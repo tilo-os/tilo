@@ -370,7 +370,7 @@ fn may_write(
         return Err(WorkspaceRefusal::WriteForbidden);
     }
     let bound = tilo_action_policy::roles::foreign_device_bound();
-    let authority = policy.person_on_device(&person, foreign, &bound);
+    let authority = policy.person_on_device(&person, foreign, bound);
     let cx = Context::at_secs(now_ns / 1_000_000_000);
     let allows = |kind| {
         authority

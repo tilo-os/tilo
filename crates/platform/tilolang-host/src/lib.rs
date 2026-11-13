@@ -1012,6 +1012,20 @@ impl TilolangHost {
             && self.appliers.is_empty()
             && self.task.is_none()
     }
+
+    /// Whether the host owes work of its own: an instance being opened, a change being applied,
+    /// or a window with a frame coming. A host that owes none draws nothing more until something
+    /// reaches it — its door, a window, or a wake — so a frame taken then is the same frame the
+    /// next one would be.
+    #[must_use]
+    pub fn owes_work(&self) -> bool {
+        !self.opening.is_empty()
+            || self.appliers.iter().any(hosted::Applier::owes)
+            || self
+                .running
+                .iter()
+                .any(|running| running.hosted.owes_a_frame())
+    }
 }
 
 /// Say each request in `events`, which reached the instance of `app` before its route was

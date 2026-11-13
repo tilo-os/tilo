@@ -8,31 +8,16 @@
 
 //! User notifications: one API on Linux, macOS and the web.
 //!
-//! A [`Notification`] is shown under a stable tag; showing the same tag again
-//! replaces it, and [`Notifier::withdraw`] takes it away. Where the platform
-//! keeps notifications for an app that is not running, [`Notifier::schedule`]
-//! hands one over for later. [`system`] is this target's backend:
+//! A [`Notification`] is shown under a stable tag: showing the same tag again
+//! replaces it, and [`Notifier::withdraw`] takes it away. Where the platform keeps
+//! notifications for an app that is not running, [`Notifier::schedule`] hands one
+//! over for later. [`system`] is this target's backend.
 //!
 //! | Target | Backend |
 //! |---|---|
 //! | Linux | the notification portal, else `org.freedesktop.Notifications`; Tilo's service also owns durable deadlines |
-//! | macOS | `UNUserNotificationCenter`, which needs the app bundle's identifier: an unbundled binary has none and answers [`NotifyError::Unavailable`] |
+//! | macOS | `UNUserNotificationCenter`, which needs the app bundle's identifier: an unbundled binary answers [`NotifyError::Unavailable`] |
 //! | Web | the Notifications API, while the page is open |
-//! | Windows | toasts under the installer-registered app id |
-//!
-//! A notification may carry an activation URI
-//! ([`Notification::with_activation`]); a click hands it to the handler the
-//! app installed for the URI's scheme ([`set_activation_handler`]) where the
-//! platform reports clicks. Buttons ([`Notification::with_button`]) carry
-//! URIs of their own, handed over the same way where the platform shows
-//! them (Linux; elsewhere they are left out).
-//!
-//! Where the platform says why a notification went away, [`set_close_handler`]
-//! hands the app its tag and a [`CloseReason`]: the freedesktop service's
-//! `NotificationClosed` on Linux. The app's own withdrawal is never reported.
-//!
-//! [`availability`] says which [`Feature`]s the target has; a backend may do
-//! less at run time (no notification service on this session), never more.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -49,7 +34,6 @@ mod web;
 #[cfg(windows)]
 mod windows;
 
-/// Windows toasts for the Windows installer and examples.
 #[cfg(windows)]
 #[doc(hidden)]
 pub mod windows_toasts {
@@ -59,58 +43,38 @@ pub mod windows_toasts {
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use tilo_clock::time::SystemTime;
 
-/// One user-visible notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
-    /// A stable tag: showing the same tag again replaces the earlier one.
-    /// Keep it to 15 ASCII characters, the shortest limit among the
-    /// platforms (Windows' scheduler).
+    /// A stable tag: showing the same tag again replaces the earlier one. Keep it to
+    /// 15 ASCII characters, the shortest limit among the platforms.
     pub tag: String,
     pub title: String,
     pub body: String,
-    /// A URI handed to the app's [`set_activation_handler`] when the user
-    /// clicks the notification (`tilo-clocks:timer/<id>`), where the platform
-    /// reports clicks ([`Feature::Activate`]).
     pub activation: Option<String>,
-    /// What choosing the notification does, in the person's words ("Try
-    /// again"), for a host that shows the activation as a button. Without
-    /// one a click opens the app.
     pub action: Option<String>,
-    /// How much it asks of the person: a host marks a warning or an error
-    /// the way it marks its own.
     pub severity: Severity,
-    /// Buttons beside the notification's own activation, at most
-    /// [`MAX_BUTTONS`].
     pub buttons: Vec<NotificationButton>,
-    /// Shown without a sound: one asked for so, or a change to one already
-    /// shown (a download's progress), which would otherwise sound at every
-    /// step. Linux carries it; macOS plays no sound for any.
+    /// Shown without a sound: one asked for so, or a change to one already shown (a
+    /// download's progress), which would otherwise sound at every step. macOS plays no
+    /// sound for any.
     pub silent: bool,
 }
 
-/// The most buttons a notification carries, as the Tilo shell shows them.
 pub const MAX_BUTTONS: usize = 3;
 
-/// A button on a notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationButton {
-    /// What choosing it does, in the person's words ("Pause").
     pub label: String,
-    /// The URI handed to the app's [`set_activation_handler`] when the
-    /// person chooses it.
     pub activation: String,
 }
 
-/// How much a notification asks of the person.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Severity {
-    /// News: something happened.
     #[default]
     Info,
-    /// Something went wrong that the person can put right, such as a save
-    /// that did not go through.
+    /// Something went wrong that the person can put right, such as a save that did not
+    /// go through.
     Warning,
-    /// Something failed that needs the person now.
     Error,
 }
 
@@ -128,15 +92,12 @@ impl Notification {
         }
     }
 
-    /// Show it without a sound.
     #[must_use]
     pub fn quietly(mut self) -> Self {
         self.silent = true;
         self
     }
 
-    /// Add a button named `label` that hands `uri` to the app's activation
-    /// handler when the person chooses it.
     #[must_use]
     pub fn with_button(mut self, label: impl Into<String>, uri: impl Into<String>) -> Self {
         self.buttons.push(NotificationButton {
@@ -146,22 +107,18 @@ impl Notification {
         self
     }
 
-    /// Hand `uri` to the app's activation handler when the user clicks.
     #[must_use]
     pub fn with_activation(mut self, uri: impl Into<String>) -> Self {
         self.activation = Some(uri.into());
         self
     }
 
-    /// Name what the activation does ("Try again"), for a host that shows
-    /// it as a button.
     #[must_use]
     pub fn with_action(mut self, label: impl Into<String>) -> Self {
         self.action = Some(label.into());
         self
     }
 
-    /// Mark it as a warning or an error.
     #[must_use]
     pub fn with_severity(mut self, severity: Severity) -> Self {
         self.severity = severity;
@@ -169,19 +126,17 @@ impl Notification {
     }
 }
 
-/// Receives the activation URIs of clicked notifications.
 type ActivationHandler = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// The installed handlers by URI scheme, and the clicks that arrived
-/// before theirs was (a click that launched the app). Several apps share a
-/// process on a Tilo desktop, so each owns only its scheme's clicks.
+/// The installed handlers by URI scheme, and the clicks that arrived before theirs
+/// was (a click that launched the app). Several apps share a process on a Tilo
+/// desktop, so each owns only its scheme's clicks.
 #[derive(Default)]
 struct Activations {
     handlers: std::collections::HashMap<String, ActivationHandler>,
     pending: Vec<String>,
 }
 
-/// The scheme of activation URI `uri`, as handlers are keyed.
 fn scheme_of(uri: &str) -> &str {
     uri.split_once(':').map_or(uri, |(scheme, _)| scheme)
 }
@@ -191,14 +146,8 @@ fn activations() -> &'static Mutex<Activations> {
     ACTIVATIONS.get_or_init(Mutex::default)
 }
 
-/// Clicks kept for a handler not yet installed; older ones are dropped.
 const PENDING_ACTIVATIONS: usize = 16;
 
-/// Call `handler` with the activation URI of every notification the user
-/// clicks whose URI has `scheme` (`tilo-clocks`), on whatever thread the
-/// platform reports it, starting with any such click that arrived before
-/// (the one that launched the app). Replaces an earlier handler for
-/// `scheme`.
 pub fn set_activation_handler(scheme: &str, handler: impl Fn(&str) + Send + Sync + 'static) {
     let handler: ActivationHandler = Arc::new(handler);
     let pending = {
@@ -219,17 +168,12 @@ pub fn set_activation_handler(scheme: &str, handler: impl Fn(&str) + Send + Sync
     }
 }
 
-/// Report that the person chose a notification carrying `uri`, for a host
-/// that shows applications' notifications itself (a desktop drawing its own
-/// banners) rather than through a platform backend. The app's
-/// [`set_activation_handler`] receives it as it would a platform click.
 pub fn report_activation(uri: &str) {
     if valid_activation(uri) {
         activated(uri);
     }
 }
 
-/// A backend's report that the user clicked a notification carrying `uri`.
 pub(crate) fn activated(uri: &str) {
     let handler = {
         let Ok(mut activations) = activations().lock() else {
@@ -248,21 +192,18 @@ pub(crate) fn activated(uri: &str) {
     handler(uri);
 }
 
-/// Why the platform closed a notification the app showed, before the app took it back itself,
-/// as `org.freedesktop.Notifications`' `NotificationClosed` names it.
+/// Why the platform closed a notification the app showed, before the app took it
+/// back itself, as `org.freedesktop.Notifications`' `NotificationClosed` names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseReason {
-    /// The notification ran out of time.
     Expired,
-    /// The person dismissed it.
     Dismissed,
-    /// The app closed it with [`Notifier::withdraw`], or the platform did so because the
-    /// notification was replaced.
+    /// The app withdrew it, or the platform closed it because the notification was
+    /// replaced.
     Closed,
 }
 
 impl CloseReason {
-    /// The specification's `reason` code for it.
     #[must_use]
     pub fn code(self) -> u32 {
         match self {
@@ -272,7 +213,6 @@ impl CloseReason {
         }
     }
 
-    /// The reason `code` names; `None` for a code the specification leaves open.
     #[must_use]
     pub fn from_code(code: u32) -> Option<Self> {
         match code {
@@ -284,25 +224,24 @@ impl CloseReason {
     }
 }
 
-/// Receives the tags of closed notifications.
 type CloseHandler = Arc<dyn Fn(&str, CloseReason) + Send + Sync>;
 
-/// The installed close handlers by tag prefix. Several apps share a process on a Tilo desktop,
-/// so each owns only the tags it names.
+/// The installed close handlers by tag prefix. Several apps share a process on a
+/// Tilo desktop, so each owns only the tags it names.
 fn close_handlers() -> &'static Mutex<std::collections::HashMap<String, CloseHandler>> {
     static HANDLERS: OnceLock<Mutex<std::collections::HashMap<String, CloseHandler>>> =
         OnceLock::new();
     HANDLERS.get_or_init(Mutex::default)
 }
 
-/// Call `handler` with the tag and reason of every notification whose tag starts with `prefix`
-/// that the platform closes, on whatever thread reports it. Replaces an earlier handler for
-/// `prefix`; where prefixes nest, the longest one wins.
+/// Call `handler` with the tag and reason of every notification whose tag starts
+/// with `prefix` that the platform closes, on whatever thread reports it. Replaces
+/// an earlier handler for `prefix`; where prefixes nest, the longest one wins.
 ///
-/// Only some platforms report this ([`Feature::Close`]), and only for notifications they closed
-/// themselves: a notification the app withdrew is the app's own doing and is not reported. A
-/// dismissal ([`CloseReason::Dismissed`]) is the person's answer; [`CloseReason::Expired`] and
-/// [`CloseReason::Closed`] say nothing about them.
+/// Only some platforms report this ([`Feature::Close`]), and only for notifications
+/// they closed themselves: a notification the app withdrew is not reported, and
+/// [`CloseReason::Expired`] and [`CloseReason::Closed`] say nothing about the
+/// person.
 pub fn set_close_handler(
     prefix: &str,
     handler: impl Fn(&str, CloseReason) + Send + Sync + 'static,
@@ -313,7 +252,6 @@ pub fn set_close_handler(
     handlers.insert(prefix.to_owned(), Arc::new(handler));
 }
 
-/// A backend's report that the platform closed the notification `tag`.
 #[cfg_attr(
     not(target_os = "linux"),
     allow(dead_code, reason = "only the freedesktop backend reports closes")
@@ -334,17 +272,14 @@ pub(crate) fn closed(tag: &str, reason: CloseReason) {
     }
 }
 
-/// Why a notification could not be shown, scheduled or withdrawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotifyError {
-    /// This host has no notification service, or this process may not use
-    /// it (an unbundled macOS binary).
+    /// This host has no notification service, or this process may not use it (an
+    /// unbundled macOS binary).
     Unavailable,
-    /// This target cannot do what was asked; see [`availability`].
     Unsupported(Unsupported),
     /// The request itself is malformed (an empty tag).
     Invalid(&'static str),
-    /// The service rejected the request.
     Failed(String),
 }
 
@@ -361,14 +296,12 @@ impl std::fmt::Display for NotifyError {
 
 impl std::error::Error for NotifyError {}
 
-/// A notification the platform holds for later delivery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scheduled {
     pub tag: String,
     pub at: SystemTime,
 }
 
-/// The host's authoritative occurrence and delivery history for an alarm.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AlarmState {
     pub tag: String,
@@ -379,27 +312,16 @@ pub struct AlarmState {
     pub last_rung: Option<chrono::NaiveDate>,
 }
 
-/// Host-owned user notifications.
 pub trait Notifier: Send + Sync {
-    /// Show `notification`, replacing any earlier one with the same tag.
     fn show(&self, notification: &Notification) -> Result<(), NotifyError>;
 
-    /// Withdraw the notification shown under `tag`, if any.
     fn withdraw(&self, tag: &str) -> Result<(), NotifyError>;
 
-    /// Have the platform show `notification` at `at`, even if this app is no
-    /// longer running. Scheduling a tag again replaces the earlier one.
-    ///
-    /// # Errors
-    /// [`Feature::Schedule`] is unsupported here, or the platform refused.
     fn schedule(&self, notification: &Notification, at: SystemTime) -> Result<(), NotifyError> {
         let _ = (notification, at);
         Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 
-    /// Schedule a local-time alarm. Hosts that understand calendar alarms
-    /// retain recurrence and timezone semantics after the app closes; other
-    /// hosts retain the supplied next occurrence through `schedule`.
     fn schedule_alarm(
         &self,
         notification: &Notification,
@@ -412,31 +334,22 @@ pub trait Notifier: Send + Sync {
         self.schedule(notification, at)
     }
 
-    /// Calendar handoffs and delivered occurrences owned by this app.
-    /// Hosts that retain only an absolute deadline return no calendar state.
+    /// Calendar handoffs and delivered occurrences owned by this app; a host that keeps
+    /// only an absolute deadline returns none.
     fn alarm_states(&self) -> Result<Vec<AlarmState>, NotifyError> {
         Ok(Vec::new())
     }
 
-    /// The notifications this app has scheduled that are not yet delivered.
-    ///
-    /// # Errors
-    /// As [`schedule`](Self::schedule).
     fn scheduled(&self) -> Result<Vec<Scheduled>, NotifyError> {
         Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 
-    /// Cancel the scheduled notification under `tag`, if any.
-    ///
-    /// # Errors
-    /// As [`schedule`](Self::schedule).
     fn cancel_scheduled(&self, tag: &str) -> Result<(), NotifyError> {
         let _ = tag;
         Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 }
 
-/// The request checks every backend makes before reaching the platform.
 pub(crate) fn validate(notification: &Notification) -> Result<(), NotifyError> {
     validate_tag(&notification.tag)?;
     if notification.title.trim().is_empty() {
@@ -465,8 +378,8 @@ pub(crate) fn validate(notification: &Notification) -> Result<(), NotifyError> {
     Ok(())
 }
 
-/// `scheme:rest`, the scheme as RFC 3986 spells it, without control
-/// characters or whitespace.
+/// `scheme:rest`, the scheme as RFC 3986 spells it, without control characters or
+/// whitespace.
 pub fn valid_activation(uri: &str) -> bool {
     let Some((scheme, _)) = uri.split_once(':') else {
         return false;
@@ -493,9 +406,9 @@ pub(crate) fn validate_tag(tag: &str) -> Result<(), NotifyError> {
 }
 
 /// This target's notifications for the app `app_id`. A desktop attributes
-/// notifications to an app, so without an id (a tool, a test, the shell) they
-/// are unavailable there; a browser attributes them to the page's origin and
-/// needs none.
+/// notifications to an app, so without an id (a tool, a test, the shell) they are
+/// unavailable there; a browser attributes them to the page's origin and needs
+/// none.
 pub fn system(app_id: Option<&str>) -> Arc<dyn Notifier> {
     match app_id.filter(|id| !id.is_empty()) {
         Some(app_id) => backend(app_id),
@@ -534,7 +447,6 @@ fn backend(_app_id: &str) -> Arc<dyn Notifier> {
     unavailable()
 }
 
-/// Notifications that are never shown, for hosts that offer none.
 pub fn unavailable() -> Arc<dyn Notifier> {
     Arc::new(UnavailableNotifier)
 }
@@ -574,20 +486,17 @@ fn schedule_refusal() -> NotifyError {
     }
 }
 
-/// A person whose messages may break through Do Not Disturb.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PriorityContact {
-    /// Stable across renames.
     pub id: String,
     pub name: String,
-    /// Addresses and numbers messages from this person arrive from.
     pub endpoints: Vec<String>,
 }
 
 /// Replace the people whose notifications break through Do Not Disturb with
 /// `contacts`. Only the Tilo shell takes such a list, and only from an app it
-/// launched as `app_id` ([`Feature::PriorityContacts`]). Blocks on the
-/// session bus: call it off the UI thread.
+/// launched as `app_id` ([`Feature::PriorityContacts`]). Blocks on the session bus:
+/// call it off the UI thread.
 pub fn publish_priority_contacts(
     app_id: &str,
     contacts: &[PriorityContact],

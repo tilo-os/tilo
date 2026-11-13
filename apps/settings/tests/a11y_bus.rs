@@ -1,21 +1,4 @@
 //! What a connected accessibility bus costs a Settings click.
-//!
-//! The native runner hands the whole accessibility tree to AccessKit's Unix
-//! adapter after every frame. The adapter ignores it until the bus reports
-//! assistive technology enabled; then it diffs the tree and queues AT-SPI
-//! events. This runs the hosted app against the real adapter and reports the
-//! frame work with the bus absent and present.
-//!
-//! It needs a session bus with the registry, so it is ignored by default:
-//!
-//! ```sh
-//! # A private runtime directory and settings backend keep the real session
-//! # (its buses, its dconf) out of it.
-//! export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
-//! dbus-run-session -- sh -c '
-//!   /usr/libexec/at-spi-bus-launcher --launch-immediately & sleep 2
-//!   TILO_A11Y_BUS=1 cargo test -p settings --test it a11y_bus -- --ignored --nocapture'
-//! ```
 #![allow(
     clippy::cast_possible_truncation,
     clippy::indexing_slicing,
@@ -130,7 +113,6 @@ fn accesskit_adapter_on_a_live_bus() {
     eprintln!(
         "perf a11y bus (active={active}): page switch p50={frame}us, adapter update p50={adapter_us}us ({nodes} nodes)"
     );
-    // Scrolling re-sends the whole tree each frame.
     let mut scroll = Vec::new();
     app.harness().click_at(1460.0, 460.0);
     for i in 0..60 {

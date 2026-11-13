@@ -1,18 +1,14 @@
 //! Background fetching.
 //!
-//! Networking runs off the UI thread: each [`FetchRequest`] becomes its own
-//! task on the shared app runtime, and posts its [`FetchResult`] back over a
-//! channel the moment it completes, so one slow feed never holds up the
-//! others. The widget drains results during its `sync` pass and folds them
-//! into the store + CRDT. HTTP feeds go through `tilo_net` + feed-rs;
-//! `gemini://` feeds go through a raw TLS socket (desktop only) and the
-//! gemtext parser, trusting the server certificate on first use: the first
-//! fetch pins it on the feed and every later fetch must present the same one. Parsing runs on the CPU pool, not on the runtime thread.
-//! In a page, feeds whose sites do not allow cross-origin reads go through
-//! the host's fetch proxy when it offers one.
+//! Each [`FetchRequest`] is its own task on the shared app runtime and posts its
+//! [`FetchResult`] back over a channel when it completes, so one slow feed never
+//! holds up the others; the widget folds results in during `sync`. HTTP goes
+//! through `tilo_net` and feed-rs, `gemini://` through a raw TLS socket
+//! (desktop only) whose certificate the first fetch pins on the feed. In a page,
+//! a site without cross-origin reads goes through the host's fetch proxy.
 //!
-//! None of this is touched by `--shots` — the worker is created lazily on the
-//! first real fetch, so the offline screenshot stays hermetic.
+//! None of this is touched by `--shots`: the worker starts on the first real
+//! fetch.
 
 use std::io::Cursor;
 use std::sync::OnceLock;
@@ -30,7 +26,6 @@ pub enum FetchRequest {
         feed_id: Id,
         url: String,
         kind: FeedKind,
-        /// The feed's [`crate::model::Feed::certificate_pin`]; the server must match it.
         certificate_pin: Option<String>,
     },
 }
@@ -43,17 +38,12 @@ pub enum FetchResult {
         feed_id: Id,
         title: Option<String>,
         articles: Vec<Fetched>,
-        /// The certificate a gemini server presented, for a feed to pin on
-        /// its first fetch.
         certificate_pin: Option<String>,
     },
     /// Something went wrong; `feed_id` is set for a refresh failure.
     Failed {
         feed_id: Option<Id>,
-        /// Why it went wrong, in the words the subscription's row uses.
         reason: RefreshFailure,
-        /// The transport's own words: what the notice says when there is no
-        /// subscription to put a reason on.
         message: String,
     },
 }
@@ -65,17 +55,10 @@ pub enum FetchResult {
 /// not to be a feed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefreshFailure {
-    /// The site could not be reached, or the connection broke mid-answer.
     Unreachable,
-    /// The server answered and said no: an access rule, a challenge, a
-    /// removed page. `status` is the code it named, when it named one.
     Refused { status: Option<u16> },
-    /// The address answered with something this reader cannot read as a feed.
     NotAFeed,
-    /// A gemini server presented a different certificate than the one the
-    /// subscription was pinned to.
     Untrusted,
-    /// Fetching could not start at all (no network client, no runtime).
     Unavailable,
 }
 
@@ -126,18 +109,12 @@ impl FetchFailure {
 
 /// Where queued requests go.
 enum Dispatch {
-    /// Each request runs as a task on the app runtime.
     Runtime(&'static ui::rt::AppRuntime),
-    /// The runtime could not be started; requests are dropped (the failure
-    /// was reported once as a [`FetchResult::Failed`]).
     Unavailable,
-    /// Tests: requests are only counted, never fetched.
     #[cfg(test)]
     Record,
 }
 
-/// Handle to the fetcher. Dropping it drops the result channel; tasks still
-/// in flight finish and their results are discarded.
 pub struct FetchWorker {
     dispatch: Dispatch,
     results: Sender<FetchResult>,
@@ -146,7 +123,6 @@ pub struct FetchWorker {
 }
 
 impl FetchWorker {
-    /// Create a fetcher backed by the app runtime.
     pub fn spawn() -> Self {
         let (res_tx, res_rx) = std::sync::mpsc::channel::<FetchResult>();
         let dispatch = match ui::rt::try_app() {
@@ -168,8 +144,6 @@ impl FetchWorker {
         }
     }
 
-    /// Queue a request. Increments the in-flight counter. Never waits: the
-    /// fetch runs as a task on the app runtime.
     pub fn send(&mut self, req: FetchRequest) {
         match self.dispatch {
             Dispatch::Runtime(runtime) => {
@@ -187,7 +161,6 @@ impl FetchWorker {
         }
     }
 
-    /// Drain every result that has arrived since the last poll.
     pub fn poll(&mut self) -> Vec<FetchResult> {
         let mut out = Vec::new();
         while let Ok(r) = self.rx.try_recv() {
@@ -223,7 +196,6 @@ impl FetchWorker {
     }
 }
 
-/// The shared HTTP client, built on first use by the first fetch task.
 fn http_client() -> Option<&'static tilo_net::Client> {
     static CLIENT: OnceLock<Option<tilo_net::Client>> = OnceLock::new();
     CLIENT
@@ -265,11 +237,9 @@ async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchRe
     }
 }
 
-/// What one fetch found.
 struct Found {
     title: Option<String>,
     articles: Vec<Fetched>,
-    /// The certificate a gemini server presented; `None` over HTTP.
     certificate_pin: Option<String>,
 }
 
@@ -313,10 +283,8 @@ async fn fetch_feed(
     })
 }
 
-/// The largest feed or gemini page read; bigger answers are refused.
 const MAX_FEED_BYTES: usize = 16 * 1024 * 1024;
 
-/// Parse RSS/Atom/JSON-feed bytes into our model via feed-rs.
 fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Fetched>), String> {
     let parsed = feed_rs::parser::parse(Cursor::new(bytes)).map_err(|e| format!("parse: {e}"))?;
     let title = parsed.title.map(|t| t.content);
@@ -378,7 +346,6 @@ fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Fetched>), Strin
     Ok((title, articles))
 }
 
-/// A short, tag-free preview line for the article list.
 fn plain_summary(html_text: &str) -> String {
     let blocks = html::to_blocks(html_text);
     let text = blocks
@@ -542,10 +509,8 @@ mod tests {
         assert_eq!(articles[1].url, "https://example.org/posts/2");
     }
 
-    /// Fetching derives site URLs, parses RSS bytes and polls the worker without blocking.
     #[test]
     fn fetch_parses_feeds_and_polls_the_worker_without_blocking() {
-        // --- phase: derive_site_url_drops_path ---
         {
             assert_eq!(
                 derive_site_url("https://blog.rust-lang.org/feed.xml"),
@@ -557,7 +522,6 @@ mod tests {
             );
         }
 
-        // --- phase: a gemini server must present the pinned certificate ---
         {
             let pin = check_certificate("example.org", Some(b"cert"), None).unwrap();
             assert_eq!(pin, blake3::hash(b"cert").to_hex().as_str());
@@ -577,7 +541,6 @@ mod tests {
             );
         }
 
-        // --- phase: worker_send_is_nonblocking_and_poll_drains ---
         {
             fn worker_send_is_nonblocking_and_poll_drains() {
                 // A worker that records requests instead of fetching them.
@@ -615,7 +578,6 @@ mod tests {
             worker_send_is_nonblocking_and_poll_drains();
         }
 
-        // --- phase: parse_rss_bytes ---
         {
             let rss = r#"<?xml version="1.0"?>
         <rss version="2.0"><channel>

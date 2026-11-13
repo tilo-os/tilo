@@ -9,7 +9,6 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-/// Length of every symmetric key and X25519 key handled by this crate.
 pub const KEY_LEN: usize = 32;
 
 /// Fill `out` from the operating system CSPRNG.
@@ -91,10 +90,8 @@ impl std::fmt::Debug for SymmetricKey {
     }
 }
 
-/// Length of a [`KeyId`].
 pub const KEY_ID_LEN: usize = 8;
 
-/// Public identifier of a [`SymmetricKey`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyId(pub [u8; KEY_ID_LEN]);
 
@@ -104,7 +101,6 @@ impl std::fmt::Debug for KeyId {
     }
 }
 
-/// An X25519 public key that sealed data can be addressed to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PublicKey([u8; KEY_LEN]);
 
@@ -125,12 +121,10 @@ impl PublicKey {
             .map_err(|_| Error::InvalidKey)
     }
 
-    /// The encoded key.
     pub const fn to_bytes(self) -> [u8; KEY_LEN] {
         self.0
     }
 
-    /// Borrow the encoded key.
     pub const fn as_bytes(&self) -> &[u8; KEY_LEN] {
         &self.0
     }
@@ -142,7 +136,6 @@ impl std::fmt::Debug for PublicKey {
     }
 }
 
-/// An X25519 private key that sealed data can be opened with.
 #[derive(Clone)]
 pub struct SecretKey(Zeroizing<[u8; KEY_LEN]>);
 
@@ -173,7 +166,6 @@ impl SecretKey {
         SymmetricKey::from_slice(bytes).map(|key| Self(key.0))
     }
 
-    /// The raw private key, for persisting in a sealed store.
     pub fn expose_secret(&self) -> &[u8; KEY_LEN] {
         &self.0
     }

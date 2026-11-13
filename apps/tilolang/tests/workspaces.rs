@@ -4,7 +4,6 @@
 //! workspace has synced.
 
 use ui::framework::testing::HostedApp;
-use ui::headless::InspectionNode;
 use ui::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
 
 /// What the shell tells a window in the workspace "Lounge" about its state.
@@ -20,22 +19,10 @@ fn told(state: WorkspaceSyncState) -> WorkspaceSync {
 
 /// Everything the window says, as a screen reader hears it: each node's accessible name.
 fn said(app: &mut HostedApp) -> Vec<String> {
-    fn walk(node: &InspectionNode, out: &mut Vec<String>) {
-        if let Some(name) = node
-            .semantics
-            .as_ref()
-            .and_then(|access| access.name.clone())
-        {
-            out.push(name);
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
     app.harness().relayout();
-    let mut out = Vec::new();
-    walk(&app.harness().inspection().root, &mut out);
-    out
+    (app.harness().inspection().root.nodes().into_iter())
+        .filter_map(|node| node.semantics.as_ref()?.name.clone())
+        .collect()
 }
 
 /// The window of the installed Notes package over a workspace with nothing in it yet.

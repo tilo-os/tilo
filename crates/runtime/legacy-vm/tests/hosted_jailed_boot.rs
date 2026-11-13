@@ -177,7 +177,6 @@ fn a_jailed_vm_reaches_the_internet_and_nothing_of_the_hosts() {
         size: VmSize::Small,
     };
 
-    // phase: the first command boots the VM in a jail of its slot's own
     let (link, booted) = service.ensure(&request, &[]).unwrap();
     eprintln!("jailed cold boot to agent: {} ms", booted.unwrap());
     let (pid, slot) = firecracker(&config.run);
@@ -203,7 +202,6 @@ fn a_jailed_vm_reaches_the_internet_and_nothing_of_the_hosts() {
     assert_eq!(code, 0, "{err}");
     assert!(out.starts_with("Linux\n"), "{out}");
 
-    // phase: the VM fetches from the internet
     let fetch = "if command -v curl >/dev/null; then \
            curl -fsS --max-time 60 -o /tmp/fetched \
              https://static.crates.io/crates/itoa/itoa-1.0.11.crate; \
@@ -217,7 +215,6 @@ fn a_jailed_vm_reaches_the_internet_and_nothing_of_the_hosts() {
     assert!(bytes > 1000, "fetched {bytes} bytes");
     eprintln!("fetched {bytes} bytes from the internet");
 
-    // phase: the metadata endpoint, the host and the gateway are refused
     let host = std::env::var("TILO_HOSTED_HOST_ADDRESS").expect("TILO_HOSTED_HOST_ADDRESS");
     let listener = TcpListener::bind(("0.0.0.0", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -240,7 +237,6 @@ fn a_jailed_vm_reaches_the_internet_and_nothing_of_the_hosts() {
         "nothing from the VM reached the host's listener"
     );
 
-    // phase: an interactive program gets its keys on a terminal
     let stream = link.connect(AGENT_PORT).unwrap();
     let mut out = Vec::new();
     let mut err = Vec::new();
@@ -284,7 +280,6 @@ fn a_jailed_vm_reaches_the_internet_and_nothing_of_the_hosts() {
     assert!(out.contains("40 120"), "of the session's size: {out}");
     assert!(out.contains("hi agent"), "the keys arrived: {out}");
 
-    // phase: idle, it is snapshotted and its slot released; restored, it is jailed and online again
     wait_for_phase(&service, "Suspended");
     assert!(!runs_as(vm_uid), "a sleeping VM holds no process");
     assert!(!jail_config.jail_dir(slot).exists(), "nor its jail");
@@ -301,7 +296,6 @@ fn a_jailed_vm_reaches_the_internet_and_nothing_of_the_hosts() {
     let (code, _, err) = run(&link, fetch);
     assert_eq!(code, 0, "the restored VM reaches the internet: {err}");
 
-    // phase: stopped, the slot's uids run nothing and its files are the service's again
     service.stop("ws1", "default").unwrap();
     assert!(!runs_as(vm_uid), "nothing runs as the VM's uid");
     assert!(

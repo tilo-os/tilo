@@ -1,6 +1,6 @@
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Ids, KindSet, Labels,
-    Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, Subject, TreePath,
+    Acting, ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Ids, KindSet,
+    Labels, Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, Subject, TreePath,
     WorkspacePolicy, decide, describe, describe_node,
     roles::{self, governance},
     sentences,
@@ -530,7 +530,7 @@ fn every_bound_applies() {
     assert!(
         verdict
             .explain()
-            .starts_with("Not allowed: the delegation's grants"),
+            .starts_with("Not allowed: the grants of those acting for them"),
         "{}",
         verdict.explain()
     );
@@ -1234,16 +1234,17 @@ fn a_standing_carries_the_person_and_every_bound() {
         bob.answer(&bob.node(&relative), ActionKind::Outside, &cx()),
         Answer::Ask
     );
-    let agent = Standing::person(workspace.clone(), BOB).bounded_by(
-        Subject::agent("ag"),
-        roles::agent_default(&[mail()]).assign(
-            "ag",
-            &Subject::agent("ag"),
-            &alice(),
-            &Lifetime::UntilRevoked,
-        ),
-    );
-    assert!(agent.is_bounded_by(&Subject::agent("ag")));
+    let agent = Standing::new(
+        workspace.clone(),
+        Acting::agent("ag").acting_for(Acting::person(BOB)),
+    )
+    .granted(roles::agent_default(&[mail()]).assign(
+        "ag",
+        &Subject::agent("ag"),
+        &alice(),
+        &Lifetime::UntilRevoked,
+    ));
+    assert_eq!(agent.people(), vec![BOB]);
     assert_eq!(
         agent.answer(&archive(), ActionKind::Undoable, &cx()),
         Answer::Allow
@@ -1381,7 +1382,7 @@ fn a_foreign_device_never_governs() {
     let workspace = workspace_with_members(&[]);
     let bound = roles::foreign_device_bound();
     let authority = Authority::person(workspace.party(ALICE))
-        .bounded_by(Party::new(vec![Subject::ForeignDevice], &bound));
+        .bounded_by(Party::new(vec![Subject::ForeignDevice], bound.iter()));
     assert_eq!(
         authority.decide(&send(), ActionKind::Outside, &cx()).answer,
         Answer::Ask
@@ -1850,12 +1851,11 @@ fn an_agent_delegation_bounds_its_person_by_the_editor_preset() {
     let workspace = workspace_with_members(&[(BOB, Role::Viewer)]);
     let records = TreePath::workspace("r").app("notes").action("append");
     let set_role = roles::governance_action("r", governance::SET_ROLE);
-    let owner_agent = Standing::person(workspace.clone(), ALICE).with_bound(roles::agent_turn(
-        "r",
-        "scribe",
-        ALICE,
-        &[],
-    ));
+    let owner_agent = Standing::new(
+        workspace.clone(),
+        Acting::agent("scribe").acting_for(Acting::person(ALICE)),
+    )
+    .granted(roles::agent_grants("r", "scribe", ALICE, &[]));
     assert_eq!(
         owner_agent.answer(&records, ActionKind::Undoable, &cx()),
         Answer::Allow
@@ -1869,8 +1869,11 @@ fn an_agent_delegation_bounds_its_person_by_the_editor_preset() {
         Answer::Allow,
         "the owner governs"
     );
-    let viewer_agent =
-        Standing::person(workspace, BOB).with_bound(roles::agent_turn("r", "scribe", BOB, &[]));
+    let viewer_agent = Standing::new(
+        workspace,
+        Acting::agent("scribe").acting_for(Acting::person(BOB)),
+    )
+    .granted(roles::agent_grants("r", "scribe", BOB, &[]));
     assert_eq!(
         viewer_agent.answer(&records, ActionKind::Undoable, &cx()),
         Answer::Deny

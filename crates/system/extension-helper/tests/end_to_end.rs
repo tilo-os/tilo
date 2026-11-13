@@ -130,10 +130,8 @@ struct Fixture {
     public: PathBuf,
     rogue: PathBuf,
     crypto: PathBuf,
-    /// The release root and the operational certificate it issued for `key`.
     root: PathBuf,
     certificate: PathBuf,
-    /// A root of the same name that issued nothing here.
     other_root: PathBuf,
     rekor: PathBuf,
     rekor_public: PathBuf,
@@ -198,9 +196,6 @@ fn build_rpm(top: &Path, package: &Package) -> PathBuf {
     built
 }
 
-/// The release root (and one that issued nothing here), the operational
-/// certificate the real ceremony script issues it for `public`, and a
-/// throwaway Rekor key, all under `scratch`.
 fn release_ceremony(scratch: &Path, public: &Path) {
     let path = |name: &str| scratch.join(name);
     let ceremony = repo().join("tools/signing/release-ca.sh");
@@ -272,8 +267,6 @@ fn release_ceremony(scratch: &Path, public: &Path) {
     );
 }
 
-/// The RPMs and keys, built once; `None` (with the reason printed) when this
-/// machine lacks the tools.
 fn fixture() -> Option<&'static Fixture> {
     static FIXTURE: OnceLock<Option<Fixture>> = OnceLock::new();
     FIXTURE
@@ -365,7 +358,6 @@ fn fixture() -> Option<&'static Fixture> {
         .as_ref()
 }
 
-/// What `cosign sign-blob --output-signature` writes: base64 DER.
 fn sign(data: &[u8], key: &Path, workdir: &Path) -> Vec<u8> {
     let message = workdir.join("to-sign");
     fs::write(&message, data).unwrap();
@@ -483,9 +475,6 @@ fn certify(machine: &Machine, fixture: &Fixture, root: &Path, trust: &str) {
     fs::write(layout.release_trust(), trust).unwrap();
 }
 
-/// Enter the published manifest's signature in the throwaway log under the
-/// operational certificate, and publish the bundle
-/// tools/signing/sign-blob-certified.sh would write.
 fn publish_bundle(machine: &Machine, fixture: &Fixture) {
     let url = machine.manifest_url(Some(&tilo_extension::base_packages_sha256(&BASE_PACKAGES)));
     let (data, signature) = {
@@ -599,8 +588,6 @@ fn install_assembles_signed_artifacts_and_remove_restores_everything() {
             );
         }
     }
-    // Whatever is written to /var later is replaced by what the signed
-    // manifest pins, the next time the parts are activated.
     fs::write(codecs.join("usr/lib64/libavcodec.so.61"), "hijacked").unwrap();
     assert_eq!(machine.run("activate"), 0);
     assert_eq!(
@@ -682,7 +669,6 @@ fn an_image_with_the_release_root_installs_a_certified_manifest() {
     let (code, status) = install(&machine);
     assert_eq!(code, 0, "{status}");
     assert_eq!(status["state"], "installed");
-    // Activation checks the kept bundle with the real verifier again.
     fs::remove_dir_all(machine.codecs()).unwrap();
     assert_eq!(machine.run("activate"), 0);
     assert!(machine.codecs().is_dir());

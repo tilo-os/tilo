@@ -110,35 +110,29 @@ fn assert_settles(app: &mut TestApp<TlApp>, within: ui::time::Duration, what: &s
 /// The test id of the first control whose accessible name contains `name`: a note by its title,
 /// which is content the person reads, never a control they look up to press.
 fn named_text(harness: &FrameHarness, name: &str) -> Option<String> {
-    fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
-        let named = node
-            .semantics
+    let named = |node: &&ui::headless::InspectionNode| {
+        node.semantics
             .as_ref()
             .and_then(|access| access.name.as_deref())
-            .is_some_and(|shown| shown.contains(name));
-        if named && let Some(id) = &node.test_id {
-            return Some(id.clone());
-        }
-        node.children.iter().find_map(|child| find(child, name))
-    }
-    find(&harness.inspection().root, name)
+            .is_some_and(|shown| shown.contains(name))
+    };
+    (harness.inspection().root.nodes().into_iter())
+        .filter(named)
+        .find_map(|node| node.test_id.clone())
 }
 
 /// The test id of the first control that does `identity`: what the window says it does, wherever
 /// the window's composition draws it and whatever the person's language calls it.
 fn doing_control(harness: &FrameHarness, identity: &str) -> Option<String> {
-    fn find(node: &ui::headless::InspectionNode, identity: &str) -> Option<String> {
-        let does = node
-            .semantics
+    let does = |node: &&ui::headless::InspectionNode| {
+        node.semantics
             .as_ref()
             .and_then(|access| access.action.as_deref())
-            == Some(identity);
-        if does && let Some(id) = &node.test_id {
-            return Some(id.clone());
-        }
-        node.children.iter().find_map(|child| find(child, identity))
-    }
-    find(&harness.inspection().root, identity)
+            == Some(identity)
+    };
+    (harness.inspection().root.nodes().into_iter())
+        .filter(does)
+        .find_map(|node| node.test_id.clone())
 }
 
 /// What the mail conversation's Reply button does: it answers the thread.

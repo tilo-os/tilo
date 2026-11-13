@@ -1,11 +1,7 @@
-//! One unprivileged `virtiofsd` per share.
-//!
-//! `virtiofsd` runs as the user, so it can never reach more than the user
-//! can. It cannot build its own namespace sandbox without a uid map, so
-//! Tilo confines it instead: `tilo-legacy confine-fs` restricts itself with
-//! Landlock to the shared directory (read-only when the grant is), the
-//! socket's directory and the system's read-only files, then execs
-//! `virtiofsd`. A path lookup that escaped the share would find nothing.
+//! One unprivileged `virtiofsd` per share. It cannot build its own namespace
+//! sandbox without a uid map, so `tilo-legacy confine-fs` restricts it with
+//! Landlock to the share, the socket's directory and the system's read-only files,
+//! then execs it.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +13,6 @@ pub const VIRTIOFSD: &str = "/usr/libexec/virtiofsd";
 /// What a confined `virtiofsd` may read besides its share.
 pub const SYSTEM_READ_ONLY: &[&str] = &["/usr", "/etc", "/proc", "/sys/devices/system/cpu"];
 
-/// `virtiofsd` for `share`, presenting the guest user as the host user.
 #[must_use]
 #[allow(clippy::similar_names, reason = "uid and gid are the vocabulary here")]
 pub fn virtiofsd_argv(
@@ -49,7 +44,6 @@ pub fn virtiofsd_argv(
     argv
 }
 
-/// `tilo-legacy confine-fs --ro … --rw … -- <virtiofsd argv>`.
 #[must_use]
 pub fn confined_argv(
     self_exe: &Path,
@@ -71,8 +65,7 @@ pub fn confined_argv(
     argv
 }
 
-/// A `confine-fs` command line: what the program may read and write, what
-/// it must not see at all, and the program.
+/// A `confine-fs` command line: what the program may read, write and must not see, and the program.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Confinement {
     pub ro: Vec<PathBuf>,
@@ -119,7 +112,6 @@ mod tests {
             read_only: true,
         };
         let socket = Path::new("/run/user/1000/tilo-legacy/linux/fs-1.sock");
-        // phase: the daemon serves one directory as the guest user, read-only when granted so
         {
             let argv = virtiofsd_argv(VIRTIOFSD, &share, socket, 1000, 4242, 4243);
             assert_eq!(
@@ -150,7 +142,6 @@ mod tests {
                     .contains(&"--readonly".to_string())
             );
         }
-        // phase: the confinement names exactly the share and the socket directory
         {
             let daemon = virtiofsd_argv(VIRTIOFSD, &share, socket, 1000, 1, 1);
             let argv = confined_argv(

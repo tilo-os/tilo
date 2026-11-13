@@ -743,11 +743,14 @@ impl FileExplorerWidget {
             crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
         let cmds = new_sink();
         let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
-        let nav = NavShell::new()
-            .content_kind(ui::widget::ContentKind::List)
-            .with_id("files.shell")
-            .content_header("", vec![Box::new(actions_widget)])
-            .content_header_leading(Box::new(path_widget));
+        // The header the bar takes over once it hosts the window.
+        let nav = ui::window_toolbar::exempt!(Fallback, {
+            NavShell::new()
+                .content_kind(ui::widget::ContentKind::List)
+                .with_id("files.shell")
+                .content_header("", vec![Box::new(actions_widget)])
+                .content_header_leading(Box::new(path_widget))
+        });
         let thumbs = match &services {
             FileServices::Legacy => build_thumb_service(config_dir).map(Arc::new),
             FileServices::Hosted(hosted) => hosted.thumbnails.clone(),

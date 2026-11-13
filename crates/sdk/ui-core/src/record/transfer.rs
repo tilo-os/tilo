@@ -131,8 +131,8 @@ impl Origin {
         match self {
             Self::Record(checkout) => key(package, workspace, &checkout.id),
             Self::AppDocument(_) => {
-                app_state::validate_record_namespace(package, workspace)?;
-                Ok(StorageKey::package(package))
+                app_state::validate_document_namespace(package, workspace)?;
+                Ok(StorageKey::app(package))
             }
         }
     }
@@ -165,8 +165,8 @@ fn key(package: &str, workspace: &str, id: &RecordId) -> Result<StorageKey, Tran
         ));
     }
     let record = id.storage_key();
-    app_state::validate_record_identity(package, workspace, &record)?;
-    Ok(StorageKey::record(package, workspace, record))
+    app_state::validate_document_identity(package, workspace, &record)?;
+    Ok(StorageKey::document(package, workspace, record))
 }
 
 fn decode(store: &Rc<dyn DurableStore>, key: &StorageKey) -> Result<AutoCommit, TransferError> {
@@ -721,7 +721,7 @@ pub fn install_workspace_document(
     workspace: &str,
     doc: &mut AutoCommit,
 ) -> Result<Landing, TransferError> {
-    app_state::validate_record_namespace(package, workspace)?;
+    app_state::validate_document_namespace(package, workspace)?;
     let key = StorageKey::workspace_index(package, workspace);
     let _writer = writer(store, &key)?;
     if store
@@ -1290,7 +1290,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = store(temp.path());
         let mut app =
-            app_state::DocStore::shared(Rc::clone(&store), StorageKey::package(PACKAGE)).unwrap();
+            app_state::DocStore::shared(Rc::clone(&store), StorageKey::app(PACKAGE)).unwrap();
         let mut doc = app.load_or_new();
         doc.put(ROOT, "body", "kept in the app document").unwrap();
         app.save(&mut doc).unwrap();

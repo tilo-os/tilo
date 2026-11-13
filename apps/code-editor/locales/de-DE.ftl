@@ -42,6 +42,18 @@ code-editor-a11y-code = Code: { $project }
 code-editor-open-failed = { $path } ließ sich nicht öffnen: { $detail }
 code-editor-cursor = Z. { $line }, Sp. { $column }
 
+## Was ein Hinweis nach einem Befehl sagt
+code-editor-edit-refused-no-file = Die Änderung wurde nicht übernommen: Es ist keine Datei geöffnet
+code-editor-edit-refused = Die Änderung wurde nicht übernommen: { $detail }
+code-editor-create-failed = { $name } wurde nicht angelegt: { $detail }
+code-editor-no-formatter = Für diese Datei ist kein Formatierer eingerichtet
+code-editor-theme-in-system-settings = Wähle das Erscheinungsbild in den Systemeinstellungen
+code-editor-go-to-line-needs-file = Öffne eine Datei, um zu einer Zeile zu springen
+code-editor-search-needs-folder = Öffne einen Projektordner, um ihn zu durchsuchen
+code-editor-replaced-one = 1 Treffer ersetzt
+code-editor-replaced = { $count } Treffer ersetzt
+code-editor-definition-on-another-computer = Die Definition liegt auf einem anderen Rechner: { $uri }
+
 ## What the search panel reports
 code-search-running = Suche läuft…
 code-search-none = Keine Treffer für „{ $query }“

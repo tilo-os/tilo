@@ -19,10 +19,9 @@ use crate::web::fetch as backend;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Redirects {
-    /// Follow up to this many hops. A page follows at most 20, whatever the
-    /// limit.
+    /// Follow up to this many hops; a page stops at 20 whatever the limit.
     Follow(u8),
-    /// Answer the redirect itself. A page cannot read redirect responses, so
+    /// Answer the redirect itself; a page cannot read redirect responses, so
     /// there the request fails with [`NetError::Redirect`].
     None,
 }
@@ -33,7 +32,6 @@ impl Default for Redirects {
     }
 }
 
-/// Settings shared by every request of a [`Client`].
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Config {
     pub(crate) timeout: Option<Duration>,
@@ -41,17 +39,12 @@ pub(crate) struct Config {
     pub(crate) default_headers: HeaderMap,
     pub(crate) redirects: Redirects,
     pub(crate) proxy: ProxyUse,
-    /// The TLS settings to verify servers with, in place of the system's.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) tls: Option<rustls::ClientConfig>,
 }
 
 /// An HTTP client: a connection pool on the desktop, the page's `fetch` on
-/// the web. Cheap to clone; clones share the pool.
-///
-/// Every request future is `Send`, so it can run on `tilo_rt::app()` from any
-/// target. On the desktop it needs a tokio runtime with I/O and timers, which
-/// the app runtime is.
+/// the web. Clones share the pool, and every request future is `Send`.
 #[derive(Clone)]
 pub struct Client {
     inner: Arc<Inner>,
@@ -77,13 +70,6 @@ impl Default for Client {
 }
 
 impl Client {
-    /// A client with the defaults: no overall timeout, 10 redirects, no
-    /// fetch proxy.
-    ///
-    /// # Panics
-    ///
-    /// Never in practice: the default configuration always builds. Use
-    /// [`Client::builder`] to handle a failure.
     #[must_use]
     pub fn new() -> Self {
         #[allow(
@@ -95,12 +81,10 @@ impl Client {
             .expect("the default HTTP client builds")
     }
 
-    /// Configure a client.
     pub fn builder() -> ClientBuilder {
         ClientBuilder::default()
     }
 
-    /// Start a request.
     pub fn request(&self, method: Method, url: impl AsRef<str>) -> RequestBuilder {
         let request = Url::parse(url.as_ref())
             .map_err(|error| NetError::InvalidUrl(format!("{}: {error}", url.as_ref())))
@@ -111,43 +95,29 @@ impl Client {
         }
     }
 
-    /// Start a `GET`.
     pub fn get(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::GET, url)
     }
 
-    /// Start a `POST`.
     pub fn post(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::POST, url)
     }
 
-    /// Start a `PUT`.
     pub fn put(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::PUT, url)
     }
 
-    /// Start a `DELETE`.
     pub fn delete(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::DELETE, url)
     }
 
-    /// Start a `HEAD`.
     pub fn head(&self, url: impl AsRef<str>) -> RequestBuilder {
         self.request(Method::HEAD, url)
     }
 
-    /// Send `request` and wait for the response head. The body streams
-    /// afterwards through the [`Response`].
-    ///
-    /// A status of 4xx or 5xx is a response, not an error; see
-    /// [`Response::error_for_status`].
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when the server was not reached,
-    /// [`NetError::Timeout`], [`NetError::Redirect`], and
-    /// [`NetError::Blocked`] when the host's fetch proxy refused the
-    /// destination.
+    /// Sends the request and waits for the response head; the body streams
+    /// through the [`Response`]. A 4xx or 5xx status is a successful response,
+    /// not an error.
     pub fn send(
         &self,
         mut request: Request,
@@ -176,7 +146,6 @@ impl Client {
     }
 }
 
-/// Settings for a [`Client`].
 #[derive(Clone, Debug, Default)]
 #[must_use]
 pub struct ClientBuilder {
@@ -185,27 +154,24 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    /// The longest a request may take, from sending it to the end of its
-    /// body. A request's own [`RequestBuilder::timeout`] replaces it.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.config.timeout = Some(timeout);
         self
     }
 
-    /// The longest establishing a connection may take. A page has no
-    /// separate connection phase and applies only the overall timeout.
+    /// The longest establishing a connection may take; a page has no separate
+    /// connection phase and applies only the overall timeout.
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
         self.config.connect_timeout = Some(timeout);
         self
     }
 
-    /// The `User-Agent` header. A page sends the browser's own instead,
-    /// except through the host's fetch proxy.
+    /// The `User-Agent` header; a page sends the browser's own, except through
+    /// the host's fetch proxy.
     pub fn user_agent(self, agent: impl AsRef<str>) -> Self {
         self.default_header(USER_AGENT, agent.as_ref())
     }
 
-    /// A header sent with every request that does not set it itself.
     pub fn default_header<K, V>(mut self, name: K, value: V) -> Self
     where
         HeaderName: TryFrom<K>,
@@ -222,22 +188,19 @@ impl ClientBuilder {
         self
     }
 
-    /// Whether to follow redirects.
     pub fn redirects(mut self, redirects: Redirects) -> Self {
         self.config.redirects = redirects;
         self
     }
 
-    /// Whether requests may go through the host's fetch [`proxy`](crate::proxy).
-    /// Off unless the app opts in; a request can override it.
+    /// Whether requests may go through the host's fetch [`proxy`](crate::proxy);
+    /// off unless the app opts in.
     pub fn fetch_proxy(mut self, proxy: ProxyUse) -> Self {
         self.config.proxy = proxy;
         self
     }
 
-    /// Verify servers with `tls` (such as
-    /// [`client_config_also_trusting`](crate::client_config_also_trusting))
-    /// instead of the system's trust. A page always has the browser's.
+    /// Verify servers with `tls` instead of the system's trust.
     #[cfg(not(target_family = "wasm"))]
     pub fn tls(mut self, mut tls: rustls::ClientConfig) -> Self {
         if tls.alpn_protocols.is_empty() {
@@ -247,12 +210,6 @@ impl ClientBuilder {
         self
     }
 
-    /// Build the client.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::InvalidRequest`] for a default header that is not valid,
-    /// or when the desktop TLS stack cannot be set up.
     pub fn build(self) -> Result<Client, NetError> {
         if let Some(error) = self.error {
             return Err(error);
@@ -281,27 +238,18 @@ where
     Ok((name, value))
 }
 
-/// One HTTP request.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Request {
     pub method: Method,
-    /// An `http` or `https` URL.
     pub url: Url,
     pub headers: HeaderMap,
     pub body: Option<Bytes>,
-    /// Replaces the client's timeout for this request.
     pub timeout: Option<Duration>,
-    /// Replaces the client's fetch-proxy choice for this request.
     pub proxy: Option<ProxyUse>,
 }
 
 impl Request {
-    /// A request with no headers or body.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::InvalidUrl`] unless the scheme is `http` or `https`.
     pub fn new(method: Method, url: Url) -> Result<Self, NetError> {
         Self::checked(method, url)
     }
@@ -349,7 +297,7 @@ impl RequestBuilder {
         self
     }
 
-    /// Add a header; repeated names are all sent.
+    /// Adds a header; repeated names are all sent.
     pub fn header<K, V>(self, name: K, value: V) -> Self
     where
         HeaderName: TryFrom<K>,
@@ -380,12 +328,10 @@ impl RequestBuilder {
         })
     }
 
-    /// `Authorization: Bearer <token>`.
     pub fn bearer_auth(self, token: impl fmt::Display) -> Self {
         self.sensitive_header(AUTHORIZATION, format!("Bearer {token}"))
     }
 
-    /// `Authorization: Basic …` for `user` and `password`.
     pub fn basic_auth(self, user: impl fmt::Display, password: Option<impl fmt::Display>) -> Self {
         use base64::Engine as _;
         let credentials = match password {
@@ -406,7 +352,6 @@ impl RequestBuilder {
         })
     }
 
-    /// Append query parameters to the URL.
     pub fn query<K: AsRef<str>, V: AsRef<str>>(self, pairs: &[(K, V)]) -> Self {
         self.map(|request| {
             request
@@ -425,7 +370,6 @@ impl RequestBuilder {
         })
     }
 
-    /// An `application/x-www-form-urlencoded` body.
     pub fn form<K: AsRef<str>, V: AsRef<str>>(self, pairs: &[(K, V)]) -> Self {
         let encoded = url::form_urlencoded::Serializer::new(String::new())
             .extend_pairs(pairs.iter().map(|(k, v)| (k.as_ref(), v.as_ref())))
@@ -440,7 +384,6 @@ impl RequestBuilder {
         })
     }
 
-    /// A JSON body, with `Content-Type: application/json`.
     #[cfg(feature = "json")]
     pub fn json<T: serde::Serialize + ?Sized>(self, value: &T) -> Self {
         let encoded = serde_json::to_vec(value);
@@ -454,7 +397,6 @@ impl RequestBuilder {
         })
     }
 
-    /// The longest this request may take, body included.
     pub fn timeout(self, timeout: Duration) -> Self {
         self.map(|request| {
             request.timeout = Some(timeout);
@@ -462,8 +404,6 @@ impl RequestBuilder {
         })
     }
 
-    /// Whether this request may go through the host's fetch
-    /// [`proxy`](crate::proxy).
     pub fn fetch_proxy(self, proxy: ProxyUse) -> Self {
         self.map(|request| {
             request.proxy = Some(proxy);
@@ -471,16 +411,10 @@ impl RequestBuilder {
         })
     }
 
-    /// The assembled request, for [`Client::send`].
     pub fn build(self) -> Result<Request, NetError> {
         self.request
     }
 
-    /// Send the request; see [`Client::send`].
-    ///
-    /// # Errors
-    ///
-    /// Any error made while building it, then those of [`Client::send`].
     pub fn send(self) -> impl Future<Output = Result<Response, NetError>> + Send + use<> {
         let sent = self.request.map(|request| self.client.send(request));
         async move { sent?.await }
@@ -516,13 +450,11 @@ impl Response {
         &self.headers
     }
 
-    /// The URL that answered, after redirects.
     #[must_use]
     pub fn url(&self) -> &Url {
         &self.url
     }
 
-    /// The `Content-Length` the server declared.
     #[must_use]
     pub fn content_length(&self) -> Option<u64> {
         self.headers
@@ -531,11 +463,6 @@ impl Response {
             .and_then(|value| value.trim().parse().ok())
     }
 
-    /// `Err(NetError::Status)` for a 4xx or 5xx status.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Status`] with the status.
     pub fn error_for_status(self) -> Result<Self, NetError> {
         if self.status.is_client_error() || self.status.is_server_error() {
             Err(NetError::Status(self.status))
@@ -544,31 +471,14 @@ impl Response {
         }
     }
 
-    /// The next piece of the body; `None` at its end.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Body`] when the connection failed mid-body,
-    /// [`NetError::Timeout`] when the request's deadline passed.
     pub fn chunk(&mut self) -> impl Future<Output = Result<Option<Bytes>, NetError>> + Send + '_ {
         self.body.chunk()
     }
 
-    /// The whole body.
-    ///
-    /// # Errors
-    ///
-    /// As [`chunk`](Self::chunk).
     pub async fn bytes(self) -> Result<Bytes, NetError> {
         self.bytes_limited(usize::MAX).await
     }
 
-    /// The whole body, refusing one longer than `limit` bytes before reading
-    /// past it.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::TooLarge`], and those of [`chunk`](Self::chunk).
     pub async fn bytes_limited(mut self, limit: usize) -> Result<Bytes, NetError> {
         if let Some(declared) = self.content_length()
             && usize::try_from(declared).map_or(true, |declared| declared > limit)
@@ -585,22 +495,11 @@ impl Response {
         Ok(body.freeze())
     }
 
-    /// The whole body as text, with invalid UTF-8 replaced.
-    ///
-    /// # Errors
-    ///
-    /// As [`chunk`](Self::chunk).
     pub async fn text(self) -> Result<String, NetError> {
         let bytes = self.bytes().await?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// The whole body, parsed as JSON.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Protocol`] when it does not parse, and those of
-    /// [`chunk`](Self::chunk).
     #[cfg(feature = "json")]
     pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, NetError> {
         let bytes = self.bytes().await?;
@@ -608,7 +507,6 @@ impl Response {
     }
 }
 
-/// What a backend answers before the body.
 pub(crate) struct RawResponse {
     pub(crate) status: StatusCode,
     pub(crate) headers: HeaderMap,

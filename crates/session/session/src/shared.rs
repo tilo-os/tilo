@@ -356,13 +356,8 @@ impl Shared {
             let catalog = std::rc::Rc::clone(&catalog);
             std::rc::Rc::new(move |resource| catalog.borrow().get(resource).is_some())
         };
-        self.session_doors.answer(
-            &self.doors,
-            &self.services,
-            &self.search,
-            std::rc::Rc::clone(&shows),
-            look,
-        );
+        self.session_doors
+            .answer(&self.doors, &self.services, &self.search, &shows, look);
         // A service's `open` changes nothing of its record: opening is the session's arranging
         // step, and the places the services were asked for are stood through the arrangement's
         // own `open`, as an agent and a view asking the shell are one act

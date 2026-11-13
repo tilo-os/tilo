@@ -550,6 +550,7 @@ members = [
     "crates/text/highlight-grammars",
     "crates/text/pim-lines",
     "crates/text/spellcheck",
+    "crates/text/tilo-words",
 
     # Windows
     "crates/windows/compat-catalogue",
@@ -651,6 +652,7 @@ must_use_candidate = "allow"
 [workspace.dependencies]
 browser-continuity = { path = "crates/browser/browser-continuity", version = "0.1.0" }
 browser-continuity-core = { path = "crates/browser/browser-continuity-core", version = "0.1.0" }
+tilo-app-id = { path = "crates/platform/tilo-app-id", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------
 # UI toolkit stack

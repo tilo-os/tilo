@@ -83,7 +83,7 @@ fn arrives(memory: &MemoryStore, store: &RecordStore, id: &RecordId, bytes: Vec<
     let key = if id.is_package_primary() {
         StorageKey::workspace_index(PACKAGE, WORKSPACE)
     } else {
-        StorageKey::record(PACKAGE, WORKSPACE, id.storage_key())
+        StorageKey::document(PACKAGE, WORKSPACE, id.storage_key())
     };
     memory.write(&key, WriteOp::Replace(bytes), None).unwrap();
     store.note_kept();

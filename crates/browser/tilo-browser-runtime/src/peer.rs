@@ -200,7 +200,7 @@ thread_local! {
 impl DurablePeerStore {
     /// The key the run of custody `name` is kept under.
     fn run_key(&self, name: &str) -> durable_store::StorageKey {
-        durable_store::StorageKey::record(
+        durable_store::StorageKey::document(
             PEER_PACKAGE,
             crate::storage::PROFILE_WORKSPACE,
             format!("{}{name}", self.runs_prefix),
@@ -222,17 +222,17 @@ impl DurablePeerStore {
             .map_err(|_| js_error("open the profile's storage before starting its peer"))?;
         Ok(Self {
             store: Rc::clone(&store),
-            key: durable_store::StorageKey::record(
+            key: durable_store::StorageKey::document(
                 PEER_PACKAGE,
                 crate::storage::PROFILE_WORKSPACE,
                 hex::encode(user_public_key),
             ),
-            channels_key: durable_store::StorageKey::record(
+            channels_key: durable_store::StorageKey::document(
                 PEER_PACKAGE,
                 crate::storage::PROFILE_WORKSPACE,
                 format!("{}.channels", hex::encode(user_public_key)),
             ),
-            workspaces_key: durable_store::StorageKey::record(
+            workspaces_key: durable_store::StorageKey::document(
                 PEER_PACKAGE,
                 crate::storage::PROFILE_WORKSPACE,
                 format!("{}.rooms", hex::encode(user_public_key)),

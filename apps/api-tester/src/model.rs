@@ -1,27 +1,19 @@
-//! Pure data model for the API tester.
-//!
-//! Everything here is plain Rust + serde — no rendering, no IO, no CRDT
-//! plumbing. The workspace (collections, environments, history, the request
-//! currently being edited) is stored as the record in [`crate::record`],
-//! which is what makes it collaborative; these are the values the window
-//! works on, projected from it. Credentials are the exception: a request's
-//! auth secret and a secret variable's value stay on the device
-//! ([`Auth::secret`], [`KeyValue::secret`]) and the record holds the rest.
+//! The values the window works on, projected from the record in [`crate::record`].
+//! Credentials are the exception: a request's auth secret and a secret variable's value
+//! stay on this device.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Model};
 use uuid::Uuid;
 
-/// Identifier for a saved request, a collection, an environment or a sent
-/// request: its item in the record.
+/// The id of a saved request, a collection, an environment or a sent request.
 pub type Id = ui::tilo_resource::Id;
 
-/// A fresh id for a value the window makes before the record has it.
 pub fn fresh_id() -> Id {
     Id::from_raw(Uuid::new_v4().to_string())
 }
 
-/// HTTP verb. Ordered the way the method dropdown presents them.
+/// HTTP verb, in the order the method dropdown presents them.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HttpMethod {
     #[default]
@@ -35,7 +27,6 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
-    /// Every verb, in dropdown order.
     pub const ALL: [HttpMethod; 7] = [
         HttpMethod::Get,
         HttpMethod::Post,
@@ -58,9 +49,7 @@ impl HttpMethod {
         }
     }
 
-    /// Parse a verb from its wire string, defaulting unknown values to
-    /// GET. The inverse of [`HttpMethod::as_str`]; used when importing a
-    /// request whose method arrives as raw text.
+    /// The verb of a wire string, unknown values reading as GET.
     pub fn from_str(s: &str) -> HttpMethod {
         match s.to_ascii_uppercase().as_str() {
             "POST" => HttpMethod::Post,
@@ -73,27 +62,25 @@ impl HttpMethod {
         }
     }
 
-    /// Whether this verb conventionally carries a request body. Used to
-    /// decide whether the Body tab is meaningful for the current request.
+    /// Whether this verb conventionally carries a body, which decides whether the Body tab
+    /// means anything.
     pub fn has_body(self) -> bool {
         matches!(self, HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch)
     }
 }
 
-/// A single editable key/value row. Used uniformly for query params,
-/// headers, and form-body fields. `enabled` lets a row stay in the list
-/// while being excluded from the sent request (the checkbox in the UI).
+/// One editable key/value row, used for query params, headers and form fields. `enabled`
+/// keeps a row listed while excluding it from the sent request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyValue {
-    /// Durable row identity. The visible key may be renamed or duplicated
-    /// (notably for HTTP headers), so it must not be used as CRDT identity.
+    /// The row's identity: a key may be renamed or duplicated, so it cannot serve as
+    /// CRDT identity.
     #[serde(default)]
     pub id: String,
     pub key: String,
     pub value: String,
     pub enabled: bool,
-    /// A variable whose value is a credential: the document holds its key and
-    /// this flag, and the value stays in the device's secret store.
+    /// A variable whose value is a credential: the document holds its key and this flag.
     #[serde(default)]
     pub secret: bool,
 }
@@ -109,41 +96,35 @@ impl KeyValue {
         }
     }
 
-    /// A row whose value is a credential kept on the device.
     #[must_use]
     pub fn secret(mut self) -> Self {
         self.secret = true;
         self
     }
 
-    /// A blank, enabled row — the trailing "add a new pair" affordance.
     pub fn blank() -> Self {
         Self::new(String::new(), String::new())
     }
 }
 
-/// Authentication scheme applied to a request. The variants mirror the
-/// Auth tab's mode selector.
+/// The authentication scheme applied to a request.
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 pub enum Auth {
-    /// An opaque, device-local secret-store key. Safe to collaborate.
+    /// An opaque, device-local secret-store key, safe to collaborate.
     SecretRef {
         id: String,
-        /// Public scheme label; never credential material.
+        /// The scheme's public label, never credential material.
         #[serde(default)]
         scheme: String,
     },
     None,
-    /// `Authorization: Bearer <token>`.
     Bearer {
         token: String,
     },
-    /// `Authorization: Basic base64(user:pass)`.
     Basic {
         username: String,
         password: String,
     },
-    /// A header `name: value` carrying an API key (e.g. `X-Api-Key`).
     ApiKey {
         header: String,
         value: String,
@@ -177,9 +158,9 @@ impl Serialize for Auth {
 }
 
 impl Auth {
-    /// The scheme's public name as records carry it: a credential's stored
-    /// scheme is matched back to the fields it needs by exactly this word, so
-    /// it stays the same in every language.
+    /// The scheme's public name as records carry it: a credential's stored scheme is
+    /// matched back to its fields by exactly this word, so it stays the same in every
+    /// language.
     pub fn scheme(&self) -> &'static str {
         match self {
             Auth::SecretRef { scheme, .. } => match scheme.as_str() {
@@ -195,7 +176,6 @@ impl Auth {
         }
     }
 
-    /// The catalogue message naming `scheme` in the Auth selector.
     pub fn scheme_message(scheme: &str) -> &'static str {
         match scheme {
             "Bearer Token" => "api-tester-auth-bearer",
@@ -206,7 +186,6 @@ impl Auth {
         }
     }
 
-    /// The catalogue message naming this scheme in the Auth selector.
     pub fn message(&self) -> &'static str {
         Self::scheme_message(self.scheme())
     }
@@ -222,7 +201,7 @@ impl Auth {
         }
     }
 
-    /// This scheme with its credential replaced by `secret`.
+    /// This scheme with its credential replaced.
     #[must_use]
     pub fn with_secret(&self, secret: &str) -> Self {
         let secret = secret.to_owned();
@@ -248,7 +227,6 @@ impl Auth {
     }
 }
 
-/// How the request body is encoded. The Body tab switches between these.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BodyMode {
     #[default]
@@ -276,7 +254,6 @@ impl BodyMode {
     ];
 }
 
-/// The four editing tabs in the request builder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestTab {
     Params,
@@ -303,7 +280,6 @@ impl RequestTab {
     ];
 }
 
-/// The three response-body view modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseView {
     Pretty,
@@ -327,8 +303,7 @@ impl ResponseView {
     ];
 }
 
-/// One saved/active HTTP request. This is the unit a collection holds and
-/// the request builder edits.
+/// One saved or active HTTP request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
     pub id: Id,
@@ -339,14 +314,13 @@ pub struct Request {
     pub headers: Vec<KeyValue>,
     pub auth: Auth,
     pub body_mode: BodyMode,
-    /// Raw / JSON body text.
+    /// Raw or JSON body text.
     pub body_text: String,
-    /// Form-encoded body fields (used when `body_mode == Form`).
+    /// Form fields, sent when the body mode is Form.
     pub form: Vec<KeyValue>,
 }
 
 impl Request {
-    /// A fresh empty GET request.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: fresh_id(),
@@ -363,8 +337,6 @@ impl Request {
     }
 }
 
-/// A named group of saved requests, shown as a foldable node in the
-/// sidebar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collection {
     pub id: Id,
@@ -384,9 +356,8 @@ impl Collection {
     }
 }
 
-/// A set of `{{variable}}` substitutions. The active environment's
-/// variables are interpolated into the URL, headers, params, and body
-/// just before a request is sent.
+/// A set of `{{variable}}` substitutions, resolved into a request just before it is
+/// sent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Environment {
     pub id: Id,
@@ -404,7 +375,6 @@ impl Environment {
     }
 }
 
-/// A finished request/response pair, recorded for the History list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub id: Id,
@@ -413,14 +383,12 @@ pub struct HistoryEntry {
     pub status: u16,
     /// Round-trip time in milliseconds.
     pub duration_ms: u64,
-    /// The request as it was authored, so replaying the entry replays the
-    /// request and not only its method and URL.
+    /// The request as it was authored, so replaying the entry replays the request.
     pub replay: Option<RequestSnapshot>,
 }
 
-/// A request as it was authored, kept with the history entry that sent it:
-/// everything the builder holds, and the credential's *reference* rather
-/// than the credential, which never leaves the device it was typed on.
+/// A request as it was authored, with the credential's reference rather than the
+/// credential.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestSnapshot {
     pub method: HttpMethod,
@@ -430,20 +398,19 @@ pub struct RequestSnapshot {
     pub body_mode: BodyMode,
     pub body: String,
     pub form: Vec<KeyValue>,
-    /// The authentication scheme's public label, if one was set.
+    /// The scheme's public label, if one was set.
     pub scheme: String,
     /// The device-local reference to the credential, never its value.
     pub credential: String,
 }
 
 impl RequestSnapshot {
-    /// The snapshot of `request`.
     pub fn of(request: &Request) -> Self {
         let (scheme, credential) = match &request.auth {
             Auth::SecretRef { id, scheme } => (scheme.clone(), id.clone()),
             Auth::None => (String::new(), String::new()),
-            // A literal credential in a builder request is on its way to the
-            // secret store; its scheme is public, its value is not recorded.
+            // A literal credential is on its way to the secret store: its scheme is public,
+            // its value is not recorded.
             other => (other.scheme().to_owned(), String::new()),
         };
         Self {
@@ -459,8 +426,7 @@ impl RequestSnapshot {
         }
     }
 
-    /// The request this snapshot held, as a new request in the builder: it
-    /// keeps the credential's reference, which the secret store answers for.
+    /// The request this snapshot held, as a new request in the builder.
     pub fn to_request(&self) -> Request {
         let mut request = Request::new("New request");
         request.method = self.method;
@@ -482,17 +448,16 @@ impl RequestSnapshot {
     }
 }
 
-/// The outcome of a sent request, rendered by the response viewer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResponseData {
     pub status: u16,
     pub status_text: String,
     pub duration_ms: u64,
-    /// Size of the response body in bytes: what arrived, or the length the
-    /// server declared when only its start was downloaded.
+    /// The body's size in bytes: what arrived, or the length the server declared when only
+    /// its start was downloaded.
     pub size_bytes: usize,
-    /// Whether `size_bytes` is the body's size, rather than how much of a
-    /// body of undeclared length arrived before the download stopped.
+    /// Whether `size_bytes` is the body's size, rather than how much of an undeclared body
+    /// arrived before the download stopped.
     pub size_exact: bool,
     /// How many of the body's bytes `body` shows.
     pub shown_bytes: usize,

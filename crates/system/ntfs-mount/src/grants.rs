@@ -1,8 +1,4 @@
 //! The remembered choices, one root-owned file per person.
-//!
-//! They live with the service rather than in the person's settings because a
-//! grant stands in for consent: nothing the person's own processes can write
-//! may create one. Only the shell's prompt does, through the service.
 
 use std::fs;
 use std::io;
@@ -17,7 +13,6 @@ struct File {
     grants: Vec<Grant>,
 }
 
-/// Where every person's grants are kept.
 #[derive(Clone, Debug)]
 pub struct GrantStore {
     dir: PathBuf,
@@ -32,7 +27,6 @@ impl GrantStore {
         self.dir.join(format!("{uid}.json"))
     }
 
-    /// The grants `uid` has remembered.
     pub fn load(&self, uid: u32) -> io::Result<Vec<Grant>> {
         match fs::read(self.path(uid)) {
             Ok(bytes) => serde_json::from_slice::<File>(&bytes)

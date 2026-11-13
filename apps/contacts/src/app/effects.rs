@@ -1,10 +1,9 @@
-//! The address book as a bound view: [`window`] takes the window into the
-//! view, which answers the book's effects and publishes what the window
-//! holds beside the book.
+//! The address book as a bound view: [`window`] takes the window into the view,
+//! which answers the book's effects and publishes what the window holds beside
+//! the book.
 //!
-//! The effects answer from the book the document holds; what they ask of
-//! the window itself (a group to show, a dialog to open, a toast) waits in
-//! [`Store::asks`] until the window next looks.
+//! An effect answers from the book the document holds; what it asks of the window
+//! itself waits in [`Store::asks`] until the window next looks.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -21,50 +20,30 @@ use crate::actions::ContactsEffect;
 use crate::model::group_names_equal;
 use crate::resource::Contacts;
 
-/// What an effect asked of the window, done when it next looks.
 pub(crate) enum Ask {
-    /// Show the people in a group.
     OpenGroup(String),
-    /// Show the favorites.
     OpenFavorites,
-    /// Sort the list by the order the list's order picker names so.
     Sort(String),
-    /// Open a contact's form on one of their details.
     EditField(ContactId, crate::form::Slot),
-    /// Open a website in this device's browser.
     OpenWebsite(String),
-    /// Review whether the second contact is a duplicate of the first.
     Review(ContactId, ContactId),
-    /// Choose the format a contact is exported in.
     Export(ContactId),
-    /// Settle a pending import review: import the card as a new contact
-    /// (`true`) or keep the existing one.
     Resolve(String, bool),
-    /// Show what an import did and the first contact it added.
     Imported(ImportSummary, Option<ContactId>),
-    /// Say something in the window.
     Say(String),
-    /// Stage a capture's scenario (`None` for a plain capture).
     Stage(Option<String>),
 }
 
-/// What the window and the view's effect handler share.
 #[derive(Default)]
 pub(crate) struct Store {
-    /// What effects asked of the window since it last looked.
     pub(super) asks: Vec<Ask>,
-    /// Pending untrusted UID collisions. These never enter the document
-    /// until the person explicitly chooses a safe resolution.
     pub(crate) import_conflicts: Vec<ImportConflict>,
-    /// Whether the window is asking for an export's format.
     pub(super) export_open: bool,
 }
 
-/// The [`Store`] as the window and the view share it.
 pub(crate) type Asked = Rc<RefCell<Store>>;
 
 impl Store {
-    /// The pending import reviews, each a row offering its resolutions.
     pub(crate) fn conflict_rows(&self) -> Vec<LiveRow> {
         self.import_conflicts
             .iter()
@@ -78,8 +57,8 @@ impl Store {
     }
 }
 
-/// Answer one of the book's effects, invoked by a control, the palette, an
-/// agent or a script.
+/// Answer one of the book's effects, from a control, the palette, an agent or a
+/// script.
 fn answer(
     asked: &Asked,
     file_work: &Rc<Cell<Option<FileWork>>>,
@@ -207,7 +186,6 @@ fn read_duplicate(
     }))
 }
 
-/// Settle the pending import review `token`, when it is still pending.
 fn resolve(asked: &Asked, token: String, import_as_new: bool) -> Result<Ask, String> {
     if !asked
         .borrow()
@@ -221,7 +199,6 @@ fn resolve(asked: &Asked, token: String, import_as_new: bool) -> Result<Ask, Str
 }
 
 impl ContactsApp {
-    /// Do what effects asked of the window since it last looked.
     pub(super) fn do_asks(&mut self) {
         let asks = std::mem::take(&mut self.asked.borrow_mut().asks);
         for ask in asks {
@@ -269,9 +246,9 @@ impl ContactsApp {
     }
 }
 
-/// The view of the address book: `app` follows the document, the view
-/// answers the book's effects and publishes the pending import reviews and
-/// account reviews beside it.
+/// The view of the address book: `app` follows the document, and the view
+/// answers the book's effects and publishes the pending import and account
+/// reviews.
 pub(crate) fn window(cx: &ViewCx<Contacts>, mut app: ContactsApp) -> Element {
     app.document = Some(cx.live().clone());
     app.actions = Some(cx.actions());
@@ -281,8 +258,7 @@ pub(crate) fn window(cx: &ViewCx<Contacts>, mut app: ContactsApp) -> Element {
     if cx.mode().is_live() {
         app.identity_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();
     }
-    // A vCard file the app was opened with ("open with", a dropped file) is
-    // imported into the address book.
+    // A vCard the app was opened with ("open with", a dropped file) is imported.
     if let Some(file) = cx.launch().file() {
         app.open_cards(String::from_utf8_lossy(file.bytes()).into_owned());
     }

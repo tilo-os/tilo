@@ -69,31 +69,19 @@ use std::time::Duration;
 
 use automerge::AutoCommit;
 
-/// Ceilings for one untrusted input and for the workers that decode it.
 #[derive(Clone, Debug)]
 pub struct Limits {
-    /// Largest untrusted input, in bytes.
     pub max_input_bytes: usize,
-    /// Most chunks in one input.
     pub max_chunks: usize,
-    /// Heap ceiling of each worker process, including the documents it keeps.
     pub memory_bytes: u64,
-    /// Deadline for one request, before the time added for its size: see
-    /// [`Limits::timeout_per_mib`].
     pub timeout: Duration,
     /// Time added to [`Limits::timeout`] per MiB of untrusted input. Decoding
     /// grows with the input, and a long history must not be refused only for
     /// being long.
     pub timeout_per_mib: Duration,
-    /// Worker processes, each serving one request at a time.
     pub workers: usize,
-    /// Most documents each worker keeps between requests.
     pub max_documents: usize,
-    /// Heap a worker may hold before it drops the documents it keeps, least
-    /// recently used first (the one it last worked on stays).
     pub cache_bytes: u64,
-    /// A worker exits after this long without a request, returning its
-    /// memory; the next request starts a fresh one.
     pub idle: Duration,
 }
 
@@ -116,13 +104,10 @@ impl Default for Limits {
 /// Why an input was not applied. The caller's document is unchanged.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Rejected {
-    /// Larger than [`Limits::max_input_bytes`] or [`Limits::max_chunks`].
     #[error("automerge input exceeds its size limit")]
     TooLarge,
-    /// The chunk framing is not Automerge storage.
     #[error("malformed automerge input: {0}")]
     Malformed(&'static str),
-    /// Automerge refused the input.
     #[error("invalid automerge input: {0}")]
     Invalid(String),
     /// The worker died on the input: a panic, an allocation past its heap
@@ -132,28 +117,19 @@ pub enum Rejected {
     /// The worker did not finish within [`Limits::timeout`].
     #[error("automerge input timed out")]
     TimedOut,
-    /// No worker could be started.
     #[error("automerge worker unavailable: {0}")]
     Unavailable(String),
 }
 
-/// Whether changes may wait in the document's queue for dependencies that
-/// have not arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dependencies {
-    /// Refuse input that leaves any change waiting; nothing is applied.
     RequireComplete,
-    /// Apply what is ready and queue the rest, as `load_incremental` does.
     RetainOrphans,
 }
 
-/// The result of an accepted input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Applied {
-    /// Applied; whether the document's heads moved.
     Changed(bool),
-    /// Some change lacks a dependency ([`Dependencies::RequireComplete`]);
-    /// the document is unchanged.
     MissingDependencies,
 }
 
@@ -176,7 +152,6 @@ impl Isolate {
         }
     }
 
-    /// The process-wide instance with [`Limits::default`].
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Isolate> = std::sync::OnceLock::new();
         SHARED.get_or_init(|| Self::new(Limits::default()))
@@ -190,13 +165,6 @@ impl Isolate {
         return &self.limits;
     }
 
-    /// Apply untrusted `incoming` (change chunks, a bundle or a saved
-    /// document) to `doc`, as [`tilo_automerge::ApplyIncoming::load_incoming`]
-    /// does. Input with a malformed chunk is refused whole.
-    ///
-    /// # Errors
-    ///
-    /// A [`Rejected`] reason; `doc` is then unchanged.
     pub fn apply(
         &self,
         doc: &mut AutoCommit,
@@ -224,11 +192,6 @@ impl Isolate {
     }
 }
 
-/// [`Isolate::apply`] on [`Isolate::shared`].
-///
-/// # Errors
-///
-/// A [`Rejected`] reason; `doc` is then unchanged.
 pub fn apply(
     doc: &mut AutoCommit,
     incoming: &[u8],
@@ -237,11 +200,6 @@ pub fn apply(
     Isolate::shared().apply(doc, incoming, dependencies)
 }
 
-/// [`Isolate::load`] on [`Isolate::shared`].
-///
-/// # Errors
-///
-/// A [`Rejected`] reason.
 pub fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     Isolate::shared().load(bytes)
 }
@@ -303,14 +261,8 @@ pub fn dispatch_early() -> Option<u8> {
     None
 }
 
-/// The worker program [`serve_workers_from`] named, if any.
 static WORKER_PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// Start workers as `program` (the `tilo-automerge-worker` program, or any
-/// that calls [`dispatch_early`] first) rather than as this executable: for a
-/// library loaded into an executable that is not Tilo's, which cannot be
-/// started again in worker mode. The first program named holds for the
-/// process; naming another later changes nothing and answers `false`.
 pub fn serve_workers_from(program: std::path::PathBuf) -> bool {
     match WORKER_PROGRAM.set(program) {
         Ok(()) => true,
@@ -318,11 +270,6 @@ pub fn serve_workers_from(program: std::path::PathBuf) -> bool {
     }
 }
 
-/// Serve workers from a test binary, whose `main` belongs to libtest: defines
-/// the test that libtest runs when the binary is started as a worker, which
-/// then does what [`dispatch_early`] does. Invoke once per test crate (for
-/// unit tests, in the library under `#[cfg(test)]`; for each integration test
-/// file, at its top level).
 #[macro_export]
 macro_rules! test_worker {
     () => {

@@ -1,11 +1,4 @@
 //! SMS over a supervisor-supplied, authenticated `ModemManager` bus connection.
-//!
-//! The supervisor authorizes the account and holds its modem/SIM lease during
-//! each operation. This adapter discovers no modem, unlocks no SIM, changes no
-//! default and connects to no ambient bus. It pins the daemon's unique owner,
-//! modem path, SIM path and ICCID, rechecking before Create and Send. D-Bus has
-//! no atomic conditional Send against an ICCID: physical hot-swap during that
-//! method remains a host/hardware acceptance limit, not a guarantee made here.
 
 #[cfg(feature = "signal-broker")]
 mod inbox;
@@ -40,7 +33,6 @@ pub struct SmsRuntime {
 }
 
 impl SmsRuntime {
-    /// Bind host-custodied journal and modem authority without creating a grant.
     pub fn new(
         owner: Owner,
         transport: DbusTransport,
@@ -127,7 +119,6 @@ impl SmsRuntime {
         Ok(self.transport.reference(&message))
     }
 
-    /// Frozen native owner used by the trusted mounting host.
     pub fn owner(&self) -> &Owner {
         &self.owner
     }
@@ -136,7 +127,6 @@ impl SmsRuntime {
         self.journal.status(operation)
     }
 
-    /// Read-only observation from this exact host-owned modem/SIM assembly.
     #[cfg(feature = "signal-broker")]
     pub fn inbox(&self) -> SmsInbox {
         SmsInbox::new(self.owner.clone(), self.transport.clone())

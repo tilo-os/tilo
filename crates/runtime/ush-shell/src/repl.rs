@@ -16,7 +16,6 @@
 use crate::editor::Read;
 use crate::shell::{Flow, Shell};
 
-/// One command line read at the prompt.
 struct Command {
     text: String,
     /// An agent asked for it: its output takes the agent rendering.
@@ -29,7 +28,6 @@ impl Command {
     }
 }
 
-/// What the interactive loop needs beyond the shell.
 #[derive(Debug, Clone, Default)]
 pub struct Session {
     /// The key Terminal marks this session's runs with, if it asked for
@@ -59,7 +57,6 @@ impl Shell {
             self.host.edit_mode(false);
         }
         let reads = if edits { ";in=1" } else { "" };
-        // Each command line is a run of its own; this names the session's.
         let session_id = format!("ush-{}-{}", self.host.pid(), self.host.now_ms());
         let mut lines: u64 = 0;
         loop {
@@ -191,7 +188,6 @@ impl Shell {
         }
     }
 
-    /// A prompt string with its backslash escapes and expansions done.
     pub(crate) fn prompt(&mut self, template: &str) -> String {
         let mut out = String::new();
         let mut chars = template.chars();
@@ -251,7 +247,6 @@ impl Shell {
     }
 }
 
-/// A line that runs nothing Terminal records: `exit`.
 fn runs_nothing(line: &str) -> bool {
     let first = line.split_whitespace().next().unwrap_or("");
     first == "exit"

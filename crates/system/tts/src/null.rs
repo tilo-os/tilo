@@ -22,7 +22,6 @@ pub struct NullSpeaker {
 }
 
 impl NullSpeaker {
-    /// A fresh recorder with rate `1.0` and no voice set.
     pub fn new() -> Self {
         NullSpeaker {
             spoken: Vec::new(),
@@ -40,32 +39,26 @@ impl NullSpeaker {
         &self.spoken
     }
 
-    /// The full utterances spoken, in order (text + priority + interrupt flag).
     pub fn utterances(&self) -> &[Utterance] {
         &self.utterances
     }
 
-    /// The most recently spoken text, if any.
     pub fn last(&self) -> Option<&str> {
         self.spoken.last().map(String::as_str)
     }
 
-    /// How many times [`Speaker::stop`] was called.
     pub fn stop_count(&self) -> usize {
         self.stops
     }
 
-    /// The current rate (last value passed to [`Speaker::set_rate`]).
     pub fn rate(&self) -> f32 {
         self.rate
     }
 
-    /// The current voice id, if [`Speaker::set_voice`] was called.
     pub fn voice(&self) -> Option<&str> {
         self.voice.as_deref()
     }
 
-    /// Forget all recorded interactions (rate/voice persist).
     pub fn reset(&mut self) {
         self.spoken.clear();
         self.utterances.clear();

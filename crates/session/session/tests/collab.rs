@@ -198,6 +198,7 @@ fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64,
     let mut chats = ui::presence::CursorChats::default();
     let pointers = tilo_session_core::presence::pointers(
         &sync.members(WORKSPACE),
+        &std::collections::HashMap::new(),
         tiles,
         &mut chats,
         &ui::presence::PresenceCtx::empty(),

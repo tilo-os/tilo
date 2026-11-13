@@ -1,34 +1,18 @@
 //! The settings categories shown in the left sidebar.
-//!
-//! Each [`Category`] carries a vector icon, a user-facing label, a stable slug
-//! (used for `test_id`s and CRDT paths), and the [`Section`] it groups
-//! under. The sidebar renders sections in [`Section::ALL`] order, and
-//! within each section the categories in [`Category::ALL`] order.
 
 use crate::i18n::t;
 use ui::icons::Icon;
 
-/// A labelled group of categories in the sidebar. Sections give the long
-/// category list a scannable structure rather than one flat run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Section {
-    /// Network, Bluetooth, Sync between devices: getting online and connected.
     Connectivity,
-    /// Displays, sound, the input devices, printers and power: the hardware
-    /// in front of you.
     Devices,
-    /// Appearance, accessibility, notifications, apps, language, time and
-    /// shortcuts: how the desktop behaves for you.
     Personal,
-    /// The people, accounts and models other apps rely on, and the device's
-    /// privacy. Workspace roles live with the workspace that owns them.
     Hubs,
-    /// Storage, updates and the device's identity.
     Maintenance,
 }
 
 impl Section {
-    /// Render order, top to bottom.
     pub const ALL: &'static [Section] = &[
         Section::Connectivity,
         Section::Personal,
@@ -37,7 +21,6 @@ impl Section {
         Section::Maintenance,
     ];
 
-    /// Stable identifier of the section in the navigation list.
     pub fn slug(self) -> &'static str {
         match self {
             Section::Connectivity => "connectivity",
@@ -48,7 +31,6 @@ impl Section {
         }
     }
 
-    /// The section header label.
     pub fn label(self) -> String {
         t(match self {
             Section::Connectivity => "settings-section-connectivity",
@@ -60,7 +42,6 @@ impl Section {
     }
 }
 
-/// One entry in the settings sidebar.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
     Network,
@@ -99,11 +80,9 @@ impl Category {
     /// web) the device's hardware and OS services are not listed at all.
     #[cfg(feature = "tilo-os")]
     pub const ALL: &'static [Category] = &[
-        // Connectivity
         Category::Network,
         Category::Bluetooth,
         Category::DeviceMesh,
-        // Personal
         Category::Appearance,
         Category::Accessibility,
         Category::Notifications,
@@ -112,7 +91,6 @@ impl Category {
         Category::RegionFormats,
         Category::TimeDate,
         Category::KeyboardShortcuts,
-        // Devices
         Category::Displays,
         Category::Sound,
         Category::Speakers,
@@ -120,51 +98,39 @@ impl Category {
         Category::Pointing,
         Category::Printers,
         Category::Power,
-        // Hubs
         Category::DevicesAccess,
         Category::Users,
         Category::Billing,
         Category::ExternalAccounts,
         Category::AgentModels,
         Category::Permissions,
-        // Maintenance
         Category::Storage,
         Category::Updates,
         Category::About,
     ];
 
-    /// The panes a build without the device's own (`tilo-os`) carries, as on
-    /// the web: the person's look, language and shortcuts, their devices and
-    /// the keys acting for them, and their billing.
     pub const WEB: &'static [Category] = &[
-        // Personal
         Category::Appearance,
         Category::Accessibility,
         Category::RegionFormats,
         Category::KeyboardShortcuts,
-        // Hubs
         Category::DevicesAccess,
         Category::Billing,
     ];
 
-    /// The panes a build without the device's own (`tilo-os`) carries.
     #[cfg(not(feature = "tilo-os"))]
     pub const ALL: &'static [Category] = Self::WEB;
 
-    /// The category shown when Settings first opens and no link names one.
     #[cfg(feature = "tilo-os")]
     pub const DEFAULT: Category = Category::Network;
 
-    /// The category shown when Settings first opens and no link names one.
     #[cfg(not(feature = "tilo-os"))]
     pub const DEFAULT: Category = Category::Appearance;
 
-    /// Whether this build carries the category's pane.
     pub fn is_built(self) -> bool {
         Self::ALL.contains(&self)
     }
 
-    /// Which section this category groups under.
     pub fn section(self) -> Section {
         match self {
             Category::Network | Category::Bluetooth | Category::DeviceMesh => Section::Connectivity,
@@ -193,7 +159,6 @@ impl Category {
         }
     }
 
-    /// The categories belonging to a section, in sidebar order.
     pub fn in_section(section: Section) -> impl Iterator<Item = Category> {
         Category::ALL
             .iter()
@@ -201,26 +166,19 @@ impl Category {
             .filter(move |c| c.section() == section)
     }
 
-    /// This category's page in the index every search reads.
     pub fn page(self) -> settings_store::index::Page {
         settings_store::index::page(self.slug())
             .unwrap_or_else(|| settings_store::index::Page { slug: self.slug() })
     }
 
-    /// User-facing label, rendered in the sidebar and reused as the pane
-    /// header.
     pub fn label(self) -> String {
         t(&self.page().title_key())
     }
 
-    /// A one-line summary of what the page holds.
     pub fn subtitle(self) -> String {
         t(&self.page().subtitle_key())
     }
 
-    /// Toolkit-owned vector icon rendered before the label in the sidebar.
-    /// Keeping category chrome out of private-use font glyphs makes it render
-    /// reliably on every supported font stack and at high contrast.
     pub fn icon(self) -> Icon {
         match self {
             Category::Network => Icon::Wifi,
@@ -253,11 +211,6 @@ impl Category {
         }
     }
 
-    /// What else this category is found by, beyond its label: each setting
-    /// on its page by its name in the desktop's language and its words in
-    /// every language, then the words people use for the page itself
-    /// ("wlan" and "wifi" both find Network), from the index the desktop
-    /// palette reads too.
     pub fn search_terms(self) -> Vec<ui::widget::NavSearchTerm> {
         use settings_store::index::{names_in_every_locale, words_in_every_locale};
         let page = self.page();
@@ -277,7 +230,6 @@ impl Category {
         terms
     }
 
-    /// Every word of [`Self::search_terms`], for a search entry's text.
     pub fn search_words(self) -> Vec<String> {
         self.search_terms()
             .into_iter()
@@ -285,10 +237,6 @@ impl Category {
             .collect()
     }
 
-    /// Whether this category matches a search query (case-insensitive): a
-    /// substring of its label or of one of its [`Self::search_terms`]. An
-    /// all-whitespace query matches everything (the caller treats that as
-    /// "no search").
     pub fn matches(self, query: &str) -> bool {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
@@ -301,8 +249,6 @@ impl Category {
                 .any(|term| term.to_lowercase().contains(&q))
     }
 
-    /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
-    /// The category whose [`Self::slug`] is `slug`.
     pub fn from_slug(slug: &str) -> Option<Self> {
         Self::ALL
             .iter()
@@ -355,8 +301,6 @@ mod tests {
         assert_eq!(built, settings_store::index::WEB_PAGES);
     }
 
-    /// Every category is unique, fully described, keyworded and sits in exactly
-    /// one listed section; slugs are unique too.
     #[test]
     fn category_catalogue_is_complete_unique_and_partitioned() {
         let mut categories = std::collections::HashSet::new();

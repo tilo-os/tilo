@@ -1,15 +1,4 @@
 //! The registry: one row per installed application, persisted as TOML.
-//!
-//! [`InstalledPackage`] is the one description of an installed package that
-//! every consumer shares — the launcher resolving an app id, the shell
-//! listing applications, the app host's capability, the Store and
-//! `tilo-install`. A row is keyed by the app id (one installed version per
-//! app) and names the signed package root it runs, so an upgrade is a row
-//! replacement and a stale row can never point at another package's tree.
-//!
-//! Rows written before payloads moved into the content store have the same
-//! shape with the tree under `payloads/<app-id>`; they stay readable, and
-//! `PackageStore` moves them into the content-addressed layout once.
 
 use std::path::{Path, PathBuf};
 
@@ -40,9 +29,7 @@ impl Pinning {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledPackage {
-    /// Reverse-DNS app id, from the manifest's `[package].id`.
     pub id: String,
-    /// Version from the manifest.
     #[serde(default)]
     pub version: String,
     /// The signed package root (hex, no `tapp:` prefix). Empty only for
@@ -50,14 +37,11 @@ pub struct InstalledPackage {
     /// reject such a row rather than derive trust from a path.
     #[serde(default)]
     pub package_id_hex: String,
-    /// The payload tree the launcher binds as the app's root.
     pub payload_root: PathBuf,
-    /// The manifest the launcher reads.
     pub manifest_path: PathBuf,
     /// Publisher public key (hex).
     #[serde(default)]
     pub publisher_key_hex: String,
-    /// Pinned packages are kept under size pressure.
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -70,7 +54,6 @@ pub struct InstalledPackage {
     /// for a self-signed one.
     #[serde(default)]
     pub attested_by: String,
-    /// PATH commands this package published.
     #[serde(default)]
     pub cli_commands: Vec<String>,
     /// The manifest's declared `tilo-runtime/<v>`, if any.
@@ -110,8 +93,6 @@ impl InstalledPackage {
         }
     }
 
-    /// Whether the user's store owns this package (and so may pin or
-    /// remove it).
     pub fn user_managed(&self) -> bool {
         !self.system
     }
@@ -228,12 +209,10 @@ impl Registry {
         self.entries.iter().find(|entry| entry.id == app_id)
     }
 
-    /// The row for `app_id`, mutably.
     pub fn find_mut(&mut self, app_id: &str) -> Option<&mut InstalledPackage> {
         self.entries.iter_mut().find(|entry| entry.id == app_id)
     }
 
-    /// The row running package `id`.
     pub fn find_package(&self, id: PackageId) -> Option<&InstalledPackage> {
         let hex = id.to_hex();
         self.entries
@@ -241,8 +220,6 @@ impl Registry {
             .find(|entry| entry.package_id_hex.eq_ignore_ascii_case(&hex))
     }
 
-    /// Insert `entry`, replacing the row of the same app id in place.
-    /// Returns the replaced row.
     pub fn upsert(&mut self, entry: InstalledPackage) -> Option<InstalledPackage> {
         if let Some(slot) = self.entries.iter_mut().find(|row| row.id == entry.id) {
             return Some(std::mem::replace(slot, entry));
@@ -251,14 +228,12 @@ impl Registry {
         None
     }
 
-    /// Drop the row for `app_id`, and what it had taken over.
     pub fn remove(&mut self, app_id: &str) -> Option<InstalledPackage> {
         let index = self.entries.iter().position(|entry| entry.id == app_id)?;
         self.taken_over.retain(|taken| taken.by != app_id);
         Some(self.entries.remove(index))
     }
 
-    /// The earlier ids installed apps took over (see [`TakenOver`]).
     pub fn taken_over(&self) -> &[TakenOver] {
         &self.taken_over
     }
@@ -271,7 +246,6 @@ impl Registry {
             .map(|taken| taken.by.as_str())
     }
 
-    /// Record that `by` took over the earlier id `id`.
     pub fn take_over(&mut self, id: &str, by: &str) {
         self.taken_over.retain(|taken| taken.id != id);
         self.taken_over.push(TakenOver {
@@ -287,7 +261,6 @@ mod tests {
 
     #[test]
     fn registry_rows_load_parse_and_upsert() {
-        // phase: a_legacy_row_parses_with_defaults
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("registry.toml");
@@ -303,7 +276,6 @@ mod tests {
             assert_eq!(row.pinning(), Pinning::Tried);
             assert!(row.user_managed());
         }
-        // phase: a_missing_registry_is_empty_and_a_broken_one_is_an_error
         {
             let dir = tempfile::tempdir().unwrap();
             assert!(
@@ -318,7 +290,6 @@ mod tests {
                 Err(RegistryError::Parse { .. })
             ));
         }
-        // phase: upsert_replaces_the_row_of_the_same_app
         {
             let row = |version: &str| InstalledPackage {
                 id: "so.tilo.notes".into(),

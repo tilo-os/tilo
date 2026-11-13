@@ -178,9 +178,16 @@ def covered(path: str, copies: list[Copy]) -> bool:
 
 
 def workspace_roots(repo: Path) -> list[str]:
+    """Every workspace member's directory, and vendor/: what the stage must copy whole. A member
+    is its own directory, not the top one it sits under, so a member beside other sources
+    (sdk/python/native) is copied without them."""
     workspace = tomllib.loads((repo / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
-    roots = {member.split("/", 1)[0] for member in workspace.get("members", [])}
-    return sorted(roots | {"vendor"})
+    return sorted(set(workspace.get("members", [])) | {"vendor"})
+
+
+def under(path: str, roots: list[str]) -> bool:
+    """Is repository `path` one of `roots` or inside one?"""
+    return any(path == root or path.startswith(root + "/") for root in roots)
 
 
 def test_only(text: str, offset: int) -> bool:
@@ -205,7 +212,7 @@ def compile_includes(repo: Path, tracked: list[str], roots: list[str]) -> dict[s
             line_offsets.append(line_offsets[-1] + len(line))
         for read in entries:
             target = read.target
-            if target is None or read.runtime or target.split("/", 1)[0] in roots:
+            if target is None or read.runtime or under(target, roots):
                 continue
             if test_only(text, line_offsets[read.line - 1]):
                 continue
@@ -259,7 +266,7 @@ def copied_script_references(repo: Path, copies: list[Copy], tracked: list[str],
     copy, so what they read must be in it too."""
     refs: list[tuple[str, str]] = []
     for script in tracked:
-        if (not script.endswith((".sh", ".py")) or script.split("/", 1)[0] in roots
+        if (not script.endswith((".sh", ".py")) or under(script, roots)
                 or not covered(script, copies)):
             continue
         base = Path(script).parent

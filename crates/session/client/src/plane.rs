@@ -128,15 +128,15 @@ impl Outbox for std::sync::Arc<tokio::sync::mpsc::UnboundedSender<Cmd>> {
 /// Where a client's presence frames go: one host's live plane. Presence is ephemeral, so a frame
 /// that finds no plane is dropped rather than held.
 pub trait SayPresence: std::fmt::Debug + collab_types::signer::MaybeSendSync {
-    /// Say `frame` as object `sequence` of `workspace`'s presence track.
+    /// Say `frames`, one burst, each as the object its number names, on `workspace`'s presence
+    /// track: the burst travels whole, so the newest one carries all of it.
     ///
     /// # Errors
     /// This host holds no plane for the workspace, or the plane could not carry it.
     fn say(
         &self,
         workspace: tilo_desktop_model::WorkspaceId,
-        sequence: u32,
-        frame: &collab_types::presence::Presence,
+        frames: &[(u32, collab_types::presence::Presence)],
     ) -> Result<(), String>;
 }
 

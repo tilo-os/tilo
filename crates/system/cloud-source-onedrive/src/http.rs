@@ -79,7 +79,6 @@ impl Http {
         Ok(request.header(AUTHORIZATION, value))
     }
 
-    /// Send `request`; any status comes back as `Ok`.
     pub fn send_raw(&self, request: RequestBuilder, auth: Auth) -> Result<Response> {
         let request = match auth {
             Auth::Bearer => self.authorize(request)?,
@@ -97,7 +96,6 @@ impl Http {
         Err(self.error(failure(response), auth))
     }
 
-    /// Send and parse a JSON body.
     pub fn json<T: DeserializeOwned>(&self, request: RequestBuilder, auth: Auth) -> Result<T> {
         read_json(self.send(request, auth)?)
     }
@@ -115,7 +113,6 @@ impl Http {
             StatusCode::UNAUTHORIZED if auth == Auth::Bearer => {
                 cloud_source::http::unauthorized(self.credentials.as_ref())
             }
-            // A pre-authenticated URL that stopped working has expired.
             StatusCode::UNAUTHORIZED => Error::Forbidden,
             StatusCode::CONFLICT if code == "nameAlreadyExists" => Error::AlreadyExists,
             StatusCode::CONFLICT => Error::Conflict { current: None },

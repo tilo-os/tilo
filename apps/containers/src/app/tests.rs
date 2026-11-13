@@ -1,6 +1,5 @@
 use super::*;
 
-/// The sample engine, staged as a plain `--shots` opens it.
 fn staged() -> ContainersApp {
     let mut app = ContainersApp::sample();
     app.stage_scene(None);
@@ -107,8 +106,8 @@ fn the_detail_closes_from_its_header_control() {
     );
 }
 
-/// The chosen container's name and its verbs stand in the window's header row, which is the
-/// window's bar; with nothing chosen the section names the window there.
+/// The chosen container's name and its verbs stand in the window's bar; with nothing
+/// chosen the section names the window there.
 #[test]
 fn the_section_and_its_commands_are_in_the_window_bar() {
     let mut d = driver(staged());
@@ -273,8 +272,8 @@ fn removing_asks_first_and_then_runs_once() {
     );
 }
 
-/// Moving around is the window's own: switching sections leaves the
-/// selection behind, and a selection opens the containers section.
+/// Where the window is stays local: switching sections leaves the selection behind, and
+/// a selection opens the containers section.
 #[test]
 fn where_the_window_is_stays_local() {
     let app = staged();
@@ -528,10 +527,8 @@ fn a_lifecycle_control_asks_the_host_for_its_exact_target() {
     );
 }
 
-/// A container that logs after it was opened says so: the detail read
-/// beside the probe replaces what the tab showed, instead of the first
-/// read being carried over for as long as the container stays open
-/// (`APP-containers-01`).
+/// A container that logs after it was opened says so: the detail read beside the probe
+/// replaces what the tab showed.
 #[test]
 fn a_container_that_logs_later_replaces_the_lines_the_tab_shows() {
     let (window, _requests, _results) = ContainersApp::controlled_runtime_root();
@@ -556,8 +553,7 @@ fn a_container_that_logs_later_replaces_the_lines_the_tab_shows() {
     assert_eq!(shown.logs_fetched_unix_ms, Some(1_700_000_000_000));
 }
 
-/// Stopping a pull asks the engine to end it, and the sheet says it
-/// stopped rather than pretending it finished.
+/// Stopping a pull asks the engine to end it, not to hide it.
 #[test]
 fn stopping_a_pull_ends_it_rather_than_hiding_it() {
     let (window, _requests, _results) = ContainersApp::controlled_runtime_root();
@@ -573,7 +569,6 @@ fn stopping_a_pull_ends_it_rather_than_hiding_it() {
     assert!(app.pull.as_ref().is_some_and(|p| p.stopped));
 }
 
-/// What Podman's layer lines say about the bytes fetched.
 #[test]
 fn a_layer_line_says_how_many_bytes_are_fetched() {
     assert_eq!(
@@ -587,7 +582,6 @@ fn a_layer_line_says_how_many_bytes_are_fetched() {
     );
 }
 
-/// A controlled live engine selects and hydrates its one container.
 #[test]
 fn controlled_selection_asks_for_its_detail() {
     let (window, requests, _results) = ContainersApp::controlled_runtime_root();

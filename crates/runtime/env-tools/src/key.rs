@@ -5,7 +5,6 @@
 //! sorted, de-duplicated NEVRAs the transaction installs. What the user typed
 //! (`pandoc`, `pandoc-cli`, `/usr/bin/pandoc`) is not part of it — two
 //! requests that resolve to the same transaction share one image.
-
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -14,12 +13,10 @@ use tilo_app_package::PackageId;
 /// Bumped whenever the build recipe changes what a key's image contains
 /// (dnf flags, the seal's exclusions). Old keys then simply miss.
 pub const RECIPE: &str = "tilo-env-tool/1 weak-deps=off docs=off";
-
-/// `(runtime id, sorted resolved NEVRAs)`.
+/// The cache key of a tool image: `(runtime id, sorted resolved NEVRAs)`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CacheKey {
     pub runtime: PackageId,
-    /// Sorted and de-duplicated, in [`normalize_nevra`] form.
     pub nevras: Vec<String>,
 }
 
@@ -62,7 +59,6 @@ impl CacheKey {
     }
 }
 
-/// [`CacheKey::digest`] — names a tool in the local index and the catalog.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct KeyDigest(pub [u8; 32]);
 
@@ -102,7 +98,6 @@ pub fn normalize_nevra(nevra: &str) -> String {
     }
 }
 
-/// The name part of a NEVRA: everything before the version's `-`.
 pub fn nevra_name(nevra: &str) -> &str {
     split_name(nevra).map_or(nevra, |(name, _)| name)
 }

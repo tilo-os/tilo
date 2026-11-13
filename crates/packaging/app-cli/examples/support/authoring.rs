@@ -1,31 +1,12 @@
 //! Authoring the `.tapp` a local test registry serves.
-//!
-//! Shared by the `serve-test-registry` example and the test that holds
-//! it to its contract. Lives under `examples/support/` (a dev-only
-//! dependency set) so the packer doesn't ship inside `app`.
-//!
-//! The manifest decides launch behaviour — `[sandbox.services]`
-//! (which service descriptors the launcher hands the app; no `collab`
-//! entry means collaboration silently doesn't work), the runtime
-//! bundle, sandbox namespaces, the entrypoint binary. A registry
-//! serving a *synthesised* manifest therefore serves a different app
-//! than the one it points at, with no visible symptom beyond a peer's
-//! caret never arriving.
-//!
-//! So the rule: **publish the manifest the payload was built with**
-//! (a payload root with `manifest.toml` beside `bin/`, as
-//! `tilo-install` writes). Synthesising a minimal manifest is the
-//! fallback for a payload with none at all, not the default.
 
 use std::path::{Path, PathBuf};
 
 use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
-/// Where the manifest that got packed came from, so a log identifies the published app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestSource {
-    /// Taken from the package the payload belongs to.
     Package(PathBuf),
     /// No manifest found next to the payload; a minimal one was
     /// synthesised — the app can install and start, but declares no
@@ -33,7 +14,6 @@ pub enum ManifestSource {
     Synthesised,
 }
 
-/// One authored package: the bytes to serve, plus what they say about themselves.
 pub struct Authored {
     pub tapp: Vec<u8>,
     /// The version to advertise, read off the manifest rather than chosen, so the registry entry and package agree.
@@ -41,8 +21,6 @@ pub struct Authored {
     pub source: ManifestSource,
 }
 
-/// Failure authoring a `.tapp` for the local test registry — every
-/// variant names the step that failed.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthorError {
     #[error("read the package manifest at {}: {detail}", path.display())]
@@ -134,17 +112,12 @@ pub fn author(
         ),
     };
 
-    // The registry advertises this package under the id/name the caller
-    // gave, so the manifest must agree or the installed app answers to a
-    // different name than the row that installed it.
     manifest.package.id = package_id.to_string();
     manifest.package.name = Some(name.to_string());
     manifest.publisher.identity = format!("ed25519:{pubhex}");
     manifest.publisher.signature = String::new();
     manifest.trust.attested_by.clear();
 
-    // The entrypoint the manifest declares is where the payload has to
-    // land — otherwise the package installs and then fails to exec.
     let entry_rel: PathBuf = manifest
         .entrypoint
         .as_ref()
@@ -192,9 +165,6 @@ pub fn author(
     })
 }
 
-/// The minimum that installs and starts, for a payload with no
-/// package. Declares no services on purpose — pretending otherwise
-/// would hand the launcher a descriptor the app was never built to read.
 fn synthesised_toml(package_id: &str, name: &str, pubhex: &str) -> String {
     format!(
         r#"

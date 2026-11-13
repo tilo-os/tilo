@@ -1,16 +1,9 @@
-//! The registries this machine pulls app entries from.
+//! The registries this machine pulls app entries from: one `registries.toml` under
+//! `$XDG_CONFIG_HOME/tilo-store/`, which the store app and the desktop also read.
 //!
-//! One file, `registries.toml`, under `$XDG_CONFIG_HOME/tilo-store/`.
-//! The store app and desktop read this same list so they agree about
-//! which software is available.
-//!
-//! Reading is split in two:
-//!
-//! * [`load_registries`] seeds a default file when none exists — what
-//!   an app the user opened on purpose should do.
-//! * [`load_registries_no_seed`] never writes. The compositor consults
-//!   the catalogue on a timer, and a background timer that
-//!   materialises config files in `~/.config` as a side effect.
+//! [`load_registries`] seeds a default file when none exists; [`load_registries_no_seed`] never
+//! writes, since the compositor consults the catalogue on a timer and must not materialise config
+//! files as a side effect.
 
 use std::fs;
 use std::path::PathBuf;
@@ -68,34 +61,26 @@ pub fn official_owner_pubkey() -> Option<String> {
     .then_some(value)
 }
 
-/// The image's pinned official registry owner key.
 pub const OFFICIAL_OWNER_KEY_PATH: &str = "/usr/share/tilo/trust/tilo-main-registry-owner.pub";
 
-/// Where the official owner key is read from, given the override the
-/// build's gate let through.
 fn official_owner_key_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
     allowed_override.map_or_else(|| PathBuf::from(OFFICIAL_OWNER_KEY_PATH), PathBuf::from)
 }
 
-/// The placeholder owner pubkey a seeded file carries — 64 zeros, so
-/// "not yet bootstrapped" is unambiguous.
 pub fn placeholder_owner_pubkey() -> String {
     "00".repeat(32)
 }
 
-/// A single configured registry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryConfig {
     /// Human-readable short name, shown wherever an entry has to say
     /// where it came from.
     pub name: String,
-    /// Base URL — `GET {base_url}/entries` returns the catalogue.
     pub base_url: String,
     /// Registry owner's pinned Ed25519 identity, hex-encoded. Missing keys
     /// fail closed; registry discovery never silently creates trust.
     #[serde(default)]
     pub owner_pubkey_hex: String,
-    /// Users can silence a registry without removing it.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// Stable by default; development explicitly opts into prerelease apps.
@@ -107,8 +92,6 @@ fn default_enabled() -> bool {
     true
 }
 
-/// Top-level shape of `registries.toml`. TOML's array-of-tables serde
-/// form is `[[registry]] { … }` per entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistriesFile {
     #[serde(default, rename = "registry")]
@@ -132,13 +115,12 @@ impl RegistriesFile {
         }
     }
 
-    /// The registries the user has left switched on.
     pub fn enabled(&self) -> impl Iterator<Item = &RegistryConfig> {
         self.registries.iter().filter(|r| r.enabled)
     }
 }
 
-/// Root config dir. `TILO_STORE_CONFIG_DIR` overrides for tests.
+/// The root config dir; `TILO_STORE_CONFIG_DIR` overrides it for tests.
 pub fn config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_STORE_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
@@ -146,8 +128,7 @@ pub fn config_dir() -> Option<PathBuf> {
     tilo_paths::AppDirs::new("tilo-store").config()
 }
 
-/// Cache dir (`$XDG_CACHE_HOME/tilo-store`). Downloaded `.tapp`s are
-/// staged here before they are handed to the installer.
+/// `$XDG_CACHE_HOME/tilo-store`, where downloaded `.tapp`s are staged.
 pub fn cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_STORE_CACHE_DIR") {
         return Some(PathBuf::from(dir));
@@ -155,7 +136,6 @@ pub fn cache_dir() -> Option<PathBuf> {
     tilo_paths::AppDirs::new("tilo-store").cache()
 }
 
-/// The path `registries.toml` lives at, when a config dir resolves.
 pub fn registries_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("registries.toml"))
 }
@@ -192,9 +172,6 @@ pub fn load_registries() -> RegistriesFile {
     let path = dir.join("registries.toml");
     let seed_on_disk = match fs::read_to_string(&path) {
         Ok(text) => match toml::from_str::<RegistriesFile>(&text) {
-            // A file listing no registry at all is the seed of a reader that
-            // could not see the image's trust anchor, not a choice: the way
-            // to stop using a registry is to disable it, which keeps its row.
             Ok(parsed) if parsed.registries.is_empty() => true,
             Ok(mut parsed) => {
                 if refresh_official_pin(&mut parsed)
@@ -209,8 +186,6 @@ pub fn load_registries() -> RegistriesFile {
         Err(error) => error.kind() == std::io::ErrorKind::NotFound,
     };
     let seeded = RegistriesFile::seeded();
-    // Without the trust anchor there is nothing to write down; the next
-    // reader that can see it seeds the file.
     if seed_on_disk
         && !seeded.registries.is_empty()
         && let Ok(text) = toml::to_string_pretty(&seeded)
@@ -220,8 +195,6 @@ pub fn load_registries() -> RegistriesFile {
     seeded
 }
 
-/// Replace only the exact official Tilo-main placeholder with the immutable OS
-/// trust input. Custom registries never acquire trust implicitly.
 fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
     let owner = official_owner_pubkey();
     let mut changed = false;
@@ -239,11 +212,8 @@ fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
     changed
 }
 
-/// Durably replace the shared Store/catalogue registry configuration.
 pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
     let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
-    // A failed load answers with defaults for browsing. Those defaults are
-    // not a replacement for the user's hand-edited repository configuration.
     match fs::read_to_string(&path) {
         Ok(text) => {
             toml::from_str::<RegistriesFile>(&text)?;
@@ -256,7 +226,6 @@ pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Add a registry after validating the fields users most often mistype.
 pub fn add_registry(
     registries: &mut RegistriesFile,
     name: &str,
@@ -298,17 +267,10 @@ pub fn add_registry(
     Ok(())
 }
 
-/// Remove the registry named `name`.
-///
-/// # Errors
-///
-/// Returns [`ConfigError::NotFound`] when there is no exact name match.
 pub fn remove_registry(registries: &mut RegistriesFile, name: &str) -> Result<(), ConfigError> {
     if !registries.registries.iter().any(|r| r.name == name) {
         return Err(ConfigError::NotFound(name.to_string()));
     }
-    // An empty list reads as unconfigured and seeds the official registry
-    // again, so the last row is switched off rather than removed.
     if registries.registries.len() == 1 {
         return Err(ConfigError::LastRegistry(name.to_string()));
     }
@@ -316,11 +278,6 @@ pub fn remove_registry(registries: &mut RegistriesFile, name: &str) -> Result<()
     Ok(())
 }
 
-/// Enable or disable the registry named `name`.
-///
-/// # Errors
-///
-/// Returns [`ConfigError::NotFound`] when there is no exact name match.
 pub fn set_registry_enabled(
     registries: &mut RegistriesFile,
     name: &str,
@@ -397,8 +354,6 @@ mod tests {
         }
     }
 
-    /// Points the store config directory and the official owner key at `td`
-    /// for as long as the returned scope lives.
     fn scoped_dir(td: &TempDir) -> tilo_test_env::ScopedEnv {
         let trust = td.path().join("registry-owner.pub");
         std::fs::write(
@@ -479,9 +434,6 @@ mod tests {
                 "a disabled registry is not consulted"
             );
         }
-        // Phase `an_empty_list_is_seeded_and_no_trust_writes_nothing`.
-        // A sandboxed reader that could not see the trust anchor once wrote
-        // `registry = []`; that file is the unconfigured state, not a choice.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);
@@ -521,10 +473,6 @@ mod tests {
                 "the user's file is left for them to fix"
             );
         }
-        // Phase `no_seed_read_never_writes_a_file`.
-        // The compositor's read must not materialise a config file — a
-        // background timer that writes `~/.config` is a side effect the
-        // user never asked for.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);

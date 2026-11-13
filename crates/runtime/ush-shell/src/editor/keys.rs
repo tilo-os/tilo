@@ -6,30 +6,22 @@
 //! BEL`: a history page, a command line `run` asked for). A lone `ESC` is a
 //! meta prefix, as in readline: `ESC f` is `Alt+F`.
 
-/// One key, or one thing the terminal sent that is not a key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
-    /// A character to insert.
     Char(char),
-    /// `Ctrl` with a letter (`'a'` for `Ctrl+A`), or `Ctrl+_` as `'_'`.
     Ctrl(char),
-    /// `Alt` (or `ESC` first) with a character.
     Alt(char),
     Enter,
     Tab,
-    /// Shift+Tab.
     BackTab,
     Backspace,
-    /// `Alt+Backspace`.
     AltBackspace,
     Delete,
     Up,
     Down,
     Left,
     Right,
-    /// `Ctrl+Left` (or `Alt+Left`): a word back.
     WordLeft,
-    /// `Ctrl+Right`: a word on.
     WordRight,
     Home,
     End,
@@ -39,11 +31,9 @@ pub enum Key {
     /// A mark of Terminal's on the input (`ESC ] 133 ; <body> BEL`), as its
     /// body: the shell checks its key before acting on it.
     Mark(String),
-    /// A sequence this editor does not bind.
     Unknown,
 }
 
-/// Turns bytes into keys, across reads.
 #[derive(Debug, Default)]
 pub struct Decoder {
     bytes: Vec<u8>,
@@ -54,7 +44,6 @@ pub struct Decoder {
 const MAX_SEQUENCE: usize = 1 << 20;
 
 impl Decoder {
-    /// Add one byte; a key it completes comes back.
     pub fn push(&mut self, byte: u8) -> Option<Key> {
         self.bytes.push(byte);
         match decode(&self.bytes) {
@@ -149,7 +138,6 @@ fn csi(tail: &[u8]) -> Step {
         .nth(1)
         .and_then(|m| m.parse::<u8>().ok())
         .unwrap_or(1);
-    // Ctrl (5) or Alt (3) on the horizontal arrows moves by words.
     let by_word = matches!(modifier, 3 | 5);
     let key = match tail.get(end) {
         Some(b'A') => Key::Up,

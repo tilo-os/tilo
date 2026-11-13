@@ -179,8 +179,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     store.upsert(original.clone());
     root.save_store(&store).unwrap();
     let mut app = TestApp::<crate::SettingsShell>::open_data_dir(&profile).unwrap();
-    // A private headless host intentionally does not take in the device's
-    // file. Seed its actual personal record, then project that canonical state.
+    // A headless host does not take in the device's file; seed its record instead.
     let person = app
         .shared_person::<accounts::person::PersonAccounts>()
         .unwrap();

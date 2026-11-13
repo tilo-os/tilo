@@ -1,9 +1,6 @@
-//! GNOME Shell and `KRunner` search over the session bus.
-//!
-//! Both ask this runtime to match what a person types and hand back only an
-//! entry id to open; neither ever sees more than the catalogue offered the
-//! owner. One bus name serves both, each at its own object path, so one
-//! D-Bus activation file starts the runtime for either.
+//! GNOME Shell and `KRunner` search over the session bus: both ask this runtime
+//! to match what a person types and get back an entry id to open. One bus name
+//! serves both, each at its own object path.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,7 +16,6 @@ pub const GNOME_PATH: &str = "/so/tilo/Runtime/SearchProvider";
 /// Where `KRunner` finds `org.kde.krunner1`.
 pub const KRUNNER_PATH: &str = "/so/tilo/Runtime/KRunner";
 
-/// Results one query answers at most; a host shows a handful.
 const RESULTS: usize = 20;
 /// `KRunner`'s category relevance for a match that may be what was meant.
 const POSSIBLE_MATCH: i32 = 30;
@@ -27,7 +23,6 @@ const POSSIBLE_MATCH: i32 = 30;
 /// A result's properties, as both hosts read them (`a{sv}`).
 type Properties = HashMap<&'static str, Value<'static>>;
 
-/// Serve both providers over `builder`'s connection.
 fn serve<'a>(
     builder: zbus::connection::Builder<'a>,
     search: &Arc<OsSearch>,
@@ -51,12 +46,11 @@ fn serve<'a>(
 ///
 /// # Errors
 ///
-/// Returns zbus errors: no session bus, or the name already owned.
+/// zbus errors: no session bus, or the name already owned.
 pub async fn serve_on_session_bus(search: &Arc<OsSearch>) -> zbus::Result<zbus::Connection> {
     serve_on(zbus::connection::Builder::session()?, search).await
 }
 
-/// Serve both providers under [`BUS_NAME`] on the bus `builder` connects to.
 async fn serve_on(
     builder: zbus::connection::Builder<'_>,
     search: &Arc<OsSearch>,
@@ -77,7 +71,6 @@ fn ids(entries: Vec<SearchEntry>) -> Vec<String> {
         .collect()
 }
 
-/// `org.gnome.Shell.SearchProvider2`.
 struct GnomeShell {
     search: Arc<OsSearch>,
 }
@@ -132,7 +125,6 @@ impl GnomeShell {
     }
 }
 
-/// `org.kde.krunner1`.
 struct KRunner {
     search: Arc<OsSearch>,
 }
@@ -160,7 +152,6 @@ impl KRunner {
                 if let Some(detail) = entry.detail {
                     properties.insert("subtext", Value::from(detail));
                 }
-                // Best first, as ranked; KRunner orders by relevance.
                 let relevance = 1.0 - f64::from(u32::try_from(at).unwrap_or(u32::MAX)) / count;
                 (
                     entry.id.to_string(),

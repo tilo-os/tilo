@@ -232,7 +232,6 @@ fn read_pin(path: &Path) -> std::io::Result<Option<String>> {
 }
 
 fn decode(bytes: &[u8], optional_engine: bool) -> std::io::Result<Option<String>> {
-    // An explicitly empty optional-engine pin is the existing image contract.
     if bytes.is_empty() && optional_engine {
         return Ok(None);
     }
@@ -340,9 +339,6 @@ mod tests {
             assert_retained_namespace_case(&case);
             return;
         }
-        // The fixture runs the pinned binary in a bubblewrap user namespace.
-        // A capability-less job sandbox refuses that namespace; the micro-VM
-        // check sets TILO_REQUIRE_USERNS=1 and runs it as real root.
         tilo_test_env::require_capability!(
             UserNamespace,
             tilo_test_env::bubblewrap(),
@@ -400,8 +396,6 @@ mod tests {
         for case in ["valid", "mutable", "malformed"] {
             let mut command = namespace(&executable, &operator);
             if std::fs::metadata(&pin).unwrap().uid() != 0 {
-                // As in the pin test: the runner's own files look root-owned
-                // in the namespace, as the image files the pins come from are.
                 command.args(["--uid", "0", "--gid", "0"]);
             }
             command.args(["--dir", "/usr/share/tilo/runtime-retained"]);
@@ -457,7 +451,6 @@ mod tests {
             }
             return;
         }
-        // As above: bubblewrap is the immutable-filesystem subject here.
         tilo_test_env::require_capability!(
             UserNamespace,
             tilo_test_env::bubblewrap(),
@@ -487,9 +480,6 @@ mod tests {
         ] {
             let mut command = namespace(&executable, &operator);
             if std::fs::metadata(&pin).unwrap().uid() != 0 {
-                // An unprivileged runner's files are its own. Map it to root in
-                // the namespace so the fixture looks as the root-owned image
-                // files the pins are read from do.
                 command.args(["--uid", "0", "--gid", "0"]);
             }
             match case {

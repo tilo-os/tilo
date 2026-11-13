@@ -30,12 +30,9 @@ impl ImportPayload {
     }
 }
 
-/// A single-use, exact-payload grant for the import engine.
-///
-/// Only a host-owned [`ImportAuthority`] can construct this value. It is neither
-/// cloneable nor serializable, and executing an import consumes it by value.
-/// The engine reads its payload directly, so callers cannot substitute a source
-/// or destination after admission.
+/// A single-use grant for the import engine, minted only by a host-owned
+/// [`ImportAuthority`]: neither cloneable nor serializable, consumed by the
+/// import it admits.
 pub struct ImportConsent {
     payload: ImportPayload,
 }
@@ -46,22 +43,15 @@ impl ImportConsent {
     }
 }
 
-/// A host-private registry of local import approvals.
-///
-/// Keep this issuer in the host callback state, never in a replicated document.
-/// Call `approve` only after local destination and device admission. Untrusted
-/// job records are not approvals. Consumed job IDs remain reserved for this
-/// issuer's lifetime, including after a mismatched consumption attempt.
+/// Host-private import approvals. Keep the issuer in the host callback state,
+/// never in a replicated document, and approve only after local destination and
+/// device admission. A consumed job ID stays reserved for the issuer's life.
 #[derive(Default)]
 pub struct ImportAuthority {
     approvals: HashMap<String, Option<ImportPayload>>,
 }
 
 impl ImportAuthority {
-    /// Record the exact locally approved selection and destination.
-    ///
-    /// # Errors
-    /// Rejects a job ID already approved or consumed by this issuer.
     pub fn approve(
         &mut self,
         job_id: &str,
@@ -87,11 +77,12 @@ impl ImportAuthority {
         }
     }
 
-    /// Consume a local approval, checking every field before minting a permit.
+    /// Consume a local approval, checking every field before minting a permit. A
+    /// mismatch burns the approval.
     ///
     /// # Errors
-    /// Rejects missing, replayed or changed jobs. A mismatch burns the approval
-    /// so a later retry cannot use an older local decision.
+    ///
+    /// Rejects missing, replayed or changed jobs.
     pub fn consume(
         &mut self,
         job_id: &str,

@@ -16,6 +16,10 @@ COPY keys/tpm2-pcr-signing.public.pem /build/keys/
 COPY crates /build/crates
 COPY apps /build/apps
 COPY examples /build/examples
+# The SDKs' native parts are workspace members, which every workspace build
+# needs the manifests of.
+COPY sdk/python/native /build/sdk/python/native
+COPY sdk/typescript/native /build/sdk/typescript/native
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks

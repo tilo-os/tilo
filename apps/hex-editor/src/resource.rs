@@ -1,11 +1,7 @@
-//! The hex buffer as a record: a file's bytes, kept in the document so
-//! they sync, undo and show in history like any document.
-//!
-//! The bytes are a [`ByteBuffer`], stored in pages and edited at its path
-//! in its own vocabulary ([`BufferEdit`]): a keystroke writes the page it
-//! lands in. The verbs below offer the same edits by offset, for the
-//! palette, agents and scripts; loading a file is a verb of its own, which
-//! no undo takes back.
+//! The hex buffer as a record: a file's bytes in the document, so they sync, undo and
+//! show in history like any document. A keystroke writes the page it lands in; the
+//! verbs below offer the same edits by offset, and loading a file is a verb no undo
+//! takes back.
 
 use std::rc::Rc;
 
@@ -22,19 +18,12 @@ use crate::view::HexView;
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
-/// The open buffer.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct HexEditor {
     /// File name
-    ///
-    /// The opened file's name; `None` until a file is opened. Written whole
-    /// by a load.
     #[model(readonly)]
     pub name: Option<Atom>,
     /// Loads
-    ///
-    /// How many times a file was loaded into this record: a view takes the
-    /// bytes after a change of it as freshly loaded, not as edits.
     #[model(readonly)]
     pub opened: u64,
     /// Bytes
@@ -46,20 +35,14 @@ impl HexEditor {
         self.name.is_some()
     }
 
-    /// The opened file's name.
     pub fn name(&self) -> Option<&str> {
         self.name.as_ref().map(|name| name.0.as_str())
     }
 }
 
 impl HexEditor {
-    /// What the record holds: the open buffer: a file's bytes, its name and where it was
+    /// What the record holds: the open buffer's bytes, its name and where it was
     /// opened.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -73,10 +56,8 @@ impl HexEditor {
     read_content = HexEditor::read_document
 )]
 impl HexEditor {
-    /// Load a file's bytes.
-    ///
-    /// The bytes come from outside: loading them syncs to everyone, but no
-    /// undo takes them back. Unchanged bytes of the same file change nothing.
+    /// Load a file's bytes. Loading syncs to everyone and no undo takes it back;
+    /// unchanged bytes of the same file change nothing.
     #[action(external)]
     pub fn load(
         &mut self,
@@ -91,7 +72,6 @@ impl HexEditor {
         self.bytes = ByteBuffer::of(&bytes.0);
     }
 
-    /// Insert bytes before an offset, growing the buffer.
     #[action]
     pub fn insert_bytes(
         &mut self,
@@ -101,7 +81,6 @@ impl HexEditor {
         self.bytes.edit(&BufferEdit::Insert { offset, bytes })
     }
 
-    /// Replace the bytes at an offset in place.
     #[action]
     pub fn overwrite_bytes(
         &mut self,
@@ -111,7 +90,6 @@ impl HexEditor {
         self.bytes.edit(&BufferEdit::Overwrite { offset, bytes })
     }
 
-    /// Remove bytes starting at an offset.
     #[action(destructive)]
     pub fn delete_bytes(
         &mut self,
@@ -123,8 +101,8 @@ impl HexEditor {
 }
 
 impl HexEditor {
-    /// The byte edits bound to where the person is: insert or overwrite at
-    /// the cursor, delete the selection or the byte under the cursor.
+    /// The byte edits at the cursor: insert or overwrite there, delete the selection or
+    /// the byte under it.
     pub(crate) fn at_cursor(
         cursor: usize,
         len: usize,
@@ -169,7 +147,6 @@ impl HexEditor {
         bound.into_iter().flatten().collect()
     }
 
-    /// The load of `name`'s `bytes`, as an invocation.
     pub(crate) fn loading(name: impl Into<String>, bytes: Vec<u8>) -> Invoke<Self> {
         Self::LOAD.with(hex_editor::Load {
             name: name.into(),
@@ -181,7 +158,6 @@ impl HexEditor {
 /// The hex editor app: one buffer per file, edited in a [`HexView`].
 pub struct HexEditorShell;
 
-/// The bundled sample a capture shows.
 #[cfg(feature = "samples")]
 const SAMPLE_NAME: &str = "sample.png";
 
@@ -206,8 +182,7 @@ impl ResourceApp for HexEditorShell {
         let effects = Rc::clone(&editor);
         cx.effects(move |effect: HexEffect, cx| {
             let answer = effects.borrow_mut().answer(effect, cx);
-            // What it asked of the window (the go-to prompt) happens on its
-            // next frame.
+            // What it asked of the window happens on its next frame.
             cx.waker().wake();
             answer
         })
@@ -215,14 +190,13 @@ impl ResourceApp for HexEditorShell {
             let editor = Rc::clone(&editor);
             move || editor.borrow().effect_statuses()
         });
-        // A capture shows the bundled sample the scenario opened; the
-        // scenario then stages its view state.
+        // A capture shows the bundled sample the scenario opened; the scenario then
+        // stages its view state.
         let staged = Rc::clone(&editor);
         cx.on_stage(move |scenario| staged.borrow_mut().stage_scenario(scenario));
-        // The edits at the cursor and the selection.
         cx.bind_declarations(move |_| editor.borrow().bound_declarations());
-        // In a container, the window is a widget of the view's tree that
-        // tests and headless drives address by name.
+        // In a container, the window is a widget of the view's tree that tests and
+        // headless drives address by name.
         Box::new(ui::widget::Stack::new().push(Box::new(window)))
     }
 
@@ -237,16 +211,15 @@ impl ResourceApp for HexEditorShell {
         Some(&CATALOG)
     }
 
-    /// The buffer of a file is a record of its own, derived from the
-    /// file's, so another app's record of the same file is left alone.
+    /// A file's buffer is a record of its own, derived from the file's, so another
+    /// app's record of the same file is left alone.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
         input
             .argument()
             .map(|path| RecordId::derived("hex", &RecordId::identify_file(path)))
     }
 
-    /// The file is read afresh on every launch: what is on disk is what the
-    /// buffer shows. Unchanged bytes change nothing.
+    /// The file is read afresh on every launch; unchanged bytes change nothing.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<HexEditor>> {
         input
             .file()
@@ -274,7 +247,6 @@ impl ResourceApp for HexEditorShell {
             .unwrap_or((1280, 800))
     }
 
-    /// Every capture but the empty state shows the bundled sample.
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<HexEditor>> {
         if name == Some("empty") {
@@ -297,7 +269,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Make `edit` at the bytes' path, as a keystroke does.
     fn edit(replica: &mut Replica<HexEditor>, edit: &BufferEdit) -> Result<(), String> {
         let edit = HexEditor::paths().bytes.perform(edit).unwrap();
         replica
@@ -324,7 +295,6 @@ mod tests {
         replica.state().unwrap()
     }
 
-    /// The stored pages' lengths, read from the document.
     fn pages(replica: &Replica<HexEditor>) -> Vec<usize> {
         let doc = replica.doc();
         let Some((_, list)) = doc.get(ROOT, "bytes").unwrap() else {
@@ -384,7 +354,6 @@ mod tests {
         expected.drain(PAGE..2 * PAGE + 10);
         assert_eq!(state(&replica).bytes, expected);
 
-        // Appending at the end grows the last page; a long page splits.
         let end = expected.len();
         let tail = vec![7; MAX_PAGE];
         edit(&mut replica, &insert(end, &tail)).unwrap();
@@ -447,8 +416,8 @@ mod tests {
         ] {
             assert!(edit(&mut replica, &action).is_err(), "{action:?}");
         }
-        // Overwriting across the end keeps the length; deleting past it
-        // stops at the end; appending at the end is allowed.
+        // Overwriting across the end keeps the length; deleting past it stops at the
+        // end; appending at the end is allowed.
         edit(&mut replica, &overwrite(2, &[8, 9])).unwrap();
         assert_eq!(state(&replica).bytes, [1, 2, 8]);
         edit(&mut replica, &BufferEdit::Delete { offset: 1, len: 9 }).unwrap();
@@ -494,7 +463,6 @@ mod tests {
         assert_eq!(state(&theirs).bytes, bytes);
     }
 
-    /// A reader kept up to date page by page shows what a fresh read shows.
     #[test]
     fn a_refreshed_state_matches_a_fresh_read() {
         let file: Vec<u8> = (0..3 * PAGE).map(|i| (i % 7) as u8).collect();

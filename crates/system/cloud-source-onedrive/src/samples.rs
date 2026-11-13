@@ -2,7 +2,6 @@
 //! (learn.microsoft.com/graph/api, `microsoft-graph-docs-contrib`), verbatim
 //! except where noted.
 
-/// `GET /drives/{drive-id}/root` (driveitem-get).
 pub const GET_ROOT: &str = r#"{
   "createdBy": {
       "user": {
@@ -28,7 +27,6 @@ pub const GET_ROOT: &str = r#"{
   "webUrl": "https://contoso-my.sharepoint.com/personal/rgregg_contoso_com/Documents"
 }"#;
 
-/// `POST /me/drive/root/children` (driveitem-post-children).
 pub const CREATE_FOLDER: &str = r#"{
   "createdBy": {
     "user": {
@@ -58,7 +56,6 @@ pub const CREATE_FOLDER: &str = r#"{
   }
 }"#;
 
-/// `PATCH /me/drive/items/{item-id}` moving an item (driveitem-move).
 pub const MOVE: &str = r#"{
   "id": "0123456789abc",
   "name": "new-item-name.txt",
@@ -70,7 +67,6 @@ pub const MOVE: &str = r#"{
   }
 }"#;
 
-/// `GET .../children` (driveitem-list-children).
 pub const LIST_CHILDREN: &str = r#"{
   "value": [
     {"name": "myfile.jpg", "size": 2048, "file": {} },
@@ -81,7 +77,6 @@ pub const LIST_CHILDREN: &str = r#"{
   "@odata.nextLink": "https://..."
 }"#;
 
-/// `GET /me/drive/root/delta`, first page (driveitem-delta, example 1).
 pub const DELTA_FIRST: &str = r#"{
     "value": [
         {
@@ -103,7 +98,6 @@ pub const DELTA_FIRST: &str = r#"{
     "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/drive/delta(token=1230919asd190410jlka)"
 }"#;
 
-/// The last page of a delta round (driveitem-delta, example 2).
 pub const DELTA_LAST: &str = r#"{
     "value": [
         {
@@ -121,7 +115,6 @@ pub const DELTA_LAST: &str = r#"{
     "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/drive/root/delta?(token='MzslMjM0OyUyMzE7MzsyM2YwNDVhMS1lNmRmLTQ1N2MtOGQ5NS1hNmViZDVmZWRhNWQ7NjM3OTQzNzQwODQ3NTcwMDAwOzU4NTk2OTY0NDslMjM7JTIzOyUyMzA')"
 }"#;
 
-/// `GET /me/drive/items/{item-id}/versions` (driveitem-list-versions).
 pub const VERSIONS: &str = r#"{
   "value":
   [
@@ -161,13 +154,11 @@ pub const VERSIONS: &str = r#"{
   ]
 }"#;
 
-/// `POST .../createUploadSession` (driveitem-createuploadsession, example 1).
 pub const UPLOAD_SESSION: &str = r#"{
   "uploadUrl": "https://sn3302.up.1drv.com/up/fe6987415ace7X4e1eF866337",
   "expirationDateTime": "2015-01-29T09:21:55.523Z"
 }"#;
 
-/// A fragment accepted with ranges still missing (example 2).
 pub const UPLOAD_FRAGMENT: &str = r#"{
   "expirationDateTime": "2015-01-29T09:21:55.523Z",
   "nextExpectedRanges": [
@@ -176,7 +167,6 @@ pub const UPLOAD_FRAGMENT: &str = r#"{
   ]
 }"#;
 
-/// The final fragment's response (example 3).
 pub const UPLOAD_COMPLETE: &str = r#"{
   "id": "912310013A123",
   "name": "largefile.vhd",
@@ -202,7 +192,6 @@ pub const CREATE_LINK: &str = r#"{
   "hasPassword": true
 }"#;
 
-/// `GET /me/drive` (drive-get).
 pub const GET_DRIVE: &str = r#"{
     "id": "b!t18F8ybsHUq1z3LTz8xvZqP8zaSWjkFNhsME-Fepo75dTf9vQKfeRblBZjoSQrd7",
     "driveType": "business",

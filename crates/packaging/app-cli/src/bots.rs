@@ -7,7 +7,6 @@ use registry_types::{BotArtifact, EntryKind, RegistryEntry, RegistryImageKind};
 
 use crate::client::{RegistryError, VerifiedEntry, fetch_bounded};
 
-/// One bot as the Store lists it: the newest signed version of a bot entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueBot {
     pub package_id: String,
@@ -17,7 +16,6 @@ pub struct CatalogueBot {
     pub icon_url: Option<String>,
     pub publisher_pubkey_hex: String,
     pub registry_name: String,
-    /// The newest listed version.
     pub version: String,
     pub artifact: BotArtifact,
 }
@@ -30,8 +28,6 @@ fn newest_bot_version(entry: &RegistryEntry) -> Option<(&str, &BotArtifact)> {
         .max_by(|a, b| tilo_app_package::version::compare(a.0, b.0))
 }
 
-/// The newest version of a signed bot entry, as the Store lists it. Apps and
-/// unsigned entries answer `None`.
 #[must_use]
 pub fn bot_offer(entry: &VerifiedEntry, registry_name: &str) -> Option<CatalogueBot> {
     if entry.entry.kind != EntryKind::Bot || !entry.trust.is_offerable() {
@@ -58,7 +54,6 @@ pub fn bot_offer(entry: &VerifiedEntry, registry_name: &str) -> Option<Catalogue
     })
 }
 
-/// `version` of the signed bot `package_id`, when the catalogue still lists it.
 #[must_use]
 pub fn listed_version<'a>(
     entries: &'a [VerifiedEntry],
@@ -126,7 +121,6 @@ mod tests {
         }
     }
 
-    /// Serve `body` once on loopback; answers the origin.
     fn serve_once(body: Vec<u8>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -150,7 +144,6 @@ mod tests {
         let origin = serve_once(program.clone());
         let artifact = bot("1.0.0", &program, &origin);
         assert_eq!(fetch_bot_program(artifact.bot().unwrap()).unwrap(), program);
-        // Same length, other bytes: only the hash check can refuse it.
         let origin = serve_once(b"{\"id\":\"evil\"}".to_vec());
         let swapped = bot("1.0.0", &program, &origin);
         assert!(matches!(

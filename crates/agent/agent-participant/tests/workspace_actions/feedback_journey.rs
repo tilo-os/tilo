@@ -728,9 +728,12 @@ async fn assert_signed_canonical(
         permissions: {
             let standing: ui::permissions::Standing =
                 serde_json::from_value(admission.admission.standing).unwrap();
-            assert_eq!(standing.person, hex::encode(reporter.user_public_key));
+            assert_eq!(
+                standing.person_id(),
+                Some(hex::encode(reporter.user_public_key).as_str())
+            );
             ui::permissions::PermissionContext::new(
-                ui::permissions::Actor::person(standing.person.clone())
+                ui::permissions::Actor::person(standing.person_id().unwrap_or_default().to_owned())
                     .in_workspace(&submission.destination.room),
                 serde_json::from_value(admission.admission.sandbox).unwrap(),
                 standing,

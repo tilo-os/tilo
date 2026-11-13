@@ -1,20 +1,6 @@
 //! Remembered drives: the NTFS drives the person chose to remember when the
-//! shell asked whether, and how, to open them (Windows partitions next to
-//! Tilo, external drives).
-//!
-//! The choices live with the consent-gated NTFS mount service, root-owned,
-//! because a remembered choice stands in for the person's answer. Settings
-//! asks the service for them over its socket, which the image binds into
-//! Settings alone, and may do no more there than the person at the seat:
-//! forget a drive, which closes it if it is open, and switch a drive inside
-//! this computer between opening safely and the faster kernel driver. It
-//! cannot open a drive; only the shell's own prompt can.
-//!
-//! A change is a device-local [`DrivesEffect`]; its buttons and the Ctrl+K
-//! entries build the same value and both reach [`DrivesModel::start`].
-//!
-//! Its part of the Storage page is view code over what the area read
-//! ([`view`]), built again whenever that changes.
+//! shell asked whether, and how, to open them (Windows partitions next to Tilo,
+//! external drives).
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -53,18 +39,13 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`DrivesArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DrivesArea> {
     app.areas().find()
 }
 
-/// How long the service may take to answer; forgetting an open drive waits
-/// for its driver to write everything out.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// A grant id as the service mints it: hex.
 const MAX_GRANT_BYTES: usize = 64;
 
-/// Forget a remembered drive, or change how it opens.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DrivesEffect {
@@ -108,13 +89,9 @@ pub(crate) fn answer(
     Ok(Effected::Pending)
 }
 
-/// What Settings asks of the mount service, behind a seam for tests and
-/// captures.
 pub trait DriveService: Send + Sync {
-    /// The person's remembered drives.
     fn remembered(&self) -> Result<Vec<RememberedDrive>, Unreachable>;
 
-    /// Carry out one change.
     fn change(&self, request: Request) -> Result<(), String>;
 }
 
@@ -124,7 +101,6 @@ pub trait DriveService: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unreachable(pub String);
 
-/// The real service, over its control socket.
 pub struct SocketService {
     pub socket: PathBuf,
 }
@@ -156,7 +132,6 @@ impl DriveService for SocketService {
     }
 }
 
-/// A capture's: the scene's sample drives, and no change ever made.
 struct CaptureService(Vec<RememberedDrive>);
 
 impl DriveService for CaptureService {
@@ -176,7 +151,6 @@ fn valid_grant(grant: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// The request `operation` makes of the service, and what to say once done.
 fn request_for(operation: &DrivesEffect) -> Result<Option<(Request, String)>, String> {
     match operation {
         DrivesEffect::RefreshDrives => Ok(None),
@@ -205,14 +179,10 @@ fn request_for(operation: &DrivesEffect) -> Result<Option<(Request, String)>, St
     }
 }
 
-/// The host keeps the drives model when the Storage pane is closed.
 pub struct DrivesArea {
-    /// Whether the model talks to this device's drive service.
     devices: bool,
-    /// The drives a capture remembers, in place of the service's.
     remembered: Vec<RememberedDrive>,
     model: std::cell::OnceCell<Rc<RefCell<DrivesModel>>>,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
@@ -242,8 +212,6 @@ impl DrivesArea {
         })
     }
 
-    /// Take in what the service answered, and move what the page is keyed
-    /// by when what it shows changed.
     pub(crate) fn poll(&self) {
         let Some(model) = self.model.get() else {
             return;
@@ -266,8 +234,6 @@ impl DrivesArea {
             .is_some_and(|model| model.busy())
     }
 
-    /// One row per remembered drive the pane has read, offering what its
-    /// buttons do.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let Some(model) = self.model.get() else {
             return Vec::new();
@@ -277,8 +243,6 @@ impl DrivesArea {
     }
 }
 
-/// A remembered drive as a row of the published surface, offering what can
-/// be done to it now; the pane's controls for it bind to it.
 fn drive_live_row(drive: &RememberedDrive) -> LiveRow {
     let mut row = LiveRow::new(
         format!("settings.drive:{}", drive.grant),
@@ -314,21 +278,18 @@ fn drive_name(drive: &RememberedDrive) -> String {
     }
 }
 
-/// The Drives section of Storage.
 pub struct DrivesModel {
     service: Arc<dyn DriveService>,
     /// `None` until the first read answers.
     drives: Option<Result<Vec<RememberedDrive>, Unreachable>>,
     read_rx: Option<channel::Receiver<Result<Vec<RememberedDrive>, Unreachable>>>,
     change_rx: Option<channel::Receiver<(DrivesEffect, Result<String, String>)>>,
-    /// The last change's outcome.
     outcome: Option<Result<String, String>>,
     replies: Replies,
     structure_dirty: bool,
 }
 
 impl DrivesModel {
-    /// A model over `service`, reading it once.
     pub fn over(service: Arc<dyn DriveService>) -> Self {
         let mut model = Self {
             service,
@@ -360,7 +321,6 @@ impl DrivesModel {
         }
     }
 
-    /// Start `operation`: what a button and a Ctrl+K entry both reach.
     pub fn start(&mut self, operation: &DrivesEffect, reply: Option<EffectReply>) {
         if let Some(reply) = reply {
             self.replies.wait(operation.id(), reply);
@@ -439,7 +399,6 @@ impl DrivesModel {
         }
     }
 
-    /// Whether a read or a change is on its way.
     fn busy(&self) -> bool {
         self.read_rx.is_some() || self.change_rx.is_some()
     }
@@ -451,7 +410,6 @@ impl DrivesModel {
         }
     }
 
-    /// The drives' part of the Storage page, as the model shows them now.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         // A machine that never remembered a drive, or has no mount service,
         // has nothing to say about drives.
@@ -541,8 +499,6 @@ impl DrivesModel {
     }
 }
 
-/// The drives' part of the Storage page as view code over what the area
-/// read: built again whenever what it shows changes ([`DrivesArea::poll`]).
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &SettingsApp) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
@@ -563,7 +519,6 @@ mod tests {
 
     const UID: u32 = 1000;
 
-    /// No drives attached; the grants are what the test remembered.
     struct NoDrives;
 
     impl Backend for NoDrives {
@@ -669,8 +624,6 @@ mod tests {
         }
     }
 
-    /// What a Settings window on the Storage page says once its drives
-    /// model is `model`.
     fn texts(model: DrivesModel) -> Vec<String> {
         let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
         app.with_widget::<crate::window::Inspected, _>(move |app| {

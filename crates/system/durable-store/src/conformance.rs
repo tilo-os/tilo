@@ -1,7 +1,4 @@
-//! The behaviour every [`DurableStore`] shares, as a reusable suite. An
-//! implementation's tests call [`run`] (and [`reopen`] when its data outlives
-//! the store value) so hosts cannot drift apart on ordering, ownership or
-//! durability.
+//! The behaviour every [`DurableStore`] shares, as a reusable test suite.
 #![allow(
     clippy::unwrap_used,
     clippy::missing_panics_doc,
@@ -12,12 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{Durability, DurableStore, StorageKey, StoreError, Stored, WriteOp};
 
-/// A store under test.
 pub struct Subject<'a> {
     pub store: &'a dyn DurableStore,
-    /// Drive the store until every accepted write has resolved: nothing for a
-    /// store that commits by itself, one host commit loop for a
-    /// host-acknowledged store.
+    /// Drive the store until every accepted write has resolved: nothing for one
+    /// that commits by itself, a host commit loop for one that awaits its host.
     pub settle: &'a dyn Fn(),
 }
 
@@ -33,10 +28,9 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 fn fresh(tag: &str) -> StorageKey {
     let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    StorageKey::record("so.tilo.conformance", "room", format!("{tag}-{n}"))
+    StorageKey::document("so.tilo.conformance", "room", format!("{tag}-{n}"))
 }
 
-/// Every check that needs only one live store value.
 pub fn run(subject: &Subject<'_>) {
     namespace_is_named(subject);
     missing_keys_read_as_absent(subject);
@@ -50,8 +44,7 @@ pub fn run(subject: &Subject<'_>) {
     views_round_trip(subject);
 }
 
-/// Data committed through one store value is visible, unchanged, through a
-/// second value opened over the same storage.
+/// Data committed through one store value is visible, unchanged, through a second.
 pub fn reopen(subject: &Subject<'_>, reopen: &dyn Fn() -> Box<dyn DurableStore>) {
     let key = fresh("reopen");
     {
@@ -178,7 +171,7 @@ fn leases_are_exclusive_until_dropped(subject: &Subject<'_>) {
 fn shared_leases_coexist_and_exclude_an_exclusive_owner(subject: &Subject<'_>) {
     let store = subject.store;
     let package = format!("so.tilo.shared-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
-    for key in [fresh("shared"), StorageKey::package(package)] {
+    for key in [fresh("shared"), StorageKey::app(package)] {
         let first = store.lease_shared(&key).unwrap();
         let second = store.lease_shared(&key).unwrap();
         assert!(
@@ -208,8 +201,7 @@ fn shared_leases_coexist_and_exclude_an_exclusive_owner(subject: &Subject<'_>) {
 fn one_claimant_wins_custody(subject: &Subject<'_>) {
     let store = subject.store;
     let package = format!("so.tilo.claim-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
-    let key = StorageKey::record(package.clone(), "room", "former");
-    // A former record exists before any successor claims it.
+    let key = StorageKey::document(package.clone(), "room", "former");
     let lease = store.lease_shared(&key).unwrap();
     store
         .write(&key, WriteOp::Replace(b"source".to_vec()), None)
@@ -222,7 +214,7 @@ fn one_claimant_wins_custody(subject: &Subject<'_>) {
         store.claim(&key, "successor-a").unwrap(),
         "the claimant may resume"
     );
-    let other = StorageKey::record(package, "room", "other");
+    let other = StorageKey::document(package, "room", "other");
     assert!(
         store.claim(&other, "successor-b").unwrap(),
         "claims are per key"
@@ -233,11 +225,11 @@ fn keys_never_alias(subject: &Subject<'_>) {
     let store = subject.store;
     let record = format!("alias-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
     let keys = [
-        StorageKey::record("so.tilo.conformance", "room", record.clone()),
-        StorageKey::record("so.tilo.conformance", "other-room", record.clone()),
-        StorageKey::record("so.tilo.other", "room", record.clone()),
+        StorageKey::document("so.tilo.conformance", "room", record.clone()),
+        StorageKey::document("so.tilo.conformance", "other-room", record.clone()),
+        StorageKey::document("so.tilo.other", "room", record.clone()),
         StorageKey::workspace_index("so.tilo.conformance", record.clone()),
-        StorageKey::package(format!("so.tilo.alias-{record}")),
+        StorageKey::app(format!("so.tilo.alias-{record}")),
     ];
     let leases: Vec<_> = keys.iter().map(|key| store.lease(key).unwrap()).collect();
     for (n, key) in keys.iter().enumerate() {

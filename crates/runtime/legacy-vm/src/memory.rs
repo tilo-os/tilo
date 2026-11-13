@@ -1,8 +1,7 @@
-//! How much memory the VM holds: little when idle, more under pressure.
-//!
-//! The domain is defined with [`MemoryPolicy::max_mib`] and boots ballooned
-//! down to [`MemoryPolicy::base_mib`]. The supervisor reads the guest's
-//! available memory and moves the virtio-balloon target one step at a time.
+//! How much memory the VM holds: little when idle, more under pressure. The domain
+//! is defined with [`MemoryPolicy::max_mib`] and boots ballooned down to
+//! [`MemoryPolicy::base_mib`]; the supervisor moves the virtio-balloon target one
+//! step at a time.
 
 /// Balloon bounds and step, in MiB.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,11 +25,9 @@ impl Default for MemoryPolicy {
 }
 
 impl MemoryPolicy {
-    /// The next balloon target, or `None` to leave it.
-    ///
-    /// Grows by a step while available memory is under the low-water mark or
-    /// a quarter of the current size; gives a step back while more than half
-    /// plus a step is free, never below the base.
+    /// The next balloon target, or `None` to leave it: up a step while available memory is under
+    /// the low-water mark or a quarter of the current size, down a step while more than half plus a
+    /// step is free, never below the base.
     #[must_use]
     pub fn next_target(&self, current_mib: u64, available_mib: u64) -> Option<u64> {
         let low = self.low_water_mib.max(current_mib / 4);
@@ -64,21 +61,18 @@ mod tests {
     #[test]
     fn the_balloon_follows_guest_pressure_within_bounds() {
         let policy = MemoryPolicy::default();
-        // phase: pressure grows one step at a time up to the ceiling
         {
             assert_eq!(policy.next_target(1536, 200), Some(2048));
             assert_eq!(policy.next_target(5888, 100), Some(6144));
             assert_eq!(policy.next_target(6144, 100), None);
             assert_eq!(policy.next_target(4096, 900), Some(4608));
         }
-        // phase: a mostly idle guest gives memory back, never below the base
         {
             assert_eq!(policy.next_target(4096, 3000), Some(3584));
             assert_eq!(policy.next_target(1792, 1500), Some(1536));
             assert_eq!(policy.next_target(1536, 1500), None);
             assert_eq!(policy.next_target(2048, 1000), None);
         }
-        // phase: virsh's balloon size is read in MiB
         {
             assert_eq!(actual_mib("actual 2097152\nrss 100\n"), Some(2048));
             assert_eq!(actual_mib("rss 100\n"), None);

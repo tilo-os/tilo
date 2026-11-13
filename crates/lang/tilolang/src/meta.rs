@@ -792,62 +792,28 @@ pub struct FnMeta {
 }
 
 impl TypeMeta {
-    /// What one is called in a sentence: its name in words, lower case (`TodoList` is a
-    /// `todo list`).
+    /// What one is called in a sentence: its name in words, lower case, in the singular (`TodoList`
+    /// is a `todo list`, `Tasks` a `task`).
     #[must_use]
     pub fn noun(&self) -> String {
-        in_words(&self.name)
+        singular(&in_words(&self.name))
     }
 
-    /// What several are called in a sentence: [`plural`] of its [`noun`](Self::noun).
+    /// What several are called in a sentence: [`plural`] of its [`noun`](Self::noun), which a name
+    /// that already names several leaves as it is.
     #[must_use]
     pub fn plural(&self) -> String {
-        plural(&self.noun())
+        plural(&in_words(&self.name))
     }
 }
 
-/// A declared name in words, lower case: `TodoList` and `todo_list` are `todo list`.
-#[must_use]
-pub fn in_words(name: &str) -> String {
-    let mut words: Vec<String> = Vec::new();
-    let mut word = String::new();
-    for ch in name.chars() {
-        if ch == '_' || ch == ' ' {
-            if !word.is_empty() {
-                words.push(std::mem::take(&mut word));
-            }
-        } else if ch.is_uppercase() && !word.is_empty() {
-            words.push(std::mem::take(&mut word));
-            word.extend(ch.to_lowercase());
-        } else {
-            word.extend(ch.to_lowercase());
-        }
-    }
-    if !word.is_empty() {
-        words.push(word);
-    }
-    words.join(" ")
-}
-
-/// What several of a noun are called, as English writes most: `notes`, `entries`, `boxes`.
-#[must_use]
-pub fn plural(noun: &str) -> String {
-    let consonant_y = noun.strip_suffix('y').is_some_and(|stem| {
-        stem.chars()
-            .last()
-            .is_some_and(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
-    });
-    if consonant_y {
-        format!("{}ies", noun.strip_suffix('y').unwrap_or(noun))
-    } else if ["s", "x", "z", "ch", "sh"]
-        .iter()
-        .any(|end| noun.ends_with(end))
-    {
-        format!("{noun}es")
-    } else {
-        format!("{noun}s")
-    }
-}
+/// A declared name in words, lower case: `TodoList` and `todo_list` are `todo list`; and what one
+/// of them and several are, as English writes it (`todo list`, `todo lists`, `task` for `Tasks`).
+///
+/// The rules are [`tilo_words`]: the compiler writes a package's catalogue from them and the
+/// action model reads a Rust type's noun from them, so an app's words agree whichever it is
+/// written in.
+pub use tilo_words::{in_words, plural, singular};
 
 impl PackageMeta {
     /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.

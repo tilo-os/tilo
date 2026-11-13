@@ -24,7 +24,6 @@ impl Slugger {
     }
 }
 
-/// Lowercase; letters, digits, `_`, `-` and spaces kept; spaces become `-`.
 #[must_use]
 pub fn slugify(text: &str) -> String {
     text.to_lowercase()

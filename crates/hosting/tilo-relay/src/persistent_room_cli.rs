@@ -806,10 +806,10 @@ async fn answer_wait_list_command(
 }
 
 /// Declare the person `key` (their user root, hex) an owner of the workspace:
-/// its governance holds them as a member with every governance action, so the
-/// door lets them in even when it takes people by invitation, and they govern
-/// from the moment their device arrives — or after the workspace restarts.
-/// Answers what the operator hears.
+/// its governance holds them by their root as a member with every governance
+/// action, so the door lets them in even when it takes people by invitation,
+/// and a key of theirs lists the workspace, enters it and invites before any
+/// device of theirs has joined. Answers what the operator hears.
 async fn declare_owner(
     workspaces: &Workspaces,
     workspace: &str,

@@ -15,9 +15,6 @@ impl CalendarAlarm {
         self.hour < 24 && self.minute < 60 && self.weekdays < 128
     }
 
-    /// Resolve the next occurrence after `after`, excluding the local date
-    /// already delivered. A missing spring-forward time advances to the first
-    /// valid minute; an ambiguous autumn time uses its first occurrence.
     pub fn next_in<Tz: TimeZone>(
         self,
         last_rung: Option<NaiveDate>,
@@ -50,8 +47,6 @@ impl CalendarAlarm {
     }
 }
 
-/// A calendar handoff together with this device's delivered occurrence.
-/// Carrying the local date keeps host recomputation from rearming it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AlarmSchedule {
     pub alarm: CalendarAlarm,

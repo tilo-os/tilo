@@ -1,4 +1,5 @@
-//! What the client draws: the window's screens, the list column and its rows, the banner, the diff, the panels and the first-run screen.
+//! What the client draws: the window's screens, the list column and its rows, the
+//! banner, the diff, the panels and the first-run screen.
 
 use super::{
     Banner, ButtonFace, ChangesHit, ControlSize, EmptyState, EmptyStateContent, GitClientState,
@@ -71,8 +72,8 @@ impl GitClientState {
             self.paint_list_column(&mut lctx, presence, panel, panel);
         } else if panel.width() > 0.5 {
             let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
-            // The list keeps its width while the column opens or closes: it
-            // slides under the column's edge instead of reflowing.
+            // The list keeps its width while the column opens or closes: it slides under the
+            // column's edge instead of reflowing.
             let full = Rect::new(
                 panel.x1 - self.drawer.resolved_docked_width(),
                 panel.y0,
@@ -86,8 +87,8 @@ impl GitClientState {
         }
     }
 
-    /// The list column: the Changes or History list. `full` is the column
-    /// at its full width; `clip` is what of it is showing.
+    /// The list column: the Changes or History list, `full` at its full width and `clip` what of it
+    /// is showing.
     pub(super) fn paint_list_column(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -135,8 +136,8 @@ impl GitClientState {
             if rect.width() <= 0.0 || rect.height() <= 0.0 {
                 continue;
             }
-            // Row actions show under the pointer; their semantic
-            // twins are recorded for every row below.
+            // Row actions show under the pointer; their semantic twins are recorded for every row
+            // below.
             if matches!(hit, ChangesHit::ToggleStage(..)) {
                 self.targets.push(Target {
                     rect,
@@ -204,8 +205,8 @@ impl GitClientState {
         });
     }
 
-    /// An error or a running transfer as a banner at the top of the content;
-    /// returns the content area under it.
+    /// An error or a running transfer as a banner at the top of the content; returns the content
+    /// area under it.
     pub(super) fn paint_banner(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) -> Rect {
         use ui::widget::banner::{BannerContent, BannerKind};
         let (kind, title, dismissible) = if let Some(job) = &self.remote_job {
@@ -280,8 +281,8 @@ impl GitClientState {
                 settings: self.settings,
                 staged,
                 can_discard: true,
-                // A conflicted file's decision is the band above its diff:
-                // staging the markers would settle it as neither side.
+                // A conflicted file's decision is the band above its diff: staging the markers
+                // would settle it as neither side.
                 actions: self.selected_conflict().is_none(),
                 pointer: self.pointer,
             },
@@ -370,8 +371,7 @@ impl GitClientState {
         });
     }
 
-    /// The open screen's title and what to do, from `at` down; returns
-    /// where the path row starts.
+    /// The open screen's title and what to do, from `at` down; returns where the path row starts.
     pub(super) fn paint_open_intro(ctx: &mut PaintCtx<'_>, at: Point, width: f32) -> f64 {
         let theme = ctx.theme;
         let s = &theme.tokens.spacing;
@@ -400,8 +400,8 @@ impl GitClientState {
         y + hint_h + f64::from(s.s6)
     }
 
-    /// The "open a repository" screen: what to do, the path field and the
-    /// Open button, and the reason the last attempt failed.
+    /// The "open a repository" screen: what to do, the path field and the Open button, and the
+    /// reason the last attempt failed.
     pub(super) fn paint_open(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
         use ui::widget::banner::{BannerContent, BannerKind};
         let theme = ctx.theme;
@@ -421,8 +421,8 @@ impl GitClientState {
         let h = ButtonFace::height(ControlSize::Regular, theme);
         let label = t("git-open");
         let button_w = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme);
-        // Beside the path, the system's file chooser: most people pick the
-        // folder rather than type where it is.
+        // Beside the path, the system's file chooser: most people pick the folder rather than type
+        // where it is.
         let choose_label = t("git-choose");
         let choose_face =
             || ButtonFace::new(Rect::ZERO, &choose_label).icon(ui::icons::Icon::FolderOpen);
@@ -501,9 +501,8 @@ impl GitClientState {
         self.screen = screen;
         self.set_focus(None);
         self.confirm = None;
-        // The branches page opens on its first local branch, as History
-        // opens on its first commit: otherwise the first arrow lands on the
-        // second branch and Enter checks that one out.
+        // The branches page opens on its first local branch, as History opens on its first commit,
+        // so the first arrow does not land on the second branch.
         if screen == Screen::Panels && self.branch_selection.is_none() {
             let local = self.model.branches.iter().filter(|b| !b.is_remote).count();
             if local > 0 {

@@ -10,20 +10,6 @@
 //! The design system's gallery (`docs/design-language.md`, "Primitives"):
 //! every primitive in every state (rest, hover, pressed, focused, disabled,
 //! on, selected), dark and light, and the rows again at compact density.
-//!
-//! Pages, each `<page>-<theme>.png`:
-//!
-//! - `surfaces`: the five levels in place (ground, a window with a region,
-//!   raised wells and a floating menu) and the colour roles: accent, accent
-//!   ink, on state, neutral fill and the four status tones.
-//! - `controls`: buttons by role, icon buttons, bar controls, switch,
-//!   checkbox, radio, segmented, slider and chips, in every state.
-//! - `rows`: list rows (icon 16, avatar 24, avatar 40), text stacks, facts,
-//!   key hints, a property list and disclosure rows; `rows-compact` the
-//!   same at compact density.
-//! - `panels`: a floating panel with an embedded field, rows and a key-hint
-//!   footer; a menu; a banner and an empty state.
-//!
 //! Run: `cargo run -p ui-examples --example ui-shots -- design_gallery [OUT_DIR]`
 
 use std::collections::HashMap;

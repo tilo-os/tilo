@@ -213,9 +213,10 @@ pub(crate) fn endpoint(answers: Vec<String>) -> (String, Responder) {
 
 /// One request as the endpoint took it: its head, lowercased, and its body.
 pub(crate) fn seen(request: &test_http::Request) -> (String, String) {
+    use std::fmt::Write as _;
     let mut head = format!("{} {} HTTP/1.1\r\n", request.method, request.target);
     for (name, value) in &request.headers {
-        head.push_str(&format!("{name}: {value}\r\n"));
+        let _ = write!(head, "{name}: {value}\r\n");
     }
     (head.to_ascii_lowercase(), request.body_text())
 }

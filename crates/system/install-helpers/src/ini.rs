@@ -1,8 +1,8 @@
-//! `configparser.ConfigParser(interpolation=None, strict=True)` as the
-//! helpers read bootc's `.origin` files: `[section]` headers, `key = value`
-//! or `key: value` options with lowercased keys, full-line `#`/`;` comments,
-//! indented continuation lines, and a refusal for a repeated section or
-//! option or a line that is none of these.
+//! `configparser.ConfigParser(interpolation=None, strict=True)` as the helpers
+//! read bootc's `.origin` files: `[section]` headers, `key = value` or
+//! `key: value` options with lowercased keys, full-line `#`/`;` comments,
+//! indented continuation lines, and a refusal for a repeated section or option
+//! or a line that is none of these.
 
 use std::fmt::Write as _;
 
@@ -10,14 +10,12 @@ use crate::{Error, Result};
 
 const DEFAULT: &str = "DEFAULT";
 
-/// One section: its options in order, each with its value's lines.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Section {
     name: String,
     options: Vec<(String, Vec<String>)>,
 }
 
-/// One parsed file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ini {
     sections: Vec<Section>,
@@ -29,8 +27,8 @@ fn leading_whitespace(line: &str) -> usize {
         .saturating_sub(line.trim_start_matches(crate::py::is_space).len())
 }
 
-/// `\[(?P<header>.+)\]` matched at the start: up to the last `]` after at
-/// least one character.
+/// `\[(?P<header>.+)\]` matched at the start: up to the last `]` after at least
+/// one character.
 fn header(value: &str) -> Option<&str> {
     let rest = value.strip_prefix('[')?;
     let end = rest.rfind(']')?;
@@ -38,8 +36,8 @@ fn header(value: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
-/// `(?P<option>.*?)\s*[=:]\s*(?P<value>.*)`: the key before the first
-/// delimiter and the value after it.
+/// `(?P<option>.*?)\s*[=:]\s*(?P<value>.*)`: the key before the first delimiter
+/// and the value after it.
 fn option(value: &str) -> Option<(String, &str)> {
     let delimiter = value.find(['=', ':'])?;
     let key = crate::py::strip(value.get(..delimiter)?).to_lowercase();
@@ -54,7 +52,6 @@ fn parsing_error(number: usize, raw: &str) -> Error {
     ))
 }
 
-/// The section lines go to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Place {
     /// Before the first header.
@@ -64,7 +61,6 @@ enum Place {
     Section(usize),
 }
 
-/// Where the parse is, and whether an option's value may still continue.
 #[derive(Debug, Clone, Copy, Default)]
 struct Cursor {
     place: Place,
@@ -139,7 +135,6 @@ impl Ini {
         Ok(())
     }
 
-    /// Parses `text`.
     pub fn parse(text: &str) -> Result<Self> {
         let mut ini = Self {
             defaults: Section {
@@ -170,11 +165,7 @@ impl Ini {
         Ok(ini)
     }
 
-    /// `get(section, option)`: the value's lines joined, trailing whitespace
-    /// removed.
-    ///
-    /// # Errors
-    /// No such section, or no such option in it or in `DEFAULT`.
+    /// `get(section, option)`: the value's lines joined, trailing whitespace removed.
     pub fn get(&self, section: &str, option: &str) -> Result<String> {
         let Some(found) = self.sections.iter().find(|s| s.name == section) else {
             return Err(Error::new(format!("No section: '{section}'")));
@@ -194,8 +185,8 @@ impl Ini {
             .ok_or_else(|| Error::new(format!("No option '{key}' in section: '{section}'")))
     }
 
-    /// `set(section, option, value)`: replaces the option's value in place,
-    /// or adds the option at the end of the section.
+    /// `set(section, option, value)`: replaces the option's value in place, or adds
+    /// the option at the end of the section.
     pub fn set(&mut self, section: &str, option: &str, value: &str) -> Result<()> {
         let Some(found) = self.sections.iter_mut().find(|s| s.name == section) else {
             return Err(Error::new(format!("No section: '{section}'")));
@@ -210,8 +201,8 @@ impl Ini {
     }
 
     /// The text `write()` writes: each section as `[name]`, its options as
-    /// `key = value` (continuation lines indented by a tab), then a blank
-    /// line; `DEFAULT` first when it has options.
+    /// `key = value` with continuation lines indented by a tab, then a blank line;
+    /// `DEFAULT` first when it has options.
     #[must_use]
     pub fn write(&self) -> String {
         let mut out = String::new();

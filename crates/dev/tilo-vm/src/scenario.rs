@@ -24,6 +24,7 @@ pub enum Layout {
 }
 
 impl Layout {
+    /// The installer's `set-method` choice.
     pub fn method(self) -> &'static str {
         match self {
             Self::Erase => "erase",
@@ -82,6 +83,7 @@ pub enum Graphics {
 }
 
 impl Graphics {
+    /// `vm.sh`'s display flag.
     pub fn flag(self) -> &'static str {
         match self {
             Self::Gl => "--gl",
@@ -196,6 +198,7 @@ pub fn has_recovery_key_shape(text: &str) -> bool {
         })
 }
 
+/// The installer backend's private marker for the one-time recovery key.
 pub const RECOVERY_KEY_MARKER: &str = "::tilo-recovery-key::";
 
 /// Empty every file under `dir` that contains `secret`, the recovery-key
@@ -370,6 +373,7 @@ mod tests {
         }
     }
 
+    /// Credentials from stdin are distinct, bounded and never echoed, and secrets never debug-print.
     #[test]
     fn install_credentials_are_bounded_distinct_and_never_printed() {
         {

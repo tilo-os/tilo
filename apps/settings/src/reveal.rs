@@ -1,18 +1,8 @@
-//! Showing a setting asked for from search, the palette or an agent: once
-//! its pane is built, its control takes the keyboard and is scrolled into
-//! sight, a little below the top so its card's heading shows too; it stays
-//! in sight through relayouts until the person acts, and its row is marked
-//! for a moment as a found match is. A capture puts the keyboard on a
-//! control the same way, and a pane rebuilt under the keyboard keeps it on
-//! the control it was on.
-//!
-//! This is a piece of Settings' own around its shell ([`Reveal`]): the
-//! toolkit can put the keyboard on a widget and scroll a scroller, but it
-//! has no way to say "the control of this setting, once the part that shows
-//! it is built and read". A setting of the index names several controls
-//! ([`settings_store::index::Setting::is_control`]), and whether its pane
-//! is built as it will show depends on Settings' own reads (an area's first
-//! reading of the device): neither is anything the toolkit knows of.
+//! Showing a setting asked for from search, the palette or an agent: once its
+//! pane is built, its control takes the keyboard and is scrolled into sight, a
+//! little below the top so its card's heading shows too; it stays in sight
+//! through relayouts until the person acts, and its row is marked for a moment
+//! as a found match is.
 
 use std::cell::Cell;
 
@@ -20,20 +10,15 @@ use settings_store::index::Setting;
 use ui::widget::DrawChild;
 use ui::widget::{Element, Scrollable, Widget};
 
-/// How long a shown setting's row stays marked, in seconds.
 const HIGHLIGHT_HOLD: f32 = 1.5;
 
-/// What the window asks [`Reveal`] to show, shared with it.
 #[derive(Default)]
 pub(crate) struct RevealAsks {
     /// The setting asked to be shown, until its pane is built.
     pub(crate) setting: Cell<Option<&'static Setting>>,
-    /// The setting whose control took the keyboard, to scroll to once laid
-    /// out.
     scroll: Cell<Option<&'static Setting>>,
     /// The setting shown, kept in sight until the person acts.
     pub(crate) kept: Cell<Option<&'static Setting>>,
-    /// The control a capture puts the keyboard on, once its pane is built.
     pub(crate) control: Cell<Option<&'static str>>,
 }
 
@@ -48,12 +33,9 @@ impl RevealAsks {
     }
 }
 
-/// The window's content, showing what [`RevealAsks`] asks once `settled`
-/// says the pane is built as it will show. See the [module docs](self).
 pub(crate) struct Reveal {
     asks: std::rc::Rc<RevealAsks>,
     settled: Box<dyn Fn() -> bool>,
-    /// The row of the setting just shown, marked since then.
     highlight: Option<(&'static Setting, ui::time::Instant)>,
     content: Element,
 }
@@ -72,7 +54,6 @@ impl Reveal {
         }
     }
 
-    /// The row of the setting just shown, while it is marked.
     fn highlighted_row(&self) -> Option<vello::kurbo::Rect> {
         let (setting, since) = self.highlight?;
         let elapsed = ui::time::now()
@@ -166,8 +147,6 @@ impl ui::widget::Decorator for Reveal {
     ) {
         self.content
             .draw_child(scene, transform, text_renderer, theme, presence);
-        // The row of a setting just shown is marked as a found match is,
-        // for a moment.
         match self.highlighted_row() {
             Some(row) => ui::widget::paint_find_match(scene, transform, row, true, theme),
             None => self.highlight = None,
@@ -179,7 +158,6 @@ impl ui::widget::Decorator for Reveal {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        // The person acts: what they do decides what is in sight now.
         if matches!(
             event,
             winit::event::WindowEvent::KeyboardInput { .. }
@@ -194,7 +172,6 @@ impl ui::widget::Decorator for Reveal {
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         self.content.collect_damage(regions);
-        // The fading wash over a shown setting's row.
         if let Some((setting, _)) = self.highlight
             && let Some(row) = row_of(&*self.content, setting)
         {
@@ -220,7 +197,6 @@ fn scroll_to_control(root: &mut dyn Widget, setting: &'static Setting) {
             .into_iter()
             .find_map(|child| control_rect(child, setting))
     }
-    /// Scroll the innermost scroller holding the control; whether one did.
     fn reveal(widget: &mut dyn Widget, setting: &Setting) -> bool {
         if widget
             .children_mut()
@@ -255,9 +231,6 @@ fn scroll_to_control(root: &mut dyn Widget, setting: &'static Setting) {
     reveal(root, setting);
 }
 
-/// The row of `setting`'s control under `root`, within the scroller that
-/// holds it: the narrowest ancestor of the control at least as wide as most
-/// of that scroller, which is the settings row.
 fn row_of(root: &dyn Widget, setting: &Setting) -> Option<vello::kurbo::Rect> {
     fn walk(
         widget: &dyn Widget,
@@ -293,7 +266,6 @@ fn row_of(root: &dyn Widget, setting: &Setting) -> Option<vello::kurbo::Rect> {
     walk(root, setting, &mut Vec::new())
 }
 
-/// The identity of the current keyboard control, before a pane rebuilds it.
 fn focused_control_id(widget: &dyn Widget) -> Option<&str> {
     if widget.is_focusable()
         && widget.is_focused()
@@ -304,7 +276,6 @@ fn focused_control_id(widget: &dyn Widget) -> Option<&str> {
     widget.children().into_iter().find_map(focused_control_id)
 }
 
-/// A reveal transfers the keyboard rather than leaving two focused controls.
 fn clear_control_focus(widget: &mut dyn Widget) {
     if widget.is_focusable() && widget.is_focused() {
         widget.set_focus(false);
@@ -314,8 +285,6 @@ fn clear_control_focus(widget: &mut dyn Widget) {
     }
 }
 
-/// Put the keyboard on the first matching control under `widget`;
-/// whether there was one.
 fn focus_control(widget: &mut dyn Widget, matches: &dyn Fn(&str) -> bool) -> bool {
     fn first_focusable(widget: &mut dyn Widget) -> Option<&mut dyn Widget> {
         if widget.is_focusable() {

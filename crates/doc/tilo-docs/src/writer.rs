@@ -18,7 +18,6 @@ struct Writer {
     alignments: Vec<Alignment>,
     in_head: bool,
     cell: usize,
-    /// Inside an image, whose text is its `alt`, not markup.
     image_depth: usize,
 }
 
@@ -169,7 +168,6 @@ impl Writer {
     }
 }
 
-/// A link may lead anywhere but into script.
 fn safe_url(url: &str) -> &str {
     if url
         .trim_start()

@@ -1,9 +1,5 @@
 //! Interrupt-aware utterance queue.
 //!
-//! The screen reader is *chatty*: a fast Tab through a toolbar can enqueue a dozen
-//! focus-narration utterances in the time it takes to speak one. Naively speaking them all
-//! is unusable, so the queue exists to make it sane:
-//!
 //! * An **interrupting** utterance ([`Utterance::interrupt`]) clears all pending work of
 //!   *equal or lower* significance, so the latest focus change wins — *but* a queued
 //!   [`Priority::Important`] (error / permission prompt) survives a lower-priority interrupt.
@@ -11,14 +7,6 @@
 //! * The queue is engine-agnostic: it just produces an ordered list of [`Utterance`]s to hand
 //!   to a [`Speaker`]. When to pull the next one belongs to the reader's run loop, not here —
 //!   which keeps the queue trivially unit-testable without a daemon.
-//!
-//! Coalescing rule, precisely: when pushing utterance `U`:
-//!   1. If `U.interrupt`, drop every *pending* utterance `P` with `P.priority <= U.priority`
-//!      (equal priority drops too — the newer focus change supersedes the older one).
-//!   2. Append `U`.
-//!
-//! [`Priority`]: crate::Priority
-//! [`Priority::Important`]: crate::Priority::Important
 
 use std::collections::VecDeque;
 
@@ -33,7 +21,6 @@ pub struct SpeechQueue {
 }
 
 impl SpeechQueue {
-    /// A fresh, empty queue.
     pub fn new() -> Self {
         SpeechQueue {
             pending: VecDeque::new(),
@@ -56,32 +43,26 @@ impl SpeechQueue {
         interrupted
     }
 
-    /// Convenience: push plain text at the default priority, interrupting.
     pub fn push_text(&mut self, text: impl Into<String>) -> bool {
         self.push(Utterance::new(text))
     }
 
-    /// Remove and return the next utterance to speak, if any.
     pub fn pop(&mut self) -> Option<Utterance> {
         self.pending.pop_front()
     }
 
-    /// Peek at the next utterance without removing it.
     pub fn peek(&self) -> Option<&Utterance> {
         self.pending.front()
     }
 
-    /// Discard everything pending (the "silence key").
     pub fn clear(&mut self) {
         self.pending.clear();
     }
 
-    /// Number of pending utterances.
     pub fn len(&self) -> usize {
         self.pending.len()
     }
 
-    /// Whether anything is pending.
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
@@ -128,9 +109,7 @@ mod tests {
         }
         {
             let mut q = SpeechQueue::new();
-            // An error is queued (Important).
             q.push(Utterance::new("error!").with_priority(Priority::Important));
-            // A focus change comes in (Message, interrupting).
             let interrupted = q.push(Utterance::new("button"));
             assert!(interrupted);
             // The Important error must survive; the focus narration is appended after.

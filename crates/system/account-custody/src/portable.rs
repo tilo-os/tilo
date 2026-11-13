@@ -102,7 +102,6 @@ const ARTIFACT: Frame = Frame::new(
     256,
     MAX_SEALED,
 );
-/// Largest accepted password-wrapped artifact, in bytes.
 pub const MAX_ARTIFACT: usize = ARTIFACT.max_len();
 
 /// A portable password-wrapped artifact: sealed selected accounts and a fresh
@@ -119,7 +118,6 @@ impl PasswordSealedAccounts {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
-    /// Parse a bounded password-wrapped artifact without decrypting it.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, PortableError> {
         ARTIFACT.parse(bytes).map_err(frame_error)?;
         Ok(Self(bytes.to_vec()))
@@ -214,8 +212,6 @@ fn valid_entries(entries: &[Entry]) -> Result<(), PortableError> {
     }
     Ok(())
 }
-/// Produce an actual portable selected-account artifact with a fresh
-/// content key wrapped under the person's explicit transport password.
 pub fn seal_selected_accounts_with_password(
     root: &Path,
     selected: &[AccountId],
@@ -278,8 +274,6 @@ pub fn seal_selected_accounts(
     Ok(SealedAccounts(sealed))
 }
 
-/// Import every account the artifact carries into an explicit custody root.
-/// The caller has already authenticated the artifact's selection itself.
 pub fn import_password_sealed_accounts(
     root: &Path,
     artifact: &PasswordSealedAccounts,
@@ -464,7 +458,6 @@ fn matching_bundle(
 }
 
 impl PasswordSealedAccounts {
-    /// Inspect the exact authenticated selection's consumer requirement.
     pub fn requires_protected_consumer(
         &self,
         password: &[u8],
@@ -477,8 +470,6 @@ impl PasswordSealedAccounts {
             .iter()
             .any(|entry| crate::requires_protected_consumer(&entry.secret)))
     }
-    /// Authenticate and check exact manifest selection without creating any
-    /// target metadata or vault. Used before accepting prepared setup custody.
     pub fn verify_selection(
         &self,
         password: &[u8],
@@ -675,8 +666,6 @@ mod tests {
         assert!(PasswordSealedAccounts::from_bytes(&trailing).is_err());
     }
 
-    // Re-enter this exact test in a fresh process: changing environment or uid
-    // in the parallel test runner would affect unrelated custody tests.
     #[test]
     #[cfg(unix)]
     fn installed_adoption_succeeds_as_private_target_user() {
@@ -868,7 +857,6 @@ mod tests {
         let artifact =
             seal_selected_accounts_with_password(&from, &[id], PASSWORD, b"setup").unwrap();
         let mut expensive = artifact.as_bytes().to_vec();
-        // The wrapped envelope starts at 12; its Argon2 memory field at 8.
         expensive[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(PasswordSealedAccounts::from_bytes(&expensive).is_err());
         let short = &artifact.as_bytes()[..artifact.as_bytes().len() - 1];

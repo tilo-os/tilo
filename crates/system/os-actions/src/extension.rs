@@ -1,40 +1,28 @@
-//! Downloaded system extensions, as the desktop sees them.
-//!
-//! Some optional `/usr` content is not part of the image: the owner turns it
-//! on, and the root helper `/usr/libexec/tilo-extension` downloads it on this
-//! device from the publishers' servers, verifies it against a manifest the
-//! image's own release key signed, and merges it as read-only system
-//! extensions. The desktop never runs that helper itself: like every other
-//! privileged change Settings makes, it starts one of the fixed unit
-//! instances polkit lets a local, active administrator start
-//! (`tilo-extension@{install,remove,refresh}:<id>.service`) and reads the
-//! helper's world-readable status file. See
-//! `/usr/share/tilo/system-extensions/README.md`.
+//! Downloaded system extensions, as the desktop sees it: optional `/usr` content that
+//! is not part of the image, which the owner turns on and the root helper
+//! `/usr/libexec/tilo-extension` downloads, assembles as a systemd-sysext and merges.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The root helper. Its presence (with a catalogue entry for the id) is what
-/// makes an extension offerable at all: a host-desktop session or a
-/// development build without it shows nothing.
+/// The root helper; its presence, with a catalogue entry for the id, is what makes an extension
+/// offerable at all.
 pub const HELPER_PATH: &str = "/usr/libexec/tilo-extension";
 /// The image-owned catalogue: one `<id>.json` per extension this image allows.
 pub const CATALOGUE_DIR: &str = "/usr/share/tilo/system-extensions/sysext.d";
-/// Root-owned, world-readable status directory; exists on every Tilo image
-/// (tmpfiles.d), so it can be watched before anything was ever installed.
+/// Root-owned and world-readable, created by tmpfiles.d on every image, so it can be watched before
+/// anything was ever installed.
 pub const STATE_DIR: &str = "/var/lib/tilo/extensions";
-/// Resolving, downloading and assembling an extension takes minutes on a
-/// slow link.
+/// Resolving, downloading and assembling takes minutes on a slow link.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_TEXT: usize = 300;
 const MAX_PARTS: usize = 16;
 const MAX_ID: usize = 63;
 
-/// A catalogue id: `[a-z0-9][a-z0-9-]{0,62}`. Only valid ids reach unit
-/// names and paths.
+/// A catalogue id: `[a-z0-9][a-z0-9-]{0,62}`. Only valid ids reach unit names and paths.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExtensionId(String);
 
@@ -50,7 +38,6 @@ impl ExtensionId {
         valid.then(|| Self(id.to_owned()))
     }
 
-    /// An id this crate knows to be well formed.
     pub(crate) fn known(id: &'static str) -> Self {
         debug_assert!(Self::new(id).is_some(), "{id} is not a well-formed id");
         Self(id.to_owned())
@@ -61,13 +48,11 @@ impl ExtensionId {
         &self.0
     }
 
-    /// The helper's status file for this extension.
     #[must_use]
     pub fn status_path(&self) -> PathBuf {
         Path::new(STATE_DIR).join(self.status_file_name())
     }
 
-    /// The image's catalogue entry for this extension.
     #[must_use]
     pub fn catalogue_path(&self) -> PathBuf {
         Path::new(CATALOGUE_DIR).join(format!("{}.json", self.0))
@@ -84,15 +69,13 @@ impl fmt::Display for ExtensionId {
     }
 }
 
-/// What the owner asked for. Each maps to exactly one unit instance per
-/// extension, the only ones polkit lets a desktop session start.
+/// What the owner asked for. Each maps to exactly one unit instance per extension, the only ones polkit
+/// lets a desktop session start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExtensionAction {
     /// Opt in and install (also the retry after a failure).
     Install,
-    /// Opt out: unmerge and delete everything the extension added.
     Remove,
-    /// Re-resolve now, e.g. to look for a part that was waiting.
     Refresh,
 }
 
@@ -117,9 +100,8 @@ impl ExtensionAction {
 pub enum ExtensionState {
     #[default]
     NotInstalled,
-    /// The owner opted in while offline; the helper installs as soon as the
-    /// device is online (`NetworkManager` starts it) and the choice survives
-    /// reboots.
+    /// The owner opted in while offline; the helper installs as soon as the device is online
+    /// (`NetworkManager` starts it) and the choice survives reboots.
     WaitingForNetwork,
     Installing,
     Installed,
@@ -127,7 +109,6 @@ pub enum ExtensionState {
     Failed,
 }
 
-/// One part (one systemd-sysext) of an extension.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PartState {
     #[default]
@@ -135,25 +116,22 @@ pub enum PartState {
     Enabled,
     /// No compatible upstream build for this base exists yet.
     Waiting,
-    /// Never available on this base.
     Unsupported,
 }
 
-/// Where a running install is, as the helper reports it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Progress {
     /// 1-based step currently running.
     pub step: u32,
     pub steps: u32,
-    /// What the step is doing, in plain language ("Downloading").
+    /// In plain language, e.g. "Downloading".
     pub label: String,
-    /// Bytes downloaded so far and in total, while the step downloads.
     pub bytes: Option<(u64, u64)>,
 }
 
 impl Progress {
-    /// Completed fraction for a progress bar: a step counts once it
-    /// finishes, and a download moves the bar through its own step.
+    /// Completed fraction for a progress bar: a step counts once it finishes, and a download moves the
+    /// bar through its own step.
     #[must_use]
     pub fn fraction(&self) -> f32 {
         if self.steps == 0 {
@@ -173,7 +151,6 @@ impl Progress {
         fraction
     }
 
-    /// Downloaded and total megabytes, rounded for a status line.
     #[must_use]
     pub fn megabytes(&self) -> Option<(u64, u64)> {
         const MB: u64 = 1_000_000;
@@ -186,18 +163,14 @@ impl Progress {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionStatus {
     pub state: ExtensionState,
-    /// Whether the owner's opt-in is recorded (it survives failures and
-    /// offline periods until they remove the extension).
+    /// The owner's recorded opt-in, which survives failures and offline periods until they remove the
+    /// extension.
     pub desired: bool,
     pub progress: Option<Progress>,
-    /// Part name to state; parts the helper did not mention are off.
     pub parts: BTreeMap<String, PartState>,
-    /// The helper's own plain-language note on the current state.
     pub message: String,
     pub last_error: String,
-    /// The accepted manifest revision.
     pub revision: u64,
-    /// Increases after every merge or unmerge.
     pub generation: u64,
 }
 
@@ -266,9 +239,8 @@ fn parts(value: &serde_json::Value) -> BTreeMap<String, PartState> {
 }
 
 impl ExtensionStatus {
-    /// Parse the helper's status JSON. Anything unreadable is "not
-    /// installed": the controls then offer Install, and the helper decides
-    /// what is true.
+    /// Anything unreadable is "not installed": the controls offer Install and the helper decides what
+    /// is true.
     #[must_use]
     pub fn parse(json: &str) -> Self {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
@@ -299,8 +271,6 @@ impl ExtensionStatus {
         }
     }
 
-    /// The status of `id` on this machine, or "not installed" when there is
-    /// none.
     #[must_use]
     pub fn read(id: &ExtensionId) -> Self {
         Self::read_from(&id.status_path())
@@ -313,14 +283,12 @@ impl ExtensionStatus {
             .unwrap_or_default()
     }
 
-    /// A part's state; parts the helper did not report are off.
     #[must_use]
     pub fn part(&self, name: &str) -> PartState {
         self.parts.get(name).copied().unwrap_or_default()
     }
 
-    /// Whether the owner has already made the choice to install: first-login
-    /// setup does not ask again (the installer may have recorded it).
+    /// First-login setup does not ask again when the installer recorded the choice.
     #[must_use]
     pub fn opted_in(&self) -> bool {
         self.desired
@@ -333,19 +301,15 @@ impl ExtensionStatus {
     }
 }
 
-/// Whether this system can install `id` at all: the helper exists and the
-/// image carries a catalogue entry for it.
+/// The helper exists and the image carries a catalogue entry.
 #[must_use]
 pub fn available(id: &ExtensionId) -> bool {
     Path::new(HELPER_PATH).is_file() && id.catalogue_path().is_file()
 }
 
-/// Start the one unit instance for `action` on `id` and wait until it
-/// finishes.
-///
-/// The helper reports progress in the status file while this runs; [`watch`]
-/// delivers those updates. Stopping the caller does not stop the
-/// transaction: the unit keeps running in the system manager.
+/// Starts the one unit instance for `action` on `id` and waits until it finishes. The helper reports
+/// progress in the status file meanwhile, which [`watch`] delivers; stopping the caller does not stop
+/// the unit.
 pub fn run(action: ExtensionAction, id: &ExtensionId) -> Result<(), String> {
     let unit = action.unit(id);
     let output = bounded_command::run(
@@ -371,13 +335,8 @@ pub fn run(action: ExtensionAction, id: &ExtensionId) -> Result<(), String> {
     })
 }
 
-/// Call `on_change` whenever the helper rewrites the status of `id`, from a
-/// background thread, until the returned watch is dropped. Event-driven
-/// (inotify on [`STATE_DIR`]): nothing polls.
-///
-/// # Errors
-/// Returns an error when the state directory cannot be watched (not a Tilo
-/// image); callers then re-read the status after their own actions only.
+/// Calls `on_change` whenever the helper rewrites the status of `id`, from a background thread, until
+/// the watch is dropped: inotify on [`STATE_DIR`], nothing polls.
 pub fn watch(
     id: &ExtensionId,
     on_change: impl Fn() + Send + 'static,
@@ -386,9 +345,6 @@ pub fn watch(
 }
 
 /// [`watch`] on an arbitrary directory (tests).
-///
-/// # Errors
-/// As [`watch`].
 #[cfg(target_os = "linux")]
 pub fn watch_dir(
     dir: &Path,
@@ -404,8 +360,7 @@ pub fn watch_dir(
     .map_err(|error| format!("watch {}: {error}", dir.display()))
 }
 
-/// Downloaded system extensions exist only on the Tilo OS image; elsewhere
-/// there is no status to watch.
+/// Downloaded system extensions exist only on the Tilo OS image; elsewhere there is no status to watch.
 #[cfg(not(target_os = "linux"))]
 pub fn watch_dir(
     dir: &Path,

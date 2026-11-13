@@ -1,8 +1,8 @@
-//! The Displays page as view code over the person's night light, this
-//! device's display preferences and the displays' arrangement, and what the
-//! area reads of the displays: the change being tried, the arrangement
-//! canvas, the selected display's settings, the person's other devices'
-//! displays and the trusted layout tools.
+//! The Displays page as view code over the person's night light, this device's
+//! display preferences and the displays' arrangement, and what the area reads
+//! of the displays: the change being tried, the arrangement canvas, the
+//! selected display's settings, the person's other devices' displays and the
+//! trusted layout tools.
 
 use std::rc::Rc;
 
@@ -27,11 +27,6 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{block, error_row, value_row};
 
-/// The Displays page. The page is built again when the arrangement of the
-/// person's displays changes (the shared cards list and number them by
-/// it), and when the displays report something new, a change of them is
-/// staged or settles, or another display is chosen on the canvas; the
-/// displays are followed while the page is open.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let following = held.model().borrow_mut().follow();
@@ -49,8 +44,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                 shown.clone(),
                 following.clone(),
             );
-            // The change being tried, as the session wrote it: the model
-            // takes it in before the page shows it.
             let pending = cx.settings::<PendingDisplayChange>();
             cx.record(&pending, move |cx| {
                 let change = cx.value(PendingDisplayChange::transaction);
@@ -67,8 +60,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                     }
                     let night_light = cx.settings::<NightLightPrefs>();
                     cx.record(&night_light, move |cx| {
-                        // The part keeps the displays followed while it is
-                        // shown.
                         cx.switch(&shown, move |cx, _| {
                             let _followed = &following;
                             match area(&app) {
@@ -87,7 +78,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     })
 }
 
-/// The page over what `model` read of the displays.
 fn page(
     cx: &ViewCx<NightLightPrefs>,
     actions: &Actions<Settings>,
@@ -121,7 +111,6 @@ fn page(
     provider_settings_ui::widgets::page(cards)
 }
 
-/// `control` (a button), bound to `effect`.
 fn invoking<C: ActionControl<()>>(
     actions: &Actions<Settings>,
     control: C,
@@ -194,8 +183,6 @@ impl DisplayModel {
                 .role(ui::widget::ButtonRole::Secondary),
             DisplayEffect::IdentifyDisplays,
         );
-        // One honest line about the idle ports rather than a row each, under
-        // the heading, saying what the canvas is for.
         let caption = if connected.len() > 1 {
             t("display-caption-switch")
         } else if disconnected == 0 {
@@ -210,10 +197,6 @@ impl DisplayModel {
         )
     }
 
-    /// The selected display's brightness, where it can be controlled: the
-    /// built-in panel's backlight (with automatic brightness beside it), or
-    /// a monitor's over DDC/CI or dimmed by Tilo. Nothing for a display
-    /// whose brightness cannot be set.
     fn output_brightness_rows(
         &self,
         cx: &ViewCx<NightLightPrefs>,
@@ -273,10 +256,6 @@ impl DisplayModel {
         out_rows
     }
 
-    /// The selected display's settings: brightness where it can be set,
-    /// resolution, refresh rate, scale, rotation, the main display,
-    /// mirroring and its place, then HDR, variable refresh and colour where
-    /// the display offers them, and turning it off.
     fn output_card(
         &self,
         cx: &ViewCx<NightLightPrefs>,
@@ -318,8 +297,6 @@ impl DisplayModel {
         section(&output_title(output), rows(output_rows))
     }
 
-    /// Scale, rotation, the main display and mirroring. Where the display
-    /// sits is the arrangement canvas's alone (by hand or arrow keys).
     fn output_primary_rows(
         &self,
         dispatcher: &Dispatcher<Settings>,
@@ -484,7 +461,6 @@ impl DisplayModel {
         out_rows
     }
 
-    /// HDR / variable-refresh-rate / colour-profile rows.
     fn output_capability_rows(
         &self,
         dispatcher: &Dispatcher<Settings>,
@@ -584,8 +560,6 @@ impl DisplayModel {
         out_rows
     }
 
-    /// The safety/apply-transaction card, driven by the on-disk
-    /// [`super::DisplayTransaction`] state machine.
     fn safety_card(
         &self,
         cx: &ViewCx<NightLightPrefs>,
@@ -600,7 +574,6 @@ impl DisplayModel {
                     .map(|deadline| deadline.saturating_sub(unix_now_ms()).div_ceil(1_000))
                     .unwrap_or_default();
                 let seconds = i64::try_from(seconds).unwrap_or(i64::MAX);
-                // One question, one pair of answers.
                 let revert = invoking(
                     actions,
                     Button::new("settings.display.revert", &t("display-revert-now")),
@@ -654,13 +627,10 @@ impl DisplayModel {
                         }),
                 ]),
             )),
-            // Nothing staged and nothing being tried: no card.
             _ => None,
         }
     }
 
-    /// Layout tools whose display changes are kept without asking, each
-    /// with a way to be asked again. Absent while no tool is trusted.
     fn trusted_tools_card(
         &self,
         cx: &ViewCx<NightLightPrefs>,

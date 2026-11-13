@@ -1,22 +1,15 @@
-//! Text for appearance streams: a pinned set of fonts, shaping, and
-//! embedding exactly the glyphs used.
+//! Text for appearance streams: a pinned set of fonts, shaping, and embedding
+//! exactly the glyphs used.
 //!
-//! Appearance text (a typed signature, a stamp's lines, free text) can be in
-//! any script, so it is never set in a standard font. An export must also be
-//! the same bytes for the same edits on every machine, so the fonts are not
-//! whatever the host happens to have: they are Tilo's pinned font catalog
-//! ([`tilo_font_catalog`]), which the OS image installs once and the helper
-//! reads through a read-only Landlock grant on that one directory
-//! ([`use_catalog`]). Each file is checked against its pinned SHA-256 as it
-//! is mapped, so the bytes are the same everywhere, or no appearance text is
-//! set at all. Each run of the text is given the first face of [`PINNED`],
-//! in that fixed order, that covers it (staying with the previous run's face
-//! while it covers the text), shaped with `harfrust` in its bidi direction
-//! (so Arabic joins and combining marks sit where they belong) at the
-//! regular weight, and the glyphs used are embedded as a CID-keyed subset
-//! font with a `ToUnicode` map, so the text stays selectable and searchable
-//! in every reader. A character none of the faces covers becomes the first
-//! face's missing glyph — also the same everywhere.
+//! Appearance text can be in any script, and an export must be the same bytes
+//! on every machine, so text is set in Tilo's pinned font catalog
+//! ([`tilo_font_catalog`]) instead of host fonts, each file checked against its
+//! pinned SHA-256 as it is mapped; if any is unavailable, no appearance text is
+//! set at all. Each run of the text takes the first face of [`PINNED`] that
+//! covers it, shaped in its bidi direction, and the glyphs used are embedded as
+//! a CID-keyed subset font with a `ToUnicode` map, so the text stays selectable
+//! and searchable in every reader. A character no face covers becomes the first
+//! face's missing glyph.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,8 +24,8 @@ use skrifa::string::StringId;
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
 use tilo_font_catalog::{Error as CatalogError, Scope};
 
-/// The catalog faces appearance text is set in, in preference order: the
-/// first face covering a character sets it. `(file, face index, family)`.
+/// The faces appearance text is set in, in preference order:
+/// `(file, face index, family)`.
 const PINNED: [(&str, u32, &str); 10] = [
     ("NotoSans[wght].ttf", 0, "Noto Sans"),
     ("NotoSansArabic[wght].ttf", 0, "Noto Sans Arabic"),
@@ -48,7 +41,6 @@ const PINNED: [(&str, u32, &str); 10] = [
     ("NotoSansMath-Regular.ttf", 0, "Noto Sans Math"),
 ];
 
-/// One face of a pinned catalog file, mapped read-only.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BundledFace {
     /// The verified font file (a collection for `index > 0`).
@@ -58,13 +50,12 @@ pub(crate) struct BundledFace {
     family: &'static str,
 }
 
-/// The catalog directory appearance text is read from. Set once per process
-/// before the first export ([`use_catalog`]); without it appearance text is
-/// left out.
+/// The catalog directory appearance text is read from, set once per process
+/// ([`use_catalog`]); without it appearance text is left out.
 static CATALOG: OnceLock<PathBuf> = OnceLock::new();
 
-/// The [`PINNED`] faces, mapped and verified on first use (not at start-up,
-/// which every helper pays). Empty when any of them is unavailable.
+/// The [`PINNED`] faces, mapped and verified on first use. Empty when any of
+/// them is unavailable.
 static USABLE: OnceLock<Vec<BundledFace>> = OnceLock::new();
 
 /// Read appearance fonts from the pinned catalog at `root`. The first call
@@ -128,7 +119,6 @@ fn load(root: &Path) -> Result<Vec<BundledFace>, CatalogError> {
     Ok(faces)
 }
 
-/// Map a catalog file read-only for the rest of the process.
 fn map(path: &Path) -> Result<&'static [u8], CatalogError> {
     let file = std::fs::File::open(path).map_err(|e| CatalogError::at(path, e))?;
     // SAFETY: a read-only shared mapping of a font file. The installed
@@ -139,7 +129,6 @@ fn map(path: &Path) -> Result<&'static [u8], CatalogError> {
     Ok(&**Box::leak(Box::new(map)))
 }
 
-/// The regular weight, for faces with a weight axis.
 const WEIGHT: (Tag, f32) = (Tag::new(b"wght"), 400.0);
 
 impl BundledFace {
@@ -151,7 +140,6 @@ impl BundledFace {
         self.face().is_some_and(|f| f.charmap().map(c).is_some())
     }
 
-    /// Variation coordinates the subset is instanced at.
     fn coordinates(&self) -> Vec<(subsetter::Tag, f32)> {
         let variable = self
             .face()
@@ -164,7 +152,6 @@ impl BundledFace {
     }
 }
 
-/// Where `face` is read: at the regular weight when it is variable.
 fn regular(face: &FontRef<'_>) -> Location {
     face.axes().location([WEIGHT])
 }
@@ -173,7 +160,6 @@ fn has_table(face: &FontRef<'_>, tag: Tag) -> bool {
     face.table_data(tag).is_some()
 }
 
-/// A name-table entry, preferring English; `None` when absent or empty.
 fn name(face: &FontRef<'_>, id: StringId) -> Option<String> {
     face.localized_strings(id)
         .english_or_first()
@@ -181,7 +167,6 @@ fn name(face: &FontRef<'_>, id: StringId) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// The OS/2 weight class, regular when the table is missing.
 fn weight_class(face: &FontRef<'_>) -> u16 {
     face.os2().map_or(400, |os2| os2.us_weight_class())
 }
@@ -204,10 +189,10 @@ fn font_units(value: f32) -> u16 {
 pub(crate) struct PlacedGlyph {
     /// Index into [`TextSetter`]'s fonts.
     pub font: usize,
-    /// Glyph id in the embedded subset (the CID written in the content).
+    /// Glyph id in the embedded subset (the CID in the content).
     pub cid: u16,
-    /// Pen position of the glyph origin, relative to the line start and
-    /// baseline, in points (y up).
+    /// Pen position of the glyph origin from the line start and baseline, in
+    /// points (y up).
     pub x: f32,
     pub y: f32,
 }
@@ -219,7 +204,6 @@ pub(crate) struct ShapedLine {
     pub width: f32,
 }
 
-/// A font chosen for some text in one export, and the glyphs used from it.
 struct UsedFont {
     source: usize,
     remapper: subsetter::GlyphRemapper,
@@ -229,14 +213,11 @@ struct UsedFont {
     advances: BTreeMap<u16, u16>,
 }
 
-/// Lays out appearance text for one export and embeds the fonts it used.
 #[derive(Default)]
 pub(crate) struct TextSetter {
     fonts: Vec<UsedFont>,
 }
 
-/// A font written into the output: its [`TextSetter`] index (see
-/// [`TextSetter::resource_name`]) and its `Type0` font object.
 pub(crate) struct EmbeddedFont {
     pub index: usize,
     pub font: Ref,
@@ -260,8 +241,8 @@ impl TextSetter {
         self.fonts.len().saturating_sub(1)
     }
 
-    /// Shape one line of `text` at `size` points. Characters no system font
-    /// covers are left out.
+    /// Shape one line of `text` at `size` points; characters no pinned face covers
+    /// are left out.
     pub fn shape_line(&mut self, text: &str, size: f32) -> ShapedLine {
         let mut line = ShapedLine::default();
         let faces = library();
@@ -388,9 +369,9 @@ impl TextSetter {
         pen
     }
 
-    /// Break `text` into lines no wider than `width` points at `size`:
-    /// at spaces, between ideographs, and at explicit line breaks. A word
-    /// wider than the line is kept whole on its own line.
+    /// Break `text` into lines no wider than `width` points at `size`: at spaces,
+    /// between ideographs and at explicit line breaks. A word wider than the line
+    /// keeps its own line.
     pub fn wrap(&mut self, text: &str, size: f32, width: f32) -> Vec<ShapedLine> {
         let mut lines = Vec::new();
         for paragraph in text.split('\n') {
@@ -417,8 +398,6 @@ impl TextSetter {
         lines
     }
 
-    /// Write every font used as a subset CID font, one object per chunk
-    /// pushed to `objects`, numbering objects from `next`.
     pub fn embed(self, objects: &mut Vec<Chunk>, next: &mut i32) -> Vec<EmbeddedFont> {
         let mut out = Vec::new();
         let faces = library();
@@ -435,13 +414,10 @@ impl TextSetter {
     }
 }
 
-/// Width of `text` at `size` in points, shaped like [`TextSetter::shape_line`].
 fn measure(text: &str, size: f32) -> f32 {
     TextSetter::default().shape_line(text, size).width
 }
 
-/// Split `text` after each break opportunity: after spaces, and around
-/// ideographs (which break between any two).
 fn break_opportunities(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -467,7 +443,6 @@ fn is_ideograph(c: char) -> bool {
         0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0x20000..=0x3FFFF)
 }
 
-/// Whether `c` follows its base character into whatever font that uses.
 fn attaches(c: char) -> bool {
     matches!(u32::from(c),
         0x0300..=0x036F // combining diacritics
@@ -476,10 +451,9 @@ fn attaches(c: char) -> bool {
         | 0xFE00..=0xFE0F) // variation selectors
 }
 
-/// Split `text` into runs, each set in one face: the previous run's face
-/// while it covers the text, otherwise the best face that covers the next
-/// character. Characters nothing covers go with the current face (they
-/// become its missing glyph).
+/// Split `text` into runs, each in one face: the previous run's face while it
+/// covers the text, otherwise the first face that covers the next character.
+/// Characters nothing covers stay with the current face as its missing glyph.
 fn font_segments(faces: &[BundledFace], text: &str) -> Vec<(usize, std::ops::Range<usize>)> {
     let mut out: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
     let mut current: Option<usize> = None;
@@ -507,8 +481,8 @@ fn font_segments(faces: &[BundledFace], text: &str) -> Vec<(usize, std::ops::Ran
     out
 }
 
-/// A subset tag (six capitals) derived from the glyph set, so the same
-/// glyphs always name the font the same way.
+/// A subset tag (six capitals) derived from the glyph set, so the same glyphs
+/// name the font the same way.
 fn subset_tag(source: &BundledFace, used: &UsedFont) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(source.family.as_bytes());
@@ -685,7 +659,6 @@ fn embed_font(
     Some(type0)
 }
 
-/// zlib-compress `data` (deterministic for the same input).
 pub(crate) fn deflate(data: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
@@ -701,7 +674,6 @@ mod tests {
 
     #[test]
     fn line_breaking_segments_keep_marks_and_break_between_words_and_ideographs() {
-        // Phase `segments_keep_marks_with_their_base`.
         fn segments_keep_marks_with_their_base() {
             let faces = library();
             if faces.is_empty() {
@@ -714,7 +686,6 @@ mod tests {
             assert_eq!(break_opportunities("ab cd  ef"), vec!["ab ", "cd  ", "ef"]);
             assert_eq!(break_opportunities("你好a"), vec!["你", "好", "a"]);
         }
-        // Phase `segments_keep_marks_with_their_base` (defined above).
         segments_keep_marks_with_their_base();
     }
 }

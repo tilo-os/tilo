@@ -10,7 +10,6 @@ pub const KEY_LEN: usize = 32;
 pub struct RecoveryKey(Zeroizing<[u8; KEY_LEN]>);
 
 impl RecoveryKey {
-    /// Parse what a person typed: case, dashes and spaces are forgiven.
     pub fn parse(typed: &str) -> Option<Self> {
         let mut bytes = Zeroizing::new([0_u8; KEY_LEN]);
         let mut nibbles = typed
@@ -42,7 +41,6 @@ impl RecoveryKey {
         &self.0
     }
 
-    /// The canonical text, which is also the recovery keyslot's passphrase.
     pub fn formatted(&self) -> Zeroizing<String> {
         let mut out = Zeroizing::new(String::with_capacity(KEY_LEN * 2 + 7));
         for (i, byte) in self.0.iter().enumerate() {

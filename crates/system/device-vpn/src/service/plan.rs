@@ -1,11 +1,5 @@
 //! The commands that set up and take down a tunnel, built from checked
 //! values only.
-//!
-//! Every argument is either a constant of this module or the text of a value
-//! [`ClientLink::check`], [`ExitLink::check`] or [`ProfileBlock::check`]
-//! bounded: an IPv4/IPv6 address, a canonical network, a port, an MTU, a
-//! uid. Nothing a request carries is ever an interface name, a program, a
-//! path or a rule.
 
 use std::fmt::Write as _;
 use std::net::IpAddr;
@@ -13,19 +7,14 @@ use std::net::IpAddr;
 use crate::net::{CLIENT_INTERFACE, EXIT_INTERFACE, GATEWAY, TUNNEL_NETWORK};
 use crate::protocol::{ClientLink, ExitLink, ProfileBlock, Routes};
 
-/// The routing table a client's tunnel routes live in.
 pub const TABLE: &str = "5270";
-/// Rule priorities, ahead of the main table's 32766.
 const PRIORITY_CARRIER_PORTS: &str = "5260";
 const PRIORITY_CARRIER_RELAYS: &str = "5261";
 const PRIORITY_LOCAL: &str = "5262";
 const PRIORITY_TUNNEL: &str = "5263";
 
-/// The nftables table of a client's kill switch.
 pub const CLIENT_TABLE: &str = "tilo_device_vpn_client";
-/// The nftables table of an exit's forwarding and masquerade.
 pub const EXIT_TABLE: &str = "tilo_device_vpn_exit";
-/// The nftables table of the block of the person's VPN profiles.
 pub const PROFILE_TABLE: &str = "tilo_device_vpn_profile";
 
 /// The private and link-local networks the kill switch leaves reachable, as
@@ -33,7 +22,6 @@ pub const PROFILE_TABLE: &str = "tilo_device_vpn_profile";
 const LOCAL_V4: &str = "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16";
 const LOCAL_V6: &str = "fe80::/10, fc00::/7";
 
-/// A program the helper runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Program {
     Ip,
@@ -152,7 +140,6 @@ fn rule_commands(owner: u32, link: &ClientLink, verb: &str) -> Vec<Command> {
         .collect()
 }
 
-/// The routes in [`TABLE`] for `routes`.
 fn route_commands(routes: &Routes) -> Vec<Command> {
     match routes {
         Routes::All => vec![
@@ -466,7 +453,6 @@ pub fn hold_profile_block(block: &ProfileBlock) -> Vec<Command> {
     vec![Command::nft_script(profile_block_script(block))]
 }
 
-/// Lift the block of the person's VPN profiles.
 #[must_use]
 pub fn release_profile_block() -> Vec<Command> {
     vec![delete_table(PROFILE_TABLE)]
@@ -676,7 +662,6 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert!(commands[0].required);
         let script = commands[0].input.clone().unwrap();
-        // Everything this computer sends or forwards, whoever sends it.
         assert!(script.contains("type filter hook output priority filter; policy accept;"));
         assert!(script.contains("type filter hook forward priority filter; policy accept;"));
         assert!(!script.contains("skuid"));

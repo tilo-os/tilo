@@ -1,5 +1,5 @@
-//! Locations as portable values: an operating-system path, or a path inside a
-//! virtual storage root the platform's file layer serves.
+//! Locations as portable values: an operating-system path, or a path inside a virtual
+//! storage root the platform's file layer serves.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -16,9 +16,8 @@ pub enum Location {
 }
 
 impl Location {
-    /// The operating-system path, for code that must hand one to a native
-    /// API. Portable code opens locations through the platform's file layer
-    /// instead.
+    /// The operating-system path, for code that must hand one to a native API; portable
+    /// code opens locations through the platform's file layer instead.
     ///
     /// # Errors
     ///
@@ -36,7 +35,6 @@ impl Location {
         }
     }
 
-    /// `relative` below this location.
     #[must_use]
     pub fn join(&self, relative: &VPath) -> Self {
         match self {
@@ -62,13 +60,13 @@ impl fmt::Display for Location {
     }
 }
 
-/// A storage tree that is not a native directory.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum VirtualRoot {
     /// The browser's origin-private file system, one tree per Tilo profile.
-    Opfs { profile: String },
-    /// Memory that lasts as long as the page, or the native process.
+    Opfs {
+        profile: String,
+    },
     Memory,
 }
 
@@ -78,7 +76,6 @@ pub enum VirtualRoot {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VPath(String);
 
-/// Why a string is not a [`VPath`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidVPath {
     pub reason: &'static str,
@@ -93,7 +90,6 @@ impl fmt::Display for InvalidVPath {
 impl std::error::Error for InvalidVPath {}
 
 impl VPath {
-    /// The root of whatever the path is relative to.
     #[must_use]
     pub const fn root() -> Self {
         Self(String::new())
@@ -109,7 +105,6 @@ impl VPath {
         Ok(Self(path.to_owned()))
     }
 
-    /// Joins components already known to be valid.
     pub(crate) fn from_components<'a>(components: impl IntoIterator<Item = &'a str>) -> Self {
         let mut path = Self::root();
         for component in components {

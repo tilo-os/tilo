@@ -26,7 +26,7 @@ pub(crate) fn in_page(
         if let Some(store) = stores
             .borrow()
             .iter()
-            .find(|store| store.package_and_home() == home)
+            .find(|store| store.app_and_home() == home)
         {
             return Ok(store.clone());
         }

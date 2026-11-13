@@ -84,7 +84,7 @@ impl Binges {
                 "DocStore",
                 "DocOwner",
                 "app_state::",
-                "open_workspace_record",
+                "open_workspace_document",
             ],
             // The runner's own code is not an app's sources: it is counted from the app's
             // entry point ([`on_runner`]), not from a marker.

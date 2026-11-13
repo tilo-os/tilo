@@ -1,14 +1,8 @@
-//! Updates pane — the system image, firmware, the media codec pack, and
-//! the automatic-update policy of this device.
+//! Updates: the system image, firmware, the media codec pack and Windows
+//! support, and the automatic-update policy of this device.
 //!
-//! Every change is an [`UpdatesEffect`], answered by the [`UpdatesModel`]
-//! the app keeps for the window: the model runs the system's update tools
-//! off the UI thread, and the pane shows where each request stands.
-//!
-//! The page is view code over the model ([`view`]): the area takes in
-//! what finished and moves what the page is keyed by when what it shows
-//! changed. What the machine reports of its timer and its last check is
-//! kept in the update preferences through the section's verbs.
+//! Each change is an [`UpdatesEffect`] answered by [`UpdatesModel`], which runs
+//! the system's update tools off the UI thread.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -55,7 +49,6 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`UpdatesArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UpdatesArea> {
     app.areas().find()
 }
@@ -75,7 +68,6 @@ fn run_bounded(
         .map_err(|error| format!("{program} command failed: {error}"))
 }
 
-/// The rollback target when one was read.
 fn target_of(target: &Result<Option<String>, String>) -> Option<&str> {
     target.as_ref().ok().and_then(Option::as_deref)
 }
@@ -100,9 +92,6 @@ fn schedule_from_label(label: &str) -> String {
     }
 }
 
-/// The system-derived part of the update state: the current image and any
-/// image staged for the next boot. Preferences (auto, last-checked)
-/// live in [`UpdatePrefs`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateStatus {
     pub current_version: String,
@@ -114,11 +103,8 @@ pub struct UpdateStatus {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpdateDetails {
-    /// Recent real bootc unit journal lines, newest last.
     pub history: Vec<String>,
-    /// OCI documentation/source URL declared by the current or staged image.
     pub release_notes: Option<String>,
-    /// Whether Tilo's delayed boot confirmation/rollback floor is armed.
     pub rollback_health: Option<String>,
 }
 
@@ -215,8 +201,6 @@ pub fn parse_bootc_release_notes(json: &str) -> Option<String> {
 }
 
 impl UpdateStatus {
-    /// Query the real system: pretty name from `/etc/os-release`, staged
-    /// deployment from `bootc status`.
     pub fn from_system() -> Self {
         crate::device_read::off_ui_thread();
         let current = fs::read_to_string(Path::new("/etc/os-release"))
@@ -235,7 +219,6 @@ impl UpdateStatus {
     }
 }
 
-/// `bootc status --format json`, or why it could not be read.
 fn read_bootc_status() -> Result<String, String> {
     let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)?;
     if !out.status.success() {
@@ -249,15 +232,10 @@ fn read_bootc_status() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Ask `bootc` whether an image is staged for the next boot: `Ok(None)` when
-/// it reports nothing staged, `Err` when it could not be asked.
 fn read_bootc_staged() -> Result<Option<String>, String> {
     read_bootc_status().map(|json| parse_bootc_staged(&json))
 }
 
-/// Parse `bootc status --format json` for a staged deployment. Defensive
-/// against schema drift: any non-null `status.staged` counts as staged, and
-/// we surface the first human-readable label we can find under it.
 pub fn parse_bootc_staged(json: &str) -> Option<String> {
     let root: serde_json::Value = serde_json::from_str(json).ok()?;
     let staged = root.get("status")?.get("staged")?;
@@ -280,63 +258,37 @@ pub fn parse_bootc_staged(json: &str) -> Option<String> {
     Some(t("upd-staged-generic"))
 }
 
-/// Side-effect interface for applying a staged update by rebooting. Tests
-/// inject a recorder so the assertion doesn't reboot the machine.
 pub trait Rebooter: Send + Sync {
-    /// # Errors
-    /// Returns an error if the reboot could not be issued — e.g. the
-    /// implementation's underlying reboot command is unavailable or reports
-    /// failure, with that failure's reason.
     fn reboot(&self) -> Result<(), String>;
 }
 
 /// Drives the update timer and rollback for real. There is no preference to
 /// keep in step with the timer: the timer *is* the setting, so this reads and
 /// writes it directly and the switch shows what the machine will actually do.
-///
-/// A trait rather than direct `Command` calls for the reason [`Rebooter`] is
-/// one: a test for "the switch turns the timer off" that turns the developer's
-/// timer off is not a test anybody runs twice.
 pub trait UpdateControl: Send + Sync {
     /// Is the update timer enabled? `None` when that cannot be determined —
     /// no systemd, no such unit, a container. The switch is then shown
     /// unavailable rather than showing a guess, because a switch that reports
     /// a state it did not read is the defect being fixed here.
     fn timer_enabled(&self) -> Option<bool>;
-    /// Turn the update timer on or off, now and across reboots.
     fn set_timer(&self, on: bool) -> Result<(), String>;
-    /// What this machine can go back to: `(entry label, image reference)`.
     fn rollback_target(&self) -> Result<Option<String>, String>;
-    /// Make the next boot the previous deployment.
     fn roll_back(&self) -> Result<(), String>;
     fn schedule(&self) -> Option<String> {
         None
     }
-    /// # Errors
-    /// Returns an error if this machine has no download-schedule policy
-    /// service to ask (the default), or if that service refuses the
-    /// requested schedule.
     fn set_schedule(&self, _schedule: &str) -> Result<(), String> {
         Err("update scheduling is unavailable on this machine".into())
     }
     fn allow_metered(&self) -> Option<bool> {
         None
     }
-    /// # Errors
-    /// Returns an error if this machine has no metered-connection policy
-    /// service to ask (the default), or if that service refuses the request.
     fn set_allow_metered(&self, _allow: bool) -> Result<(), String> {
         Err("metered update policy is unavailable on this machine".into())
     }
-    /// # Errors
-    /// Returns an error if the update check could not be started or reports
-    /// failure (the default: this machine cannot check for updates from
-    /// here).
     fn check_now(&self) -> Result<(), String> {
         Err("checking for updates is unavailable on this machine".into())
     }
-    /// # Errors
-    /// Returns an error when firmware metadata or history cannot be refreshed.
     fn refresh_firmware(
         &self,
     ) -> Result<
@@ -350,9 +302,6 @@ pub trait UpdateControl: Send + Sync {
     }
 }
 
-/// The words on the rollback card. Constants because they are the pane's
-/// promise to the user and a test asserts on exactly these, on the production
-/// path — a copy in a test would drift the first time somebody reworded one.
 fn rollback_card_title() -> String {
     t("upd-rollback-title")
 }
@@ -375,11 +324,7 @@ fn rollback_caveats() -> [String; 3] {
     ]
 }
 
-/// The unit that pulls and applies images. Named once.
 const UPDATE_TIMER: &str = "bootc-fetch-apply-updates.timer";
-/// The unit that performs a rollback as root. polkit authorises a local active
-/// session in `wheel` to start exactly this one — see
-/// `os/etc/polkit-1/rules.d/49-tilo-updates.rules`.
 const ROLLBACK_UNIT: &str = "tilo-deployment-rollback.service";
 const UPDATE_POLICY_PATH: &str = "/var/lib/tilo/update-policy";
 
@@ -429,10 +374,6 @@ fn start_update_policy(action: &str) -> Result<(), String> {
 /// silent `false` would be asserting about a machine that does not exist.
 pub struct UnavailableControl;
 
-/// Its reads are not marked as reaching the device: a capture's model
-/// ([`UpdatesModel::sample`]) and the tests' read them when it is built, on
-/// the UI thread, and they answer at once. What it is asked to do runs off
-/// the UI thread, as a real control's does, and is marked.
 impl UpdateControl for UnavailableControl {
     fn timer_enabled(&self) -> Option<bool> {
         None
@@ -449,15 +390,12 @@ impl UpdateControl for UnavailableControl {
         Err("rolling back is not available on this machine".into())
     }
 
-    // Hermetic/test control: the injected StatusProvider is the check source.
     fn check_now(&self) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         Ok(())
     }
 }
 
-/// Production impl: systemd for the timer, `bootc status` for the target, and
-/// a one-shot unit for the rollback itself.
 pub struct RealUpdateControl;
 
 impl UpdateControl for RealUpdateControl {
@@ -595,11 +533,6 @@ impl UpdateControl for RealUpdateControl {
 }
 
 /// What `bootc status` says this machine can go back to.
-///
-/// Same defensive shape as [`parse_bootc_staged`]: any non-null
-/// `status.rollback` counts. The image's version and build date name it
-/// best; the image reference usually reads the same for every image this
-/// machine follows, so it is the fallback.
 pub fn parse_bootc_rollback(json: &str) -> Option<String> {
     let root: serde_json::Value = serde_json::from_str(json).ok()?;
     let rb = root.get("status")?.get("rollback")?;
@@ -614,7 +547,6 @@ pub fn parse_bootc_rollback(json: &str) -> Option<String> {
             .filter(|value| !value.is_empty())
     };
     let label = field(&["version"]).or_else(|| field(&["image", "image"]));
-    // RFC 3339: the date is the first ten characters.
     let built = field(&["timestamp"]).and_then(|stamp| stamp.get(..10));
     Some(match (label, built) {
         (Some(label), Some(date)) => t_args(
@@ -626,8 +558,6 @@ pub fn parse_bootc_rollback(json: &str) -> Option<String> {
     })
 }
 
-/// Production impl: `systemctl reboot`.
-/// The rebooter of a capture, which restarts nothing.
 struct NoRestart;
 
 impl Rebooter for NoRestart {
@@ -654,14 +584,10 @@ impl Rebooter for RealRebooter {
 type StatusProvider = Arc<dyn Fn() -> UpdateStatus + Send + Sync>;
 type Clock = Arc<dyn Fn() -> String + Send + Sync>;
 type DetailsProvider = Arc<dyn Fn(Option<&str>) -> UpdateDetails + Send + Sync>;
-/// Runs one codec-pack unit to completion (a stub in tests).
 pub type CodecRunner = Arc<dyn Fn(CodecAction) -> Result<(), String> + Send + Sync>;
-/// Reads the codec-pack helper's status file (a fixture in tests).
 pub type CodecStatusProvider = Arc<dyn Fn() -> CodecPackStatus + Send + Sync>;
-/// Runs one Windows-support unit to completion (a stub in tests).
 pub type WindowsSupportRunner =
     Arc<dyn Fn(WindowsSupportAction) -> Result<(), String> + Send + Sync>;
-/// Reads Windows support's readiness on this device (a fixture in tests).
 pub type WindowsSupportProvider = Arc<dyn Fn() -> WindowsReadiness + Send + Sync>;
 
 fn codecs_card_title() -> String {
@@ -701,15 +627,12 @@ type FirmwareRefreshEvent = Result<
     ),
     String,
 >;
-/// What fwupd reports: the applicable upgrades and the past transactions,
-/// each read on its own so one failing does not hide the other.
 type FirmwareReading = (
     Result<Vec<os_actions::FirmwareUpdate>, String>,
     Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
 );
 type FirmwareReader = Arc<dyn Fn() -> FirmwareReading + Send + Sync>;
 
-/// Why a worker's outcome never came: it could not start, or it stopped.
 const WORKER_STOPPED: &str = "the update worker stopped before it finished";
 
 /// Where the model reads the device and acts on it. Each reaches the
@@ -726,7 +649,6 @@ struct DeviceReaders {
 }
 
 impl DeviceReaders {
-    /// This device's own tools.
     fn system() -> Self {
         Self {
             status: Arc::new(UpdateStatus::from_system),
@@ -768,7 +690,6 @@ impl DeviceReaders {
     }
 }
 
-/// What the model shows of the device before anything is changed.
 struct FirstRead {
     status: UpdateStatus,
     timer_enabled: Option<bool>,
@@ -783,7 +704,6 @@ struct FirstRead {
 }
 
 impl FirstRead {
-    /// The device could not be read: every part says why, none guesses.
     fn unread(error: &str) -> Self {
         Self {
             status: UpdateStatus {
@@ -804,17 +724,13 @@ impl FirstRead {
     }
 }
 
-/// What a change made off the UI thread does to the model once it lands,
-/// with what the device reported after it.
 type Apply = Box<dyn FnOnce(&mut UpdatesModel) + Send>;
 
-/// A change running off the UI thread.
 struct Job {
     operation: &'static str,
     landing: Landing,
 }
 
-/// A real wall-clock "last checked" stamp in the toolkit's timestamp style.
 fn now_stamp() -> String {
     ui::format::timestamp(&ui::clock::local_now())
 }
@@ -836,24 +752,15 @@ pub struct UpdatesModel {
     rebooter: Arc<dyn Rebooter>,
     control: Arc<dyn UpdateControl>,
     firmware_reader: FirmwareReader,
-    /// The device's first read, on its way; the pane says it is reading
-    /// until it lands.
     first_read: Option<Landing>,
-    /// Requests that wait — for the first read, or for the same request
-    /// still running — with the callers waiting for them.
     waiting: VecDeque<(UpdatesEffect, Option<EffectReply>)>,
-    /// Changes the device is making off the UI thread.
     jobs: Vec<Job>,
     /// The update timer's actual state, as read from the machine. `None` means
     /// it could not be read, and the switch says so instead of guessing.
     timer_enabled: Option<bool>,
     schedule: Option<String>,
     allow_metered: Option<bool>,
-    /// What this machine can go back to, if anything, or why that could not
-    /// be read.
     rollback_target: Result<Option<String>, String>,
-    /// `None` means fwupd is unavailable; `Some([])` means it answered and
-    /// there are no applicable upgrades.
     firmware_updates: Result<Vec<os_actions::FirmwareUpdate>, String>,
     firmware_history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
     firmware_state: FirmwareUiState,
@@ -865,42 +772,27 @@ pub struct UpdatesModel {
     codec_status: CodecPackStatus,
     codec_status_provider: CodecStatusProvider,
     codec_runner: CodecRunner,
-    /// Where Windows support stands here, and how a request runs on it.
     pub(super) windows_support: WindowsReadiness,
     windows_support_provider: WindowsSupportProvider,
     windows_support_runner: WindowsSupportRunner,
-    /// The Windows-support unit currently running, and its completion.
     pub(super) windows_pending: Option<WindowsSupportAction>,
     pub(super) windows_events: Option<Landing>,
-    /// The codec-pack unit currently running, and its completion.
     codec_pending: Option<CodecAction>,
     codec_events: Option<Landing>,
     /// Raised by the status-file watcher; the next sync re-reads the status,
     /// so progress written by the helper appears while it runs.
     codec_status_changed: Arc<AtomicBool>,
-    /// The watch on the helper's status file; dropping the pane ends it.
     codec_status_watch: Option<tilo_files::native::ChangeWatch>,
     wake: WakeHandle,
-    /// Set once the person has asked to roll back and been shown what it does
-    /// not undo; cleared when they leave the pane's structure alone long
-    /// enough to rebuild.
     rollback_armed: bool,
-    /// The last thing that went wrong, shown in the pane — a failed action
-    /// must surface here, not only in the journal.
     notice: Option<String>,
     dispatched_restart: bool,
-    /// The update preferences' actions, which keep what the machine
-    /// reported.
     sections: crate::sections::Sections,
-    /// The callers waiting for a request to finish.
     replies: crate::replies::Replies,
-    /// What the pane shows changed since it last looked.
     changed: bool,
 }
 
 impl UpdatesModel {
-    /// The model of this device's updates. It opens empty and reads the
-    /// system off the UI thread; the pane says it is reading until then.
     pub fn new(storage: &ui::storage::AppStorage, sections: crate::sections::Sections) -> Self {
         let mut model = Self::reading(storage, sections, DeviceReaders::system());
         model.codec_runner = Arc::new(crate::codec_pack::run);
@@ -909,8 +801,6 @@ impl UpdatesModel {
         model
     }
 
-    /// A model that reads `readers` off the UI thread before it shows
-    /// anything; requests that arrive meanwhile wait for the read.
     fn reading(
         storage: &ui::storage::AppStorage,
         sections: crate::sections::Sections,
@@ -922,7 +812,6 @@ impl UpdatesModel {
         model
     }
 
-    /// The model's parts, showing nothing read yet.
     fn assemble(
         sections: crate::sections::Sections,
         readers: DeviceReaders,
@@ -1006,10 +895,6 @@ impl UpdatesModel {
 
     /// Test constructor: inject the status provider, the clock, the rebooter,
     /// and the starting preferences so the actions are deterministic.
-    ///
-    /// Leaves the system control as a stub that can do nothing and says so, so
-    /// a test written before that existed neither reaches systemd nor gets a
-    /// switch that silently reports "off".
     pub fn with_parts(
         sections: crate::sections::Sections,
         status: UpdateStatus,
@@ -1031,10 +916,6 @@ impl UpdatesModel {
 
     /// `UpdatesPane::with_parts`, plus the system control — the timer, the
     /// rollback target and the rollback itself.
-    ///
-    /// Reads the control as it is built, on the calling thread: it is a
-    /// stand-in that answers at once ([`UnavailableControl`], a test's), so
-    /// a capture and a test show it from their first frame.
     pub fn with_parts_and_control(
         sections: crate::sections::Sections,
         status: UpdateStatus,
@@ -1075,8 +956,6 @@ impl UpdatesModel {
         model
     }
 
-    /// What a capture shows: a staged image waiting for a restart, and
-    /// nothing that reaches the system.
     pub fn sample(sections: crate::sections::Sections) -> Self {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
@@ -1095,7 +974,6 @@ impl UpdatesModel {
         )
     }
 
-    /// Replace the codec-pack status source and unit runner (tests and captures).
     #[must_use]
     pub fn with_codec_pack(mut self, status: CodecStatusProvider, runner: CodecRunner) -> Self {
         self.codec_status = status();
@@ -1119,8 +997,6 @@ impl UpdatesModel {
         }
     }
 
-    /// The status-file watcher saw a change (tests call this in place of the
-    /// inotify thread).
     #[cfg(test)]
     pub fn codec_status_file_changed(&self) {
         self.codec_status_changed.store(true, Ordering::Release);
@@ -1140,7 +1016,6 @@ impl UpdatesModel {
         &self.codec_status
     }
 
-    /// The codec card's title and lines, in order, as the person reads them.
     #[cfg(test)]
     pub fn codecs_card_lines(&self) -> Vec<String> {
         let mut out = vec![
@@ -1166,8 +1041,6 @@ impl UpdatesModel {
         out
     }
 
-    /// Whether the helper has picked up the request this pane made: until it
-    /// writes its first status, the card says the request is starting.
     fn codec_request_acknowledged(&self) -> bool {
         match self.codec_pending {
             Some(CodecAction::Install | CodecAction::Refresh) => matches!(
@@ -1185,7 +1058,6 @@ impl UpdatesModel {
         }
         match self.codec_pending {
             Some(CodecAction::Remove) => t("upd-codecs-removing"),
-            // A refresh of a working pack keeps it "installed" throughout.
             Some(CodecAction::Refresh) => t("upd-codecs-checking-driver"),
             _ => t("upd-codecs-starting"),
         }
@@ -1257,8 +1129,6 @@ impl UpdatesModel {
         })
     }
 
-    /// The bar's fill while an install runs: the helper's step count, or an
-    /// empty bar while the request is starting.
     fn codec_progress(&self) -> Option<f32> {
         if self.codec_status.state == PackState::Installing {
             return Some(
@@ -1273,7 +1143,6 @@ impl UpdatesModel {
         starting.then_some(0.0)
     }
 
-    /// (label, control id, action id) of the buttons the card offers.
     fn codec_buttons(&self) -> Vec<(String, &'static str, UpdatesEffect)> {
         if self.codec_pending.is_some() {
             return Vec::new();
@@ -1311,8 +1180,6 @@ impl UpdatesModel {
     }
 
     fn codecs_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
-        // The pack's state, with what can be done about it on its trailing
-        // edge; how far an install got under it.
         let mut buttons = Row::new()
             .no_wrap()
             .with_rhythm(ui::tokens::Rhythm::Related)
@@ -1352,7 +1219,6 @@ impl UpdatesModel {
         section(&codecs_card_title(), rows(body))
     }
 
-    /// Where Windows support stands here, as the card reads it.
     pub fn windows_support(&self) -> &WindowsReadiness {
         &self.windows_support
     }
@@ -1402,21 +1268,15 @@ impl UpdatesModel {
                 self.operation_succeeded(operation, "codec pack changed");
             }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-codecs",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     operation,
-                    format!("The codec pack could not be changed: {error}"),
+                    t_args("upd-notice-codecs", &[("error", error.as_str().into())]),
                 );
             }
         }
         self.changed = true;
     }
 
-    /// Block until the running codec-pack unit returns, then apply its result
-    /// (tests; the pane itself drains without blocking on every sync).
     #[cfg(test)]
     fn wait_for_codec_operation(&mut self) {
         while self.codec_events.is_some() {
@@ -1425,18 +1285,14 @@ impl UpdatesModel {
         }
     }
 
-    /// Is the machine's update timer on, as this pane last read it?
     pub fn timer_enabled(&self) -> Option<bool> {
         self.timer_enabled
     }
 
-    /// Are updates on a metered connection allowed, as this pane last read
-    /// it?
     pub fn allow_metered(&self) -> Option<bool> {
         self.allow_metered
     }
 
-    /// The message currently shown in the pane, if any.
     pub fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
     }
@@ -1446,12 +1302,6 @@ impl UpdatesModel {
     }
 
     /// The rollback card's title and lines, in order.
-    ///
-    /// Split out of `build_composition` rather than duplicated, so a test can
-    /// assert on the words a person actually reads. Asserting on a `Text`
-    /// widget's contents is not possible from here — the toolkit does not
-    /// expose them — and asserting on a copy of the strings would prove
-    /// nothing about what is rendered.
     pub fn rollback_card_lines(&self) -> Vec<String> {
         let mut out = vec![rollback_card_title()];
         match (&self.rollback_target, self.rollback_armed) {
@@ -1485,7 +1335,6 @@ impl UpdatesModel {
         out
     }
 
-    /// The "How updates work" captions, in order.
     pub fn help_lines(&self) -> Vec<String> {
         vec![t("upd-help-1"), t("upd-help-2")]
     }
@@ -1498,11 +1347,8 @@ impl UpdatesModel {
         &self.prefs
     }
 
-    /// The page as the model shows the device now.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         if self.first_read.is_some() {
-            // Nothing read yet: say so rather than show placeholders a
-            // person could take for the device's state.
             return provider_settings_ui::widgets::page(vec![section(
                 &t("upd-software"),
                 rows(vec![note(&t("upd-reading"))]),
@@ -1542,7 +1388,6 @@ impl UpdatesModel {
         provider_settings_ui::widgets::page(all)
     }
 
-    /// Status card — current + staged + the primary action.
     fn status_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         if let Some(error) = &self.status.staged_error {
             return section(
@@ -1750,7 +1595,6 @@ impl UpdatesModel {
                     (_, Some(to)) => t_args("upd-update-to", &[("version", to.as_str().into())]),
                     _ => t("upd-update-available"),
                 };
-                // What is worth knowing about this device hugs its own row.
                 let mut details = Vec::new();
                 if let Some(description) = &update.description {
                     details.push(description.clone());
@@ -1843,10 +1687,6 @@ impl UpdatesModel {
 
     /// The rollback card. Present whether or not there is anything to go
     /// back to, because "this machine has nothing to roll back to" is
-    /// information a person looking for the control needs, and an absent
-    /// card reads as an absent feature.
-    /// Built from the same strings `rollback_card_lines` reports, so what a
-    /// test asserts on and what a person reads cannot come apart.
     fn rollback_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let lines = self.rollback_card_lines();
         let rollback_body = match (&self.rollback_target, self.rollback_armed, lines.as_slice()) {
@@ -1898,16 +1738,12 @@ impl UpdatesModel {
         )
     }
 
-    /// Keep what the machine reported in the update preferences, through
-    /// the section's verb `record`.
     fn record(&self, record: impl Into<ui::tilo_resource::Invoke<UpdatePrefs>>) {
         if let Err(e) = self.sections.invoke::<UpdatePrefs>(record) {
             warn!(target: "tilo::settings", op = "update_prefs_save", error = %e, "failed to keep update prefs");
         }
     }
 
-    /// Apply any pending firmware events from the background install, if one
-    /// is running.
     fn drain_firmware_events(&mut self) {
         let mut finished = false;
         let events: Vec<os_actions::FirmwareEvent> = self
@@ -1962,13 +1798,9 @@ impl UpdatesModel {
                     }
                     os_actions::FirmwareEvent::Failed(error) => {
                         self.firmware_state = FirmwareUiState::Idle;
-                        self.notice = Some(t_args(
-                            "upd-notice-fw-failed",
-                            &[("error", error.as_str().into())],
-                        ));
-                        self.operation_failed(
+                        self.failed(
                             UpdatesEffect::INSTALL_FIRMWARE.id,
-                            format!("Firmware installation failed: {error}"),
+                            t_args("upd-notice-fw-failed", &[("error", error.as_str().into())]),
                         );
                         finished = true;
                     }
@@ -1991,10 +1823,9 @@ impl UpdatesModel {
             Landed::Lost => {
                 self.check_events = None;
                 self.check_pending = false;
-                self.notice = Some(t("upd-notice-check-stopped"));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::CHECK_FOR_UPDATES.id,
-                    "update check worker stopped",
+                    t("upd-notice-check-stopped"),
                 );
                 self.changed = true;
                 return;
@@ -2017,13 +1848,9 @@ impl UpdatesModel {
                 );
             }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-check",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::CHECK_FOR_UPDATES.id,
-                    format!("Updates could not be checked: {error}"),
+                    t_args("upd-notice-check", &[("error", error.as_str().into())]),
                 );
             }
         }
@@ -2043,13 +1870,9 @@ impl UpdatesModel {
                 let error = t("upd-error-firmware-worker-stopped");
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
-                self.notice = Some(t_args(
-                    "upd-notice-fw-refresh",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::REFRESH_FIRMWARE.id,
-                    format!("Firmware updates could not be checked: {error}"),
+                    t_args("upd-notice-fw-refresh", &[("error", error.as_str().into())]),
                 );
                 self.changed = true;
                 return;
@@ -2070,20 +1893,15 @@ impl UpdatesModel {
             Err(error) => {
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
-                self.notice = Some(t_args(
-                    "upd-notice-fw-refresh",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::REFRESH_FIRMWARE.id,
-                    format!("Firmware updates could not be checked: {error}"),
+                    t_args("upd-notice-fw-refresh", &[("error", error.as_str().into())]),
                 );
             }
         }
         self.changed = true;
     }
 
-    /// Check for updates → re-query the system + stamp the time + persist.
     fn check(&mut self) {
         if self.check_pending {
             self.operation_failed(
@@ -2127,11 +1945,7 @@ impl UpdatesModel {
 
     fn install_firmware(&mut self) {
         if self.firmware_refresh_pending || self.firmware_events.is_some() {
-            self.notice = Some(t("upd-notice-fw-busy"));
-            self.operation_failed(
-                UpdatesEffect::INSTALL_FIRMWARE.id,
-                "firmware work is already in progress",
-            );
+            self.failed(UpdatesEffect::INSTALL_FIRMWARE.id, t("upd-notice-fw-busy"));
             self.changed = true;
             return;
         }
@@ -2150,21 +1964,15 @@ impl UpdatesModel {
                 self.notice = None;
             }
             Err(e) => {
-                self.notice = Some(t_args(
-                    "upd-notice-fw-install",
-                    &[("error", e.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::INSTALL_FIRMWARE.id,
-                    format!("Firmware upgrades could not be installed: {e}"),
+                    t_args("upd-notice-fw-install", &[("error", e.as_str().into())]),
                 );
             }
         }
         self.changed = true;
     }
 
-    /// Run `work` off the UI thread for `operation`; what it returns is
-    /// applied to the model when it lands ([`Self::drain`]).
     fn start(&mut self, operation: &'static str, work: impl FnOnce() -> Apply + Send + 'static) {
         self.jobs.push(Job {
             operation,
@@ -2172,7 +1980,6 @@ impl UpdatesModel {
         });
     }
 
-    /// Take in the changes that ended.
     fn drain_jobs(&mut self) {
         let mut index = 0;
         while let Some(job) = self.jobs.get(index) {
@@ -2185,15 +1992,13 @@ impl UpdatesModel {
                 Landed::Lost => {
                     let job = self.jobs.remove(index);
                     warn!(target: "tilo::settings", op = job.operation, "update worker stopped");
-                    self.notice = Some(WORKER_STOPPED.into());
-                    self.operation_failed(job.operation, WORKER_STOPPED);
+                    self.failed(job.operation, WORKER_STOPPED.to_string());
                     self.changed = true;
                 }
             }
         }
     }
 
-    /// Read fwupd again after an installation, off the UI thread.
     fn reread_firmware(&mut self) {
         let reader = Arc::clone(&self.firmware_reader);
         self.start(UpdatesEffect::INSTALL_FIRMWARE.id, move || {
@@ -2206,7 +2011,6 @@ impl UpdatesModel {
         });
     }
 
-    /// Restart & update → reboot into the staged image (dedup).
     fn restart(&mut self) {
         if self.dispatched_restart {
             self.operation_failed(
@@ -2226,13 +2030,9 @@ impl UpdatesModel {
     fn restarted(&mut self, result: Result<(), String>) {
         if let Err(e) = result {
             warn!(target: "tilo::settings", op = "reboot", error = %e, "restart & update failed");
-            self.notice = Some(t_args(
-                "upd-notice-restart",
-                &[("error", e.as_str().into())],
-            ));
-            self.operation_failed(
+            self.failed(
                 UpdatesEffect::RESTART_TO_UPDATE.id,
-                format!("Restarting into the staged update failed: {e}"),
+                t_args("upd-notice-restart", &[("error", e.as_str().into())]),
             );
             self.changed = true;
         } else {
@@ -2257,10 +2057,6 @@ impl UpdatesModel {
         let control = Arc::clone(&self.control);
         self.start(operation, move || {
             let set = control.set_timer(b);
-            // Read it back rather than assuming. `systemctl enable`
-            // can succeed on a unit that is masked or static, and
-            // the switch has to show what the machine will do; after
-            // a refusal it goes back where the machine actually is.
             let timer = control.timer_enabled();
             Box::new(move |model: &mut Self| model.automatic_set(b, set, timer))
         });
@@ -2292,14 +2088,12 @@ impl UpdatesModel {
             }
             Err(e) => {
                 warn!(target: "tilo::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
-                self.notice = Some(t_args("upd-notice-auto", &[("error", e.as_str().into())]));
-                // Put the switch back where the machine actually is.
                 let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
                 self.prefs.auto = effective;
                 self.last_prefs.auto = effective;
-                self.operation_failed(
+                self.failed(
                     operation,
-                    format!("Automatic updates could not be changed: {e}"),
+                    t_args("upd-notice-auto", &[("error", e.as_str().into())]),
                 );
             }
         }
@@ -2346,13 +2140,9 @@ impl UpdatesModel {
                 self.operation_succeeded(operation, "update schedule changed");
             }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-schedule",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     operation,
-                    format!("Download schedule could not be changed: {error}"),
+                    t_args("upd-notice-schedule", &[("error", error.as_str().into())]),
                 );
             }
         }
@@ -2393,20 +2183,15 @@ impl UpdatesModel {
                 );
             }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-metered",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::SET_METERED_UPDATES.id,
-                    format!("Metered-network policy could not be changed: {error}"),
+                    t_args("upd-notice-metered", &[("error", error.as_str().into())]),
                 );
             }
         }
         self.changed = true;
     }
 
-    /// Roll back, in two steps. The first only opens the explanation.
     fn review_rollback(&mut self) {
         {
             self.rollback_armed = true;
@@ -2446,13 +2231,9 @@ impl UpdatesModel {
             }
             Err(e) => {
                 warn!(target: "tilo::settings", op = "rollback", error = %e, "rollback failed");
-                self.notice = Some(t_args(
-                    "upd-notice-rollback",
-                    &[("error", e.as_str().into())],
-                ));
-                self.operation_failed(
+                self.failed(
                     UpdatesEffect::ROLL_BACK.id,
-                    format!("Rolling back failed: {e}"),
+                    t_args("upd-notice-rollback", &[("error", e.as_str().into())]),
                 );
             }
         }
@@ -2460,7 +2241,6 @@ impl UpdatesModel {
     }
 }
 
-/// Updates, firmware and the media codec pack of this device.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum UpdatesEffect {
@@ -2549,7 +2329,6 @@ impl UpdatesModel {
         }
     }
 
-    /// Take in the device's first read, if it landed.
     fn drain_first_read(&mut self) {
         let Some(read) = self.first_read.as_ref() else {
             return;
@@ -2563,7 +2342,6 @@ impl UpdatesModel {
         self.adopt(read);
     }
 
-    /// Run the requests that were waiting and may run now.
     fn run_waiting(&mut self) {
         if self.first_read.is_some() {
             return;
@@ -2573,8 +2351,6 @@ impl UpdatesModel {
         }
     }
 
-    /// Take in what background work finished, and run what waited for it.
-    /// What the pane shows changed is kept for the pane's next look.
     fn drain(&mut self) {
         self.drain_first_read();
         self.drain_jobs();
@@ -2587,31 +2363,34 @@ impl UpdatesModel {
         self.run_waiting();
     }
 
-    /// Whether the first read, a change or a waiting request is unfinished.
     #[cfg(test)]
     fn working(&self) -> bool {
         self.first_read.is_some() || !self.jobs.is_empty() || !self.waiting.is_empty()
     }
 
-    /// Tell the caller of `operation` it succeeded.
     fn operation_succeeded(&mut self, operation: &'static str, message: impl Into<String>) {
         self.replies.succeed(operation, message);
     }
 
-    /// Tell the caller of `operation` why it failed.
     fn operation_failed(&mut self, operation: &'static str, message: impl Into<String>) {
         self.replies.fail(operation, message);
     }
+
+    /// Show the person `notice` and tell the caller of `operation` the same
+    /// sentence: one failure has one wording, so nothing can drift apart and
+    /// a test that reads the notice reads what the caller was told.
+    fn failed(&mut self, operation: &'static str, notice: String) {
+        self.notice = Some(notice.clone());
+        self.operation_failed(operation, notice);
+    }
 }
 
-/// A line holding one button, at the leading edge of its section.
 fn button_row(cx: &ViewCx<Settings>, control_id: &str, label: &str, effect: UpdatesEffect) -> Item {
     row(Box::new(
         Row::new().push(Box::new(button(cx, control_id, label, effect))),
     ))
 }
 
-/// A state with the one button that acts on it on its trailing edge.
 fn status_row(
     cx: &ViewCx<Settings>,
     status: &str,
@@ -2629,7 +2408,6 @@ fn status_row(
     )))
 }
 
-/// A button running `effect`.
 fn button(cx: &ViewCx<Settings>, control_id: &str, label: &str, effect: UpdatesEffect) -> Button {
     cx.actions().bind_effect_invocation(
         Button::new(control_id, label),
@@ -2637,19 +2415,12 @@ fn button(cx: &ViewCx<Settings>, control_id: &str, label: &str, effect: UpdatesE
     )
 }
 
-/// What the updates area keeps for the window: the model, read from the
-/// system when first needed.
 pub struct UpdatesArea {
-    /// The settings document the update preferences are read from.
     storage: ui::storage::AppStorage,
-    /// The update preferences' actions.
     sections: crate::sections::Sections,
-    /// Whether the model reads this device's system tools.
     devices: bool,
-    /// The installed formats a capture shows; `None` in a live window.
     codec_status: Option<CodecPackStatus>,
     model: std::cell::OnceCell<Rc<RefCell<UpdatesModel>>>,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
@@ -2665,8 +2436,6 @@ impl UpdatesArea {
         }
     }
 
-    /// The model, created on first use: a capture's reaches no system tool.
-    /// A live model reads the system off the UI thread.
     pub fn model(&self) -> &Rc<RefCell<UpdatesModel>> {
         self.model.get_or_init(|| {
             let model = if self.devices {
@@ -2688,8 +2457,6 @@ impl UpdatesArea {
         })
     }
 
-    /// Take in finished background work, if the model exists, and move
-    /// what the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
         let Some(model) = self.model.get() else {
             return;
@@ -2702,8 +2469,6 @@ impl UpdatesArea {
         }
     }
 
-    /// Whether a check, a firmware refresh or install is running, which
-    /// the page shows moving.
     fn busy(&self) -> bool {
         self.model
             .get()
@@ -2712,7 +2477,6 @@ impl UpdatesArea {
     }
 }
 
-/// Answer `effect` on the area's model.
 pub(crate) fn answer(
     app: &crate::settings_app::SettingsApp,
     effect: UpdatesEffect,
@@ -2728,32 +2492,23 @@ pub(crate) fn answer(
 }
 
 impl UpdatesModel {
-    /// Take in what background work finished; whether what the page shows
-    /// changed.
     fn poll(&mut self) -> bool {
         self.drain();
         std::mem::take(&mut self.changed)
     }
 
-    /// Whether a check, a firmware refresh or install is running.
     fn busy(&self) -> bool {
         self.check_pending || self.firmware_refresh_pending || self.firmware_events.is_some()
     }
 }
 
-/// The Updates page as view code over what the area reads of the device:
-/// built again whenever what it shows changes ([`UpdatesArea::poll`]).
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
-    // What finished while no page showed the model is taken in before the
-    // page is built.
     model.borrow_mut().poll();
     Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
-/// What the update settings found by search are set to, as the page last
-/// read the machine: nothing until it has.
 pub(crate) mod values {
     use ui::LocalState;
 
@@ -2774,7 +2529,6 @@ pub(crate) mod values {
         read(&model)
     }
 
-    /// Automatic updates, a switch where the machine schedules them.
     pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Read {
         read(app, |model| {
             model.timer_enabled.is_some().then_some(model.prefs.auto)
@@ -2792,8 +2546,6 @@ pub(crate) mod values {
             )
     }
 
-    /// Updating over metered connections, a switch once the machine said
-    /// whether it may.
     pub(crate) fn metered(app: &SettingsApp, _: &Follows) -> Read {
         read(app, |model| model.allow_metered).map_or(Read::Value(None), Read::Switch)
     }

@@ -1,5 +1,5 @@
-//! What Devices and access lists, and what the person does to it, through
-//! the host calls the page makes.
+//! What Devices and access lists, and what the person does to it, through the
+//! host calls the page makes.
 
 use super::*;
 
@@ -9,7 +9,6 @@ fn en() {
     ui::i18n::I18nManager::init("en-US");
 }
 
-/// Without Fluent's isolation marks around what a message was given.
 fn plain(text: &str) -> String {
     text.replace(['\u{2068}', '\u{2069}'], "")
 }
@@ -25,14 +24,10 @@ fn sample() -> AccessSample {
 const MINUTE: i64 = 60_000;
 const DAY: i64 = 86_400_000;
 
-/// A host that answers the identity and pairing actions as the person's
-/// host does, and records what it was asked.
 #[derive(Default)]
 struct RecordingHost {
     asked: std::sync::Mutex<Vec<InvokeRequest>>,
-    /// The keys it lists.
     listed: std::sync::Mutex<serde_json::Value>,
-    /// The devices asking to be the person.
     asking: std::sync::Mutex<serde_json::Value>,
 }
 
@@ -53,7 +48,6 @@ impl RecordingHost {
         self.asked.lock().unwrap().clone()
     }
 
-    /// What it was asked at `step` of `target`, in order.
     fn asked_at(
         &self,
         target: &ui::tilo_actions::remote::RemoteActionTarget,
@@ -98,7 +92,6 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
         } else if request.target == device_pairing::target(device_pairing::ASKING) {
             self.asking.lock().unwrap().clone()
         } else if request.target == agent_door::target(agent_door::DOOR) {
-            // This host keeps no agent door for the person: the record lists the agents.
             return ui::tilo_actions::remote::Pending::ready(Err(
                 ui::tilo_actions::remote::ActionHostError::UnknownAction,
             ));
@@ -139,8 +132,6 @@ fn key(n: u8) -> String {
     hex::encode([n; 32])
 }
 
-/// What the person's host lists: this computer, Claude Code signed in on a
-/// laptop as them, and a browser with two tabs, as the record answers them.
 fn record(now: i64) -> serde_json::Value {
     let tab = |n: u8| {
         serde_json::json!({"label": "Chrome on Linux", "key_hex": key(n),
@@ -166,9 +157,6 @@ fn model_on(host: &std::sync::Arc<RecordingHost>) -> (AccessModel, ui::RemoteAct
     (model, remote)
 }
 
-/// An agent signed in as the person is listed with the agents, from the
-/// person's record, even where no agent door answers: what it may do and
-/// until when, and that it is active now. It is no browser or computer.
 #[test]
 fn an_agent_signed_in_as_the_person_is_listed_with_what_it_may_do() {
     en();
@@ -198,8 +186,6 @@ fn an_agent_signed_in_as_the_person_is_listed_with_what_it_may_do() {
     assert_eq!(model.list_note(), None, "the lists read");
 }
 
-/// Removing an agent ends its key's access on the host, as no longer used,
-/// with the person's confirmation, and the list is read again.
 #[test]
 fn removing_an_agent_revokes_its_key_and_reads_the_list_again() {
     en();
@@ -242,9 +228,6 @@ fn removing_an_agent_revokes_its_key_and_reads_the_list_again() {
     );
 }
 
-/// A browser keeps a key per tab: its two tabs are one entry, named for
-/// its browser and system, saying how many tabs and when it was last
-/// active. Removing it ends every tab's access.
 #[test]
 fn a_browsers_tabs_are_one_entry_removed_together() {
     en();
@@ -294,8 +277,6 @@ fn a_browsers_tabs_are_one_entry_removed_together() {
     assert_eq!(revoked, [key(0x31), key(0x32)], "every tab of it");
 }
 
-/// Opened in one of its tabs, the browser is "This browser", named for its
-/// browser and system with its tabs, first, and can't remove itself.
 #[test]
 fn this_browser_comes_first_and_is_removed_from_elsewhere() {
     en();
@@ -332,9 +313,6 @@ fn this_browser_comes_first_and_is_removed_from_elsewhere() {
     );
 }
 
-/// A device asking to be the person shows at the top while it waits, with
-/// the code to compare; approving it answers the host, confirmed, and the
-/// lists are read again: once answered it no longer waits.
 #[test]
 fn a_request_appears_and_is_approved() {
     en();
@@ -379,8 +357,6 @@ fn a_request_appears_and_is_approved() {
     );
 }
 
-/// "Connect an agent or computer" asks the desk for its own setup, the
-/// one the person's card opens.
 #[test]
 fn connecting_asks_the_desk_for_its_setup() {
     en();
@@ -396,9 +372,6 @@ fn connecting_asks_the_desk_for_its_setup() {
     );
 }
 
-/// Where the person's agent door answers, its grant for a key the record
-/// holds is that key's entry, and a grant the record holds no key for is
-/// listed too, removed at the door.
 #[test]
 fn the_doors_grants_join_the_records_agents() {
     en();
@@ -433,8 +406,6 @@ fn the_doors_grants_join_the_records_agents() {
     assert_eq!(plain(&agent_may(&agents[2])), "Only in Launch plan");
 }
 
-/// The rows the page publishes offer each entry but this computer, each
-/// agent and each request: what can be done to it.
 #[test]
 fn the_published_rows_offer_what_can_be_done() {
     en();

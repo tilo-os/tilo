@@ -17,13 +17,9 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// The API server hosted Tilo answers at.
 pub const DEFAULT_API_URL: &str = "https://mcp.tilo.sh";
-/// Names the API server, like `--api`.
 pub const API_URL_ENV: &str = "TILO_API_URL";
-/// The key a call is made with.
 pub const KEY_ENV: &str = "TILO_API_KEY";
-/// The most one answer may be.
 const MAX_ANSWER: usize = 64 * 1024 * 1024;
 /// The longest one request is held before the server answers that it still
 /// waits: `Prefer: wait=` takes seconds, 60 at most.

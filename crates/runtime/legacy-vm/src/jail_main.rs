@@ -1,10 +1,6 @@
-//! `tilo-hosted-jail`: the one privileged step of a hosted-VM host. See
-//! `legacy_vm::hosted::jail` for what it does and how it is installed.
-//!
+//! `tilo-hosted-jail`: the one privileged step of a hosted-VM host ([`legacy_vm::hosted::jail`]).
 //! ```text
-//! tilo-hosted-jail [--config FILE] start --slot N --vcpus V --memory-mib M (--boot|--restore)
-//!                                   [--relay-endpoint ADDR:PORT]
-//!                                   (descriptors 3, 4, 5: the VM's state, sockets, guest)
+//! tilo-hosted-jail [--config FILE] start --slot N --vcpus V --memory-mib M (--boot|--restore) [--relay-endpoint ADDR:PORT] (descriptors 3, 4, 5: the VM's state, sockets, guest)
 //! tilo-hosted-jail [--config FILE] stop --slot N
 //! tilo-hosted-jail [--config FILE] release --slot N   (descriptors 3, 4)
 //! ```

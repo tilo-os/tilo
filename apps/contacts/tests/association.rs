@@ -1,11 +1,6 @@
-//! The Contacts app manifest (`tilo-app.toml`) declares Contacts as the
-//! handler for vCard files. These tests validate that declaration against the
-//! real Tilo packaging schema — so the association is checked, not eyeballed.
-//!
-//! Note on scope: `[providers]` is the manifest's "what file kinds this
-//! package opens" field. The declaration is correct and schema-valid today;
-//! the runtime piece that would *route* a `.vcf` open to this app (a
-//! MIME→app resolver in the launcher) is not yet built.
+//! The Contacts manifest (`tilo-app.toml`) declares Contacts as the handler for
+//! vCard files. These tests validate that declaration against the real Tilo
+//! packaging schema.
 
 #![allow(
     clippy::expect_used,
@@ -22,7 +17,6 @@ fn manifest() -> Manifest {
 
 #[test]
 fn manifest_declares_a_valid_vcard_app_with_the_file_chooser() {
-    // --- phase: manifest_is_a_valid_tilo_app ---
     {
         let m = manifest();
         assert_eq!(m.package.id, "so.tilo.contacts");
@@ -37,7 +31,6 @@ fn manifest_declares_a_valid_vcard_app_with_the_file_chooser() {
         );
     }
 
-    // --- phase: manifest_declares_the_vcard_file_types ---
     {
         let m = manifest();
         for mime in ["text/vcard", "text/x-vcard"] {
@@ -57,10 +50,9 @@ fn manifest_declares_a_valid_vcard_app_with_the_file_chooser() {
         }
     }
 
-    // --- phase: manifest_declares_the_file_chooser_portal ---
     {
-        // Import/Export use the host XDG file-chooser portal; the launcher only
-        // plumbs the D-Bus session bus in when the manifest declares the intent.
+        // Import and export use the host's XDG file chooser, which the launcher only
+        // connects when the manifest declares the intent.
         use tilo_app_package::manifest::PortalPolicy;
         let m = manifest();
         assert_eq!(

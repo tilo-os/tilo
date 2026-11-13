@@ -1,8 +1,4 @@
 //! `tilo-ntfs-mount`: the consent-gated NTFS mount service.
-//!
-//! - `serve`: answer the shell and Settings on the control socket.
-//! - `record-boot-disks`: note which disks are attached at start-up.
-//! - `check-volume`: the confined preflight step the service starts itself.
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {

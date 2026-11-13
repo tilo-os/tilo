@@ -1,20 +1,10 @@
 //! A read of the device made off the UI thread.
-//!
-//! An area of Settings whose rows show what it reads of the device — its
-//! audio graph, its Bluetooth adapter, its accounts — reads it with blocking
-//! calls: commands, D-Bus, file scans. After a window's first frame its
-//! warm-up ([`crate::effects::AreaReads`]) starts that read on the host's
-//! background executor, and the area builds its model from the result on
-//! the UI thread. An area asked for its model while its read still runs —
-//! its pane opened, an effect or a row lookup reached it — waits for that
-//! read rather than starting a second one, so the device is read once.
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-/// A result on its way from the background executor.
 pub type Erased = Box<dyn Any + Send>;
 
 /// One background read of a `T`, started at most once.
@@ -46,8 +36,6 @@ impl<T: Send + 'static> DeviceRead<T> {
             .start(Box::new(move || Box::new(read()) as Erased))
     }
 
-    /// Whether the read started has ended: its result is in, or it failed
-    /// and the area will read when asked. `true` when none was started.
     pub fn is_finished(&self) -> bool {
         self.read.is_finished()
     }
@@ -59,8 +47,6 @@ impl<T: Send + 'static> DeviceRead<T> {
         Some(*value)
     }
 
-    /// What waits, off the UI thread, for the started read to end, after
-    /// which [`Self::take`] answers at once. `None` when no read runs.
     pub fn wait(&self) -> Option<Wait> {
         self.read.wait()
     }
@@ -69,7 +55,6 @@ impl<T: Send + 'static> DeviceRead<T> {
 /// Waiting for a [`DeviceRead`] to end; run only off the UI thread.
 pub type Wait = Box<dyn FnOnce() + Send>;
 
-/// [`DeviceRead`] for a result of any type: the reading, compiled once.
 #[derive(Default)]
 struct ErasedRead {
     /// The read on its way, until its result is taken off the channel.
@@ -178,11 +163,9 @@ impl<T> Clone for Reading<T> {
     }
 }
 
-/// A reading of any type, shared between the panes and the worker.
 type Shared = std::sync::Arc<dyn Any + Send + Sync>;
 
 impl<T: Clone + Send + Sync + 'static> Reading<T> {
-    /// Nothing read yet; [`Self::refresh`] reads with `read`.
     pub fn new(read: impl Fn() -> T + Send + Sync + 'static) -> Self {
         Self {
             read: ErasedReading::new(std::sync::Arc::new(move || {
@@ -197,13 +180,10 @@ impl<T: Clone + Send + Sync + 'static> Reading<T> {
         self.read.get()?.downcast_ref::<T>().cloned()
     }
 
-    /// Bumped by every reading that lands.
     pub fn revision(&self) -> u64 {
         self.read.value.revision()
     }
 
-    /// Change the last reading in place: what a change the device took
-    /// makes of it before the device is read again.
     pub fn update(&self, change: impl FnOnce(&mut T)) {
         if let Some(mut value) = self.get() {
             change(&mut value);
@@ -211,20 +191,15 @@ impl<T: Clone + Send + Sync + 'static> Reading<T> {
         }
     }
 
-    /// Read the device again on the background executor; the window is
-    /// woken when the reading lands. A host that runs no background work
-    /// reads here.
     pub fn refresh(&self) {
         self.read.refresh();
     }
 }
 
-/// [`Reading`] for a reading of any type: the reading, compiled once.
 #[derive(Clone)]
 struct ErasedReading {
     value: ui::LocalState<Option<Shared>>,
     read: std::sync::Arc<dyn Fn() -> Shared + Send + Sync>,
-    /// 0: idle, 1: a read runs, 2: a read runs and another is asked for.
     running: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 
@@ -243,7 +218,6 @@ impl ErasedReading {
 
     fn refresh(&self) {
         use std::sync::atomic::Ordering;
-        // Asked while a read runs: that read goes round once more.
         if self
             .running
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
@@ -282,7 +256,6 @@ impl ErasedReading {
     }
 }
 
-/// Blocking work for the background executor, its result erased.
 pub type Work = Box<dyn FnOnce() -> Erased + Send>;
 
 /// Run `work` on the background executor and wake the window asking when
@@ -290,8 +263,6 @@ pub type Work = Box<dyn FnOnce() -> Erased + Send>;
 /// background work. Every off-thread read and change of Settings goes
 /// through here, so the spawn and the channel are compiled once.
 fn spawn_erased(work: Work) -> Option<Receiver<Erased>> {
-    // The window's report-back channel: the result wakes the pane that
-    // asked for it, before it can be received and once it can.
     let (sender, receiver) = ui::wake::waking_channel();
     let job: Box<dyn FnOnce() + Send> = Box::new(move || {
         let _ = sender.send(work());
@@ -311,16 +282,12 @@ pub fn thread(name: &str, job: Box<dyn FnOnce() + Send>) -> std::io::Result<()> 
     tilo_rt::spawn_thread(name, job).map(drop)
 }
 
-/// Blocking work running off the UI thread for a model, which takes its
-/// result in when it lands ([`Landing::poll`]).
 pub struct Landing(Receiver<Erased>);
 
-/// Where a [`Landing`] stands.
 pub enum Landed<T> {
     /// Still running.
     Pending,
     Done(T),
-    /// The work stopped without a result (it panicked).
     Lost,
 }
 
@@ -356,7 +323,6 @@ impl Landing {
         Self(receiver)
     }
 
-    /// Its result if it landed, taken once.
     pub fn poll<T: 'static>(&self) -> Landed<T> {
         match self.poll_erased() {
             Landed::Done(value) => value
@@ -389,10 +355,8 @@ impl Landing {
     }
 }
 
-/// The context an effect of Settings answers in.
 pub type Cx = ui::framework::EffectCx<crate::resource::Settings>;
 
-/// What takes a job's erased result in on the UI thread.
 type ErasedThen = Box<
     dyn FnOnce(&crate::settings_app::SettingsApp, Erased, &mut Cx) -> ui::framework::EffectAnswer,
 >;
@@ -439,8 +403,6 @@ fn erased_job(
 mod tests {
     use super::*;
 
-    /// A read runs off the calling thread, its result is taken once, and a
-    /// second start while it is held is refused.
     #[test]
     fn a_started_read_runs_off_the_calling_thread_once() {
         let read = DeviceRead::default();
@@ -452,8 +414,6 @@ mod tests {
         assert_eq!(read.take(), None, "a result is adopted once");
     }
 
-    /// Asking for the result while the read runs waits for it rather than
-    /// reading again.
     #[test]
     fn taking_a_running_read_waits_for_it() {
         let read = DeviceRead::default();

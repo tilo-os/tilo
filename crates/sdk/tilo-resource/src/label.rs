@@ -364,15 +364,15 @@ mod tests {
     #[test]
     fn a_kind_refines_its_noun_from_its_entry_and_keeps_the_derived_one_without_it() {
         install_noun(|key, count| match (key, count) {
-            ("people-person-noun", 1) => Some("person".to_owned()),
-            ("people-person-noun", 2) => Some("people".to_owned()),
+            ("notes-note-noun", 1) => Some("notebook".to_owned()),
+            ("notes-note-noun", 2) => Some("notebooks".to_owned()),
             _ => None,
         });
-        assert_eq!(noun_key("people.person"), "people-person-noun");
+        assert_eq!(noun_key("notes.note"), "notes-note-noun");
         assert_eq!(
-            localized_noun("people.person", tilo_actions::Noun::of_type("Person")),
-            tilo_actions::Noun::new("person", "people"),
-            "the catalogue says what several are"
+            localized_noun("notes.note", tilo_actions::Noun::of_type("Note")),
+            tilo_actions::Noun::new("notebook", "notebooks"),
+            "the catalogue says what the app calls it"
         );
         assert_eq!(
             localized_noun("lock.screen", tilo_actions::Noun::of_type("Screen")),

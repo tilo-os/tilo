@@ -11,24 +11,21 @@ use tilo_fs_client::wire::{FsReply, FsRequest};
 
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The pieces of one streamed upload, in order, as the uploader writes them
-/// ([`BlobBackend::put_stream`]). The stream ends (`None`) only once the
-/// uploader finished; if the upload is dropped first, or a write is refused,
-/// the next piece is an error, so a backend that stops at the first error
-/// stores nothing of it.
+/// The pieces of one streamed upload, in order, as the uploader writes them.
+/// The stream ends (`None`) only once the uploader finished; a dropped upload
+/// or a refused write makes the next piece an error, so a backend that stops at
+/// the first error stores nothing of it.
 pub struct BlobChunks {
     pieces: tokio::sync::mpsc::Receiver<Option<Vec<u8>>>,
     ended: bool,
 }
 
-/// The writing end of [`BlobChunks`].
 #[derive(Clone)]
 pub struct BlobChunkSender {
     pieces: tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
 }
 
 impl BlobChunks {
-    /// A connected pair holding at most `in_flight` pieces between the two.
     pub fn channel(in_flight: usize) -> (BlobChunkSender, Self) {
         let (sender, pieces) = tokio::sync::mpsc::channel(in_flight.max(1));
         (
@@ -40,8 +37,6 @@ impl BlobChunks {
         )
     }
 
-    /// The next piece, `None` at the uploader's end, or an error when the
-    /// upload ended without finishing.
     pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<io::Result<Vec<u8>>>> {
         if self.ended {
             return Poll::Ready(None);
@@ -65,15 +60,12 @@ impl BlobChunks {
         })
     }
 
-    /// [`Self::poll_next`] as a future.
     pub async fn next(&mut self) -> Option<io::Result<Vec<u8>>> {
         std::future::poll_fn(|cx| self.poll_next(cx)).await
     }
 }
 
 impl BlobChunkSender {
-    /// Hand on one piece, waiting while [`BlobChunks::channel`]'s pieces are
-    /// all in flight.
     pub async fn send(&self, piece: Vec<u8>) -> Result<(), BlobError> {
         self.pieces
             .send(Some(piece))
@@ -81,7 +73,6 @@ impl BlobChunkSender {
             .map_err(|_| BlobError::Refused("the store stopped reading the upload".into()))
     }
 
-    /// End the content cleanly; dropping every sender without this abandons it.
     pub async fn finish(self) -> Result<(), BlobError> {
         self.pieces
             .send(None)
@@ -90,11 +81,8 @@ impl BlobChunkSender {
     }
 }
 
-/// A boxed `Send` future, the shape [`BlobBackend`] answers in.
 pub type BlobFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-/// The store behind the capability. Every call carries the scope the
-/// connection was authenticated for; the backend decides reachability.
 pub trait BlobBackend: Send + Sync + 'static {
     fn put(
         self: Arc<Self>,
@@ -102,11 +90,8 @@ pub trait BlobBackend: Send + Sync + 'static {
         bytes: Vec<u8>,
         mime: String,
     ) -> BlobFuture<Result<BlobRef, BlobError>>;
-    /// Store content that arrives in pieces, as an upload writes it. The
-    /// backend consumes `chunks` as they come and must not hold all of them:
-    /// that is what keeps a 64 MiB upload from costing 64 MiB of heap. A
-    /// piece that is an error means the upload was abandoned or refused, and
-    /// nothing may be stored.
+    /// Store content that arrives in pieces: the backend consumes `chunks` as they
+    /// come and never holds all of them.
     fn put_stream(
         self: Arc<Self>,
         scope: BlobScope,
@@ -123,8 +108,6 @@ pub trait BlobBackend: Send + Sync + 'static {
     fn has(self: Arc<Self>, scope: BlobScope, hash: String) -> BlobFuture<bool>;
     fn size(self: Arc<Self>, scope: BlobScope, hash: String) -> BlobFuture<Option<u64>>;
 
-    /// Keep a copy of the public content `name` on this device for `scope`'s
-    /// app ([`PublicRead`]). A backend that keeps none refuses.
     fn public_keep(
         self: Arc<Self>,
         scope: BlobScope,
@@ -134,7 +117,6 @@ pub trait BlobBackend: Send + Sync + 'static {
         Box::pin(async { Err(no_public_content()) })
     }
 
-    /// `scope`'s app no longer keeps the public content `name`.
     fn public_release(
         self: Arc<Self>,
         scope: BlobScope,
@@ -144,7 +126,6 @@ pub trait BlobBackend: Send + Sync + 'static {
         Box::pin(async { Err(no_public_content()) })
     }
 
-    /// Read the current copy of the public content `name`.
     fn public_read(
         self: Arc<Self>,
         name: String,
@@ -155,8 +136,6 @@ pub trait BlobBackend: Send + Sync + 'static {
         Box::pin(async { Err(no_public_content()) })
     }
 
-    /// Check every kept public copy against where it came from and take a
-    /// newer one: how many changed.
     fn refresh_public(self: Arc<Self>) -> BlobFuture<u32> {
         Box::pin(async { 0 })
     }
@@ -170,12 +149,11 @@ pub trait BlobBackend: Send + Sync + 'static {
     }
 }
 
-/// The refusal of a backend that keeps no public content.
 fn no_public_content() -> BlobError {
     BlobError::Refused("this device keeps no public content".into())
 }
 
-/// Serve `listener` on a dedicated thread.
+/// Serve `listener` on a thread of its own.
 pub fn spawn_blob_server(
     listener: std::os::unix::net::UnixListener,
     backend: Arc<dyn BlobBackend>,
@@ -224,8 +202,8 @@ pub fn spawn_blob_server(
         })
 }
 
-/// Serve one already-accepted connection: read its handoff, then answer
-/// frames until the peer goes away.
+/// Serve one accepted connection: read its handoff, then answer frames until
+/// the peer goes away.
 pub async fn serve_connection(
     mut stream: tokio::net::UnixStream,
     backend: Arc<dyn BlobBackend>,
@@ -296,9 +274,8 @@ impl ServeObject for ScopedBlobs {
                     Ok(FsReply::Blob(stored))
                 }
                 FsRequest::Upload { mime } => {
-                    // The backend consumes the upload as it is written, so the
-                    // store hashes and imports it piece by piece and nothing
-                    // here ever holds the whole payload.
+                    // The backend consumes the upload as it is written: the store hashes and
+                    // imports it piece by piece, so nothing here holds the whole payload.
                     let (pieces, chunks) = BlobChunks::channel(UPLOAD_PIECES_IN_FLIGHT);
                     let stored = self.runtime.spawn(Arc::clone(&self.backend).put_stream(
                         scope.clone(),
@@ -364,7 +341,6 @@ impl ServeObject for ScopedBlobs {
     }
 }
 
-/// One public copy, as an app's scope reaches it.
 struct PublicContentServer {
     scope: BlobScope,
     name: String,
@@ -414,26 +390,15 @@ impl ServeObject for PublicContentServer {
 }
 
 struct Uploading {
-    /// The backend's end of the stream; dropped unfinished when refused.
     pieces: BlobChunkSender,
-    /// The backend storing the stream; it answers once the stream ends.
     stored: tokio::task::JoinHandle<Result<BlobRef, BlobError>>,
     /// Bytes written so far.
     len: u64,
-    /// Set when the upload is refused while this write holds it.
     writing: tokio::sync::watch::Receiver<bool>,
 }
 
-/// One upload in progress. Each `write` is passed on to the backend in
-/// [`UPLOAD_PIECE`]s as soon as it arrives, and is answered once the backend
-/// has taken all of it, which is what holds the uploader back. Writes are
-/// taken one at a time, as [`BlobClient::put_reader`] sends them; a write
-/// pipelined behind another is refused, so what waits here stays bounded by
-/// one message whatever the peer sends.
 struct Upload {
-    /// `None` once finished or refused.
     state: tokio::sync::Mutex<Option<Uploading>>,
-    /// Ends the write in flight when a call is refused behind it.
     ended: tokio::sync::watch::Sender<bool>,
 }
 
@@ -442,9 +407,6 @@ impl Upload {
         message.into()
     }
 
-    /// Refuse a call that arrived while a write holds the upload: that write
-    /// stops, and the backend sees the stream end without finishing, so the
-    /// upload stores nothing.
     fn refuse(&self, message: &str) -> String {
         self.ended.send_replace(true);
         message.into()

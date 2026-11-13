@@ -6,7 +6,6 @@ use super::Edit;
 use super::line::Line;
 use crate::field::{Field, LEASE_NS, Lease, Reply, Request, Status, TEXT_BYTES};
 
-/// Where the last replacement stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     None,
@@ -14,20 +13,16 @@ enum Phase {
     Undone,
 }
 
-/// The field's state across the session's prompts.
 pub(crate) struct Native {
     generation: u64,
     revision: u64,
-    /// The revision the lease was published for, and when it ends.
     lease_revision: u64,
     lease_expiry: u64,
     phase: Phase,
-    /// The replacement that can be undone, and the revision it left.
     checkpoint: u64,
     checkpoint_revision: u64,
     before: Line,
     after: Line,
-    /// The last request that changed the line, and its receipt.
     last: Option<(u64, Request, Reply)>,
 }
 
@@ -52,7 +47,6 @@ fn bump(value: &mut u64) {
     *value = value.saturating_add(1);
 }
 
-/// The cursor, in bytes of the line.
 fn cursor(edit: &Edit) -> u32 {
     u32::try_from(edit.line.before().len()).unwrap_or(u32::MAX)
 }
@@ -93,27 +87,23 @@ fn plain(request: u64, status: Status, transaction: u64) -> Reply {
 }
 
 impl Native {
-    /// A new prompt: leases on the last one end.
     pub(super) fn prompt(&mut self) {
         self.phase = Phase::None;
         bump(&mut self.generation);
         bump(&mut self.revision);
     }
 
-    /// A key was read: the line is the person's again.
     pub(super) fn key(&mut self) {
         self.phase = Phase::None;
         bump(&mut self.revision);
     }
 
-    /// The prompt is left: the line is no longer offered.
     pub(super) fn leave(&mut self, field: &dyn Field) {
         self.phase = Phase::None;
         bump(&mut self.revision);
         self.publish(field, 0, None);
     }
 
-    /// Say what the field is now, answering `request` (zero: unasked).
     pub(super) fn publish(&mut self, field: &dyn Field, request: u64, edit: Option<&Edit>) {
         let now = field.now_ns();
         let Some(edit) = edit.filter(|edit| offerable(edit) && now > 0) else {
@@ -147,7 +137,6 @@ impl Native {
         });
     }
 
-    /// Whether `lease` is the one published for the line as it is.
     fn holds(&self, field: &dyn Field, lease: &Lease, edit: &Edit) -> bool {
         let now = field.now_ns();
         offerable(edit)

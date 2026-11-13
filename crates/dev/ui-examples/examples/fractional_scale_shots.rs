@@ -1,21 +1,7 @@
 //! Offscreen renders of the component gallery at different **device scales** and
 //! **user font sizes**, so fractional scaling can be self-inspected without a
 //! real high-DPI display.
-//!
-//! Every shot drives the identical logical widget tree (the same one the
-//! interactive `gallery` builds) through the real five-pass pipeline. The only
-//! thing that changes between shots is:
-//!   * the **device scale** — the physical buffer is `logical × scale` and the
-//!     scene is drawn through `Affine::scale(device_scale)`, exactly as the App's
-//!     render loop composites a fractional-scaled output; and
-//!   * the **user scale** — a `Theme::with_ui_scale` / `with_text_scale` applied
-//!     to the theme handed to the layout pass.
-//!
-//! At 1.5× the text and strokes are rasterised at 1.5× the pixels from the same
-//! vector outlines — crisp, not a blurry upscale of the 1.0× raster.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- fractional_scale_shots`
-//! Out:  `$FRAC_SCALE_SHOTS_OUT` (default `/tmp/frac_scale_shots`)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

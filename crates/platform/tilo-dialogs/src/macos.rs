@@ -21,7 +21,6 @@ use crate::portal::{
     open_selected_uri,
 };
 
-/// The panel [`crate::FilePicker`].
 pub(crate) struct PanelFilePicker;
 
 impl crate::FilePicker for PanelFilePicker {
@@ -46,8 +45,6 @@ impl crate::FilePicker for PanelFilePicker {
             ));
         }
         choose(request, |picked| match picked {
-            // Open the descriptor at once, so no later frame can turn the
-            // accepted path into a reopen of something else.
             Ok(uris) => uris
                 .first()
                 .map_or(OpenFileOutcome::Cancelled, open_selected_uri),
@@ -66,8 +63,6 @@ fn answered<T>(outcome: T) -> Receiver<T> {
     rx
 }
 
-/// Show the panel `request` describes on the main thread and deliver
-/// `finish(picked URIs)` over the returned channel.
 fn choose<T: Send + 'static>(
     request: PickRequest,
     finish: impl FnOnce(Result<Vec<url::Url>, PortalFailure>) -> T + Send + 'static,
@@ -89,7 +84,6 @@ fn choose<T: Send + 'static>(
     rx
 }
 
-/// Where a panel's outcome goes, and the event loop it wakes.
 struct Reply<T> {
     tx: Sender<T>,
     wake: tilo_rt::wake::WakeHandle,
@@ -97,7 +91,6 @@ struct Reply<T> {
 
 impl<T> Reply<T> {
     fn send(self, outcome: T) {
-        // The UI may have moved on (window closed); ignore a dead channel.
         if self.tx.send(outcome).is_ok() {
             self.wake.wake();
         }
@@ -122,9 +115,6 @@ fn show(
     panel.beginWithCompletionHandler(&handler);
 }
 
-/// Show `request`'s panel modally in a process of its own, which becomes a
-/// foreground app for as long as it shows: the runtime's chooser for a
-/// confined app. The picked local paths, or `None` when cancelled.
 pub(crate) fn show_modal(request: &PickRequest) -> Result<Option<Vec<std::path::PathBuf>>, String> {
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
     let mtm = MainThreadMarker::new().ok_or("the file panel must run on the main thread")?;
@@ -183,7 +173,6 @@ pub(crate) fn ask_modal(
     Ok(alert.runModal() == NSAlertSecondButtonReturn)
 }
 
-/// What `panel` answered with `response`.
 fn picked(
     panel: &NSSavePanel,
     is_open: bool,
@@ -209,7 +198,6 @@ fn picked(
         })
 }
 
-/// The panel `request` describes.
 fn panel(mtm: MainThreadMarker, request: &PickRequest) -> Retained<NSSavePanel> {
     let title = NSString::from_str(&request.title);
     let prompt = NSString::from_str(&request.accept_label);
@@ -253,9 +241,6 @@ fn panel(mtm: MainThreadMarker, request: &PickRequest) -> Retained<NSSavePanel> 
     panel
 }
 
-/// The extensions an `NSSavePanel` may restrict to, or `None` for any file:
-/// no filter, an "All files" filter, or a glob that is not a plain `*.ext`.
-/// A narrower chooser than the reader would hide files the app could open.
 fn extensions(filters: &[FileFilter]) -> Option<Vec<String>> {
     let mut extensions = Vec::new();
     for filter in filters {
@@ -296,7 +281,6 @@ fn launch(request: &LaunchRequest) -> LaunchOutcome {
     }
 }
 
-/// Hand `uri` to the app Launch Services registers for its scheme.
 pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
     let Some(url) = NSURL::URLWithString(&NSString::from_str(uri)) else {
         return Err(std::io::Error::new(

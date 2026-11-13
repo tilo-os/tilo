@@ -1,42 +1,17 @@
 //! Which installed trees a running app has mounted.
-//!
-//! The launcher hands an app its payload tree and its runtime bundle as
-//! read-only bind mounts (`--ro-bind <tree> <mount>`), so the kernel's mount
-//! table is the one record of what a running app uses that every launch path
-//! writes, whoever launched it. Each process's `/proc/<pid>/mountinfo` lists
-//! the mounts of its namespace with the *root* of each mount: the path of
-//! the bound directory inside its filesystem, which keeps naming the tree
-//! after the tree is renamed and says `//deleted` once it is gone.
-//!
-//! A bound tree is recognised by its last two path components
-//! (`tilo-runtime/<version>`, `pkgs/<package id>`) anywhere in a mount's
-//! root, so a bind of a subdirectory (`<bundle>/lib/fonts`) or a file inside
-//! it counts as well. The mount root is relative to its filesystem, which on
-//! a split or subvolume layout differs from the path this process sees by a
-//! prefix; matching the tail stays right across both. A false match only
-//! keeps a tree longer.
-//!
-//! Only Linux bind-mounts app trees. Elsewhere nothing is mounted, and
-//! [`InUse::now`] says so; on Linux a mount table it cannot read makes every
-//! tree count as in use, so a collector keeps everything rather than guess.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-/// The mounts of every mount namespace this process can see.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mounts {
     roots: BTreeSet<Vec<OsString>>,
-    /// Each mount's mount point, as the mounting process sees it.
     points: BTreeSet<PathBuf>,
 }
 
 impl Mounts {
-    /// Read `<proc>/<pid>/mountinfo` for every process under `proc_root`.
-    /// A process that exits while it is read, or whose table this user may
-    /// not read, is skipped: its mounts are another user's.
     pub fn scan_proc(proc_root: &Path) -> io::Result<Self> {
         let mut mounts = Self::default();
         let mut seen_namespaces = BTreeSet::new();
@@ -63,7 +38,6 @@ impl Mounts {
         Ok(mounts)
     }
 
-    /// Parse one `mountinfo` table (proc(5)) into `self`.
     pub fn add_mountinfo(&mut self, text: &str) {
         for line in text.lines() {
             let mut fields = line.split(' ');
@@ -83,8 +57,6 @@ impl Mounts {
         }
     }
 
-    /// Whether some mount's root is `tree`, or a path inside it, judged by
-    /// `tree`'s last two components.
     #[must_use]
     pub fn holds(&self, tree: &Path) -> bool {
         let Some([parent, name]) = tail_of(tree) else {
@@ -96,7 +68,6 @@ impl Mounts {
         })
     }
 
-    /// Whether some process has a mount at `point`, as it sees it.
     #[must_use]
     pub fn has_mount_point(&self, point: &Path) -> bool {
         self.points.contains(point)
@@ -117,9 +88,7 @@ pub struct InUse(std::sync::OnceLock<Table>);
 /// One reading of the mount table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Table {
-    /// The mount table was read.
     Known(Mounts),
-    /// The mount table could not be read: everything counts as in use.
     Unknown(String),
 }
 
@@ -131,13 +100,12 @@ impl InUse {
         Self::default()
     }
 
-    /// The mount table `mounts`, as already read.
     #[must_use]
     pub fn known(mounts: Mounts) -> Self {
         Self(std::sync::OnceLock::from(Table::Known(mounts)))
     }
 
-    /// A mount table that could not be read, for `reason`.
+    /// A table that could not be read: every tree counts as in use.
     #[must_use]
     pub fn unknown(reason: impl Into<String>) -> Self {
         Self(std::sync::OnceLock::from(Table::Unknown(reason.into())))
@@ -158,7 +126,6 @@ impl InUse {
         })
     }
 
-    /// Whether `tree` may be in use by a running app.
     #[must_use]
     pub fn holds(&self, tree: &Path) -> bool {
         match self.table() {
@@ -167,7 +134,6 @@ impl InUse {
         }
     }
 
-    /// Whether some process may have a mount at `point`.
     #[must_use]
     pub fn has_mount_point(&self, point: &Path) -> bool {
         match self.table() {
@@ -177,7 +143,6 @@ impl InUse {
     }
 }
 
-/// `tree`'s parent directory name and its own name.
 fn tail_of(tree: &Path) -> Option<[OsString; 2]> {
     let name = tree.file_name()?;
     let parent = tree.parent()?.file_name()?;

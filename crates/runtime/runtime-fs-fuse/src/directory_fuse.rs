@@ -1,6 +1,6 @@
-//! Raw-name Home presentation over existing directory/file/job capabilities.
-//! No source credentials or descriptors reach this target adapter. Native jobs
-//! provide durable NOREPLACE outcomes; replacing rename/history is unsupported.
+//! The workspace's Home presented through FUSE: raw names over the directory,
+//! file and job capabilities. No source credentials or descriptors reach this
+//! adapter, and nothing here keeps a history or replaces a rename.
 use fuser::{
     FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
     IoctlFlags, KernelConfig, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
@@ -22,10 +22,9 @@ use std::{
 };
 const ROOT: u64 = 1;
 const NODES: usize = 4096;
-// Native pins consume real source-worker descriptors. The canonical managed
-// worker has RLIMIT_NOFILE=1024: retain at most 256 nodes, plus at most 64 byte
-// handles and 64 cursors, leaving half that table for provider/runtime/transient
-// descriptors. This is admission, never authority or permission to drop a pin.
+// Pins take real source-worker descriptors, and the worker has
+// RLIMIT_NOFILE=1024: keep at most 256 nodes, 64 byte handles and 64 cursors,
+// which leaves half the table for provider, runtime and transient descriptors.
 const RESIDENT_NODES: usize = 256;
 const TRIM_AT: usize = 64;
 const TRIM_TO: usize = 32;
@@ -87,7 +86,7 @@ fn reply_errno(failure: io::Error) -> fuser::Errno {
     if runtime_fs::native_reply::is_operation_refusal(&failure) {
         return fuser::Errno::from_i32(libc::ENFILE);
     }
-    // Transport/authority errors remain I/O failure, never successful access.
+    // A transport or authority error is an I/O failure, never access.
     fuser::Errno::EIO
 }
 /// The errno a failed capability call reaches the kernel as: an OS error as
@@ -97,9 +96,8 @@ fn reply_errno(failure: io::Error) -> fuser::Errno {
 pub fn kernel_errno(failure: io::Error) -> i32 {
     reply_errno(failure).code()
 }
-/// The FUSE type of a native `S_IFMT` value. `DirectoryClient` already
-/// refuses any other value; one that still arrives is an I/O failure, never
-/// a guessed type.
+/// The FUSE type of a native `S_IFMT` value. `DirectoryClient` refuses any
+/// other; one that still arrives is an I/O failure, not a guessed type.
 fn kind(raw: u32) -> io::Result<FileType> {
     Ok(match raw {
         libc::S_IFREG => FileType::RegularFile,
@@ -127,7 +125,6 @@ fn mode(flags: i32, created: bool) -> io::Result<OpenMode> {
     }
 }
 impl DirectoryFilesystem {
-    /// Uses only a mode-selected, independently admitted directory channel.
     pub fn new(source: DirectoryConnection, uid: u32, gid: u32) -> io::Result<Self> {
         if uid == 0 {
             return Err(error(libc::EINVAL));
@@ -165,8 +162,8 @@ impl DirectoryFilesystem {
             table,
         })
     }
-    /// Attach only the notifier from the same canonical FUSE Session. The
-    /// returned worker has no source authority, descriptors or alternate mount.
+    /// The worker only notifies this filesystem's session: it gets no source
+    /// authority, descriptors or mount of its own.
     #[must_use]
     pub fn invalidation_control(&self) -> InvalidationControl {
         self.invalidations.clone()
@@ -176,7 +173,6 @@ impl DirectoryFilesystem {
             && let Some(node) = table.nodes.get_mut(&ino)
         {
             node.published = true;
-            // A fresh positive reply can recreate a dentry after invalidation.
             node.invalidating = false;
         }
         self.invalidations.wake();
@@ -248,9 +244,8 @@ impl DirectoryFilesystem {
                 return Err(error(errno));
             }
             if table.nodes.len() >= RESIDENT_NODES || table.nodes.len() >= NODES {
-                // Never wait for kernel FORGET inside a related callback.
-                // Existing owners remain held; a later retry can be admitted
-                // after the independent notifier and actual FORGET progress.
+                // Never wait for a kernel FORGET inside a related callback:
+                // the lookups stay held, and a retry comes after it.
                 return Err(error(libc::ENFILE));
             }
             let ino = Self::next(table)?;
@@ -362,8 +357,8 @@ impl DirectoryFilesystem {
                 .get(&handle.0)
                 .filter(|file| file.node == ino)
                 .ok_or_else(|| error(libc::EBADF))?;
-            // The actual open inode remains pinned. Read original mode from
-            // that SAME metadata-only held capability, never a replacement path.
+            // The open inode stays pinned: read the mode from that same
+            // metadata-only capability, not from a replacement path.
             let stat = self
                 .source
                 .metadata_pin(node.pin.ok_or_else(|| error(libc::ESTALE))?)?;
@@ -509,7 +504,7 @@ impl DirectoryFilesystem {
                 std::thread::sleep(Duration::from_millis(10));
             }
         })();
-        // Lost/unknown effects are never retried, nor represented as completion.
+        // A lost or unknown effect is not retried, and not reported as done.
         let released = self.source.release_job(id);
         match (result, released) {
             (Ok(identity), Ok(())) => Ok(identity),
@@ -519,8 +514,8 @@ impl DirectoryFilesystem {
 }
 impl Filesystem for DirectoryFilesystem {
     fn statfs(&self, _: &Request, _: INodeNo, reply: ReplyStatfs) {
-        // The held Home root supplies filesystem-wide capacity. File inode
-        // handles are not converted into directory grants or byte permissions.
+        // The held Home root supplies filesystem-wide capacity; a file handle
+        // does not become a directory grant or byte permission.
         match self.source.statfs(ROOT_DIRECTORY) {
             Ok(stats) => reply.statfs(
                 stats.blocks,
@@ -607,8 +602,6 @@ impl Filesystem for DirectoryFilesystem {
         flags: Option<fuser::BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        // A mounted source owns no created inode and changes no mode, owner,
-        // size or time through a metadata write.
         let _ = (
             ino, uid, gid, size, atime, mtime, ctime, handle, created_at, chgtime, bkuptime, flags,
         );
@@ -629,7 +622,7 @@ impl Filesystem for DirectoryFilesystem {
         _: u32,
         reply: ReplyIoctl,
     ) {
-        // No save-marker promise: a mounted source does not own external history.
+        // No save marker: a mounted source does not own external history.
         reply.error(fuser::Errno::ENOTTY);
     }
     fn readlink(&self, _: &Request, ino: INodeNo, reply: ReplyData) {
@@ -850,9 +843,9 @@ impl Filesystem for DirectoryFilesystem {
                 return Err(error(libc::EINVAL));
             }
             if offset < rows.base {
-                // Rewind/replay uses a new independent OFD, one bounded page at a
-                // time. Under concurrent mutation these are live positions, not
-                // snapshot/CAS bookmarks. No caller cookie mints path authority.
+                // Rewind and replay use a new independent OFD, one bounded page
+                // at a time: live positions under concurrent mutation, not
+                // snapshot bookmarks.
                 self.source.release_cursor(rows.cursor)?;
                 rows.cursor = self.source.open_cursor(directory)?;
                 rows.sequence = 0;
@@ -997,7 +990,6 @@ impl Filesystem for DirectoryFilesystem {
         }
     }
     fn unlink(&self, _: &Request, _: INodeNo, _: &OsStr, reply: ReplyEmpty) {
-        // Removal needs own-created transient custody a plain mounted source has none of.
         reply.error(fuser::Errno::EOPNOTSUPP);
     }
     fn mkdir(
@@ -1129,7 +1121,6 @@ mod tests {
 
     fn assert_native_symlink_identity(disk: &std::path::Path, source: &DirectoryConnection) {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
-        // Exercise actual connected RPC, native backend, and bounded bridge.
         let raw = std::ffi::OsString::from_vec(b"nested/missing-\xff".to_vec());
         std::os::unix::fs::symlink(&raw, disk.join("raw-link")).unwrap();
         let link_name = EntryName::new("raw-link".into()).unwrap();
@@ -1190,7 +1181,6 @@ mod tests {
                 .perm,
             0o600
         );
-        // Metadata remains observational; virtual owner and write/read policy stay target-local.
         assert_eq!(
             fs.attributes(table, executable_ino, None).unwrap().uid,
             1000
@@ -1205,8 +1195,8 @@ mod tests {
         table: &mut Table,
         old: u64,
     ) {
-        // Actual native metadata pins consume descriptors even without byte
-        // opens. Capacity refusal must leave the old unlinked inode pinned.
+        // A metadata pin takes a descriptor without a byte open, so a refusal
+        // for capacity must leave the old unlinked inode pinned.
         while table.nodes.len() < RESIDENT_NODES {
             let name = format!("capacity-{}", table.nodes.len());
             std::fs::write(disk.join(&name), b"capacity").unwrap();
@@ -1258,7 +1248,7 @@ mod tests {
         let socket = UnixListener::bind(disk.path().join("socket")).unwrap();
         let fifo = std::ffi::CString::new(disk.path().join("fifo").as_os_str().as_encoded_bytes())
             .unwrap();
-        // Create an actual special inode; byte opens below must still refuse.
+        // Make a real special inode; opening its bytes must still refuse.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         let owner = FsOwner {
             workspace: "native-home-lookup".into(),
@@ -1332,9 +1322,8 @@ mod tests {
         drop(table);
         drop(fs);
         drop(socket);
-        // The deliberately revoked capability fault remains the worker's
-        // terminal result. Retirement joins that worker and must preserve the
-        // denial, rather than report a clean authority checkpoint.
+        // The revoked capability's fault is the worker's last word: retiring
+        // it joins the worker and keeps the denial, not a clean checkpoint.
         assert_eq!(
             source.retire().unwrap_err().kind(),
             io::ErrorKind::PermissionDenied

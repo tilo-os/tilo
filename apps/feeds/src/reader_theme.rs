@@ -16,21 +16,12 @@ use ui::theme::Theme;
 /// Resolved colours of one paper.
 #[derive(Clone, Copy, Debug)]
 pub struct ReaderPalette {
-    /// The page fill, or `None` when the page is the window ground the
-    /// framework already painted.
     pub page: Option<Color>,
-    /// The ground the page's ink is measured against.
     pub ground: Color,
-    /// Body ink.
     pub ink: Color,
-    /// Secondary ink (byline, quotes).
     pub ink_dim: Color,
-    /// Rules: block-quote bar, the line under the header, dividers.
     pub rule: Color,
-    /// The well behind a code block.
     pub well: Color,
-    /// The stock theme a fixed paper is printed in; `None` for the
-    /// system's own.
     stock: Option<Stock>,
 }
 
@@ -76,12 +67,10 @@ impl ReaderPalette {
         }
     }
 
-    /// A page of `page` printed in `stock`'s ink.
     fn of_paper(stock: Stock, page: Color) -> Self {
         Self::of_theme(&stock.theme().on_ground(page), Some(page), Some(stock))
     }
 
-    /// Ink, rules and wells measured from a theme's content ground.
     fn of_theme(theme: &Theme, page: Option<Color>, stock: Option<Stock>) -> Self {
         let colors = &theme.tokens.colors;
         let ground = colors.surfaces.content;
@@ -127,8 +116,6 @@ mod tests {
     use super::*;
     use crate::model::ReadTheme;
 
-    /// The default paper is the system ground; fixed papers draw their own
-    /// page with readable ink; high contrast overrides any paper.
     #[test]
     fn papers_follow_the_system_and_keep_their_ink_readable() {
         // The default paper paints nothing: it is the window ground.

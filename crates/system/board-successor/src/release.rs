@@ -35,7 +35,6 @@ fn is_hex(text: &str) -> bool {
     HEX.as_ref().is_some_and(|re| re.is_match(text))
 }
 
-/// Runs one verification command and returns its standard output.
 pub trait Runner {
     /// # Errors
     /// The command failed, timed out or wrote too much.
@@ -270,7 +269,6 @@ pub fn freshness(
     Ok(expires)
 }
 
-/// What [`select`] chose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Successor {
     /// `code.tilo.so/tilo/tilo@sha256:…`

@@ -130,7 +130,6 @@ fn run(root: &Path, path: &str, job: &BuildJob) -> (JobLine, String) {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn in_vm_builds_import_layers_and_report_errors_with_hints() {
-    // Phase `build_errors_come_back_with_hints`.
     {
         let (root, path) = setup();
         let (line, _) = run(
@@ -164,7 +163,6 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         let error = line.error.unwrap();
         assert!(error.hint.contains("--builder vm"), "{}", error.hint);
     }
-    // Phase `in_vm_build_imports_a_layer_and_records_its_build_dir`.
     {
         let (root, path) = setup();
         let session = || {

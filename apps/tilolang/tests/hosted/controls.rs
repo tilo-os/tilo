@@ -2,7 +2,7 @@
 //! words the person's language gives it and without where the window's composition drew it.
 //!
 //! A control that runs an app action says which one — the record kind and the operation, in the
-//! app's own names — and one that edits a record's field says which field. The window's
+//! app's own ids — and one that edits a record's field says which field. The window's
 //! composition moves the control between its bar, an empty state and a columns' header row and
 //! the person's language renames it; neither changes what it does.
 
@@ -55,11 +55,11 @@ impl super::Session {
             .controls()
             .into_iter()
             .find(|control| {
-                control.doing.as_deref().is_some_and(|doing| {
-                    doing
-                        .rsplit_once(PLACE)
-                        .is_some_and(|(_, op)| op == editing)
-                })
+                control
+                    .doing
+                    .as_deref()
+                    .and_then(ui::tilo_actions::ActionAddress::parse)
+                    .is_some_and(|doing| doing.action == editing)
             })
             .unwrap_or_else(|| panic!("no field edits {field}: {:?}", self.controls()));
         (doing.at.0 + doing.at.2 / 2.0, doing.at.1 + doing.at.3 / 2.0)
@@ -74,14 +74,21 @@ impl super::Session {
     /// The centre of the control that does `identity`: the action the app publishes, on the kind
     /// of record it acts on. Where it is the window's business — its bar while it lists nothing,
     /// its columns' header once it does — and so is what the person's language calls it.
-    pub(super) fn control(&mut self, identity: &str) -> (f64, f64) {
+    pub(super) fn control(&mut self, identity: &(String, String)) -> (f64, f64) {
+        let (kind, action) = identity;
         let control = self
             .controls()
             .into_iter()
-            .find(|control| control.doing.as_deref() == Some(identity))
+            .find(|control| {
+                control
+                    .doing
+                    .as_deref()
+                    .and_then(ui::tilo_actions::ActionAddress::parse)
+                    .is_some_and(|doing| doing.resource == *kind && doing.action == *action)
+            })
             .unwrap_or_else(|| {
                 panic!(
-                    "no control does {identity}: {:?}",
+                    "no control does {action} on {kind}: {:?}",
                     self.controls()
                         .into_iter()
                         .map(|control| (control.doing, control.name))
@@ -100,18 +107,18 @@ impl super::Session {
     }
 
     /// The identity of the app's action `action`, as it is declared (`new_note`), on records of
-    /// `ty`: the record kind and the action's name, as the app publishes it at its door.
-    pub(super) fn doing(&self, ty: &str, action: &str) -> String {
+    /// `ty`: the record kind and the id the app declares the action by.
+    pub(super) fn doing(&self, ty: &str, action: &str) -> (String, String) {
         let bundle = package(package_of(&self.app));
         let Some(declared) = bundle
             .meta
             .actions
             .iter()
-            .find(|declared| declared.name == action || declared.id == action)
+            .find(|declared| declared.name == action)
         else {
             panic!("{} declares no action {action}", self.app);
         };
-        format!("{}{PLACE}{}", self.kind(ty), declared.name)
+        (self.kind(ty), declared.id.clone())
     }
 
     /// The id the app gives the field `field`, as it is declared (`title`): what the control that
@@ -158,10 +165,6 @@ impl super::Session {
         }
     }
 }
-
-/// The separator an identity writes between the record it acts on and what it does: what
-/// [`ui::tilo_actions::ActionAddress`] writes.
-pub(super) const PLACE: char = '\u{1f}';
 
 /// One control of a window as its accessibility tree publishes it.
 #[derive(Debug)]

@@ -7,7 +7,6 @@ use anyhow::{Context as _, Result, bail};
 
 pub(crate) fn prepared_fonts(sdk: &Path, scope: &str) -> Result<PathBuf> {
     let source = sdk.join("crates/sdk/ui-core/assets/fonts");
-    // Historical SDK revisions still carry their pinned source files.
     if !source.join("artifacts.json").is_file() {
         return Ok(source);
     }

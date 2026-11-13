@@ -396,7 +396,10 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         .unwrap();
     assert_eq!(policy.workspace, created.workspace);
     assert_eq!(
-        policy.standing.policy.role_of(&policy.standing.person),
+        policy
+            .standing
+            .policy
+            .role_of(policy.standing.person_id().unwrap_or_default()),
         Some(collab_types::Role::Owner)
     );
     let source = tilo_peer_state::document_frame::DocumentRoute {

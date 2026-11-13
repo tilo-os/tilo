@@ -1,7 +1,7 @@
-//! A device that does not answer until the test lets it go, for proving
-//! that the window never waits on one. The test looks at the window while
-//! the stall is still held; a window that waited on it would sit until the
-//! shared hang bound, when the stall gives up and says so.
+//! A device that does not answer until the test lets it go, for proving that
+//! the window never waits on one. The test looks at the window while the stall
+//! is still held; a window that waited on it would sit until the shared hang
+//! bound, when the stall gives up and says so.
 
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -11,7 +11,6 @@ struct State {
     gave_up: bool,
 }
 
-/// A gate every call of a stalled device waits on.
 #[derive(Default)]
 pub struct Stall {
     state: Mutex<State>,
@@ -40,13 +39,11 @@ impl Stall {
         open
     }
 
-    /// Let every call answer.
     pub fn release(&self) {
         self.state.lock().unwrap().open = true;
         self.released.notify_all();
     }
 
-    /// Stall every call from here on again.
     pub fn hold(&self) {
         self.state.lock().unwrap().open = false;
     }

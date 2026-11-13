@@ -1,7 +1,6 @@
 //! The Sound page as view code over the person's `audio` section and the
-//! session's `sound` reading: the outputs and inputs, the levels, the
-//! cards' profiles, each app's stream, the way into Speakers and the
-//! system sounds.
+//! session's `sound` reading: the outputs and inputs, the levels, the cards'
+//! profiles, each app's stream, the way into Speakers and the system sounds.
 
 use std::rc::Rc;
 
@@ -27,10 +26,6 @@ use provider_settings_ui::widgets::{
     setting_row_described,
 };
 
-/// The Sound page. The page is built again when what it shows of the
-/// section changes shape (system sounds turned on or off, mono output
-/// changed), and when the device reports something new or a change of it
-/// says how it went; the device is followed while the page is open.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let following = held.model().borrow_mut().follow();
@@ -57,7 +52,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
             if let Some(area) = area(&app) {
                 area.saw_mono(mono_on);
             }
-            // The part keeps the device followed while it is shown.
             cx.switch(&shown, move |cx, _| {
                 let _followed = &following;
                 match area(&app) {
@@ -69,7 +63,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     })
 }
 
-/// The page over what `area` read, system sounds on or off (`sounds_on`).
 fn page(
     cx: &ViewCx<AudioPrefs>,
     actions: &Actions<Settings>,
@@ -103,9 +96,6 @@ fn page(
         input_card(cx, actions, &model),
     ];
     cards.extend(hardware_card(cx, actions, &model));
-    // One line per playback stream, routing just that app to a chosen
-    // output, with its own volume and mute: the music app to the headphones
-    // while the browser stays on the speakers.
     cards.push(streams_card(
         dispatcher,
         &model,
@@ -114,8 +104,6 @@ fn page(
         model.outputs(),
         &t("sound-apps-empty"),
     ));
-    // The capture streams (which app is using the microphone), routed to a
-    // chosen input, with their own level and mute.
     cards.push(streams_card(
         dispatcher,
         &model,
@@ -129,7 +117,6 @@ fn page(
     provider_settings_ui::widgets::page(cards)
 }
 
-/// `control` (a button), bound to `effect`.
 fn invoking<C: ui::framework::ActionControl<()>>(
     actions: &Actions<Settings>,
     control: C,
@@ -138,7 +125,6 @@ fn invoking<C: ui::framework::ActionControl<()>>(
     actions.bind_effect_invocation(control, &effect.into())
 }
 
-/// The way into Speakers: several of your devices as one set.
 fn speakers_card(actions: &Actions<Settings>) -> SettingsSection {
     let open = invoking(
         actions,
@@ -173,8 +159,6 @@ fn output_card(
         ))));
     }
     if model.outputs().len() + model.sets.shown.len() >= 2 {
-        // The outputs as a list to pick from, the person's speaker sets
-        // among them: the one in use checked.
         output_rows.push(row(device_list(actions, model, model.outputs(), true)));
     }
     if let Some(error) = &model.volume_error {
@@ -185,7 +169,6 @@ fn output_card(
     } else {
         output_rows.push(setting_row(&t("sound-volume"), volume_line(actions, model)));
     }
-    // A stereo output is the one a channel test and a balance apply to.
     let stereo = model
         .output_device()
         .is_some_and(|device| device.channels == 2);
@@ -197,8 +180,6 @@ fn output_card(
         output_rows.push(note(&t("sound-mono-caption")));
     }
     if model.runtime_caps.channel_test && stereo {
-        // A tone on one side, then the other: one row, its two buttons the
-        // row's control.
         let side = |id: &str, label: &str, channel: &str| {
             invoking(
                 actions,
@@ -234,8 +215,6 @@ fn output_card(
     section(&t("sound-output"), rows(output_rows))
 }
 
-/// The output's volume and, beside it, the button that mutes it, as each
-/// app's line has.
 fn volume_line(actions: &Actions<Settings>, model: &AudioModel) -> Box<dyn Widget> {
     let volume = actions.bind_effect(
         Slider::from_state(&LocalState::new(f64::from(model.volume)))
@@ -285,7 +264,6 @@ fn volume_line(actions: &Actions<Settings>, model: &AudioModel) -> Box<dyn Widge
     )
 }
 
-/// The left/right balance, the section's field.
 fn balance(cx: &ViewCx<AudioPrefs>) -> Item {
     cx.setting(t("sound-balance")).custom(
         |prefs: &AudioPrefs| f64::from(prefs.balance.clamp(0.0, 1.0)),
@@ -305,8 +283,6 @@ fn balance(cx: &ViewCx<AudioPrefs>) -> Item {
     )
 }
 
-/// The "Input" card: the inputs to choose from, then the microphone level
-/// and (when the runtime supports it) a bounded microphone meter test.
 fn input_card(
     cx: &ViewCx<AudioPrefs>,
     actions: &Actions<Settings>,
@@ -369,9 +345,6 @@ fn input_card(
     section(&t("sound-input"), rows(input_rows))
 }
 
-/// The "Device capabilities" card: a profile chooser for each device
-/// offering more than one profile, and each output's codec. `None` when
-/// there is nothing to show: no empty card.
 fn hardware_card(
     cx: &ViewCx<AudioPrefs>,
     actions: &Actions<Settings>,
@@ -413,9 +386,6 @@ fn hardware_card(
     (!hardware_rows.is_empty()).then(|| section(&t("sound-hardware"), rows(hardware_rows)))
 }
 
-/// One streams card (Applications or Recording): each stream a line with
-/// its volume, mute and (with more than one device) where it plays, or
-/// `empty_note` rather than a made-up line.
 fn streams_card(
     dispatcher: &Dispatcher<Settings>,
     model: &AudioModel,
@@ -427,7 +397,6 @@ fn streams_card(
     if streams.is_empty() {
         return section(title, rows(vec![note(empty_note)]));
     }
-    // The routes: every device, after "follow the default".
     let mut options = vec![follow_shown()];
     options.extend(devices.iter().map(|d| d.label.clone()));
     let items: Vec<Item> = streams
@@ -445,8 +414,6 @@ fn streams_card(
     section(title, rows(items))
 }
 
-/// Outputs or inputs as rows to choose from, the one in use checked;
-/// choosing another plays (or records) through it.
 fn device_list(
     actions: &Actions<Settings>,
     model: &AudioModel,
@@ -516,10 +483,6 @@ fn device_list(
     Box::new(list)
 }
 
-/// One app's stream on one line: the app and what it plays, its volume, a
-/// mute button and, with more than one device to choose from (`routable`),
-/// where it plays. Its controls act on its row of the published surface,
-/// where its volume, mute and route are operations.
 fn stream_row(
     dispatcher: &Dispatcher<Settings>,
     model: &AudioModel,
@@ -560,8 +523,6 @@ fn stream_row(
             effect(AudioEffect::SET_STREAM_MUTED).map(move |()| (id, !muted)),
         ),
     );
-    // The volume and its mute button stay together, then the route; in a
-    // narrow window they move under the name.
     let mut controls = Row::new()
         .with_align_items(taffy::AlignItems::Center)
         .with_rhythm(ui::tokens::Rhythm::Related)
@@ -598,8 +559,6 @@ fn stream_row(
     Box::new(line)
 }
 
-/// The "System sounds" card: the master switch, then volume, theme and
-/// one switch per event while it is on (`sounds_on`).
 fn system_sounds_card(
     cx: &ViewCx<AudioPrefs>,
     model: &AudioModel,
@@ -634,7 +593,6 @@ fn system_sounds_card(
             AudioPrefs::paths().system_sounds.theme,
             themes,
             |prefs: &AudioPrefs| prefs.system_sounds.theme_name().to_owned(),
-            // The default theme is stored as no choice.
             |id: String| Ok((id != settings_store::system_sounds::DEFAULT_THEME).then_some(id)),
         ));
     }

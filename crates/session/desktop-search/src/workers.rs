@@ -172,7 +172,6 @@ impl SearchWorkers {
             answer,
             wake: ui::wake::WakeHandle::new(),
         };
-        let loop_wake = self.loop_wake.clone();
         {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if generation < state.generation {
@@ -187,14 +186,14 @@ impl SearchWorkers {
             }
             state.running.insert(key.to_owned());
         }
-        self.start(job, key, loop_wake);
+        self.start(job, key, self.loop_wake.as_ref());
     }
 
     /// Run `job` away from the frame, and once it is done let the query that
     /// waited for its source run. The answer wakes the desk: no frame is
     /// drawn for the search while its sources work. `loop_wake` is the host's
     /// own wake, where it asks the search from off the frames.
-    fn start(&self, job: Job, key: &str, loop_wake: Option<LoopWake>) {
+    fn start(&self, job: Job, key: &str, loop_wake: Option<&LoopWake>) {
         let workers = self.clone();
         let key = key.to_owned();
         let done = key.clone();
@@ -207,7 +206,7 @@ impl SearchWorkers {
         } = job;
         let unanswered = answer.clone();
         let asker = wake.clone();
-        let asked_loop = loop_wake.clone();
+        let asked_loop = loop_wake.cloned();
         let spawned = self.background.spawn("tilo-search", move || {
             // A source that panics answers nothing rather than taking the
             // worker down with it.
@@ -237,7 +236,7 @@ impl SearchWorkers {
                 hits: Vec::new(),
             });
             asker.wake();
-            if let Some(loop_wake) = &loop_wake {
+            if let Some(loop_wake) = loop_wake {
                 loop_wake();
             }
         }
@@ -260,9 +259,8 @@ impl SearchWorkers {
             }
             next
         };
-        let loop_wake = self.loop_wake.clone();
         if let Some(job) = next {
-            self.start(job, key, loop_wake);
+            self.start(job, key, self.loop_wake.as_ref());
         }
     }
 }

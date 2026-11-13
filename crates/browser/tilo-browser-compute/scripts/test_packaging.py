@@ -113,10 +113,10 @@ class CanonicalPackaging(unittest.TestCase):
                                 '(out/(name+"_bg.wasm")).write_bytes(bytes([0,97,115,109,1,0,0,0,5,5,1,1,18,128,32]))\n',
                 # --fetch STAGE exec PROGRAM ARGS...: PROGRAM in a target dir of
                 # its own, then STAGE mirrored into this tree's target dir.
-                'rcargo': '#!/bin/sh\nset -e\n[ "$1" != metadata ] || exec cargo "$@"\nfetch=\nwhile [ $# -gt 0 ]; do\n'
+                'builder-cargo': '#!/bin/sh\nset -e\n[ "$1" != metadata ] || exec cargo "$@"\nfetch=\nwhile [ $# -gt 0 ]; do\n'
                           '  case "$1" in --fetch) fetch=$2; shift 2 ;; exec) shift; break ;; *) shift ;; esac\ndone\n'
                           '[ "${1:-}" != --help ] || { echo "with --fetch PATH, PATH is mirrored back"; exit 0; }\n'
-                          '[ -n "$fetch" ] || { echo "rcargo: no --fetch before exec" >&2; exit 2; }\n'
+                          '[ -n "$fetch" ] || { echo "builder-cargo: no --fetch before exec" >&2; exit 2; }\n'
                           'printf "%s\\n" "$fetch" >> "$FAKE_LOG"\n'
                           'CARGO=cargo CARGO_TARGET_DIR=$FAKE_BUILDER_TARGET FAKE_BUILDER=1 "$@"\n'
                           '[ -z "${FAKE_BUILDER_MISSING:-}" ] || exit 0\n'
@@ -137,7 +137,7 @@ class CanonicalPackaging(unittest.TestCase):
             env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}',
                        CARGO_METADATA_TARGET=str(target), FAKE_BUILDER_TARGET=str(temp / 'builder-target'),
                        FAKE_LOG=str(temp / 'steps.log'), REAL_NODE=shutil.which('node'),
-                       WASM_BINDGEN=str(tools / 'wasm-bindgen'), CARGO=str(tools / 'rcargo'))
+                       WASM_BINDGEN=str(tools / 'wasm-bindgen'), CARGO=str(tools / 'builder-cargo'))
             out = temp / 'bundle'
             subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
                             str(out), '--profile', 'dev'], cwd=ROOT, env=env, check=True,

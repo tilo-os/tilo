@@ -24,6 +24,8 @@ unic-langid.workspace = true
 hex = { workspace = true, optional = true }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
+# One rule for which language a locale names, shared with the packs.
+tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 

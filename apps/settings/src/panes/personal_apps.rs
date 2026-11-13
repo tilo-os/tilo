@@ -1,8 +1,7 @@
-//! Personal default applications: which installed app opens each kind of
-//! file and link for this person, wherever they sign in. The choices are the
+//! Personal default applications: which installed app opens each kind of file
+//! and link for this person, wherever they sign in. The choices are the
 //! `default_apps` section of the person's settings, which the launcher reads
-//! when it opens a file or a link. Workspace policy deliberately does not live
-//! here: it is contextual and belongs to the shell's Workspace Settings.
+//! when it opens a file or a link.
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
@@ -29,19 +28,15 @@ crate::effects::effect_family!(DefaultAppsEffect => answer);
 
 crate::area::pane_area!(DefaultAppsArea);
 
-/// The window's [`DefaultAppsArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DefaultAppsArea> {
     app.areas().find()
 }
 
-/// The most kinds of file and link the published tree lists.
 const MAX_KIND_ROWS: usize = 256;
-/// The most apps one kind lists.
 const MAX_APP_ROWS: usize = 128;
 
 pub use crate::prefs::DefaultApps;
 
-/// The defaults `apps` holds, by the kinds they are kept for.
 fn personal(apps: &DefaultApps) -> PersonalDefaults {
     PersonalDefaults {
         handlers: apps
@@ -52,7 +47,6 @@ fn personal(apps: &DefaultApps) -> PersonalDefaults {
     }
 }
 
-/// Which app opens each kind of file and link.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DefaultAppsEffect {
@@ -105,27 +99,19 @@ pub(crate) fn answer(
         .map(|()| Effected::done())
 }
 
-/// The kind a stored handler names.
 fn stored_kind(kind: &str) -> Option<ResourceKind> {
     serde_json::from_value(serde_json::Value::String(kind.to_owned())).ok()
 }
 
-/// What the Default Apps area keeps for the window: the choices as last
-/// read, and the installed apps that claim kinds of files and links.
 pub struct DefaultAppsArea {
     prefs: RefCell<SettingsCache<DefaultApps>>,
     candidates: OnceCell<Vec<AppCandidate>>,
     sample: bool,
-    /// The installed apps, read off the UI thread after the window's first
-    /// frame ([`Self::start_read`]).
     pub(crate) read: crate::device_read::DeviceRead<Vec<AppCandidate>>,
-    /// The rows, kept for the defaults version and locale they show.
     rows: crate::effects::RowsMemo<(ui::storage::SettingsRevision, u64)>,
 }
 
 impl DefaultAppsArea {
-    /// The area over `cx`'s settings. A capture lists sample apps rather
-    /// than the ones this device has installed.
     pub fn new(cx: &AreaContext) -> Self {
         Self {
             prefs: RefCell::new(SettingsCache::new(cx.storage.settings::<DefaultApps>())),
@@ -136,7 +122,6 @@ impl DefaultAppsArea {
         }
     }
 
-    /// The area among `candidates` in place of the apps installed.
     #[cfg(test)]
     fn over(cx: &AreaContext, candidates: Vec<AppCandidate>) -> Self {
         Self {
@@ -153,7 +138,6 @@ impl DefaultAppsArea {
         })
     }
 
-    /// Every installed app's manifest claims, or the sample a capture lists.
     fn read_candidates(sample: bool) -> Vec<AppCandidate> {
         if sample {
             sample_candidates()
@@ -162,8 +146,6 @@ impl DefaultAppsArea {
         }
     }
 
-    /// Read the installed apps off the UI thread; `false` when they have
-    /// been read or are being read.
     pub(crate) fn start_read(&self) -> bool {
         if self.is_open() {
             return false;
@@ -172,16 +154,10 @@ impl DefaultAppsArea {
         self.read.start(move || Self::read_candidates(sample))
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.candidates.get().is_some()
     }
 
-    /// One live row per kind of file or link, showing the app that opens it
-    /// now, with a row per installed app that claims it offering to make it
-    /// the default.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let mut prefs = self.prefs.borrow_mut();
         prefs.refresh();
@@ -238,7 +214,6 @@ impl DefaultAppsArea {
     }
 }
 
-/// The apps a capture lists.
 fn sample_candidates() -> Vec<AppCandidate> {
     let claim = |package: &str, name: &str, kinds: Vec<ResourceKind>| AppCandidate {
         package_id: package.into(),
@@ -270,7 +245,6 @@ fn sample_candidates() -> Vec<AppCandidate> {
     ]
 }
 
-/// Every kind some candidate claims, in order.
 fn kinds(candidates: &[AppCandidate]) -> Vec<ResourceKind> {
     let mut kinds: Vec<_> = candidates
         .iter()
@@ -281,7 +255,6 @@ fn kinds(candidates: &[AppCandidate]) -> Vec<ResourceKind> {
     kinds
 }
 
-/// The candidates that claim `kind`, by name.
 fn apps_for<'a>(candidates: &'a [AppCandidate], kind: &ResourceKind) -> Vec<&'a AppCandidate> {
     let mut apps: Vec<_> = candidates.iter().filter(|app| app.handles(kind)).collect();
     apps.sort_by(|a, b| {
@@ -310,7 +283,6 @@ fn shown_app(
         .unwrap_or_default()
 }
 
-/// What a kind's rows call it: "PDF documents", "Secure web links".
 fn resource_label(resource: &ResourceKind) -> String {
     if let Some(ext) = resource.extension_name() {
         t_args(
@@ -327,30 +299,22 @@ fn resource_label(resource: &ResourceKind) -> String {
     }
 }
 
-/// What a chooser stores for `app`: its package, shown by its name.
 fn option(app: &AppCandidate) -> String {
     app.package_id.clone()
 }
 
-/// The Default apps page as view code over the person's choices
-/// ([`DefaultApps`]), among the apps the area read as installed.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let candidates: Rc<[AppCandidate]> = area(app)?.candidates().into();
     let actions = cx.actions();
     let section = cx.settings::<DefaultApps>();
     cx.record(&section, move |cx| {
         let (candidates, actions) = (Rc::clone(&candidates), actions.clone());
-        // A changed choice rebuilds the choosers, as each names the app it
-        // shows.
         cx.switch(&cx.value(DefaultApps::clone), move |_, apps| {
             page(&actions, &candidates, apps)
         })
     })
 }
 
-/// The page over the person's choices as they are now (`apps`): a chooser
-/// per kind some installed app claims, and the way to the workspace's own
-/// rules.
 fn page(actions: &Actions<Settings>, candidates: &[AppCandidate], apps: &DefaultApps) -> Element {
     let defaults = personal(apps);
     let mut file_rows = Vec::new();
@@ -386,7 +350,6 @@ fn page(actions: &Actions<Settings>, candidates: &[AppCandidate], apps: &Default
     } else {
         file_rows.push(note(&t("settings-personal-apps-choice-follows")));
     }
-    // A workspace's own rules are that workspace's: one row opens them.
     let workspace = untitled(rows(vec![setting_row_described(
         &t("settings-personal-apps-workspace-rules"),
         &t("settings-personal-apps-scope-caption"),
@@ -542,14 +505,12 @@ mod tests {
     fn choosing_a_default_preserves_other_saved_handlers() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let settings = app.settings::<DefaultApps>();
-        // Open the area's cached snapshot before another writer changes it.
         let _ = app.agent_surface();
         settings
             .update(|stored| {
                 stored
                     .handlers
                     .insert("ext:txt".into(), "so.tilo.notes".into());
-                // A newer reader may understand kinds this version cannot parse.
                 stored
                     .handlers
                     .insert("future:document".into(), "so.tilo.future".into());

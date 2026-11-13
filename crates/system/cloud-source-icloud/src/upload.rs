@@ -1,11 +1,6 @@
 //! Uploads: `upload/web` reserves a document and a content URL, the bytes go
 //! to the content server in one multipart `POST`, and `update/documents`
 //! commits them under a name in the parent folder.
-//!
-//! Replacing a file commits the new bytes to the existing document id, so
-//! the item keeps its identity. Should Apple refuse that, or answer with a
-//! different document, the old file is moved to the trash and the new one
-//! takes its name: the bytes are replaced either way, only the id changes.
 
 use std::io::{Cursor, Read};
 
@@ -25,7 +20,6 @@ pub struct Upload {
     name: String,
     zone: String,
     mime: &'static str,
-    /// The file being replaced, as it was when the upload began.
     replace: Option<Item>,
     expect: Option<cloud_source::Revision>,
     slot: api::UploadSlot,

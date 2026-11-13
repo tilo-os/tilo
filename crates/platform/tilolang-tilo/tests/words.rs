@@ -153,7 +153,8 @@ fn notebooks_find_notes() {
         .resource_type
         .as_ref()
         .expect("a notebook says what it is");
-    // What English cannot derive from "notes" ("noteses"): the catalogue's nouns, by count.
+    // The app calls a note a notebook: a noun its own, which the catalogue says, not the derived
+    // one ("note", or "notes" as a plural name would read).
     assert_eq!(
         (ty.noun.one.as_str(), ty.noun.many.as_str()),
         ("notebook", "notebooks")
@@ -300,6 +301,56 @@ fn every_apps_catalogue_parses() {
         }
     }
     assert!(read >= 9, "an app ships a catalogue ({read} read)");
+}
+
+/// The words a drawn window shows, in the order the tree holds them: every text of a node and of
+/// its children, whatever prop carries it.
+fn drawn(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
+    for value in node.props.values() {
+        if let tilolang_runtime::Value::Text(text) = value {
+            out.push(text.clone());
+        }
+    }
+    for child in &node.children {
+        drawn(child, out);
+    }
+}
+
+/// A German desktop's counter window draws German: its catalogue reaches what the window shows,
+/// not only the labels it publishes, so the window's title, its section's name and its two
+/// buttons read in the person's language and nothing of them in English.
+#[test]
+fn a_german_counter_window_draws_german() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/counter");
+    let source = tilolang::PackageSource::read_dir(&dir).expect("the counter package reads");
+    let ids = tilolang::IdsLock::parse(
+        &std::fs::read_to_string(dir.join("app.ids")).expect("the counter package's ids"),
+    )
+    .expect("its ids parse");
+    let compiled =
+        tilolang::compile_package_source(&source, &ids, &[]).expect("the counter package compiles");
+    ui::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", "")]).expect("the German words");
+    let record = automerge::AutoCommit::new();
+    let host = Host::new(&record, Principal::new("ada"), || None).expect("a host");
+    host.set_words(Toolkit);
+    host.load_compiled(&compiled).expect("the counter loads");
+    let view = host
+        .open_main("so.tilo.lang.counter")
+        .expect("its window opens");
+    let mut words = Vec::new();
+    drawn(view.tree(), &mut words);
+    for word in ["Zähler", "Anzahl", "Erhöhen", "Verringern"] {
+        assert!(
+            words.iter().any(|said| said == word),
+            "the window says {word}: {words:?}"
+        );
+    }
+    for english in ["Counter", "Count", "Increment", "Decrement"] {
+        assert!(
+            !words.iter().any(|said| said == english),
+            "and nothing of it in English ({english}): {words:?}"
+        );
+    }
 }
 
 #[test]

@@ -607,6 +607,9 @@ pub struct DeskAuthority {
     /// whose governance names them by one of those is theirs, and what the broker decides in it is
     /// as theirs.
     names: Names,
+    /// Who is here in each workspace, by the person they are, as presence names and colours them:
+    /// what the broker tells the apps there of each member ([`Self::set_people`]).
+    people: Mutex<std::collections::HashMap<String, Vec<tilo_desktop_model::Collaborator>>>,
 }
 
 /// Who the person at this device is, as the broker's decisions name them.
@@ -636,17 +639,52 @@ impl DeskAuthority {
             revocations,
             journal,
             names,
+            people: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Who is here in `workspace` now: each person by their user root, with the name and colour
+    /// every surface here draws them in. The broker tells the apps there, so a person's caret and
+    /// marks in a window wear the name and colour of their face on the bar. Nothing is published
+    /// while it holds still.
+    pub fn set_people(&self, workspace: &str, people: Vec<tilo_desktop_model::Collaborator>) {
+        {
+            let mut held = self.people.lock_recover();
+            if held.get(workspace) == Some(&people) {
+                return;
+            }
+            held.insert(workspace.to_owned(), people);
+        }
+        let mut tree = self.tree.lock_recover();
+        self.seat_people(&mut tree);
+        drop(tree);
+        self.announce();
+    }
+
+    /// Write who is here into each workspace of `tree` presence names people in.
+    fn seat_people(&self, tree: &mut tilo_desktop_model::DesktopTree) {
+        let people = self.people.lock_recover();
+        for workspace in &mut tree.workspaces {
+            if let Some(here) = people.get(&workspace.id().to_string()) {
+                workspace.collaborators.clone_from(here);
+            }
+        }
+    }
+
+    /// Tell the broker the desk it decides against moved.
+    fn announce(&self) {
+        self.generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        tilo_identity_host::policy_change::announce();
     }
 
     /// The desk as the loop shows it now, for the broker's next decision, which re-checks what
     /// it holds on the announcement rather than on a clock.
     pub fn publish(&self, mut tree: tilo_desktop_model::DesktopTree) {
         claim_earlier_owners(&mut tree, &self.names);
+        self.seat_people(&mut tree);
         *self.tree.lock_recover() = tree;
-        self.generation
-            .send_modify(|generation| *generation = generation.wrapping_add(1));
-        tilo_identity_host::policy_change::announce();
+        self.announce();
     }
 
     /// Wait until the desk, as the loop publishes it, satisfies `held`: a
@@ -1012,7 +1050,8 @@ fn seams(
         });
     // What each installed app's signed manifest declares it may do on the
     // action door: a ceiling the broker decides an app's calls against.
-    let app_action_access = crate::seams::declared_access(lists);
+    let app_action_access = crate::seams::declared_access(lists.clone());
+    let app_resource_kinds = crate::seams::declared_resource_kinds(lists);
     // Where the broker keeps the actions of apps that are closed, beside the
     // journal of what it admitted: a closed app's actions survive a restart.
     let launchable_catalogue = journal_root.as_ref().and_then(|journal| {
@@ -1184,6 +1223,7 @@ fn seams(
         // files runs.
         file_clipboard: Seam::served(file_clipboard),
         app_action_access: Seam::served(app_action_access),
+        app_resource_kinds: Seam::served(app_resource_kinds),
         // A grant for an app to take another app's action is kept in a
         // workspace's own record, which this session's engine commits; the
         // host records none of them for the door to ask.

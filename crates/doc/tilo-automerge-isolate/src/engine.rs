@@ -8,8 +8,6 @@ use tilo_automerge::ApplyIncoming as _;
 
 use crate::{Applied, Dependencies, Rejected};
 
-/// Load a complete document, refusing input with a malformed tail rather
-/// than keeping the part before it.
 pub(crate) fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     AutoCommit::load_with_options(bytes, strict()).map_err(|e| Rejected::Invalid(e.to_string()))
 }
@@ -123,7 +121,6 @@ pub(crate) fn apply(
     apply_trusted(doc, incoming, dependencies)
 }
 
-/// A document with no changes, applied or queued.
 pub(crate) fn is_blank(doc: &mut AutoCommit) -> bool {
     doc.get_heads().is_empty() && doc.get_missing_deps(&[]).is_empty()
 }
@@ -148,8 +145,6 @@ fn parse_alone(chunk: crate::precheck::Chunk<'_>) -> Result<(), Rejected> {
             }
             Ok(())
         }
-        // On its own, a change whose dependencies are elsewhere loads as
-        // `MissingDeps`: every chunk parsed, which is all this asks.
         _ => match automerge::Automerge::load_with_options(chunk.bytes, strict()) {
             Ok(_) | Err(automerge::AutomergeError::MissingDeps) => Ok(()),
             Err(error) => Err(invalid(error)),
@@ -207,7 +202,6 @@ impl Key {
         Self(bytes)
     }
 
-    /// The state of a document with no changes, applied or queued.
     pub(crate) fn is_blank(&self) -> bool {
         self.complete_heads().is_some_and(|heads| heads.is_empty())
     }
@@ -220,8 +214,6 @@ impl Key {
         &self.0
     }
 
-    /// The heads, when nothing is queued: a state the caller can extend
-    /// with the changes it has made since.
     pub(crate) fn complete_heads(&self) -> Option<Vec<ChangeHash>> {
         let (heads, rest) = read_hashes(&self.0)?;
         let (missing, rest) = read_hashes(rest)?;

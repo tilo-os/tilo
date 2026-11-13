@@ -1,11 +1,6 @@
-//! The secret half of each account: its base32 seed, kept in the app's
-//! secret store on this device as the account's item secret
-//! (`secrets().item("seed", id)`).
-//!
-//! The document names accounts and never holds a seed, so every device keeps
-//! its own copy of the seeds it was given. A seed that cannot be read or
-//! written is kept for this session and reported; the user retries once the
-//! store answers again, never a loop.
+//! Each account's base32 seed, kept in this device's secret store under the
+//! account's item secret. The document never holds a seed; one the store will
+//! not take is kept for this session and reported.
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,28 +8,24 @@ use ui::secrets::SecretStore;
 
 use crate::model::AccountId;
 
-/// The purpose every account's seed is stored under.
+/// The secret-store purpose of every account's seed.
 const SEED: &str = "seed";
 
-/// A change the store has not taken yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Unsaved {
     Put(String),
     Forget,
 }
 
-/// The seeds of the accounts a view shows, read from and written to one
-/// store.
+/// The seeds of the accounts a view shows.
 pub(crate) struct Seeds {
     store: SecretStore,
-    /// Whether this view may change the store. A past version shows the
-    /// seeds it finds and never forgets or writes one.
+    /// A past version shows the seeds it finds and never writes one.
     writable: bool,
     known: HashMap<AccountId, String>,
-    /// Accounts whose seed was looked up, present or not.
+    /// Accounts whose seed was looked up.
     probed: HashSet<AccountId>,
     unsaved: HashMap<AccountId, Unsaved>,
-    /// A lookup failed: the store is locked or gone.
     unreadable: bool,
 }
 
@@ -50,9 +41,8 @@ impl Seeds {
         }
     }
 
-    /// Follow the accounts the document holds now: look up the seed of each
-    /// new one, and forget the seed of an account that left the document,
-    /// as deleting it there asks.
+    /// Look up each new account's seed, and forget the seed of one that left the
+    /// document.
     pub(crate) fn follow(&mut self, accounts: &[AccountId]) {
         let present: HashSet<AccountId> = accounts.iter().copied().collect();
         let gone: Vec<AccountId> = self
@@ -93,13 +83,12 @@ impl Seeds {
         }
     }
 
-    /// This device's seed for `id`, if it has one.
     pub(crate) fn get(&self, id: AccountId) -> Option<&str> {
         self.known.get(&id).map(String::as_str)
     }
 
-    /// Keep `seed` as the seed of `id` on this device. `false` when the store
-    /// did not take it: the seed still works for this session.
+    /// `false` when the store did not take it; the seed still works for this
+    /// session.
     pub(crate) fn put(&mut self, id: AccountId, seed: &str) -> bool {
         self.known.insert(id, seed.to_owned());
         self.probed.insert(id);
@@ -125,18 +114,16 @@ impl Seeds {
         }
     }
 
-    /// Whether a seed is unsaved or the store could not be read.
     pub(crate) fn pending(&self) -> bool {
         self.unreadable || !self.unsaved.is_empty()
     }
 
-    /// Whether the store could not be read.
     pub(crate) fn unreadable(&self) -> bool {
         self.unreadable
     }
 
-    /// Try the store again: write what it did not take, and look up the
-    /// seeds of `accounts` it could not read. `true` when nothing is left.
+    /// Write again what the store did not take and look up unreadable seeds.
+    /// `true` when nothing is left.
     pub(crate) fn retry(&mut self, accounts: &[AccountId]) -> bool {
         let unsaved: Vec<(AccountId, Unsaved)> = self.unsaved.drain().collect();
         for (id, change) in unsaved {
@@ -154,15 +141,13 @@ impl Seeds {
     }
 }
 
-/// A secret store that refuses everything while it is down, for tests of
-/// what the app does then.
+/// A secret store that refuses everything while it is down, for tests.
 #[cfg(test)]
 pub(crate) mod flaky {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use ui::secrets::{Protection, Secret, SecretBackend, SecretError};
 
-    /// A store that refuses everything while `down` is set.
     pub(crate) struct Flaky {
         pub(crate) down: AtomicBool,
         inner: Arc<dyn SecretBackend>,
@@ -236,7 +221,6 @@ mod tests {
         assert_eq!(other.get(id(1)), Some("JBSWY3DPEHPK3PXP"));
         assert_eq!(other.get(id(2)), None, "no seed was given for this one");
 
-        // The account leaves the document: its seed leaves the device.
         other.follow(&[id(2)]);
         assert_eq!(other.get(id(1)), None);
         assert!(!store.item(SEED, &id(1).to_string()).present_blocking());

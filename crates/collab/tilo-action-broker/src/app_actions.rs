@@ -14,7 +14,9 @@
 //! ([`AppActionGrants`](crate::services::AppActionGrants)). Nobody present
 //! means nobody to ask: the request is refused without a sheet.
 
-pub use tilo_broker_core::access::{AppActionAccess, AppActionAccessResolver, nothing_declared};
+pub use tilo_broker_core::access::{
+    AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver, nothing_declared,
+};
 
 use tilo_action_policy::Lifetime;
 use tokio::sync::oneshot;

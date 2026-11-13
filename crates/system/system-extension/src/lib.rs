@@ -1,25 +1,13 @@
 //! Signed desired state for optional image extensions.
 //!
-//! Tilo's root is a signed, immutable bootc/composefs deployment. Optional
-//! kernel modules, GPU stacks, and local-model runtimes must therefore not be
-//! installed by an arbitrary package manager into that root. This crate is the
-//! deliberately small policy seam between a catalogue/downloader and the image
-//! updater:
-//!
-//! * a manifest is signed by an explicitly trusted release key;
-//! * the artifact and the base image are content-addressed pins;
-//! * a manifest targets one image digest (and, optionally, an architecture or
-//!   kernel ABI), so an extension cannot silently survive an incompatible base
-//!   update;
-//! * state changes use a durable, atomic two-phase transaction; and
-//! * this crate never downloads, mounts, loads a module, invokes a package
-//!   manager, or changes a boot deployment.
-//!
-//! A privileged image builder may consume a committed [`AcceptedExtension`]
-//! set on its next deployment. It must still verify the artifact independently.
-//! A crash with a pending transaction is inert and fails closed: the previous
-//! accepted set stays active until the transaction is explicitly completed or
-//! aborted.
+//! A manifest is signed by a trusted release key, pins the artifact and the base
+//! image by digest, and targets one image digest (optionally an architecture and
+//! kernel ABI), so an extension cannot survive an incompatible base update. State
+//! changes are one durable transaction, and this crate never downloads, mounts,
+//! loads a module, invokes a package manager or changes a boot deployment: a
+//! builder consumes a committed [`AcceptedExtension`] set and verifies the
+//! artifact itself. A crash with a pending transaction is inert: the accepted set
+//! stays active until the transaction is completed or aborted.
 
 #![allow(
     clippy::missing_errors_doc,
@@ -35,14 +23,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// Wire/schema version for manifests and desired state.
 pub const SCHEMA_VERSION: u16 = 1;
-// Frozen signing bytes retain their historical prefix across product renames.
+// Frozen: the signing domain keeps its historical prefix across product renames.
 const SIGNING_DOMAIN: &str = "tilo.system-extension.manifest.v1";
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Hardware-neutral extension family. The kind is UX/policy metadata; it is
-/// not a permission and never changes what the manifest may do.
+/// Hardware-neutral family, UI and policy metadata: not a permission, and it
+/// never changes what the manifest may do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionKind {
@@ -52,30 +39,27 @@ pub enum ExtensionKind {
     Other,
 }
 
-/// A content-addressed artifact. `source` is only a retrieval hint; its hash
-/// and declared byte length are the identity the updater must enforce.
+/// A content-addressed artifact; `source` is a retrieval hint, and the hash and
+/// byte length are the identity the updater enforces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PinnedArtifact {
     pub source: String,
-    /// Lowercase hexadecimal SHA-256 with no algorithm prefix.
+    /// Lowercase hex SHA-256, no algorithm prefix.
     pub sha256: String,
     pub size_bytes: u64,
 }
 
-/// Exact compatibility constraints for the immutable base deployment.
+/// Exact compatibility constraints for the base deployment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageConstraint {
-    /// OCI image manifest digest, always `sha256:<64 lowercase hex digits>`.
     pub base_image_digest: String,
-    /// Optional exact machine architecture (`x86_64`, `aarch64`, ...).
     pub architecture: Option<String>,
-    /// Optional exact kernel ABI, supplied by the image build pipeline.
     pub kernel_abi: Option<String>,
 }
 
-/// The immutable image identity the updater supplies for preflight checks.
+/// The running image's identity, as the updater reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostImage {
     pub digest: String,
@@ -83,26 +67,25 @@ pub struct HostImage {
     pub kernel_abi: String,
 }
 
-/// One signed request to make an optional extension part of a future system
-/// deployment. It is a description only, never an installation script.
+/// One signed request to add an extension to a future deployment; a description,
+/// never an installation script.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionManifest {
     pub schema_version: u16,
-    /// Stable, lower-case extension id (`nvidia-open`, `llama-runtime`).
     pub id: String,
     pub kind: ExtensionKind,
     pub version: String,
     pub artifact: PinnedArtifact,
     pub target: ImageConstraint,
-    /// A UI hint for the image updater. It must not be interpreted as a shell
-    /// command or override normal boot-health policy.
+    /// A UI hint for the updater; never a shell command and never boot-health
+    /// policy.
     pub requires_reboot: bool,
 }
 
 impl ExtensionManifest {
-    /// Reject malformed or ambiguous manifest data before it is signed or
-    /// trusted. Unknown schema versions are never guessed at.
+    /// Reject malformed or ambiguous data before it is signed or trusted; an
+    /// unknown schema version is refused.
     pub fn validate(&self) -> Result<(), ExtensionError> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(ExtensionError::UnsupportedSchema(self.schema_version));
@@ -124,9 +107,8 @@ impl ExtensionManifest {
         Ok(())
     }
 
-    /// Check this declaration against the base image selected by the updater.
-    /// The comparison is exact; a tag, a prefix, or a similar kernel release
-    /// is not a compatibility proof.
+    /// Check the declaration against the base image the updater selected. A tag, a
+    /// prefix or a similar kernel release is not a compatibility proof.
     pub fn preflight(&self, host: &HostImage) -> Result<(), ExtensionError> {
         self.validate()?;
         validate_oci_digest(&host.digest)?;
@@ -154,8 +136,8 @@ impl ExtensionManifest {
         Ok(())
     }
 
-    /// Verify bytes downloaded by a separate transport. This has no I/O so a
-    /// caller can stream into its own safe cache and decide where it belongs.
+    /// Verify bytes a separate transport downloaded. No I/O, so a caller can
+    /// stream into its own cache.
     pub fn verify_artifact(&self, bytes: &[u8]) -> Result<ArtifactReceipt, ExtensionError> {
         let actual_size =
             u64::try_from(bytes.len()).map_err(|_| ExtensionError::ArtifactTooLarge)?;
@@ -176,9 +158,9 @@ impl ExtensionManifest {
     }
 }
 
-/// A verified local artifact observation. It is stored only after the bytes
-/// match the signed pin; it is not a path, avoiding a stale mutable path being
-/// mistaken for the verified object after a reboot.
+/// A verified artifact observation, stored only after the bytes match the signed
+/// pin. It is not a path, so a stale path after a reboot cannot pass for the
+/// verified object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactReceipt {
@@ -186,8 +168,8 @@ pub struct ArtifactReceipt {
     pub size_bytes: u64,
 }
 
-/// A manifest plus the release-key identity and Ed25519 signature over its
-/// canonical postcard representation.
+/// A manifest with the release-key identity and the Ed25519 signature over its
+/// canonical postcard bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignedExtensionManifest {
@@ -203,8 +185,8 @@ struct SigningPayload<'a> {
 }
 
 impl SignedExtensionManifest {
-    /// Create a release envelope. Production release tooling owns the private
-    /// key; devices need only [`Self::verify`].
+    /// Make a release envelope. The release tooling owns the private key; devices
+    /// need only [`Self::verify`].
     pub fn sign(
         manifest: ExtensionManifest,
         key_id: impl Into<String>,
@@ -222,7 +204,7 @@ impl SignedExtensionManifest {
         })
     }
 
-    /// Verify both manifest shape and its signature against a pinned keyring.
+    /// Verify the manifest's shape and signature against a pinned keyring.
     pub fn verify(&self, trusted_keys: &TrustedKeyring) -> Result<(), ExtensionError> {
         self.manifest.validate()?;
         validate_identifier("key id", &self.key_id)?;
@@ -237,9 +219,8 @@ impl SignedExtensionManifest {
     }
 }
 
-/// The release keys an image trusts. The keyring is expected to be owned by
-/// the signed base image; this type deliberately has no network/key-discovery
-/// mechanism.
+/// The release keys an image trusts; it comes from the signed base image, and
+/// there is no network or key discovery.
 #[derive(Clone, Debug, Default)]
 pub struct TrustedKeyring {
     keys: BTreeMap<String, VerifyingKey>,
@@ -260,8 +241,8 @@ impl TrustedKeyring {
     }
 }
 
-/// One extension accepted into desired state. It remains a declaration; an
-/// image builder is responsible for constructing a new immutable deployment.
+/// One extension accepted into desired state; a builder turns it into a new
+/// deployment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptedExtension {
@@ -270,8 +251,8 @@ pub struct AcceptedExtension {
     pub committed_revision: u64,
 }
 
-/// An interrupted transaction is intentionally visible and inactive. It can
-/// only be completed after the exact signed artifact is verified again.
+/// A pending transaction is visible and inert; it can be completed only after the
+/// signed artifact is verified again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingExtensionTransaction {
@@ -281,8 +262,8 @@ pub struct PendingExtensionTransaction {
     pub artifact: Option<ArtifactReceipt>,
 }
 
-/// Durable desired state. `active` means accepted for a future image build,
-/// not installed in the running root.
+/// Durable desired state. `active` means accepted for a future image build, not
+/// installed in the running root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionState {
@@ -331,9 +312,8 @@ impl ExtensionState {
         Ok(())
     }
 
-    /// Begin a two-phase desired-state transaction. This mutates no active
-    /// state, and a caller should persist it with [`ExtensionStateStore`]
-    /// before fetching any artifact.
+    /// Begin a two-phase transaction. It activates nothing; persist it with
+    /// [`ExtensionStateStore`] before fetching any artifact.
     pub fn begin(
         &mut self,
         transaction_id: impl Into<String>,
@@ -375,14 +355,12 @@ impl ExtensionState {
         Ok(())
     }
 
-    /// Atomically promote the verified pending declaration into desired state.
-    /// It is impossible to commit an unverified artifact or to commit after the
-    /// base revision changed under the transaction.
+    /// Promote the verified declaration into desired state. An unverified artifact
+    /// cannot be committed, nor after the base revision changed.
     pub fn commit(&mut self, transaction_id: &str) -> Result<AcceptedExtension, ExtensionError> {
         self.validate()?;
-        // Compute fallible state before taking `pending`, so even the
-        // theoretical revision-overflow failure leaves the transaction intact
-        // for an explicit operator decision instead of silently dropping it.
+        // Compute the fallible state before taking `pending`, so a revision overflow
+        // leaves the transaction for the operator instead of dropping it.
         let next_revision = self
             .revision
             .checked_add(1)
@@ -414,8 +392,8 @@ impl ExtensionState {
         Ok(accepted)
     }
 
-    /// Discard only the named pending transaction. Existing accepted state is
-    /// untouched, which makes cancellation and crash recovery safe.
+    /// Discard only the named pending transaction; accepted state is untouched,
+    /// which makes cancellation and crash recovery safe.
     pub fn abort(&mut self, transaction_id: &str) -> Result<(), ExtensionError> {
         let pending = self
             .pending
@@ -428,8 +406,8 @@ impl ExtensionState {
         Ok(())
     }
 
-    /// Verify all accepted declarations before handing them to an image
-    /// builder. A malformed/tampered state file gives no active extensions.
+    /// Verify every accepted declaration before a builder sees it; a malformed or
+    /// tampered state file gives no extensions.
     pub fn accepted_for(
         &self,
         trusted_keys: &TrustedKeyring,
@@ -447,8 +425,8 @@ impl ExtensionState {
     }
 }
 
-/// Atomic JSON persistence for desired state. It intentionally exposes no
-/// "install" operation: callers can only stage/verify/commit declarations.
+/// Atomic JSON persistence for desired state. There is no install operation:
+/// callers can only stage, verify and commit.
 #[derive(Clone, Debug)]
 pub struct ExtensionStateStore {
     path: PathBuf,
@@ -486,9 +464,9 @@ impl ExtensionStateStore {
         state.validate()?;
         let mut bytes = serde_json::to_vec_pretty(state)?;
         bytes.push(b'\n');
-        // Desired state authorises a privileged image-build boundary.  Keep it
-        // owner-only before the atomic rename so a session cannot replace an
-        // accepted declaration between review and activation.
+        // Desired state authorises a privileged image build: owner-only mode is set
+        // before the atomic rename, so a session cannot replace an accepted
+        // declaration.
         tilo_files::native::atomic::write_creating_parent_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }

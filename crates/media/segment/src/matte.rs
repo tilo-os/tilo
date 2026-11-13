@@ -10,7 +10,6 @@
 
 use std::collections::VecDeque;
 
-/// How much of each pixel belongs to the subject, `0..=1`, row by row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Matte {
     pub width: usize,
@@ -51,8 +50,6 @@ impl Matte {
         }
     }
 
-    /// The same matte at `width` by `height`: averaged over each new
-    /// pixel's footprint where it shrinks, interpolated where it grows.
     #[must_use]
     pub fn resized(&self, width: usize, height: usize) -> Self {
         let width = width.max(1);
@@ -70,7 +67,6 @@ impl Matte {
     }
 }
 
-/// Each row of `plane` (`width` wide) resampled to `to` wide.
 fn resample_rows(plane: &[f32], width: usize, height: usize, to: usize) -> Vec<f32> {
     let weights = weights(width, to);
     let mut out = Vec::with_capacity(to * height);
@@ -84,8 +80,6 @@ fn resample_rows(plane: &[f32], width: usize, height: usize, to: usize) -> Vec<f
     out
 }
 
-/// Each column of `plane` (`width` wide, `height` tall) resampled to `to`
-/// tall.
 fn resample_columns(plane: &[f32], width: usize, height: usize, to: usize) -> Vec<f32> {
     let weights = weights(height, to);
     let mut out = vec![0.0; width * to];
@@ -101,9 +95,9 @@ fn resample_columns(plane: &[f32], width: usize, height: usize, to: usize) -> Ve
     out
 }
 
-/// For each of `to` samples along a side `from` long, the source samples
-/// it is made of and their weights: the footprint's area when shrinking,
-/// linear interpolation between pixel centres when growing.
+/// For each of `to` samples along a side `from` long, the source samples it is
+/// made of and their weights: area when shrinking, linear interpolation
+/// between pixel centres when growing.
 fn weights(from: usize, to: usize) -> Vec<Vec<(usize, f32)>> {
     let scale = from as f64 / to as f64;
     let last = from - 1;
@@ -132,10 +126,6 @@ fn weights(from: usize, to: usize) -> Vec<Vec<(usize, f32)>> {
         .collect()
 }
 
-/// The part of `matte` that is the one object at pixel `(x, y)`: the
-/// connected area of at least half coverage there (or nearest to it,
-/// within a twentieth of the matte), with its soft edge. `None` when no
-/// object is near.
 pub fn object_at(matte: &Matte, x: usize, y: usize) -> Option<Matte> {
     let (width, height) = (matte.width, matte.height);
     let solid = |at: usize| matte.values[at] >= 0.5;
@@ -163,8 +153,6 @@ pub fn object_at(matte: &Matte, x: usize, y: usize) -> Option<Matte> {
             }
         }
     }
-    // The soft edge around the object belongs to it: keep coverage within
-    // a few pixels of what was found.
     let near = grow(&inside, width, height, 3);
     let values = matte
         .values
@@ -175,7 +163,6 @@ pub fn object_at(matte: &Matte, x: usize, y: usize) -> Option<Matte> {
     Matte::new(width, height, values)
 }
 
-/// The solid pixel nearest `(x, y)` within `reach`.
 fn nearest_solid(
     matte: &Matte,
     x: usize,
@@ -202,7 +189,6 @@ fn nearest_solid(
         .map(|(at, _)| at)
 }
 
-/// `cells` grown by `by` pixels (a square reach).
 pub(crate) fn grow(cells: &[bool], width: usize, height: usize, by: usize) -> Vec<bool> {
     let mut across = vec![false; cells.len()];
     for y in 0..height {

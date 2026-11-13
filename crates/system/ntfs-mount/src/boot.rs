@@ -1,9 +1,4 @@
 //! Which disks were attached when this computer started (D5 criterion 4).
-//!
-//! A unit records the disks once, early in boot, by name and disk sequence
-//! number. The kernel gives every newly attached disk a fresh sequence
-//! number, so a disk unplugged and plugged back in, or a different disk that
-//! takes the same name later, no longer matches the record.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -12,13 +7,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Disk name to disk sequence number, as seen at boot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootDisks {
     pub disks: BTreeMap<String, u64>,
 }
 
-/// A disk's current sequence number, if the kernel reports one.
 pub fn diskseq(sys_root: &Path, disk: &str) -> Option<u64> {
     fs::read_to_string(sys_root.join("class/block").join(disk).join("diskseq"))
         .ok()
@@ -26,7 +19,6 @@ pub fn diskseq(sys_root: &Path, disk: &str) -> Option<u64> {
 }
 
 impl BootDisks {
-    /// Every disk attached now.
     pub fn record(sys_root: &Path) -> io::Result<Self> {
         let mut disks = BTreeMap::new();
         for entry in fs::read_dir(sys_root.join("block"))? {
@@ -47,7 +39,6 @@ impl BootDisks {
             .unwrap_or_default()
     }
 
-    /// Write the record.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
@@ -99,7 +90,6 @@ pub fn physical_disks(sys_root: &Path, name: &str) -> BTreeSet<String> {
     disks
 }
 
-/// The source device of the mount at `target` in a `mountinfo` listing.
 pub fn mount_source<'a>(mountinfo: &'a str, target: &str) -> Option<&'a str> {
     mountinfo.lines().find_map(|line| {
         let mut fields = line.split(' ');

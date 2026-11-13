@@ -13,17 +13,14 @@ use std::io;
 
 pub use crate::windows::Descriptor;
 
-/// The name the launcher hands the door under (`crate::service_fd`).
 pub const SERVICE: &str = "tilolang-origin";
 
-/// Where the door is in the connector's process.
 pub const CHILD_FD: i32 = 37;
 
 /// The variable the launcher names the origin the process connects with (`imap`). Set, the
 /// tilolang runtime runs that origin's connector instead of a window.
 pub const ORIGIN_ENV: &str = "TILO_TILOLANG_CONNECTOR";
 
-/// The verb of an instance's connection.
 pub const ATTACH_VERB: &[u8] = b"attach";
 
 /// A connected pair of door ends: the session keeps one and hands the other to the connector
@@ -35,15 +32,12 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     crate::windows::pair()
 }
 
-/// A connection between an instance and the connector: a stream, the instance's end and the
-/// connector's.
 #[cfg(unix)]
 pub fn connection() -> io::Result<(Descriptor, Descriptor)> {
     let (instance, connector) = std::os::unix::net::UnixStream::pair()?;
     Ok((instance.into(), connector.into()))
 }
 
-/// The door the launcher handed this process, once.
 #[must_use]
 pub fn take_door() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
@@ -129,7 +123,6 @@ mod tests {
         let received = receive_attachment(&connector)
             .unwrap()
             .expect("an attachment");
-        // What the instance writes, the connector reads.
         let mut instance = std::os::unix::net::UnixStream::from(instance);
         let mut received = std::os::unix::net::UnixStream::from(received);
         instance.write_all(b"hello").unwrap();

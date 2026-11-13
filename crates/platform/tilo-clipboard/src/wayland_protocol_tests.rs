@@ -42,15 +42,12 @@ impl raw_window_handle::HasDisplayHandle for OwnedTestDisplay {
 
 const PLAIN: &str = "text/plain;charset=utf-8";
 
-/// A copy deadline no test outlives, for tests about the order of the
-/// compositor's answers rather than the copy's budget.
 fn outlasting_deadline() -> tilo_clock::time::Instant {
     tilo_clock::now()
         .checked_add(tilo_test_env::hang_bound().saturating_mul(2))
         .expect("publication deadline beyond this test")
 }
 
-/// A copy queued directly, with its own deadline, as `publish` queues one.
 fn publish(
     payload: PublicationPayload,
     reply: mpsc::Sender<bool>,
@@ -87,7 +84,6 @@ struct Server {
     hold_flush: bool,
     hold_flush_after_selection: bool,
     publications: Vec<u32>,
-    /// The source of the newest client selection.
     selection: Option<wl_data_source::WlDataSource>,
     selection_gate: Option<SelectionGate>,
 }
@@ -161,8 +157,6 @@ impl Server {
             .modifiers(serial, 0, 0, 0, 0);
     }
 
-    /// The pointer enters `surface` and leaves it again, as when it moves
-    /// across a window onto desktop chrome. Keyboard focus stays put.
     fn pointer_crossing(&mut self, index: usize, surface: usize) {
         let surface = self
             .surfaces
@@ -369,7 +363,6 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Server {
         }
     }
 }
-/// The MIME types a client source offered, in order.
 #[derive(Default)]
 struct SourceMimes(std::sync::Mutex<Vec<String>>);
 
@@ -494,9 +487,6 @@ fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
         for seat in &state.seats {
             for keyboard in seat.keyboards.iter().filter(|keyboard| keyboard.is_alive()) {
                 keyboard.enter(10, &surface, Vec::new());
-                // Smithay chooses its active seat on key/modifier events,
-                // not Enter. Activate every reader binding, not just the
-                // last keyboard retained by the fixture's seat helper.
                 keyboard.modifiers(11, 0, 0, 0, 0);
             }
             for device in seat.devices.iter().filter(|device| device.is_alive()) {
@@ -756,7 +746,6 @@ impl Harness {
     }
 
     fn fence(&self) {
-        // First make every server operation preceding this query visible.
         self.query(|_| ());
         let (send, receive) = mpsc::channel();
         self.backend()
@@ -795,7 +784,6 @@ impl Harness {
         self.operation(move |state, _| state.leave(index));
     }
 
-    /// The MIME types of the newest client selection.
     fn selection_mimes(&self) -> Vec<String> {
         self.query(|state| {
             state
@@ -807,8 +795,6 @@ impl Harness {
         })
     }
 
-    /// Ask the newest client selection for `mime`, as a pasting client does,
-    /// and read the whole answer.
     fn selection_bytes(&self, mime: &str) -> Vec<u8> {
         let (mut reader, writer) = std::io::pipe().expect("transfer pipe");
         let mime = mime.to_owned();
@@ -913,16 +899,11 @@ fn selection_before_enter_and_same_client_surface_switch_keep_one_offer() {
     h.leave(0);
     h.fence();
     assert!(h.backend().rich_text().is_none());
-    // A same-client surface switch need not repeat the selection event.
     h.enter(0, 1);
     h.assert_offer("文🙂");
     assert_eq!(h.query(|state| state.received.len()), 4);
 }
 
-/// Roundtrip completion runs at the backend level, before any event queue
-/// dispatch. The worker must not dispatch it for the application: that can
-/// complete the sync between the application's completion check and its poll,
-/// leaving the application asleep on a reply that was already consumed.
 #[test]
 fn worker_leaves_application_callbacks_to_the_application() {
     use client::backend::{Backend, ObjectData, ObjectId, protocol::Message};
@@ -1097,8 +1078,6 @@ fn image_copy_acknowledgement_follows_server_selection() {
 #[test]
 fn copy_acknowledgement_waits_for_already_sent_keyboard_focus() {
     let harness = Harness::new();
-    // The compositor has sent Enter, but its transport has not flushed it yet.
-    // Do not force any focus state into the production worker.
     harness.query(|state| {
         state.hold_flush = true;
         state.enter(0, 0);
@@ -1214,8 +1193,6 @@ fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
         }
         assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
 
-        // The host queue and connection stay live in the harness. Callback
-        // userdata therefore cannot be relied on to drop and report failure.
         drop(harness.clipboard.take());
         assert_eq!(
             result
@@ -1406,9 +1383,6 @@ fn a_secret_copy_pastes_as_plain_text_and_carries_the_history_markers() {
     assert_eq!(harness.selection_mimes(), ["image/png"]);
 }
 
-/// An app's image copy (a photo, a region of a PDF page) replaces what the
-/// app copied before. Text left beside the image would be what every app
-/// that prefers text pastes, so the person would get the old text instead.
 #[test]
 fn an_image_copy_replaces_the_text_copied_before_it() {
     let harness = focused_harness();
@@ -1427,7 +1401,6 @@ fn an_image_copy_replaces_the_text_copied_before_it() {
     let png = harness.selection_bytes("image/png");
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
-    // And a text copy after it replaces the image in turn.
     assert!(
         harness
             .backend()
@@ -1443,11 +1416,6 @@ fn an_image_copy_replaces_the_text_copied_before_it() {
     assert_eq!(harness.selection_bytes("text/plain"), b"copied after");
 }
 
-/// Tilo's compositor answers a new selection with work of its own (it mirrors
-/// the selection, takes it over, repaints) in the iteration that confirms it.
-/// A copy whose confirmation comes back after the copy's budget was still
-/// published, and must be reported as copied: an app that said "could not
-/// copy" would leave a secret on the clipboard with no clear scheduled.
 #[test]
 fn a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms() {
     let harness = focused_harness();
@@ -1483,8 +1451,6 @@ fn a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms() {
     );
 }
 
-/// The other order: the caller gives up before the worker reaches the copy.
-/// The copy is reported as failed and must then never become the selection.
 #[test]
 fn a_copy_reported_as_failed_never_becomes_the_selection() {
     let harness = focused_harness();
@@ -1506,8 +1472,6 @@ fn a_copy_reported_as_failed_never_becomes_the_selection() {
     );
 }
 
-/// The app's UI thread never waits on the compositor: the copy returns at
-/// once, and its outcome settles when the compositor has confirmed it.
 #[test]
 fn a_copy_settles_once_the_compositor_answers_and_not_before() {
     let harness = focused_harness();
@@ -1538,8 +1502,6 @@ fn a_copy_settles_once_the_compositor_answers_and_not_before() {
     assert_eq!(harness.query(|state| state.publications.len()), 1);
 }
 
-/// A copy the deadline refused settles as failed without anyone waiting on
-/// it, and never becomes the selection later.
 #[test]
 fn an_unanswered_copy_settles_as_failed_at_its_deadline() {
     let harness = focused_harness();
@@ -1571,7 +1533,6 @@ fn a_rich_copy_offers_its_html_and_its_words() {
     assert_eq!(harness.selection_bytes("text/html"), html.as_bytes());
     assert_eq!(harness.selection_bytes("text/plain"), b"plain bold");
 
-    // The next plain copy offers no stale formatting.
     assert!(
         harness
             .backend()

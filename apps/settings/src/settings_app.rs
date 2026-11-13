@@ -1,10 +1,6 @@
-//! `SettingsApp` — what the Settings window shares with its view: the
-//! areas the panes read, the settings document and the sections' actions,
-//! the pane shown and what asks for another.
-//!
-//! The window's view ([`crate::window::window`]) draws it, answers the
-//! effects and publishes the live rows from it. Everything here is read through a shared reference, so the
-//! effect handler, the published rows and the window hold it together.
+//! `SettingsApp` — what the Settings window shares with its view: the areas the
+//! panes read, the settings document and the sections' actions, the pane shown
+//! and what asks for another.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -12,59 +8,35 @@ use std::rc::{Rc, Weak};
 
 use crate::categories::Category;
 
-/// A pane's scroll offset, kept per category while the window is open.
 pub(crate) type ScrollOffset = Rc<Cell<(f32, f32)>>;
 
-/// What the window, its effects and its rows share. See the module docs.
 pub struct SettingsApp {
-    /// This app, as its jobs reach it again when they finish.
     me: Weak<SettingsApp>,
-    /// The pane the window shows.
     selected: Cell<Category>,
-    /// The app's storage: its settings document, files and secrets.
     storage: ui::storage::AppStorage,
-    /// The stand-ins a screenshot shows; `None` in a live window.
     scene: Option<Rc<crate::scenarios::CaptureScene>>,
-    /// Whether the areas reach this device's hardware and services
-    /// ([`crate::area::AreaContext::devices`]).
     devices: bool,
     /// The radios this device has; never read when it reaches no device.
     radios: crate::radios::Radios,
-    /// The pages the panes drilled into.
     pages: crate::pages::PanePages,
-    /// The password prompt the window shows for the panes.
     secrets: crate::secrets::SecretAsks,
     provider_admin: ui::models::ProviderAdministration,
-    /// The person's linked accounts, when the host lent them.
     linked: ui::linked_accounts::LinkedAccounts,
-    /// The settings sections' actions, once attached to a view.
     sections: crate::sections::Sections,
-    /// The pane a row, the palette or an agent asked for, taken by the
-    /// window on its next sync.
     sidebar_selection: ui::LocalState<Option<Category>>,
-    /// The setting asked to be shown, with the pane asked for.
     setting_request: ui::LocalState<Option<&'static settings_store::index::Setting>>,
-    /// The scenario a capture stages, taken by the window on its next sync.
     staged: RefCell<Option<crate::scenarios::Staged>>,
     account_root: crate::accounts::AccountRoot,
     wallpaper_status: ui::LocalState<Option<String>>,
     areas: crate::area::Areas,
     keyboard_map_input: ui::KeyboardMapInput,
     area_reads: crate::effects::AreaReads,
-    /// The pane shown waits for its area's read.
     pane_waits: ui::LocalState<bool>,
-    /// The generation of the content column last built.
     content_built: Cell<u64>,
-    /// The language it was built in ([`ui::i18n::I18nManager::revision`]).
     content_language: ui::LocalState<u64>,
-    /// The Keyboard pane was built without its layout list.
     keyboard_partial: ui::LocalState<bool>,
     pane_scroll: RefCell<HashMap<Category, ScrollOffset>>,
-    /// What the keyboard drawn on the Keyboard pane shows, as the window
-    /// last read it; `None` while no keyboard is drawn.
     keyboard_shown: RefCell<Option<serde_json::Value>>,
-    /// What the Keyboard pane's add-source picker shows, as the window
-    /// last read it; `None` while no picker is drawn.
     #[cfg(feature = "tilo-os")]
     input_picker_shown: RefCell<Option<serde_json::Value>>,
 }
@@ -80,8 +52,6 @@ impl SettingsApp {
         Self::with_account_root(crate::accounts::AccountRoot::live())
     }
 
-    /// The app over the private profile at `config_root`: its accounts
-    /// and mutation journal.
     #[must_use]
     pub fn with_config_root(config_root: impl Into<std::path::PathBuf>) -> Self {
         Self::with_account_root(crate::accounts::AccountRoot::at(config_root))
@@ -124,10 +94,6 @@ impl SettingsApp {
         app
     }
 
-    /// Attach the app to the view `cx`: the settings document and the
-    /// sections' actions it holds, what it lends (the provider
-    /// administration, the person's linked accounts), the stand-ins a
-    /// capture stages, and the person's accounts.
     pub fn attach(
         &mut self,
         cx: &ui::framework::ViewCx<crate::resource::Settings>,
@@ -157,8 +123,6 @@ impl SettingsApp {
             ));
         }
         self.storage = cx.storage().clone();
-        // Without the device panes (`tilo-os`, off on the web) there is no
-        // hardware or OS service of this device to reach.
         self.devices = cx.mode().is_live() && !cfg!(test) && cfg!(feature = "tilo-os");
         if self.devices {
             self.radios = crate::radios::Radios::of_device();
@@ -184,7 +148,6 @@ impl SettingsApp {
         self.area_reads = crate::effects::AreaReads::of(self.devices);
     }
 
-    /// What the areas are made in: the parts of this app they keep.
     #[must_use]
     pub fn area_context(&self) -> crate::area::AreaContext {
         crate::area::AreaContext {
@@ -201,7 +164,6 @@ impl SettingsApp {
         }
     }
 
-    /// The app, shared by the window, its effects and its rows.
     #[must_use]
     pub fn into_shared(self) -> Rc<Self> {
         Rc::new_cyclic(|me| Self {
@@ -210,12 +172,10 @@ impl SettingsApp {
         })
     }
 
-    /// The pane the window shows.
     pub fn selected(&self) -> Category {
         self.selected.get()
     }
 
-    /// The window shows `category` now.
     pub(crate) fn show(&self, category: Category) {
         if category != Category::Keyboard {
             self.keyboard_map_input.clear();
@@ -225,13 +185,10 @@ impl SettingsApp {
         }
     }
 
-    /// Ask the window to show `category`'s pane.
     pub fn request_pane(&self, category: Category) {
         self.sidebar_selection.set(Some(category));
     }
 
-    /// Ask the window to show `setting`: its pane, scrolled to it, its
-    /// control taking the keyboard.
     pub fn request_setting(&self, setting: &str) -> Result<(), String> {
         let (category, setting) = setting_and_pane(setting)
             .ok_or_else(|| format!("Settings has no setting `{setting}`"))?;
@@ -240,8 +197,6 @@ impl SettingsApp {
         Ok(())
     }
 
-    /// What a search hit or an agent's `open` runs: the pane or the setting
-    /// it names is shown.
     pub fn opener(&self) -> impl FnMut(&str) + 'static {
         let selection = self.sidebar_selection.clone();
         let setting_request = self.setting_request.clone();
@@ -258,7 +213,6 @@ impl SettingsApp {
         }
     }
 
-    /// The pane asked for since the window last looked.
     pub(crate) fn take_requested_pane(&self) -> Option<Category> {
         let requested = self.sidebar_selection.with(|request| *request)?;
         self.sidebar_selection.set(None);
@@ -270,19 +224,16 @@ impl SettingsApp {
         self.sidebar_selection.with(Option::is_some)
     }
 
-    /// The setting asked to be shown since the window last looked.
     pub(crate) fn take_requested_setting(&self) -> Option<&'static settings_store::index::Setting> {
         let requested = self.setting_request.with(|request| *request)?;
         self.setting_request.set(None);
         Some(requested)
     }
 
-    /// Stage `staged` in the window, on its next sync.
     pub fn stage(&self, staged: crate::scenarios::Staged) {
         *self.staged.borrow_mut() = Some(staged);
     }
 
-    /// The scenario staged since the window last looked.
     pub(crate) fn take_staged(&self) -> Option<crate::scenarios::Staged> {
         self.staged.borrow_mut().take()
     }
@@ -300,8 +251,6 @@ impl SettingsApp {
         self.account_root.remove_browser_identity(account)
     }
 
-    /// Where the person's accounts and their secrets are kept for this
-    /// window.
     #[cfg(feature = "tilo-os")]
     pub(crate) fn account_root(&self) -> &crate::accounts::AccountRoot {
         &self.account_root
@@ -315,8 +264,6 @@ impl SettingsApp {
             .publish_browser_identity(root, origin, identity.display_name)
     }
 
-    /// Whether the window publishes `area`'s rows now: it has read, or it
-    /// is the pane shown.
     pub fn publishes_area(&self, area: &crate::effects::LiveArea) -> bool {
         (area.is_open)(self)
             || (!self.area_reads.deferred()
@@ -327,7 +274,6 @@ impl SettingsApp {
             || (area.pane == self.selected() && area.background.is_none())
     }
 
-    /// Whether the pane shown waits for its area's background read.
     pub(crate) fn pane_reading(&self) -> bool {
         if !self.area_reads.deferred() {
             return false;
@@ -348,7 +294,6 @@ impl SettingsApp {
         self.area_reads.wake();
     }
 
-    /// Read on: the next area, or once every area has read, warm them.
     pub(crate) fn read_on(&self) {
         match self.area_reads.step(self) {
             crate::effects::Step::Read => self.area_reads.wake(),
@@ -369,12 +314,10 @@ impl SettingsApp {
         &self.pane_waits
     }
 
-    /// The generation of the content column last built.
     pub(crate) fn content_built(&self) -> &Cell<u64> {
         &self.content_built
     }
 
-    /// The language the content column last built was built in.
     pub(crate) fn content_language(&self) -> &ui::LocalState<u64> {
         &self.content_language
     }
@@ -390,13 +333,10 @@ impl SettingsApp {
         &self.keyboard_partial
     }
 
-    /// Where `category`'s pane is scrolled to, kept while the window is open.
     pub(crate) fn scroll_offset(&self, category: Category) -> ScrollOffset {
         Rc::clone(self.pane_scroll.borrow_mut().entry(category).or_default())
     }
 
-    /// Forget where `category`'s pane was scrolled to: a page drilled into
-    /// opens at its top.
     pub(crate) fn forget_scroll(&self, category: Category) {
         self.pane_scroll.borrow_mut().remove(&category);
     }
@@ -413,8 +353,6 @@ impl SettingsApp {
         self.keyboard_map_input.clone()
     }
 
-    /// What the keyboard drawn on the Keyboard pane shows: the source,
-    /// the key inspected, the keys held. Unavailable while none is drawn.
     pub fn keyboard_inspection(&self) -> Result<serde_json::Value, String> {
         Ok(self.keyboard_shown.borrow().clone().unwrap_or_else(|| {
             serde_json::json!({
@@ -426,81 +364,66 @@ impl SettingsApp {
         }))
     }
 
-    /// The window read the keyboard it draws: `shown`, or none drawn.
     #[cfg(feature = "tilo-os")]
     pub(crate) fn keyboard_drawn(&self, shown: Option<serde_json::Value>) {
         *self.keyboard_shown.borrow_mut() = shown;
     }
 
-    /// What the Keyboard pane's add-source picker shows; `None` while none
-    /// is drawn.
     #[cfg(feature = "tilo-os")]
     pub(crate) fn input_picker(&self) -> Option<serde_json::Value> {
         self.input_picker_shown.borrow().clone()
     }
 
-    /// The window read the add-source picker it draws: `shown`, or none.
     #[cfg(feature = "tilo-os")]
     pub(crate) fn input_picker_drawn(&self, shown: Option<serde_json::Value>) {
         *self.input_picker_shown.borrow_mut() = shown;
     }
 
-    /// The app's storage: its settings document, files and secrets.
     #[must_use]
     pub fn storage(&self) -> &ui::storage::AppStorage {
         &self.storage
     }
 
-    /// The stand-ins a screenshot shows; `None` in a live window.
     #[must_use]
     pub fn scene(&self) -> Option<&crate::scenarios::CaptureScene> {
         self.scene.as_deref()
     }
 
-    /// Whether the areas reach this device's hardware and services.
     #[must_use]
     pub fn reaches_devices(&self) -> bool {
         self.devices
     }
 
-    /// The radios this device has, read off the UI thread.
     #[must_use]
     pub fn radios(&self) -> &crate::radios::Radios {
         &self.radios
     }
 
-    /// The pages the panes drilled into ([`crate::pages`]).
     #[must_use]
     pub fn pages(&self) -> &crate::pages::PanePages {
         &self.pages
     }
 
-    /// The password prompt the window shows ([`crate::secrets`]).
     #[must_use]
     pub fn secrets(&self) -> &crate::secrets::SecretAsks {
         &self.secrets
     }
 
-    /// The administration of the agent providers the launcher granted.
     #[must_use]
     pub fn provider_admin(&self) -> &ui::models::ProviderAdministration {
         &self.provider_admin
     }
 
-    /// The person's linked accounts, when the host lent them.
     #[must_use]
     pub fn linked(&self) -> &ui::linked_accounts::LinkedAccounts {
         &self.linked
     }
 
-    /// The settings sections' actions ([`crate::sections`]).
     #[must_use]
     pub fn sections(&self) -> &crate::sections::Sections {
         &self.sections
     }
 
-    /// Run blocking `work` off the UI thread for an effect, then `then` with
-    /// its result and this app on the UI thread.
     pub fn job<T: Send + 'static>(
         &self,
         cx: &mut crate::device_read::Cx,

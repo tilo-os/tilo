@@ -463,6 +463,37 @@ impl PeerGovernance<'_> {
                 }
             }
         }
+        // A person is a member by their root, whatever devices of theirs the
+        // workspace lists ([`Self::governed_access`]): someone declared before
+        // any device of theirs arrived, or whose last page's row expired,
+        // holds their role all the same, so a key of theirs finds the
+        // workspace and enters it at that role.
+        for person in workspace_policy.members.keys() {
+            let mut root = [0; 32];
+            // ignored-failure: a person named by anything but a root key has
+            // no root a device could be certified by
+            if hex::decode_to_slice(person, &mut root).is_err() || rows.contains_key(&root) {
+                continue;
+            }
+            let Some(role) = workspace_policy
+                .active_role(person)
+                .and_then(member_role_from_role)
+            else {
+                continue;
+            };
+            let id = administrator_grant_id(root);
+            rows.insert(
+                root,
+                GovernedMember {
+                    user_public_key: root,
+                    role,
+                    display_name: None,
+                    active_device_keys: Vec::new(),
+                    removed: false,
+                    administrator: workspace_policy.grants.iter().any(|grant| grant.id == id),
+                },
+            );
+        }
         let mut rows = rows.into_values().collect::<Vec<_>>();
         for row in &mut rows {
             row.active_device_keys.sort_unstable();
@@ -1226,7 +1257,7 @@ impl super::StatePeer {
         member
             .policy
             .check_action(
-                &member.authority(&bound),
+                &member.authority(bound),
                 tilo_action_policy::roles::governance::INVITE,
                 &tilo_action_policy::Context::at_time(now),
                 false,
@@ -1249,7 +1280,7 @@ impl super::StatePeer {
             .policy
             .check_invite(
                 &member.person,
-                &member.authority(&bound),
+                &member.authority(bound),
                 role,
                 &tilo_action_policy::Context::at_time(now),
                 false,

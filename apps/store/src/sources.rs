@@ -161,8 +161,6 @@ pub fn tilo_bot_to_store_item(bot: &app_cli::bots::CatalogueBot) -> StoreItem {
     }
 }
 
-/// Who makes a Tilo app, when its id says so: the registry verifies the
-/// namespace a publisher signs under, and `so.tilo.` is Tilo's own.
 fn tilo_developer(package_id: &str) -> String {
     if package_id.starts_with("so.tilo.") {
         "Tilo".to_owned()
@@ -171,16 +169,10 @@ fn tilo_developer(package_id: &str) -> String {
     }
 }
 
-/// The person's interface language, which selects the catalogue names and
-/// descriptions a listing shows: the same one answer every surface resolves
-/// its language from (`ui::i18n::preferred_language`), the system locale only
-/// as its default.
 pub(crate) fn preferred_locale() -> String {
     ui::i18n::preferred_language().unwrap_or_else(|| "en".into())
 }
 
-/// The source label of an installed Tilo app no repository currently
-/// describes; the details page explains why, once.
 pub const INSTALLED_ON_DEVICE: &str = "Installed on this device";
 
 /// Turn an installed Tilo package into a local-only Store row.
@@ -307,8 +299,6 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
     }
 }
 
-/// Decode cached `AppStream` metadata from an actual configured repository.
-/// No unavailable release dates, artwork or publisher identity are invented.
 pub fn remote_catalogue_items(
     rows: &str,
     remote: &crate::flathub_client::Remote,
@@ -360,7 +350,6 @@ pub fn remote_catalogue_items(
         .collect()
 }
 
-/// Preserve the scope of apps already supplied by the device.
 pub fn apply_flatpak_origin<S: std::hash::BuildHasher>(
     item: &mut StoreItem,
     origins: &std::collections::HashMap<String, (String, bool), S>,
@@ -385,8 +374,6 @@ pub fn apply_flatpak_origin<S: std::hash::BuildHasher>(
     }
 }
 
-/// Turn a full appstream record into a store item (the enriched
-/// form used once we've fetched details).
 pub fn flathub_record_to_item(
     r: &AppStreamRecord,
     installed_flatpaks: &[(String, String)],
@@ -497,8 +484,6 @@ pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<S
     out
 }
 
-/// Distinct categories across a set of items, alpha-sorted, useful
-/// for driving the derived category chip row.
 pub fn distinct_categories(items: &[StoreItem]) -> Vec<String> {
     let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for item in items {
@@ -845,7 +830,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Merging, category dedup and `AppStream` descriptions.
     #[test]
     fn source_merging_dedups_and_describes() {
         let flathub_item = |app_id: &str, name: &str| {

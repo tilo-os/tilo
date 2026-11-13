@@ -4,18 +4,6 @@
 //! The [`Label`] is the HPKE `info` string, so a box sealed for one purpose
 //! never opens for another. Optional associated data is authenticated but
 //! not encrypted; the opener must present the same bytes.
-//!
-//! Wire layout of a [`SealedBox`] (version 1):
-//!
-//! ```text
-//! 0      version = 0x01
-//! 1..33  enc — the sender's ephemeral X25519 public key
-//! 33..   HPKE ciphertext (plaintext length + 16-byte tag)
-//! ```
-//!
-//! Base mode does not authenticate the sender: anyone holding the public
-//! key can seal to it. Callers that need sender authenticity sign the box
-//! or deliver it over an authenticated channel.
 
 use hpke_rs::hpke_types::{AeadAlgorithm, KdfAlgorithm, KemAlgorithm};
 use hpke_rs::{Hpke, HpkePrivateKey, HpkePublicKey, Mode};
@@ -26,7 +14,6 @@ use crate::error::{Error, Result};
 use crate::keys::{KEY_LEN, PublicKey, SecretKey};
 use crate::label::Label;
 
-/// Version byte of the only sealed-box layout.
 pub const SEALED_BOX_VERSION: u8 = 1;
 const ENC_END: usize = 1 + KEY_LEN;
 const TAG_LEN: usize = 16;
@@ -40,7 +27,6 @@ fn suite() -> Hpke<HpkeRustCrypto> {
     )
 }
 
-/// A value sealed to one X25519 public key.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SealedBox {
     enc: [u8; KEY_LEN],
@@ -48,7 +34,6 @@ pub struct SealedBox {
 }
 
 impl SealedBox {
-    /// The versioned wire encoding.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(ENC_END.saturating_add(self.ciphertext.len()));
         out.push(SEALED_BOX_VERSION);

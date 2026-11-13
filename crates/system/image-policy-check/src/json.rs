@@ -9,7 +9,6 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use tilo_pycompat::number_repr;
 pub use tilo_pycompat::repr_str;
 
-/// A parsed JSON value; objects are ordered key-value lists.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Json {
     Null,
@@ -21,7 +20,6 @@ pub enum Json {
 }
 
 impl Json {
-    /// `value.get(key)` on an object.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
@@ -115,7 +113,6 @@ impl<'de> Deserialize<'de> for Json {
     }
 }
 
-/// Parses policy text.
 pub fn parse(text: &str) -> Result<Json, String> {
     serde_json::from_str::<Json>(text).map_err(|error| {
         let message = error.to_string();
@@ -136,7 +133,6 @@ pub fn parse(text: &str) -> Result<Json, String> {
     })
 }
 
-/// `repr()` of an optional JSON value, `None` for a missing one.
 #[must_use]
 pub fn repr(value: Option<&Json>) -> String {
     match value {

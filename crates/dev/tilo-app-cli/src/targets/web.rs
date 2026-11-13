@@ -109,7 +109,8 @@ fn build_bundle(project: &Project, bundle: &Path, args: &[String]) -> Result<()>
         .args(args)
         .current_dir(&project.sdk_root)
         // The cargo the bundle compiles with: the drop-in named in `$CARGO`
-        // (`rcargo`, `t`), so the module is built where that cargo builds.
+        // (`t`, or any that builds on a builder), so the module is built
+        // where that cargo builds.
         .env("CARGO", cargo_program())
         .env("CARGO_TARGET_DIR", &project.target_dir);
     if let Some((cc, ar)) = wasm_c_compiler(&project.sdk_root)? {
@@ -1119,7 +1120,6 @@ mod tests {
             "the development loop's light module"
         );
         assert_eq!(bundle_profile(&release_request(false)), "release");
-        // A measured bundle keeps the assertions it is measured with.
         assert_eq!(bundle_profile(&release_request(true)), "assert");
     }
 

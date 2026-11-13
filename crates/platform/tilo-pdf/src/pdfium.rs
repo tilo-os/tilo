@@ -1,13 +1,12 @@
 //! The pdfium engine: the one place that talks to the native library.
 //!
-//! Runs inside the sandboxed helper process in production, and in-process
-//! only for development fallbacks and measurements. Everything it returns
-//! is the crate's engine-independent model; no pdfium type leaves this
-//! module.
+//! Runs inside the sandboxed helper in production, in process only for
+//! development fallbacks and measurements. Everything it returns is the crate's
+//! engine-independent model; no pdfium type leaves this module.
 //!
-//! pdfium is driven through its raw C API (via `pdfium-render`'s dynamic
-//! bindings) rather than the high-level wrapper: document lifetimes, form
-//! environments and memory-mapped inputs are owned explicitly here.
+//! It is driven through the raw C API (via `pdfium-render`'s dynamic bindings)
+//! rather than the high-level wrapper, so document lifetimes, form environments
+//! and memory-mapped inputs are owned explicitly here.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -41,7 +40,6 @@ use crate::model::{
 use crate::proto::{FailureKind, OpenKind};
 use crate::text::{MAX_PAGE_CHARS, RawChar, raw_flags};
 
-/// A failure inside the engine, classified for the caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     pub kind: FailureKind,
@@ -154,14 +152,12 @@ pub fn font_directories() -> Vec<PathBuf> {
     tilo_paths::system_font_dirs()
 }
 
-/// The loaded library.
 pub struct Library {
     pdfium: Pdfium,
     path: PathBuf,
 }
 
 impl Library {
-    /// Bind the first usable pdfium library and initialise it.
     pub fn load() -> std::result::Result<Self, String> {
         for path in library_candidates() {
             if !path.exists() {
@@ -182,7 +178,6 @@ impl Library {
         ))
     }
 
-    /// Path of the loaded library file.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -193,7 +188,6 @@ impl Library {
     }
 }
 
-/// Bytes a pdfium document reads from; must outlive the document.
 enum Backing {
     /// The document's bytes: pdfium reads them in place, and the
     /// structure reader shares them.
@@ -201,7 +195,6 @@ enum Backing {
     None,
 }
 
-/// A form-fill environment and the callback table pdfium keeps a pointer to.
 struct Form {
     handle: FPDF_FORMHANDLE,
     _info: Pin<Box<FPDF_FORMFILLINFO>>,
@@ -218,13 +211,11 @@ struct Doc {
     structure: std::cell::OnceCell<Option<hayro_syntax::Pdf>>,
 }
 
-/// The engine: a library and the documents opened in it.
 pub struct Engine {
     lib: Library,
     docs: HashMap<u64, Doc>,
 }
 
-/// A page loaded for one operation; closed (with its form view) on drop.
 struct PageGuard<'a> {
     api: &'a dyn PdfiumLibraryBindings,
     raw: FPDF_PAGE,
@@ -289,7 +280,6 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Read a UTF-16LE string through pdfium's two-call byte-length protocol.
 fn read_wide(mut call: impl FnMut(*mut FPDF_WCHAR, c_ulong) -> c_ulong) -> String {
     let bytes = call(null_mut(), 0);
     if !(2..=1 << 24).contains(&bytes) {
@@ -303,12 +293,10 @@ fn read_wide(mut call: impl FnMut(*mut FPDF_WCHAR, c_ulong) -> c_ulong) -> Strin
     utf16_to_string(&buf)
 }
 
-/// Same protocol for APIs typed with `void*` buffers.
 fn read_wide_void(mut call: impl FnMut(*mut c_void, c_ulong) -> c_ulong) -> String {
     read_wide(|ptr, len| call(ptr.cast(), len))
 }
 
-/// Read a byte string (ASCII/UTF-8) through the two-call protocol.
 fn read_bytes(mut call: impl FnMut(*mut c_void, c_ulong) -> c_ulong) -> String {
     let len = call(null_mut(), 0);
     if len == 0 || len > 1 << 24 {
@@ -344,7 +332,6 @@ fn valid_geometry(g: &PageGeometry) -> bool {
         && s.height <= MAX_PAGE_EDGE
 }
 
-/// A pdfium `FPDF_FILEWRITE` that appends to a `Vec`.
 #[repr(C)]
 struct VecWriter {
     base: FPDF_FILEWRITE,
@@ -515,8 +502,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Unreadable, encrypted (without the right password) or out-of-limits
-    /// documents.
+    /// Unreadable, encrypted without the right password, or out of limits.
     pub fn open(
         &mut self,
         id: u64,
@@ -654,7 +640,6 @@ impl Engine {
         Ok(raw)
     }
 
-    /// Close a document; unknown ids are ignored.
     pub fn close(&mut self, id: u64) {
         if let Some(doc) = self.docs.remove(&id) {
             self.close_raw(doc.raw, doc.form);
@@ -662,7 +647,6 @@ impl Engine {
         }
     }
 
-    /// Output size of a render, validated against the pixel budget.
     pub fn render_size(&self, id: u64, page: usize, options: &RenderOptions) -> Result<(u32, u32)> {
         let doc = self.doc(id)?;
         let geometry = doc
@@ -698,9 +682,8 @@ impl Engine {
         Ok((w, h))
     }
 
-    /// Render into `out`, which must hold exactly `w * h * 4` bytes for the
-    /// size [`Self::render_size`] returned. Pixels are RGBA, opaque, on
-    /// white.
+    /// Render into `out`, which must hold exactly `w * h * 4` bytes for the size
+    /// [`Self::render_size`] returned. Pixels are RGBA and opaque, on white.
     ///
     /// # Errors
     ///
@@ -821,8 +804,7 @@ impl Engine {
         }
     }
 
-    /// The characters of a page in engine order, in the page's display
-    /// space before its own rotation.
+    /// A page's characters in engine order, in its space before its own rotation.
     ///
     /// # Errors
     ///
@@ -950,7 +932,6 @@ impl Engine {
         }
     }
 
-    /// Link areas of a page.
     pub fn links(&self, id: u64, page: usize) -> Result<Vec<Link>> {
         const MAX_LINKS: usize = 10_000;
         let doc = self.doc(id)?;
@@ -989,7 +970,6 @@ impl Engine {
         Ok(out)
     }
 
-    /// The document outline.
     pub fn outline(&self, id: u64) -> Result<Vec<OutlineEntry>> {
         const MAX_ENTRIES: usize = 10_000;
         let doc = self.doc(id)?;
@@ -1023,10 +1003,9 @@ impl Engine {
         }
     }
 
-    /// Each annotation's `/C` colour on `page`, by position, read from the
-    /// file's own objects. pdfium reports no colour for an annotation that
-    /// has an appearance stream — which is nearly every annotation a reader
-    /// wrote — so this is where a taken-over annotation's colour comes from.
+    /// Each annotation's `/C` colour on `page`, by position, read from the file's
+    /// own objects: pdfium reports no colour for an annotation with an appearance
+    /// stream, which is nearly every annotation a reader wrote.
     fn annotation_colors(doc: &Doc, page: usize) -> Vec<Option<Rgba>> {
         let Some(pdf) = doc
             .structure
@@ -1075,7 +1054,6 @@ impl Engine {
         read_wide(|buf, len| api.FPDFAnnot_GetStringValue(annot, key, buf, len))
     }
 
-    /// Annotations present on a page, in display space.
     #[allow(
         clippy::too_many_lines,
         reason = "one pass reading every property of each annotation"
@@ -1322,11 +1300,10 @@ impl Engine {
         Ok(fields)
     }
 
-    /// Materialise `edits` against a fresh copy of document `id` and return
-    /// the new PDF. Pages come from `id` and the `imports`; annotations
-    /// become standard annotation objects with generated appearances, form
-    /// values become real field values. The result is an incremental update
-    /// of the source bytes and is deterministic for the same inputs.
+    /// Materialise `edits` against a fresh copy of document `id` and return the new
+    /// PDF: pages from `id` and the `imports`, annotations as standard objects with
+    /// generated appearances, form values as real field values. The result is an
+    /// incremental update of the source bytes, deterministic for the same inputs.
     pub fn export(&self, id: u64, edits: &Edits, imports: &[u64]) -> Result<Vec<u8>> {
         let source = self.doc(id)?;
         let Backing::Mapped(map) = &source.backing else {
@@ -1643,13 +1620,12 @@ impl Engine {
                 annotated.push(annotation.page);
             }
         }
-        // pdfium writes appearance streams for markup, ink and note
-        // annotations (and makes new annotations indirect objects) when it
-        // first lays out a page's annotation list; rendering each annotated
-        // page once makes it do so before saving, so other readers draw
-        // exactly what pdfium draws. The text is set only afterwards: that
-        // layout also builds pop-up windows for annotations with text, whose
-        // appearances would otherwise be saved as unused objects.
+        // pdfium writes appearance streams for markup, ink and note annotations (and
+        // makes new ones indirect objects) when it first lays out a page's annotation
+        // list; rendering each annotated page once makes it do so before saving, so
+        // other readers draw what pdfium draws. Text is set afterwards: that layout
+        // also builds pop-up windows, whose appearances would otherwise be saved as
+        // unused objects.
         for index in annotated {
             let page = api.FPDF_LoadPage(copy, index as c_int);
             if page.is_null() {
@@ -1692,9 +1668,9 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_lines, reason = "one arm per annotation kind")]
-    /// Create `a` on `page`. When the patch pass will finish it
-    /// (appearance, reply link) nothing more is drawn here; otherwise a
-    /// stamp gets an appearance built from pdfium page objects.
+    /// Create `a` on `page`. When the patch pass will finish it (appearance, reply
+    /// link) nothing is drawn here; otherwise a stamp gets an appearance built from
+    /// pdfium page objects.
     fn add_annotation(
         &self,
         doc: FPDF_DOCUMENT,
@@ -1847,10 +1823,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Remove the adopted annotations `targets` from `page`, with their
-    /// pop-up windows. An annotation is found by `/NM` where it has one
-    /// (checked at its recorded index first), otherwise at its index; a
-    /// target whose subtype no longer matches is left alone.
+    /// Remove the adopted annotations `targets` from `page`, with their pop-up
+    /// windows. One is found by `/NM` where it has one (checked at its recorded
+    /// index first), else at its index; a target whose subtype no longer matches is
+    /// left alone.
     fn remove_adopted(&self, page: FPDF_PAGE, targets: &[&AdoptedAnnotation]) {
         let api = self.api();
         let count = api.FPDFPage_GetAnnotCount(page).clamp(0, 10_000);
@@ -2091,9 +2067,9 @@ impl Engine {
         }
     }
 
-    /// Try what the sandbox must refuse; used by the helper's self-test.
-    /// Sockets count as refused when none can be bound: Seatbelt lets a
-    /// process create one but not bind or connect it.
+    /// Try what the sandbox must refuse; used by the helper's self-test. Sockets
+    /// count as refused when none can be bound: Seatbelt lets a process create one
+    /// but not bind or connect it.
     #[must_use]
     pub fn probe(path: &str) -> crate::proto::ProbeReport {
         use std::os::unix::net::UnixDatagram;
@@ -2170,13 +2146,10 @@ fn export_seed(bytes: &[u8], edits: &Edits) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// pdfium seeds the file identifier it writes into the trailer from a heap
-/// address (and a random generator), so two identical exports would differ
-/// there — between processes, and between runs whenever the allocator hands
-/// out a different address. Replace every identifier string that pdfium
-/// generated (any `/ID` string, hex or literal, not present in the source)
-/// with one derived from the inputs, keeping its length so no byte offset
-/// moves.
+/// pdfium seeds the trailer's file identifier from a heap address and a random
+/// generator, so identical exports would differ there. Replace every `/ID`
+/// string pdfium generated (hex or literal, not present in the source) with one
+/// derived from the inputs, keeping its length so no byte offset moves.
 fn normalize_trailer_ids(out: &mut [u8], source: &[u8], seed: &[u8; 32]) {
     let start = if out.starts_with(source) {
         source.len()
@@ -2295,7 +2268,6 @@ mod tests {
             normalize_trailer_ids(&mut again, &source, &[7; 32]);
             assert_eq!(out, again, "deterministic");
         }
-        // Phase `generated_ids_after_a_literal_source_id_are_replaced`.
         // Typst (and many writers) use literal strings for `/ID`; pdfium keeps
         // the first and appends its own after it.
         {

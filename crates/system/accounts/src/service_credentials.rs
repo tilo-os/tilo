@@ -1,7 +1,4 @@
 //! Service credentials in the accounts vault, with exact origin and purpose binding.
-//!
-//! The trusted service boundary constructs authorization from authenticated context;
-//! these types are not an authentication protocol or a substitute for user consent.
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +9,6 @@ use crate::{AccountId, Secret, SecretCustody, SecretVault};
 
 const PREFIX: &str = "tilo-service-credential:";
 
-/// Opaque stable reference suitable for non-secret provider configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CredentialRef(String);
@@ -54,7 +50,6 @@ impl ServiceAuthorization {
         {
             return Err(BrokerError::InvalidAppId);
         }
-        // Structured encoding avoids delimiter collisions across namespaces.
         let identity = serde_json::to_vec(&(&self.service, &self.purpose, id))
             .map_err(|_| BrokerError::CorruptItem)?;
         Ok(CredentialRef(hex::encode(identity)))
@@ -105,7 +100,6 @@ impl AccountCredentials {
         Ok(Self { vault })
     }
 
-    /// Read the canonical account credential, including legacy password/OAuth entries.
     pub fn get(&self, id: &AccountId) -> Option<Secret> {
         self.vault.get(id)
     }
@@ -115,7 +109,6 @@ impl AccountCredentials {
         self.vault.put(id, secret);
     }
 
-    /// Stage account credential removal.
     pub fn remove(&mut self, id: &AccountId) -> bool {
         self.vault.remove(id)
     }
@@ -252,7 +245,6 @@ impl ServiceCredentials {
     }
 
     fn legacy_agent_key(profile_id: &str) -> Result<AccountId, BrokerError> {
-        // Reuse the bound-reference validation before constructing an old vault key.
         ServiceAuthorization::new(
             "model-gateway",
             "provider-api-key",
@@ -262,7 +254,6 @@ impl ServiceCredentials {
         Ok(AccountId::new(format!("agent-provider-{profile_id}")))
     }
 
-    /// Diagnose an unbound provider key without disclosing it or guessing its origin.
     pub fn legacy_agent_provider_status(&self, profile_id: &str) -> Result<bool, BrokerError> {
         let key = Self::legacy_agent_key(profile_id)?;
         Ok(self.vault()?.get(&key).is_some())

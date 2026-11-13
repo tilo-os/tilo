@@ -1,18 +1,13 @@
-//! A view's tree: the nodes a `#[view]` function builds, and what a component's description says
-//! of them.
+//! A view's tree: the nodes a `#[view]` function builds, and what a component's
+//! description says of them.
 //!
-//! A Rust app's view returns described components, exactly as a tilolang view does: the same
-//! component kinds the toolkit describes (`crates/dev/ui-graph/components.json`), the same
-//! props, the same slots and events. The host builds the widget tree once, from the one
-//! description, whichever language wrote the view (one-app-model.md §2).
+//! A Rust app's view returns the same component kinds, props, slots and events the
+//! toolkit describes (`crates/dev/ui-graph/components.json`), so the host builds
+//! the widget tree once from the one description, whichever language wrote it.
 //!
-//! [`Node`] is the wired tree, the one the UI host receives over the component-patch stream
-//! ([`tilo_render_protocol::patch`]): it is what a tilolang view's tree becomes too, so a
-//! theme, a motion and an accessibility role reach both through the same code.
-//!
-//! A view builds one with the typed builders in [`ui`](crate::ui), which check each prop against
-//! the catalogue where the node is made: a prop the component does not declare, or a value of
-//! the wrong type, is a build error rather than a patch the host refuses.
+//! [`Node`] is the wired tree the UI host receives over the component-patch
+//! stream, so a theme, a motion and an accessibility role reach both through the
+//! same code.
 
 use std::collections::BTreeMap;
 
@@ -20,41 +15,33 @@ pub use tilo_render_protocol::patch::{
     Binding, Event, Node, Offered, Picture, Principal, ResourceRef, Value,
 };
 
-/// The patch stream a view's tree travels on, re-exported for the builders.
 pub use tilo_render_protocol::patch;
 
 use tilo_ui_graph::component::{Description, Type};
 
-/// The kind of node a described component is: `ui.` and its name (`ui.ListRow`).
 #[must_use]
 pub fn kind(name: &str) -> String {
     format!("ui.{name}")
 }
 
-/// The component a node kind names (`ui.ListRow`: `ListRow`), when it is one.
 #[must_use]
 pub fn component_name(kind: &str) -> Option<&str> {
     kind.strip_prefix("ui.")
 }
 
-/// The catalogue every prop is checked against: the toolkit's, as the shipped JSON declares it.
 #[must_use]
 pub fn catalogue() -> &'static tilo_ui_graph::component::Catalogue {
     tilo_ui_graph::component::catalogue()
 }
 
-/// The description of the component `name`.
 #[must_use]
 pub fn description(name: &str) -> Option<&'static Description> {
     catalogue().get(name)
 }
 
-/// Why a node could not be built: a component the catalogue does not describe, a prop it does
-/// not declare, or a value of another type.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{what}")]
 pub struct BuildError {
-    /// What was wrong, in words a developer reads.
     pub what: String,
 }
 
@@ -64,13 +51,11 @@ impl BuildError {
         Self { what: what.into() }
     }
 
-    /// A component the catalogue does not describe.
     #[must_use]
     pub fn unknown(name: &str) -> Self {
         Self::new(format!("`ui.{name}` is no component the toolkit describes"))
     }
 
-    /// A prop `name` the component `name` does not declare.
     #[must_use]
     pub fn undeclared(component: &str, prop: &str) -> Self {
         Self::new(format!(
@@ -79,7 +64,6 @@ impl BuildError {
         ))
     }
 
-    /// A value of another type given to `prop`.
     #[must_use]
     pub fn wrong_type(component: &str, prop: &str, want: &Type, got: &Value) -> Self {
         Self::new(format!(
@@ -89,7 +73,6 @@ impl BuildError {
         ))
     }
 
-    /// A slot `name` the component does not declare.
     #[must_use]
     pub fn undeclared_slot(component: &str, slot: &str) -> Self {
         Self::new(format!(
@@ -98,7 +81,6 @@ impl BuildError {
         ))
     }
 
-    /// An event `name` the component does not declare.
     #[must_use]
     pub fn undeclared_event(component: &str, event: &str) -> Self {
         Self::new(format!(
@@ -107,7 +89,6 @@ impl BuildError {
         ))
     }
 
-    /// A binding `name` the component does not declare.
     #[must_use]
     pub fn undeclared_binding(component: &str, binding: &str) -> Self {
         Self::new(format!(
@@ -117,7 +98,6 @@ impl BuildError {
     }
 }
 
-/// What kind of value `value` is, for a type error's message.
 fn shape(value: &Value) -> &'static str {
     match value {
         Value::Unit => "nothing",
@@ -139,10 +119,6 @@ fn shape(value: &Value) -> &'static str {
     }
 }
 
-/// The props a node may give, checked against the component's description as they are given.
-///
-/// [`Self::node`] checks that every required prop is given. A slot's children are the node's
-/// `slot` child, as [`slot`] builds it.
 #[derive(Clone, Debug)]
 pub struct Props<'a> {
     component: &'a str,
@@ -165,11 +141,6 @@ impl<'a> Props<'a> {
         })
     }
 
-    /// Give the prop `name` the value `value`.
-    ///
-    /// # Errors
-    ///
-    /// [`BuildError::undeclared`] or [`BuildError::wrong_type`].
     pub fn set(mut self, name: &str, value: Value) -> Result<Self, BuildError> {
         let declared = self
             .description
@@ -187,23 +158,16 @@ impl<'a> Props<'a> {
         Ok(self)
     }
 
-    /// The component this is for.
     #[must_use]
     pub fn component(&self) -> &str {
         self.component
     }
 
-    /// The props as given.
     #[must_use]
     pub fn values(&self) -> &BTreeMap<String, Value> {
         &self.values
     }
 
-    /// The node of this component, keyed by `key`, with nothing in its slots yet.
-    ///
-    /// # Errors
-    ///
-    /// A required prop the caller did not give.
     pub fn node(self, key: &str) -> Result<Node, BuildError> {
         for prop in self.description.props.iter().filter(|prop| prop.required) {
             if !self.values.contains_key(&prop.name) {
@@ -222,11 +186,6 @@ impl<'a> Props<'a> {
     }
 }
 
-/// A node of the described component `component`, keyed by `key`, with nothing else.
-///
-/// # Errors
-///
-/// [`BuildError::unknown`] when the catalogue does not describe it.
 pub fn component(component: &str, key: &str) -> Result<Node, BuildError> {
     if description(component).is_none() {
         return Err(BuildError::unknown(component));
@@ -238,8 +197,6 @@ pub fn component(component: &str, key: &str) -> Result<Node, BuildError> {
     })
 }
 
-/// A node of the language's primitive `kind` (`stack`, `row`, `page`): the layouts the host
-/// builds itself, which every view composes its components in.
 #[must_use]
 pub fn primitive(kind: &str, key: &str) -> Node {
     Node {
@@ -249,8 +206,6 @@ pub fn primitive(kind: &str, key: &str) -> Node {
     }
 }
 
-/// `node` with its named slot `name` filled with `children`: the node's `slot` child of that
-/// name, which the host reads as that component's slot.
 #[must_use]
 pub fn slot(mut node: Node, name: &str, children: Vec<Node>) -> Node {
     let key = format!("{}#{name}", node.key);
@@ -261,37 +216,30 @@ pub fn slot(mut node: Node, name: &str, children: Vec<Node>) -> Node {
     node
 }
 
-/// `node` with `children` in its default slot (or, for a primitive, its content): what a
-/// component's block holds when it names no slot.
 #[must_use]
 pub fn with(mut node: Node, children: Vec<Node>) -> Node {
     node.children.extend(children);
     node
 }
 
-/// `node` with its event `name` set to `event`: the action the event runs, or the field it
-/// toggles.
 #[must_use]
 pub fn on(mut node: Node, name: &str, event: Event) -> Node {
     node.events.insert(name.to_owned(), event);
     node
 }
 
-/// `node` bound through its `name` binding (a text field, a checkbox's flag) to what it edits.
 #[must_use]
 pub fn bind(mut node: Node, binding: Binding) -> Node {
     node.binding = Some(binding);
     node
 }
 
-/// `node` named by the resource or part it is about, for people and agents to reach by.
 #[must_use]
 pub fn anchor(mut node: Node, anchor: &str) -> Node {
     node.anchor = Some(anchor.to_owned());
     node
 }
 
-/// The names of `node`'s slots, as its children declare them.
 pub fn slots(node: &Node) -> impl Iterator<Item = (&str, &[Node])> {
     node.children.iter().filter_map(|child| {
         if child.kind != "slot" {
@@ -304,13 +252,11 @@ pub fn slots(node: &Node) -> impl Iterator<Item = (&str, &[Node])> {
     })
 }
 
-/// The node at `path` (keys from `node`'s children down).
 #[must_use]
 pub fn at<'a>(node: &'a Node, path: &[String]) -> Option<&'a Node> {
     tilo_render_protocol::patch::diff::at(node, path)
 }
 
-/// How many nodes `node`'s tree holds, `node` included.
 #[must_use]
 pub fn count(node: &Node) -> usize {
     1usize.saturating_add(node.children.iter().map(count).sum::<usize>())

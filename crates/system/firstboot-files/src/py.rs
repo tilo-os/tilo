@@ -1,9 +1,5 @@
-//! The few Python behaviours the command line has always had.
-//!
-//! The helper was a Python script, and `tilo-firstboot-user` and existing
-//! installs pass it paths and ids the way that script read them: the path split
-//! by `os.path.dirname`/`basename` and the parent resolved by
-//! `os.path.realpath`.
+//! The few Python behaviours the command line has always had: the path split by
+//! `os.path.dirname`/`basename`, and the parent resolved by `os.path.realpath`.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -33,7 +29,6 @@ pub fn dirname(path: &OsStr) -> OsString {
     OsString::from_vec(trimmed.to_vec())
 }
 
-/// `os.path.basename(path)`: everything after the last `/`.
 #[must_use]
 pub fn basename(path: &OsStr) -> OsString {
     let bytes = path.as_bytes();

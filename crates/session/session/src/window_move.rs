@@ -1395,7 +1395,7 @@ mod tests {
     /// What the record `id` of `workspace` holds in the profile at `root` .
     fn stored_at(root: &Path, workspace: &str, id: &RecordId) -> Option<automerge::AutoCommit> {
         let store = app_state::FsStore::new(root.to_path_buf());
-        let key = StorageKey::record(PROBE, workspace, id.storage_key());
+        let key = StorageKey::document(PROBE, workspace, id.storage_key());
         let stored = store.read(&key).ok().flatten()?;
         let (doc, _) =
             app_state::decode_canonical(&stored.bytes, false, Path::new("a record")).ok()?;

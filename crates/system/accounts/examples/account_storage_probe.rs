@@ -12,12 +12,10 @@ mod browser {
     use accounts::{AccountId, Saved, Secret, SecretItem, SecretStore, SecretVault};
     use secret_vault::VaultFormat;
     use tilo_files::{Dir, Location, VPath, VirtualRoot};
-    // Async wasm-bindgen exports expand to calls into this crate.
     extern crate wasm_bindgen_futures;
 
     use wasm_bindgen::prelude::*;
 
-    // The pre-existing account vault's format, used only to seed a legacy fixture.
     const LEGACY: VaultFormat = VaultFormat {
         name: "accounts",
         magic: b"QASV",
@@ -107,7 +105,6 @@ mod browser {
         })
     }
 
-    /// A synchronous service facade may reopen its vault for every call.
     #[wasm_bindgen]
     pub fn save_fresh(profile: &str, id: &str, password: &str) -> Result<(), JsValue> {
         let mut vault = SecretVault::open_page(dir(profile)?);
@@ -146,7 +143,6 @@ mod browser {
         })
     }
 
-    /// `durable` once the browser kept the store's edits, else `pending`.
     #[wasm_bindgen]
     pub fn store_flush(handle: &str) -> Result<String, JsValue> {
         STORES.with_borrow(|stores| {
@@ -193,7 +189,6 @@ mod browser {
     #[wasm_bindgen]
     pub async fn encrypted(profile: &str) -> Result<bool, JsValue> {
         let bytes = dir(profile)?.read(&path()?).await.map_err(error)?;
-        // A production load authenticates it; this also rejects a plaintext JSON inventory.
         Ok(serde_json::from_slice::<serde_json::Value>(&bytes).is_err())
     }
 }

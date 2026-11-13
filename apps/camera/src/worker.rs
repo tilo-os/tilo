@@ -23,7 +23,6 @@ pub struct ScanJob {
 }
 
 pub enum ScanSource {
-    /// The bytes of an image the person chose.
     Bytes(Vec<u8>),
     Frame(FrameBuf),
 }
@@ -38,8 +37,6 @@ pub struct ScanResult {
 pub struct PhotoJob {
     pub invocation: Option<InvocationId>,
     pub generation: u64,
-    /// `None` keeps the photo only in the content store: a host whose files
-    /// have no native path (a browser page) has no directory to project to.
     pub dir: Option<PathBuf>,
     pub frame: FrameBuf,
     pub format: PhotoFormat,
@@ -64,9 +61,6 @@ pub struct PhotoSaved {
 pub struct VideoJob {
     pub invocation: Option<InvocationId>,
     pub generation: u64,
-    /// `Some` writes an optional local projection after verification. `None` is the
-    /// hermetic sample path: it still produces/validates stored media bytes but
-    /// intentionally has no filesystem projection.
     pub dir: Option<PathBuf>,
     pub facing: Facing,
 }
@@ -115,11 +109,7 @@ pub struct CameraWorker {
     video_rx: Receiver<VideoResult>,
     recording: Arc<Mutex<RecordingControl>>,
     scan_rx: Receiver<ScanResult>,
-    /// Where there are no threads (a browser page) the loop runs each job
-    /// as it is admitted, on the caller's thread, and its jobs' queue is
-    /// drained there.
     inline: Option<Mutex<(WorkerLoop, Receiver<WorkerJob>)>>,
-    /// Photos submitted whose result has not been taken yet.
     photos_outstanding: AtomicUsize,
 }
 
@@ -327,7 +317,6 @@ impl CameraWorker {
         }
     }
 
-    /// A thread-free worker runs what was just admitted.
     fn run_inline(&self) {
         let Some(inline) = &self.inline else {
             return;

@@ -1,5 +1,5 @@
-//! The page a window draws for the item its list or tree shows: the fields of that page belong
-//! to the item, so what the person types into them lands in it, and the window is named by it.
+//! The page a window draws for the item its list or tree shows: the fields of that page belong to
+//! the item, so what the person types into them lands in it, and the window is named by it.
 
 use std::collections::BTreeSet;
 
@@ -9,9 +9,8 @@ use super::{AppWindow, UiNode, Value, lane_of};
 
 impl AppWindow {
     /// What the window is named by: the item its own view shows as its page, by the name its row
-    /// gives it — a task opened from search, the row the person opened — else what its shell's
-    /// headers name, the page or the place it stands on. A desktop names the window's tab, its
-    /// switcher entry and its assistive-technology node by this.
+    /// gives it, else what its shell's headers name. A desktop names the window's tab, its switcher
+    /// entry and its assistive-technology node by this.
     #[must_use]
     pub fn title(&self) -> Option<&str> {
         self.page_title
@@ -19,8 +18,8 @@ impl AppWindow {
             .or_else(|| self.built.as_ref().and_then(crate::shell::shown_title))
     }
 
-    /// The name the row of the item the window's own view shows as its page gives it: its
-    /// `title`, or a tree node's `label`.
+    /// The name the row of the item the view shows as its page gives it: its `title`, or a tree
+    /// node's `label`.
     pub(super) fn shown_item_title(&self) -> Option<String> {
         let shown = self.built.as_ref().and_then(shown_item_of)?;
         let rows = self.rows.borrow();
@@ -32,9 +31,9 @@ impl AppWindow {
         })
     }
 
-    /// A lane's page came to the front of a narrow window, showing `shows`' item in place where
-    /// the window draws its own page: what the person types into it is that item's. Whether the
-    /// press takes the keyboard into the page.
+    /// A lane's page came to the front of a narrow window, showing `shows`' item in place where the
+    /// window draws its own page: what the person types into it is that item's. Whether the press
+    /// takes the keyboard into the page.
     pub(super) fn fronted(
         &mut self,
         brought: wire::Front,
@@ -43,14 +42,14 @@ impl AppWindow {
         if let Some((press, shows)) = shows {
             if press > 0 {
                 self.shows_by_press.insert(press, shows.clone());
-                // A press a person made long ago has no typing left on its way.
+                // A press made long ago has no typing left on its way.
                 self.shows_by_press
                     .retain(|press, _| press.saturating_add(64) > self.fired);
             }
             self.shown_in_place = Some(shows);
         }
-        // A person's press takes the keyboard into the page it shows; what a scenario or a
-        // search opened leaves the keyboard where the person had it.
+        // A person's press takes the keyboard into the page it shows; what a scenario or a search
+        // opened leaves the keyboard where the person had it.
         if self.detail.is_none() && brought == wire::Front::Input {
             self.opened = Some(self.fired);
             return true;
@@ -58,17 +57,14 @@ impl AppWindow {
         false
     }
 
-    /// The resource a field of the window's own view belongs to: a field of the page the
-    /// window draws beside its list or tree for the item that list selects belongs to that
-    /// item (as a page after the window's own does), so what the person types into it lands in
-    /// the item even when the lane has already moved on to the next one. Every other field is
-    /// the window's own resource.
+    /// The resource a field of the window's own view belongs to: a field of the page the window
+    /// draws for the item its list or tree selects belongs to that item, so what the person types
+    /// into it lands in the item even when the lane has moved on to the next one. Every other field
+    /// is the window's own resource.
     pub(super) fn field_target(&self, field: &str) -> Option<ResourceRef> {
         self.field_target_for(field, None)
     }
 
-    /// [`Self::field_target`], for what the person typed after press `after`: the item that
-    /// press showed.
     pub(super) fn field_target_for(&self, field: &str, after: Option<u64>) -> Option<ResourceRef> {
         let (lane, _) = lane_of(field);
         if lane == Lane::Root
@@ -84,10 +80,10 @@ impl AppWindow {
         self.target(lane)
     }
 
-    /// Whether `field` is a control of the page the window draws for the item its own view
-    /// shows (a tree beside what it shows), rather than of the window's own list or sidebar.
-    /// A view with no item beside it stands in the content slot as the window's own page: its
-    /// fields are the window's resource, and what the app sends for them is what they show.
+    /// Whether `field` is a control of the page the window draws for the item its view shows (a
+    /// tree beside what it shows), rather than of the window's list or sidebar. A view with no item
+    /// beside it is the window's own page: its fields are the window's resource, and what the app
+    /// sends for them is what they show.
     pub(super) fn page_field(&self, field: &str) -> bool {
         let (lane, local) = lane_of(field);
         if lane != Lane::Root {
@@ -129,8 +125,6 @@ impl AppWindow {
     }
 }
 
-/// The nodes a window shell's content slot holds, the page beside its sidebar: the children of
-/// the first slot named `content` under `tree`.
 pub(super) fn content_nodes(tree: &UiNode) -> Vec<&UiNode> {
     fn walk<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) -> bool {
         if node.kind == crate::adapter::SLOT
@@ -146,8 +140,8 @@ pub(super) fn content_nodes(tree: &UiNode) -> Vec<&UiNode> {
     out
 }
 
-/// The item the window's own page stands on: the resource a list of the content's tree says it
-/// shows, where the window draws its page in its own view (a tree beside what it shows).
+/// The item the window's page is for: the resource a list of the content's tree says it shows,
+/// where the window draws its page in its own view (a tree beside what it shows).
 pub(super) fn chosen_item_of(tree: &UiNode) -> Option<ResourceRef> {
     let mut chosen = None;
     chosen_item(tree, &mut chosen);
@@ -164,8 +158,6 @@ pub(super) fn chosen_item<'a>(node: &'a UiNode, out: &mut Option<&'a ResourceRef
     node.children.iter().any(|child| chosen_item(child, out))
 }
 
-/// The item the window's own view shows as its page, by its id: the row its list stands open
-/// into where it stands, else the item its tree selects.
 pub(super) fn shown_item_of(tree: &UiNode) -> Option<String> {
     fn open(node: &UiNode) -> Option<String> {
         if node.kind == crate::adapter::kind("VirtualList") {
@@ -180,9 +172,8 @@ pub(super) fn shown_item_of(tree: &UiNode) -> Option<String> {
     open(tree).or_else(|| chosen_item_of(tree).map(|item| item.id))
 }
 
-/// What the node of `tree` standing for the item `item` (its `item`, by id) names it: the first
-/// `title` of its row, else a tree node's `label`. What the row opens into and its menu (its
-/// slots) name other things.
+/// What the node of `tree` for item `item` names it: the first `title` of its row, else a tree
+/// node's `label`. What the row opens into and its menu (its slots) name other things.
 pub(super) fn item_title(tree: &UiNode, item: &str) -> Option<String> {
     fn named(node: &UiNode) -> Option<String> {
         if node.kind == crate::adapter::SLOT {
@@ -204,7 +195,6 @@ pub(super) fn item_title(tree: &UiNode, item: &str) -> Option<String> {
         .find_map(|child| item_title(child, item))
 }
 
-/// The node of the composed tree `tree` whose own key is `key`.
 pub(super) fn node_of_key<'a>(tree: &'a UiNode, key: &str) -> Option<&'a UiNode> {
     if tree.key == key {
         return Some(tree);
@@ -214,8 +204,6 @@ pub(super) fn node_of_key<'a>(tree: &'a UiNode, key: &str) -> Option<&'a UiNode>
         .find_map(|child| node_of_key(child, key))
 }
 
-/// The keys of the controls `node` holds that take what the person enters, as the keys the
-/// window's bound values are kept under.
 pub(super) fn bound_keys(node: &UiNode, out: &mut BTreeSet<String>) {
     if node.binding.is_some() {
         out.insert(node.key.clone());

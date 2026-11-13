@@ -21,16 +21,13 @@ use crate::bindings;
 use crate::resource::StoreEffect;
 use ui::widget::Widget as _;
 
-/// A view's slot id: `view:` and its name in [`VIEWS`].
 const VIEW_PREFIX: &str = "view:";
 
 impl StoreState {
-    /// Whether the window shows the catalogue (no page or list over it).
     pub(super) fn shows_catalogue(&self) -> bool {
         !self.safety_open && !self.remotes_open && self.focused_detail.is_none()
     }
 
-    /// The window bar's slots, the shell's own (`base`) first.
     pub(super) fn window_toolbar(&self, mut base: WindowToolbar) -> WindowToolbar {
         let entry = |effect: StoreEffect, icon: &str, name: String| {
             self.bar.as_ref().map(|bar| ToolbarAction {
@@ -117,7 +114,6 @@ impl StoreState {
         base
     }
 
-    /// The invocation of the view action the view slot `id` stands for.
     fn view_invocation(id: &str) -> Option<ControlInvocation> {
         let view = id.strip_prefix(VIEW_PREFIX)?;
         let index = VIEWS.iter().position(|name| *name == view)?;

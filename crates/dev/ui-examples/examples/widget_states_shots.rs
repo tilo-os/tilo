@@ -14,20 +14,7 @@
 //! `docs/design-language.md`: type roles, concentric radii, the inverted
 //! primary, the lift, your-colour focus, edges, heights per `ControlSize`,
 //! spacing and contrast.
-//!
-//! Hover and press are real pointer events delivered to the retained widget
-//! at its centre, focus is `Widget::set_focus`; disabled, selected and error
-//! use each widget's own API. Overlays are captured through `FrameHarness`
-//! over a busy page, so the floating material shows its blur exactly as a
-//! window does.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- widget_states [OUT_DIR]`
-//! Out:  `OUT_DIR` (default `/tmp/widget_states`): `<page>-<theme>.png` for
-//!       the pages `controls`, `sizes`, `inputs`, `rows`, `panes`,
-//!       `navigation`, `icons`, `content`, `editor`, `embed` (and `controls-large`,
-//!       `inputs-large` and `editor-large` at 200 % text), `overlays`,
-//!       `overlays-narrow` (800 × 600), `overlays-opaque`, `modal`,
-//!       `modal-question` and `modal-tall` (800 × 600).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

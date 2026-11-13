@@ -39,15 +39,11 @@ pub struct CardAction<'a> {
     pub in_progress: bool,
 }
 
-/// What pressing the card does: open the app's details. `key` names the card
-/// for keyboard traversal and tests.
 pub struct CardDetails<'a> {
     pub key: &'a str,
     pub binding: Option<ActionBinding<()>>,
 }
 
-/// The app's icon: its published artwork while it loads or when it is
-/// missing, the toolkit's generated tile.
 pub fn app_icon(item: &StoreItem, images: Option<&ui::ImageStore>, size: AvatarSize) -> Avatar {
     let avatar = Avatar::person(&item.name, &item.id).neutral().size(size);
     match (images, item.icon_url.as_deref()) {
@@ -56,7 +52,6 @@ pub fn app_icon(item: &StoreItem, images: Option<&ui::ImageStore>, size: AvatarS
     }
 }
 
-/// Build a single card widget.
 pub fn store_card(
     item: &StoreItem,
     primary: CardAction<'_>,
@@ -183,8 +178,6 @@ pub fn visible_version(item: &StoreItem) -> &str {
     version
 }
 
-/// Turn registry category identifiers into human-facing labels without
-/// changing the stable value used by filtering and search.
 pub fn category_label(value: &str) -> String {
     match value {
         "AudioVideo" => "Audio & video".into(),

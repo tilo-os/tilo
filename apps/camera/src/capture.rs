@@ -36,10 +36,7 @@ pub fn list_devices() -> Vec<String> {
 /// A running capture session. Drop to stop it.
 pub struct Capture {
     video: VideoCapture,
-    /// The backend wakes the window whose code opened the capture when its
-    /// state moves, so nothing needs to look while it is starting.
     announces: bool,
-    /// The state last read was [`CaptureState::Starting`].
     starting: bool,
 }
 
@@ -61,7 +58,6 @@ impl Capture {
         Ok(Self::watch(video))
     }
 
-    /// `video`, waking the window whose code runs now when its state moves.
     pub fn watch(mut video: VideoCapture) -> Self {
         let wake = ui::wake::WakeHandle::new();
         let announces = video.notify(move || wake.wake());
@@ -79,7 +75,6 @@ impl Capture {
         self.announces && self.starting
     }
 
-    /// The newest frame since the last call.
     pub fn take_latest(&mut self) -> Option<CamFrame> {
         self.video.take_latest().map(|frame| CamFrame {
             rgba: frame.rgba,
@@ -88,7 +83,6 @@ impl Capture {
         })
     }
 
-    /// Why the capture failed or stopped, once it has.
     pub fn failure(&mut self) -> Option<CaptureError> {
         let state = self.video.state();
         self.starting = state == CaptureState::Starting;
@@ -135,9 +129,8 @@ mod tests {
                 if let Some(dev) = devs.first() {
                     match Capture::open(dev, 640, 480) {
                         Ok(cap) => {
-                            // A real pipeline opened; the frame channel is live. We don't
-                            // assert a frame arrives — CI cameras may be present but not
-                            // streamable — only that the pipeline built and plays.
+                            // A real pipeline opened; the frame channel is live. Only the pipeline is
+                            // asserted: a CI camera may be present but not streamable.
                             drop(cap);
                         }
                         Err(e) => {

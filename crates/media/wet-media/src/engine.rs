@@ -21,13 +21,10 @@ use crate::colour::{Paint, Pigment};
 use crate::field::ColourField;
 use crate::ground::{Heightfield, Texture};
 
-/// How a medium's layer composes onto what is beneath it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Blend {
-    /// Opaque paint covers what is beneath it.
     Normal,
-    /// Transparent pigment darkens what is beneath it, as glazes do.
     Multiply,
 }
 
@@ -54,8 +51,6 @@ impl ParamSpec {
     }
 }
 
-/// Parameter values over an engine's specs: unknown ids are ignored, missing
-/// ones take the spec default and every value is clamped to its range.
 #[derive(Clone, Debug)]
 pub struct Settings {
     specs: Arc<[ParamSpec]>,
@@ -99,7 +94,6 @@ impl Settings {
         })
     }
 
-    /// Every parameter's effective value.
     pub fn resolved(&self) -> BTreeMap<String, f32> {
         self.specs
             .iter()
@@ -108,27 +102,16 @@ impl Settings {
     }
 }
 
-/// The support a layer is painted on, in simulation cells.
-///
-/// A canvas is the whole layer's grid, or a window of it: `origin` is where
-/// its first cell lies in the whole grid at the same scale. Everything an
-/// engine derives from position (the ground's tooth, the mottling of a wash,
-/// the brushwork laying in a region) is taken in whole-grid cells, so a
-/// window simulates the same paint as the whole grid there, and two windows
-/// side by side meet without a seam in their texture.
 #[derive(Clone, Debug)]
 pub struct Canvas {
     pub width: usize,
     pub height: usize,
-    /// Cells per artwork unit.
     pub scale: f32,
     pub ground: Arc<Heightfield>,
-    /// The whole-grid cell of this grid's first cell.
     pub origin: (usize, usize),
 }
 
 impl Canvas {
-    /// The whole layer's grid over `ground`.
     pub fn whole(scale: f32, ground: Arc<Heightfield>) -> Self {
         Self {
             width: ground.width,
@@ -151,7 +134,6 @@ impl Canvas {
         }
     }
 
-    /// The whole-grid position of cell `(x, y)` of this grid.
     pub(crate) fn absolute(&self, x: f32, y: f32) -> (f32, f32) {
         (
             x + crate::grid::float(self.origin.0),
@@ -160,68 +142,45 @@ impl Canvas {
     }
 }
 
-/// A brush stroke, in cell coordinates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
     pub points: Vec<StrokePoint>,
     pub size: f32,
     pub paint: Paint,
     pub opacity: f32,
-    /// Paint into the layer while it is still wet (blending, bleeding),
-    /// rather than over paint that has dried.
     pub wet: bool,
-    /// Per-mark parameter overrides on top of the preset.
     #[serde(default)]
     pub params: BTreeMap<String, f32>,
-    /// What the stroke grows into: twigs, or a cluster of dabs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub form: Option<crate::form::Form>,
-    /// Closed outlines the paint stays inside, as a painter cuts a stroke
-    /// in against an edge; anywhere when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clip: Vec<Vec<(f32, f32)>>,
 }
 
-/// A filled region laid in with a brush, in cell coordinates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
-    /// Closed outlines; overlapping ones follow the non-zero rule.
     pub contours: Vec<Vec<(f32, f32)>>,
     pub paint: Paint,
     pub opacity: f32,
     pub wet: bool,
-    /// The width of the brush that lays the region in.
     pub brush: f32,
-    /// The direction of the brushwork, in degrees.
     pub angle: f32,
     #[serde(default)]
     pub params: BTreeMap<String, f32>,
-    /// Colour that changes across the region, mixed as it is laid in;
-    /// `paint` gives the handling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<ColourField>,
 }
 
-/// Paint taken off the layer along a path, in cell coordinates: an eraser.
-/// It is ordered like any mark: it lifts what earlier marks left under it,
-/// and later marks paint over the place it cleared.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Erase {
-    /// The path; pressure scales the width, as for a stroke.
     pub points: Vec<StrokePoint>,
     pub size: f32,
-    /// `0..=1`: how much of the paint under the eraser it takes off (1
-    /// clears it).
     pub strength: f32,
-    /// `0..=1`: a hard eraser's edge is crisp; a soft one fades out over its
-    /// outer half.
     pub hardness: f32,
-    /// Closed outlines the eraser stays inside; anywhere when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clip: Vec<Vec<(f32, f32)>>,
 }
 
-/// One mark as a medium receives it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Mark {
@@ -250,7 +209,6 @@ fn scaled_points(points: &[StrokePoint], scale: f32) -> Vec<StrokePoint> {
 }
 
 impl Mark {
-    /// This mark with artwork coordinates converted to cells.
     #[must_use]
     pub fn scaled(&self, scale: f32) -> Self {
         match self {
@@ -276,8 +234,6 @@ impl Mark {
         }
     }
 
-    /// This mark moved by `(dx, dy)` cells: a whole-grid mark as a window
-    /// whose origin is `(-dx, -dy)` receives it.
     #[must_use]
     pub fn translated(&self, dx: f32, dy: f32) -> Self {
         let shift = |contours: &Vec<Vec<(f32, f32)>>| -> Vec<Vec<(f32, f32)>> {
@@ -313,8 +269,6 @@ impl Mark {
         }
     }
 
-    /// The cells the mark can reach: its outline or path, grown by its
-    /// brush and whatever it grows into. `None` for a mark with no points.
     pub fn reach(&self) -> Option<[f32; 4]> {
         let (points, grow): (Vec<(f32, f32)>, f32) = match self {
             Self::Stroke(stroke) => {
@@ -326,8 +280,6 @@ impl Mark {
                         _ => 0.0,
                     })
                     .sum();
-                // Dabs scatter about the path; twigs fork off it, each
-                // shorter than the limb.
                 let form = match stroke.form {
                     None => 0.0,
                     Some(crate::form::Form::Dabs {
@@ -336,8 +288,6 @@ impl Mark {
                         ..
                     }) => scatter + dab.max(stroke.size),
                     Some(crate::form::Form::Branch { .. }) => length,
-                    // Hatching fills the outline, its lines ending up to a
-                    // third of their spacing past its edge.
                     Some(crate::form::Form::Hatch { spacing, .. }) => {
                         spacing.max(stroke.size * 0.5).max(0.5) * 0.5
                     }
@@ -389,7 +339,6 @@ impl Mark {
         ])
     }
 
-    /// Per-mark parameter overrides; an eraser has none.
     pub fn params(&self) -> &BTreeMap<String, f32> {
         static NONE: BTreeMap<String, f32> = BTreeMap::new();
         match self {
@@ -399,8 +348,6 @@ impl Mark {
         }
     }
 
-    /// Whether the mark works into the wet layer. An eraser is not a wet
-    /// mark, but the engines lift paint without drying the layer first.
     pub fn wet(&self) -> bool {
         match self {
             Self::Stroke(stroke) => stroke.wet,
@@ -410,19 +357,14 @@ impl Mark {
     }
 }
 
-/// One layer's simulation state.
 pub trait LayerSim: Send + Sync {
-    /// Paint one mark. `seed` makes its randomness reproducible.
     fn apply(&mut self, mark: &Mark, seed: u64);
 
-    /// The layer as it looks once dry: straight-alpha sRGB RGBA8, row-major,
-    /// `width * height * 4` bytes. Does not change the state.
     fn composite(&self) -> Vec<u8>;
 
     fn clone_box(&self) -> Box<dyn LayerSim>;
 }
 
-/// A kind of paint.
 pub trait MediumEngine: Send + Sync {
     fn id(&self) -> &str;
     fn label(&self) -> &str;
@@ -432,8 +374,6 @@ pub trait MediumEngine: Send + Sync {
     fn new_layer(&self, canvas: &Canvas, settings: Settings) -> Box<dyn LayerSim>;
 }
 
-/// A shareable medium: an engine with its parameters, a suggested ground and
-/// a palette of named pigments.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
     pub id: String,
@@ -450,11 +390,6 @@ pub struct Preset {
 }
 
 impl Preset {
-    /// Check a preset against the engines it names, with a message an agent
-    /// can act on.
-    ///
-    /// # Errors
-    /// Names the first invalid id, engine, parameter or pigment.
     pub fn validate(&self, engines: &Engines) -> Result<(), String> {
         if !valid_id(&self.id) {
             return Err(format!(
@@ -514,14 +449,12 @@ fn valid_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-/// The engines a host can simulate.
 #[derive(Clone)]
 pub struct Engines {
     engines: Vec<Arc<dyn MediumEngine>>,
 }
 
 impl Engines {
-    /// The built-in engines.
     pub fn builtin() -> Self {
         Self {
             engines: vec![

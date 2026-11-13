@@ -2,9 +2,7 @@
 //! section closed and open, under the pointer on either half, focused on
 //! either half, not enabled, and with a long name and state line, in dark
 //! and light, wide and compact (420 px, compact density).
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- quick_tile_shots [out-dir]`
-//! Out:  `out-dir` (default `target/quick_tile_shots`): quick-tile-{dark,light}-{wide,compact}.png
 
 use std::path::{Path, PathBuf};
 

@@ -29,7 +29,6 @@ use runtime_fs::{DirEntry, EntryKind, FsClient, Metadata, OpenMode};
 
 type Store = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
 
-/// What one served object answers with.
 type Dispatch = Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>>;
 
 fn ready(reply: Result<FsReply, String>) -> Dispatch {
@@ -74,8 +73,6 @@ impl ServeObject for FakeFile {
                 if entry.len() < offset {
                     entry.resize(offset, 0);
                 }
-                // In-place splice: overwrite [offset..offset+len), extending
-                // as needed.
                 for (i, byte) in bytes.iter().enumerate() {
                     let dst = offset.saturating_add(i);
                     if dst < entry.len() {
@@ -112,7 +109,6 @@ impl ServeObject for FakeFs {
         match request {
             FsRequest::Open { path, mode } => {
                 let path = normalise(&path);
-                // Truncate on write; leave alone on append/read.
                 if mode == OpenMode::Write {
                     self.store
                         .lock()
@@ -165,7 +161,6 @@ impl ServeObject for FakeFs {
                 };
                 ready(Ok(FsReply::Metadata(Some(metadata(bytes.len() as u64)))))
             }
-            // Directories are implicit in this test.
             FsRequest::Mkdir { .. } => {
                 ready(Ok(FsReply::Ack(runtime_fs::wire::NativeEntryStatus::Ok)))
             }

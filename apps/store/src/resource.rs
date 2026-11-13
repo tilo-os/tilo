@@ -14,11 +14,8 @@ use crate::app::StoreApp;
 use crate::model::ActionKind;
 use crate::reports::{Reports, report_row_id};
 
-/// The id of Trust & moderation, the row that holds the reports.
 pub const MODERATION_ID: &str = "store:moderation";
 
-/// One app's report as the window shows it: a draft until the registry
-/// knows of it, then its case.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReportProjection {
     /// The registry's case id once there is one, else `report:<app id>`.
@@ -29,12 +26,10 @@ pub struct ReportProjection {
 }
 
 impl ReportProjection {
-    /// Whether the registry has a case for this report.
     pub fn is_case(&self) -> bool {
         self.id.starts_with("case-")
     }
 
-    /// Every report `reports` holds, by app.
     pub fn of(reports: &Reports) -> Vec<Self> {
         reports
             .reports
@@ -49,52 +44,28 @@ impl ReportProjection {
     }
 }
 
-/// Everything the Store does that changes no document: moving around the
-/// catalogue, the package jobs on this device, the Flatpak remotes, and
-/// talking to a registry about a report. A package job runs on the Store's
-/// worker and answers when it finished.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "store.effect")]
 pub enum StoreEffect {
-    /// Inspect catalogue.
-    ///
-    /// Read this window's current filtered page, repository scopes and worker state.
-    /// An app identity requests its details without changing the selected app.
     #[effect(returns, kind = "read")]
     InspectCatalogue {
         #[param("Optional app identity whose catalogue details to inspect")]
         app: Option<String>,
     },
-    /// Refresh catalog.
     #[effect(job)]
     Refresh,
-    /// Update all apps.
-    ///
-    /// Installs the newest version of every installed app a catalogue
-    /// offers an update for, the system image's apps included, one after
-    /// another, without opening any.
     #[effect(job)]
     UpdateAll,
-    /// Search apps.
-    ///
-    /// Finds apps and bots in the catalogue on this device as you type, by
-    /// name, tag line, developer or category.
     #[effect(kind = "read")]
     SetSearch {
         #[param("App name, publisher, category, or description")]
         query: String,
     },
-    /// Show a part of the Store.
-    ///
-    /// Home, the apps with updates, the apps on this device, or the bots.
     #[effect(kind = "read")]
     ShowView {
         #[param("home, updates, installed or bots")]
         view: String,
     },
-    /// Show more apps.
-    ///
-    /// Lists the next apps of a long category or search.
     #[effect(kind = "read")]
     ShowMore,
     /// Block app.
@@ -107,37 +78,28 @@ pub enum StoreEffect {
         #[param("App identity (for example com.example.Game)")]
         app: String,
     },
-    /// Unblock app.
-    ///
-    /// Lifts your own block; a block set by a workspace or this device's
-    /// administrator stays.
     #[effect(idempotent)]
     UnblockApp {
         #[param("App identity")]
         app: String,
     },
-    /// Browse apps from a configured Flatpak repository.
     #[effect(job, kind = "read")]
     BrowseRemote {
         #[param("Configured repository resource identity, including its account or device scope")]
         remote: String,
     },
-    /// Show a category.
     #[effect(kind = "read")]
     SetCategory {
         #[param("App category, or All")]
         category: String,
     },
-    /// Clear the search.
     #[effect(kind = "read")]
     ClearFilters,
-    /// Show app details.
     #[effect(kind = "read")]
     ShowDetails {
         #[param("App identity (for example so.tilo.notes)")]
         app: String,
     },
-    /// Review the exact runtime required by an app; installing remains a separate step.
     #[effect(job, kind = "read")]
     ShowRuntimeDetails {
         #[param("Exact runtime reference, for example tilo-runtime/2026.10.4-chromium")]
@@ -145,7 +107,6 @@ pub enum StoreEffect {
         #[param("Optional enabled repository name; omit only when its offer is unambiguous")]
         registry: Option<String>,
     },
-    /// Install the reviewed signed runtime without launching an application.
     #[effect(job)]
     InstallRuntime {
         #[param("Reviewed runtime package identity")]
@@ -153,7 +114,6 @@ pub enum StoreEffect {
         #[param("Exact reviewed signed package root")]
         root: String,
     },
-    /// Show or hide technical package details.
     #[effect(kind = "read")]
     SetTechnicalDetails {
         #[param("Whether to show package identity, digest and publisher key")]
@@ -171,7 +131,6 @@ pub enum StoreEffect {
         #[param("Optional handed file length; bytes are independently bounded and verified")]
         reported_size: Option<u64>,
     },
-    /// Install reviewed package.
     #[effect(job)]
     #[effect(label = "store-package-install")]
     InstallImportedPackage {
@@ -180,9 +139,6 @@ pub enum StoreEffect {
         #[param("Exact reviewed signed package root, without tapp: prefix")]
         root: String,
     },
-    /// Open a Flatpak reference.
-    ///
-    /// Its app is shown ready to install; installing stays a separate step.
     #[effect(kind = "read")]
     OpenReference {
         #[param("Absolute path of a .flatpakref file")]
@@ -190,19 +146,12 @@ pub enum StoreEffect {
         #[param("The text of a .flatpakref, when there is no file")]
         contents: Option<String>,
     },
-    /// Back to apps.
     #[effect(kind = "read")]
     ShowCatalogue,
-    /// Show Flatpak remotes.
     #[effect(kind = "read")]
     ShowRemotes,
-    /// Show trust and moderation.
     #[effect(kind = "read")]
     ShowTrust,
-    /// Open a web page.
-    ///
-    /// Shows an app's home page or source code in this device's browser;
-    /// nothing in the Store changes.
     #[effect(idempotent)]
     OpenLink {
         #[param("Web address (http or https)")]
@@ -217,48 +166,41 @@ pub enum StoreEffect {
         #[param("App identity")]
         app: String,
     },
-    /// Update.
     #[effect(job)]
     #[effect(label = "store-action-update")]
     Update {
         #[param("App identity")]
         app: String,
     },
-    /// Keep on device.
     #[effect(job)]
     Pin {
         #[param("App identity")]
         app: String,
     },
-    /// Allow cleanup.
     #[effect(job)]
     #[effect(label = "store-action-release")]
     Unpin {
         #[param("App identity")]
         app: String,
     },
-    /// Install.
     #[effect(job)]
     #[effect(label = "store-action-install")]
     FlatpakInstall {
         #[param("App identity")]
         app: String,
     },
-    /// Update.
     #[effect(job)]
     #[effect(label = "store-action-update")]
     FlatpakUpdate {
         #[param("App identity")]
         app: String,
     },
-    /// Open.
     #[effect(job)]
     #[effect(label = "store-action-open")]
     FlatpakOpen {
         #[param("App identity")]
         app: String,
     },
-    /// Flatpak unavailable.
     #[effect(job)]
     #[effect(label = "store-flatpak-unavailable")]
     FlatpakSetup {
@@ -274,7 +216,6 @@ pub enum StoreEffect {
         #[param("Bot identity")]
         app: String,
     },
-    /// Refresh remotes.
     #[effect(job)]
     RefreshRemotes,
     /// Add Flatpak remote.
@@ -285,14 +226,12 @@ pub enum StoreEffect {
         #[param("HTTPS repository URL")]
         url: String,
     },
-    /// Enable source.
     #[effect(job)]
     #[effect(label = "store-remote-enable")]
     EnableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
-    /// Disable source.
     #[effect(job)]
     #[effect(label = "store-remote-disable")]
     DisableRemote {
@@ -305,7 +244,6 @@ pub enum StoreEffect {
         #[param("Remote name")]
         name: String,
     },
-    /// Prepare exact report or appeal parameters without submitting them.
     #[effect(returns, kind = "read")]
     PrepareModeration {
         #[param("App identity of the report")]
@@ -313,10 +251,6 @@ pub enum StoreEffect {
         #[param("Prepare an appeal instead of a report")]
         appeal: bool,
     },
-    /// Submit signed report.
-    ///
-    /// Signs the app's report draft with your workspace identity and sends
-    /// it to the app's registry.
     #[effect(job, sensitive)]
     SubmitReport {
         #[param("App identity of the report")]
@@ -324,18 +258,12 @@ pub enum StoreEffect {
         #[param("Exact operation JSON returned by prepare-moderation")]
         operation: String,
     },
-    /// Refresh status.
-    ///
-    /// Fetches the verified status of the app's moderation case.
     #[effect(job)]
     #[effect(label = "store-report-refresh")]
     RefreshStatus {
         #[param("App identity of the report")]
         app: String,
     },
-    /// Appeal decision.
-    ///
-    /// Appeals the app's moderation case, with its note as the reason.
     #[effect(job, sensitive)]
     #[effect(label = "store-report-appeal")]
     Appeal {
@@ -344,7 +272,6 @@ pub enum StoreEffect {
         #[param("Exact operation JSON returned by prepare-moderation")]
         operation: String,
     },
-    /// Export evidence envelope.
     #[effect(job)]
     #[effect(label = "store-report-export")]
     ExportEvidence {
@@ -354,8 +281,6 @@ pub enum StoreEffect {
 }
 
 impl StoreEffect {
-    /// The effect that carries out `action` on `app`, when the Store carries
-    /// it out: uninstalling is the system's one action (`app.uninstall`).
     pub fn package(action: ActionKind, item: &crate::StoreItem) -> Option<Self> {
         let app = item.id.clone();
         Some(match action {
@@ -380,8 +305,6 @@ impl StoreEffect {
         })
     }
 
-    /// The app and the package operation this effect carries out, when it is
-    /// one.
     pub fn as_package(&self) -> Option<(&str, ActionKind)> {
         let (app, action) = match self {
             Self::InstallRuntime { app, .. } => (app, ActionKind::RuntimeInstall),
@@ -400,7 +323,6 @@ impl StoreEffect {
     }
 }
 
-/// The Store's bots: the link a workspace's Add a bot opens.
 const BOTS_LINK: &str = "tilo-store:bots";
 
 /// Decode the one Store link shape, `tilo-store:app/<id>`. The launcher
@@ -419,17 +341,11 @@ pub fn parse_store_uri(uri: &str) -> Result<String, String> {
     Ok(id.to_string())
 }
 
-/// What a capture shows instead of this device's catalogue.
 #[derive(Clone, Debug)]
 pub struct CaptureCatalogue {
     pub items: Vec<crate::StoreItem>,
 }
 
-/// The screenshots: Home wide and narrow, a search, an app's page (wide and
-/// narrow, one with an update, a Flathub app, a blocked one), Updates, On
-/// this device, Bots, a category, the remotes, a package job in flight and
-/// one that failed, each moderation state, and an empty and an unreachable
-/// catalogue.
 const SCENARIOS: &[&str] = &[
     "wide",
     "narrow",
@@ -462,12 +378,10 @@ const SCENARIOS: &[&str] = &[
     "offline",
 ];
 
-/// The app the moderation screenshots report.
 const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
-/// Framework app.
 pub struct StoreShell;
 
 impl ResourceApp for StoreShell {
@@ -480,7 +394,6 @@ impl ResourceApp for StoreShell {
         "application/vnd.flatpak.ref",
         "application/vnd.tilo.package",
     ];
-    /// A `.flatpakref` to show, or a `tilo-store:app/<id>` link.
     const ARGUMENTS: usize = 1;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -488,7 +401,6 @@ impl ResourceApp for StoreShell {
     }
 
     fn view(cx: &mut ViewCx<Reports>) -> Element {
-        // A search hit, or an agent's `open`, shows the app it names.
         let dispatcher = cx.dispatcher();
         cx.on_open(
             move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
@@ -499,9 +411,6 @@ impl ResourceApp for StoreShell {
         crate::app::window(cx, StoreApp::new())
     }
 
-    /// A `.flatpakref` (handed over, or its path) shows its app ready to
-    /// install, and `tilo-store:app/<id>` shows that app's details. Neither
-    /// installs anything: that stays the person's choice on the page.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Reports>> {
         let effect = if let Some(file) = input.file() {
             if std::path::Path::new(file.name())
@@ -540,7 +449,6 @@ impl ResourceApp for StoreShell {
             if argument == "tilo-store:catalogue" {
                 StoreEffect::ShowCatalogue
             } else if argument == BOTS_LINK {
-                // A workspace's Add a bot opens the bots, whose pages add one.
                 StoreEffect::ShowView {
                     view: "bots".to_owned(),
                 }
@@ -598,8 +506,6 @@ impl ResourceApp for StoreShell {
             .map_or((1280, 800), |_| (520, 820))
     }
 
-    /// A capture shows a made-up catalogue (none at all when it shows an
-    /// empty or unreachable one) instead of this device's.
     fn fixture(fixture: &mut Fixture<Reports>) {
         let items = if matches!(fixture.scenario(), Some("empty" | "offline")) {
             Vec::new()
@@ -609,8 +515,6 @@ impl ResourceApp for StoreShell {
         fixture.provide(CaptureCatalogue { items });
     }
 
-    /// The moderation screenshots show a report about Notes: a draft, or a
-    /// case with its note.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Reports>> {
         let Some(name) = name.filter(|name| name.starts_with("moderation")) else {
             return Vec::new();
@@ -639,8 +543,6 @@ impl ResourceApp for StoreShell {
     }
 }
 
-/// The resource as the palette sees it without a window: its declarations
-/// and children, beside the Store's effects.
 pub fn door() -> PublishedResource {
     let mut door =
         tilo_resource::publish::<Reports>(Reports::KIND, Reports::LABEL, &Reports::default());
@@ -670,8 +572,6 @@ mod tests {
         }
     }
 
-    /// A Store whose catalogue sources answer at once and offer nothing:
-    /// no configured registry, an unreachable Flathub, a private cache.
     struct Offline {
         env: tilo_test_env::ScopedEnv,
         dir: tempfile::TempDir,
@@ -727,8 +627,6 @@ mod tests {
                         let mut request = [0; 4096];
                         let length = stream.read(&mut request).unwrap();
                         let request = String::from_utf8_lossy(&request[..length]);
-                        // Flathub's catalogue: its popular collection, then
-                        // its catalogue pages through the search index.
                         assert!(
                             request.starts_with("GET /collection/popular?")
                                 || request.starts_with("POST /search?"),
@@ -764,9 +662,6 @@ mod tests {
         })
     }
 
-    /// Search opens a Flatpak's page through this link
-    /// (`tilo-store:app/<id>`): the launch shows that app's details and
-    /// installs nothing; installing stays the person's choice on the page.
     #[test]
     fn a_store_link_opens_the_app_page_and_installs_nothing() {
         let arguments = vec!["tilo-store:app/com.spotify.Client".to_owned()];
@@ -779,7 +674,6 @@ mod tests {
         assert_eq!(invokes[0].arguments, expected.arguments);
     }
 
-    /// The links a launch may name: an app's identity and nothing else.
     #[test]
     fn store_links_name_only_a_stable_app_identity() {
         assert_eq!(
@@ -869,13 +763,10 @@ mod tests {
                         .find(|action| action.name == name)
                         .unwrap_or_else(|| panic!("catalogue: missing bar slot {name}"));
                     assert!(slot.enabled, "catalogue: live owner slot {name}");
-                    // Occasional actions stand named in the More menu, not
-                    // as bare icons.
                     assert!(slot.menu, "catalogue: {name} is a More menu item");
                 }
             }
             if page == "remotes" {
-                // Reached through the bar's slot: its action resolves.
                 app.harness()
                     .press_window_action("Flatpak repositories")
                     .unwrap();
@@ -905,15 +796,10 @@ mod tests {
                     "remotes: refreshing the repositories is the window bar's: {toolbar:?}"
                 );
             }
-            // The production audit resolves each binding against both the
-            // mounted app and the real window-owned search/History doors.
             let audit = app.harness().native_app_audit();
             let bindings =
                 ui::widget::controls::control_action_bindings(app.harness().root_widget());
             if page == "catalogue" {
-                // An empty catalogue holds no control of its own: its search
-                // is the window bar's, which acts on the Store in place, and
-                // its other slots are the bar's (above).
                 assert_bar_search_reaches_the_store(&mut app);
             } else {
                 assert!(!bindings.is_empty(), "{page}");
@@ -1110,8 +996,6 @@ mod tests {
         else {
             panic!("the original channel must carry startup");
         };
-        // Join the actual admitted launch to the host's production desktop
-        // scanner, rather than duplicating its identity convention here.
         assert_installed_flatpak_launch(&app_id, &id);
         assert!(package_root.is_none());
         assert!(
@@ -1432,8 +1316,6 @@ mod tests {
         );
     }
 
-    /// The window bar's search acts on the Store in place, whatever the
-    /// slow repository is doing.
     fn assert_bar_search_reaches_the_store(app: &mut TestApp<StoreShell>) {
         app.settle();
         assert_eq!(
@@ -1517,8 +1399,6 @@ mod tests {
                     .unwrap()
                     .value
                     .unwrap();
-                // Search answers from the catalogue on this device at once,
-                // whatever the slow repository is doing.
                 snapshot["query"] == "Editor"
                     && snapshot["items"]
                         .as_array()
@@ -1688,8 +1568,6 @@ mod tests {
             gate.entered.load(std::sync::atomic::Ordering::SeqCst)
         }));
         service.shutdown().unwrap();
-        // The fixture owns the saved task waker too. Retire it after the
-        // transport driver joins, rather than retain a task/future cycle.
         gate.retire_waiter();
         settle_catalogue_worker(&mut app);
         assert!(gate.canceled.load(std::sync::atomic::Ordering::SeqCst));
@@ -2180,8 +2058,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Opening a `.flatpakref` shows its app ready to install — and
-    /// installs nothing.
     #[test]
     fn launching_on_a_reference_shows_its_app() {
         let offline = offline();
@@ -2244,7 +2120,6 @@ mod tests {
         );
     }
 
-    /// A workspace's Add a bot opens the Store on its bots.
     #[test]
     fn the_bots_link_opens_the_bots_and_nothing_else() {
         let _offline = offline();
@@ -2265,7 +2140,6 @@ mod tests {
         );
     }
 
-    /// A `tilo-store:app/<id>` link asks for that app's details.
     #[test]
     fn launching_on_a_link_shows_that_app() {
         let _offline = offline();
@@ -2280,8 +2154,6 @@ mod tests {
         assert!(asked, "the window asks for the linked app");
     }
 
-    /// Every screenshot is a capture of the fixture catalogue, staged where
-    /// the scenario shows, and comes out the same twice.
     #[test]
     fn captures_stage_their_scenes() {
         let mut wide = TestApp::<StoreShell>::capture(Some("wide")).unwrap();
@@ -2333,8 +2205,6 @@ mod tests {
         );
     }
 
-    /// Publisher metadata reaches the running view and the same semantic
-    /// door an agent reads, without expanding ordinary catalogue listings.
     #[test]
     fn publisher_metadata_reaches_views_and_semantic_inspection() {
         let _offline = offline();
@@ -2448,7 +2318,6 @@ mod tests {
     }
 }
 
-// The thirty-odd scenarios took four minutes one after another.
 ui::reach_tests!(
     StoreShell,
     shares: [share_0, share_1, share_2, share_3, share_4, share_5, share_6, share_7],

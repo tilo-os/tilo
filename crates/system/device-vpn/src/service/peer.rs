@@ -1,15 +1,9 @@
 //! Who may ask: the compositor of the person at the seat, and nobody else.
-//!
-//! Changing a machine's routes, DNS and firewall is the shell's to ask, on
-//! the person's behalf: no app, script or other account may, even of the
-//! same person. The shell is recognised as the NTFS mount service recognises
-//! it ([`seat_peer`]).
 
 pub use seat_peer::{PeerFacts, Seat};
 
 use super::Caller;
 
-/// Decide whether `peer` may ask anything at all.
 pub fn decide(seat: &Seat, peer: &PeerFacts) -> Result<Caller, String> {
     if seat.is_seat_shell(peer) {
         Ok(Caller { uid: peer.uid })

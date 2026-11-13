@@ -1,12 +1,5 @@
-//! What the cloud account service says about its mounts, and the requests
+//! What the cloud account service says about its mounts, and the requests.
 //! Settings sends it.
-//!
-//! The storage daemon's cloud service mounts each enabled file account at
-//! `~/Remote/<label>` and serves the mounts' control on its socket
-//! (`runtime_fs::cloud`). Settings offers sync now, pause and resume on an
-//! account exactly while the service lists it as mounted, so an action
-//! disappears rather than fails. The listing is read on a worker, never on
-//! the window's thread, and carries no credential.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -15,11 +8,9 @@ use runtime_fs::cloud::{CloudClient, CloudMount, CloudRequest};
 
 use crate::channel::{Receiver, TryRecvError};
 
-/// How often an open Settings window asks the service again.
 const REFRESH: Duration = Duration::from_secs(10);
 
 pub(crate) struct CloudMounts {
-    /// Where the service listens; `None` asks nothing (samples, tests).
     socket: Option<PathBuf>,
     /// The mounts the service last listed; `None` before it answered or
     /// while it is not running.
@@ -29,12 +20,10 @@ pub(crate) struct CloudMounts {
 }
 
 impl CloudMounts {
-    /// The person's own service, at its usual socket.
     pub(crate) fn live() -> Self {
         Self::at(runtime_fs::cloud::default_socket())
     }
 
-    /// The service at `socket`, or none.
     pub(crate) fn at(socket: Option<PathBuf>) -> Self {
         Self {
             socket,
@@ -53,7 +42,6 @@ impl CloudMounts {
         }
     }
 
-    /// `account`'s mount, while the service lists it.
     pub(crate) fn mount(&self, account: &str) -> Option<&CloudMount> {
         self.known
             .as_ref()?
@@ -68,8 +56,6 @@ impl CloudMounts {
         self.next = None;
     }
 
-    /// Take in a finished listing and start the next one when due; whether
-    /// what is known changed.
     pub(crate) fn poll(&mut self) -> bool {
         if let Some(listing) = &self.listing {
             let answer = match listing.try_recv() {
@@ -104,7 +90,6 @@ impl CloudMounts {
         false
     }
 
-    /// `request` as work for a worker thread.
     pub(crate) fn request(
         &self,
         request: CloudRequest,

@@ -282,10 +282,12 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     let mut app = with_sample();
     // An agent with no answer of the person's yet, inside a turn of the
     // person's that bound how far it reaches.
-    let grants = policy::roles::agent_turn(LOCAL_WORKSPACE, AGENT, LOCAL_USER, &[]).grants;
+    let grants = policy::roles::agent_grants(LOCAL_WORKSPACE, AGENT, LOCAL_USER, &[]);
     app.set_permissions(
-        PermissionContext::member(LOCAL_USER, Role::Owner)
-            .acting_as(policy::Subject::agent(AGENT), grants),
+        PermissionContext::member(LOCAL_USER, Role::Owner).acting_as(
+            policy::Actor::Member(policy::MemberId::agent(AGENT)),
+            grants,
+        ),
     );
     // Reading or writing a file is an outside effect: it asks first, like
     // any other.

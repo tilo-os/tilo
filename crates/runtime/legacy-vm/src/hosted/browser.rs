@@ -1,49 +1,9 @@
 //! Browser in a workspace's VM: the headless Tilo session that holds the
-//! workspace's Browser window, run as a process in the same VM as its Linux
-//! programs.
-//!
-//! A workspace hosted on a relay opens Browser like any app, and in a hosted
-//! workspace the page has to run somewhere: not on the relay, which runs no
-//! apps. The workspace's VM boots one image that carries both its Linux
-//! programs and a headless session with Browser and Chromium, so the first
-//! browser action starts that session in the VM the workspace already has
-//! ([`Request::OpenBrowser`](super::control::Request)), waking it if it
-//! sleeps. Opening Browser needs no card; a Linux command in the same VM does
-//! ([`super::plan`]).
-//!
-//! # The session in the guest
-//!
-//! The host starts the guest's session through the guest agent
-//! ([`legacy_agent_protocol::Launch`]), relaying its stdio; there is no other
-//! channel, and no addition to the agent's protocol:
-//!
-//! - **argv** [`SESSION`], the guest image's own entry: the script that runs
-//!   the session as the image's unprivileged browser user, with Chromium's
-//!   sandbox on, on its own bus, headless and with no X11
-//!   (`os/hosted-guest/browser-session`). [`MARK`] is set in its environment.
-//! - **stdout, one line each, nothing else**
-//!   ([`Report`](tilo_actions::remote::browser::Report)): `ready` once it has
-//!   taken the identity it was handed; `up <provider>` once it has joined the
-//!   workspace and opened its Browser window; `used` whenever a page action
-//!   runs on it or somebody views the page. The host counts the idle limit
-//!   from the last of them, and hands the provider to the relay, which routes
-//!   page actions to that window.
-//! - **stdin, one line** at hand-off: the material the relay gives, opaque
-//!   here ([`tilo_relay_protocol::hosted::Material`]), with the relay's
-//!   address replaced by the one this VM dials ([`hand_off`]). The session
-//!   reads its identity once, before it builds anything, so it starts at the
-//!   hand-off and never before: nothing of a workspace's identity is in the
-//!   image or in the template a VM is cloned from.
-//! - **stderr** is the session's log, nothing else.
-//! - **[`STORE`]** in its environment, when the workspace keeps its profile:
-//!   a folder of the workspace's own files, mounted at the same path, which
-//!   the session restores its profile (cookies, storage) from as it starts
-//!   and writes it back to as it ends.
-//!
-//! The session ends after [`Limits::idle_stop`] without page activity, or at
-//! [`Limits::lifetime`] (its device's certificate lasts that long). It is
-//! asked to end with `SIGTERM`, so it writes its profile back first; the VM
-//! then sleeps like any idle VM.
+//! workspace's Browser window, run in the same VM as its Linux programs. The host
+//! starts it through the guest agent and relays its stdio: argv is the guest
+//! image's own entry ([`SESSION`]), stdout reports one line each (`ready`, `up
+//! <provider>`, `used`), and stdin is handed one line of material. The session ends
+//! after [`Limits::idle_stop`] without page activity, or at [`Limits::lifetime`].
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -72,10 +32,9 @@ pub const SESSION: &str = "/usr/libexec/tilo/browser-session";
 /// ([`tilo_actions::remote::linux_apps`]).
 pub const APPS_SESSION: &str = "/usr/libexec/tilo/apps-session";
 
-/// Which session of a workspace's VM: the one holding its Browser, or the
-/// one holding its Linux apps' windows. Both are a headless Tilo session that
-/// joins the workspace as a device, started and followed the same way; they
-/// run as different accounts and are never the same process.
+/// Which session of a workspace's VM: the one holding its Browser, or the one holding its Linux
+/// apps' windows. Both join the workspace as a device, run as different accounts and are never the
+/// same process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
     /// Browser, as the image's unprivileged browser user.
@@ -86,7 +45,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// The guest image's entry for this session.
     #[must_use]
     pub const fn entry(self) -> &'static str {
         match self {
@@ -95,7 +53,6 @@ impl Kind {
         }
     }
 
-    /// The mark set in its environment, which tells the session what it holds.
     #[must_use]
     pub const fn mark(self) -> &'static str {
         match self {
@@ -104,7 +61,6 @@ impl Kind {
         }
     }
 
-    /// What its log is named, beside the VM's state.
     #[must_use]
     pub const fn log(self) -> &'static str {
         match self {
@@ -124,20 +80,16 @@ pub const READY_PATIENCE: Duration = Duration::from_secs(120);
 /// to it.
 pub const UP_PATIENCE: Duration = Duration::from_secs(60);
 
-/// The line a session is handed at hand-off: `material`, the relay's, with
-/// the address its session joins the relay at replaced by `relay` — the
-/// endpoint's id stays, so the session joins the same relay, at the one
-/// address this VM dials. Nothing else of the material changes.
+/// The line a session is handed at hand-off: the relay's material, with the address the session
+/// dials replaced by `relay`. The endpoint's id stays, so it joins the same relay at the one
+/// address this VM dials.
 ///
 /// # Errors
 ///
-/// The material is not the relay's, or names no endpoint: the words to
-/// refuse the hand-off with.
+/// The material is not the relay's, or names no endpoint.
 pub fn hand_off(material: &str, relay: Endpoint) -> Result<String, String> {
     let mut material: Material = serde_json::from_str(material.trim())
         .map_err(|error| format!("the material is not the relay's: {error}"))?;
-    // An endpoint address is its id and where it is reached; the session
-    // dials the address written here, and no other.
     material.relay =
         EndpointAddr::from_parts(material.relay.id, [TransportAddr::Ip(relay.socket())]);
     serde_json::to_string(&material).map_err(|error| error.to_string())
@@ -174,12 +126,10 @@ pub fn test_material(relay: &str) -> String {
 }
 
 #[cfg(test)]
-/// The endpoint id of [`test_material`]'s relay.
 fn test_relay_id() -> iroh_base::EndpointId {
     iroh_base::SecretKey::from_bytes(&[7; 32]).public()
 }
 
-/// How long a workspace's browser session may live, and be idle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     pub idle_stop: Duration,
@@ -199,11 +149,8 @@ impl Default for Limits {
 /// Why a browser session ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum End {
-    /// No page activity for the idle limit.
     Idle,
-    /// Alive for the lifetime limit.
     Lifetime,
-    /// Its session ended.
     Session,
 }
 
@@ -227,13 +174,11 @@ pub enum SessionError {
     Io(#[from] io::Error),
 }
 
-/// One browser session's life, as it reports it: when it started, when it
-/// was last used, whether it is up, whether it is being handed its
-/// workspace, and whether it ended.
+/// One browser session's life, as it reports it: when it started, when it was last used, and
+/// whether it is up or ended.
 #[derive(Debug, Default)]
 pub struct Life {
     state: Mutex<State>,
-    /// Woken whenever the state moves.
     moved: Condvar,
 }
 
@@ -301,8 +246,8 @@ impl Life {
         lock(&self.state).ready_ms.is_some()
     }
 
-    /// Whether its session reported a page used since [`Self::report`] last
-    /// counted one: `used` is one of its reports, and reads as such.
+    /// Whether its session reported a page used since the report last counted one: `used` is one of
+    /// its reports, and reads as such.
     #[must_use]
     pub const fn used() -> Report {
         Report::Used
@@ -313,8 +258,6 @@ impl Life {
         lock(&self.state).up
     }
 
-    /// The provider token of the window the session holds, once it opened
-    /// it: what page actions on it name.
     #[must_use]
     pub fn provider(&self) -> Option<String> {
         lock(&self.state).provider.clone()
@@ -336,7 +279,6 @@ impl Life {
         true
     }
 
-    /// Wait until the session prints `report`, or `patience` passes.
     fn wait_for(
         &self,
         patience: Duration,
@@ -368,12 +310,10 @@ impl Life {
         }
     }
 
-    /// Wait until the session has joined its workspace.
     pub fn wait_up(&self, patience: Duration) -> Result<(), String> {
         self.wait_for(patience, &|state| state.up, UP)
     }
 
-    /// Whether this session is at its end by now, and why.
     #[must_use]
     pub fn expired(&self, now_ms: u64, limits: Limits) -> Option<End> {
         let (ended, up, used_ms, started_ms) = {
@@ -399,11 +339,9 @@ impl Life {
     }
 }
 
-/// The browser session running in a workspace's VM, driven through the guest
-/// agent: its stdin is where the workspace's material goes, its stdout is
-/// what it reports ([`Report`]), and its stderr is its log.
+/// The session running in a workspace's VM, driven through the guest agent: its stdin is where the
+/// material goes, its stdout what it reports, and its stderr its log.
 pub struct Session {
-    /// Its process, to end it.
     signals: Option<LaunchSignals<AgentStream>>,
     /// Its standard input, a line at a time: the material went first.
     input: Option<mpsc::Sender<String>>,
@@ -411,9 +349,9 @@ pub struct Session {
 }
 
 impl Session {
-    /// Start the session in the guest `link` reaches for the workspace
-    /// `material` names, reporting into `life`, logging to `log`, timed by
-    /// `clock`: the material is the first thing its standard input is told.
+    /// Start the session in the guest `link` reaches for the workspace `material` names, reporting
+    /// into `life`, logging to `log`, timed by `clock`: the material is the first thing its input
+    /// is told.
     pub fn start(
         link: &AgentLink,
         kind: Kind,
@@ -475,7 +413,6 @@ impl Session {
         })
     }
 
-    /// Tell the session `line` on its standard input.
     fn tell(&self, line: &str) -> Result<(), String> {
         self.input
             .as_ref()
@@ -483,19 +420,16 @@ impl Session {
             .ok_or_else(|| "the session reads no more input".to_owned())
     }
 
-    /// Send the session in the guest `signal`.
     fn signal(&self, signal: Signal) {
         if let Some(signals) = &self.signals {
             let _ = signals.send(signal);
         }
     }
 
-    /// End the session in the guest now.
     pub fn kill(&self) {
         self.signal(Signal::Kill);
     }
 
-    /// Whether the session's process ended.
     #[must_use]
     pub fn ended(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
@@ -511,7 +445,6 @@ impl Drop for Session {
 /// A session's stdin, fed a line at a time.
 struct Lines {
     lines: mpsc::Receiver<String>,
-    /// What is left of the last line.
     pending: Vec<u8>,
 }
 
@@ -536,7 +469,6 @@ impl Read for Lines {
     }
 }
 
-/// A session's stdout: the log, and what it reports.
 struct Reporter {
     log: Log,
     line: Vec<u8>,
@@ -581,7 +513,6 @@ impl Write for Reporter {
     }
 }
 
-/// A session's stderr: its log.
 struct Log {
     file: Option<std::fs::File>,
 }
@@ -627,7 +558,6 @@ pub trait Starts: Send + Sync {
     fn start(&self, material: &str) -> Result<Session, SessionError>;
 }
 
-/// The session started through the guest agent of the workspace's VM.
 pub struct Launcher {
     link: AgentLink,
     kind: Kind,
@@ -701,8 +631,6 @@ impl Browser {
         }
     }
 
-    /// A session whose life is `life`, which `starts` when the workspace's
-    /// material is handed to it.
     #[must_use]
     pub fn booted(life: Arc<Life>, starts: Box<dyn Starts>) -> Self {
         Self {
@@ -717,13 +645,10 @@ impl Browser {
         &self.life
     }
 
-    /// Hand the session `material` and wait until it reports it is up: it
-    /// starts here, with the material as the first line of its input. `None`
-    /// when it was already up: this request attached to the session someone
-    /// already opened.
+    /// Hand the session `material` and wait until it reports it is up; the session starts here,
+    /// with the material as the first line of its input. `None` when it was already up.
     pub fn open(&self, material: &str, patience: Duration) -> Result<Option<u64>, String> {
         if !self.life.begin_opening() {
-            // Someone else handed it over: follow that one in.
             self.life.wait_up(patience)?;
             return Ok(None);
         }
@@ -749,8 +674,8 @@ impl Browser {
         ))
     }
 
-    /// Tell the running session `line` on its standard input: what a Linux
-    /// apps session is asked to start, after it was handed its workspace.
+    /// Tell the running session `line` on its standard input: what an apps session is asked to
+    /// start, after it was handed its workspace.
     ///
     /// # Errors
     ///
@@ -762,9 +687,8 @@ impl Browser {
             .tell(line)
     }
 
-    /// End the session in the guest: asked with `SIGTERM`, so Chromium
-    /// writes its profile to the VM's disk, and killed when it has not ended
-    /// within `grace`.
+    /// End the session in the guest: asked with `SIGTERM`, so Chromium writes its profile to the
+    /// VM's disk, and killed when it has not ended within `grace`.
     pub fn end(&self, grace: Duration) {
         let session = lock(&self.session).take();
         let Some(session) = session else {
@@ -779,7 +703,6 @@ impl Browser {
         session.kill();
     }
 
-    /// Whether this session is at its end by now, and why.
     #[must_use]
     pub fn expired(&self, now_ms: u64, limits: Limits) -> Option<End> {
         self.life.expired(now_ms, limits)
@@ -818,7 +741,6 @@ mod tests {
         assert_eq!(line.record, "browser-1");
         assert_eq!(line.device.device_label, "Browser");
         assert_eq!(line.account, "acct-1");
-        // phase: a material that is not the relay's is refused, not handed on
         for wrong in ["{}", r#"{"relay": "an address"}"#, "not json"] {
             assert!(
                 hand_off(
@@ -855,13 +777,11 @@ mod tests {
         );
         assert!(life.up());
         assert_eq!(life.provider().as_deref(), Some("42"));
-        // phase: the idle limit counts from the last use, not from the boot
         assert_eq!(life.expired(4_000, LIMITS), None);
         assert_eq!(life.expired(604_999, LIMITS), None);
         assert_eq!(life.expired(605_000, LIMITS), Some(End::Idle));
         life.report(Report::Used, 700_000);
         assert_eq!(life.expired(1_200_000, LIMITS), None, "use resets it");
-        // phase: its session ending ends it at once
         life.ended("its session exited (1)".into());
         assert_eq!(life.expired(1_200_000, LIMITS), Some(End::Session));
         assert_eq!(
@@ -870,12 +790,8 @@ mod tests {
         );
     }
 
-    /// A guest agent a test drives: it hands what it was told to start to the
-    /// test, and answers with a session that reports `up` when the test says
-    /// so.
     struct FakeGuest {
         told: Mutex<Option<mpsc::Sender<String>>>,
-        /// Where what it is told after the material goes.
         input: Option<mpsc::Sender<String>>,
         life: Arc<Life>,
         up: bool,
@@ -921,8 +837,6 @@ mod tests {
                 up: true,
             }),
         ));
-        // phase: the hand-off starts the session with the material and waits
-        // for `up`
         let opening = {
             let browser = Arc::clone(&browser);
             std::thread::spawn(move || browser.open("{\"workspace\":\"ws1\"}", UP_PATIENCE))
@@ -932,7 +846,6 @@ mod tests {
             "{\"workspace\":\"ws1\"}",
             "the session starts with the material as its first line"
         );
-        // phase: a second request for the same workspace attaches to it
         let attaching = {
             let browser = Arc::clone(&browser);
             std::thread::spawn(move || browser.open("{\"workspace\":\"ws1\"}", UP_PATIENCE))
@@ -952,7 +865,6 @@ mod tests {
             handed.try_recv().is_err(),
             "the material is handed once, never again"
         );
-        // phase: a request after it is up attaches without waiting
         assert_eq!(
             browser.open("{\"workspace\":\"ws1\"}", Duration::from_millis(1)),
             Ok(None)
@@ -960,8 +872,8 @@ mod tests {
         assert_eq!(browser.life().expired(3_100, LIMITS), None);
     }
 
-    /// A Linux apps session is handed its workspace once, and each app after
-    /// that is a line of its input, to the session already running.
+    /// A Linux apps session is handed its workspace once, and each app after that is a line of its
+    /// input, to the session already running.
     #[test]
     fn an_apps_session_is_told_each_app_after_its_material() {
         let life = Arc::new(Life::new(1_000));
@@ -1001,8 +913,8 @@ mod tests {
         assert_ne!(Kind::Apps.mark(), Kind::Browser.mark());
     }
 
-    /// A session that never comes up is at its end, so the next open starts
-    /// a fresh one instead of waiting for a wedged one.
+    /// A session that never comes up is at its end, so the next open starts a fresh one instead of
+    /// waiting for a wedged one.
     #[test]
     fn a_session_that_never_reports_up_is_at_its_end() {
         let life = Arc::new(Life::new(1_000));
@@ -1058,7 +970,6 @@ mod tests {
                 .contains("booting\nready\nup 42\n"),
             "everything it printed is its log"
         );
-        // phase: only whole lines that are reports count
         let life = Arc::new(Life::new(0));
         let mut reporter = Reporter::new(&log, life, Arc::new(|| 7_000));
         reporter.write_all(b"notup\nused\n").unwrap();

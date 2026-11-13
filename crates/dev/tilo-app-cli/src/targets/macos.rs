@@ -24,7 +24,6 @@ use tilo_caps::Capability;
 
 use super::{Project, TargetPackageRequest};
 
-/// The oldest macOS the SDK's Metal renderer supports.
 const MINIMUM_SYSTEM_VERSION: &str = "13.0";
 
 /// The runtime daemon's executable name. The SDK looks for it beside the

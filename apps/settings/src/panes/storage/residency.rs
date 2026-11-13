@@ -1,11 +1,6 @@
-//! What each of the person's devices holds of their workspaces, by what
-//! losing that device would cost: kept by choice, also held by another
-//! device, held only there, and cache that is safe to free.
-//!
-//! A device's figures are its storage summary, the answer of its
-//! `storage-summary` action: counts per workspace, never a file name, so
-//! nothing of a workspace's contents is listed by it. This device's comes
-//! from its own storage service.
+//! What each of the person's devices holds of their workspaces, by what losing
+//! that device would cost: kept by choice, also held by another device, held
+//! only there, and cache that is safe to free.
 
 use runtime_fs::storage::WorkspaceResidency;
 use ui::framework::Actions;
@@ -22,15 +17,12 @@ use super::StorageEffect;
 
 pub use crate::scenarios::DeviceResidency;
 
-/// The summaries known, one per device: this device first, then the others
-/// by name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Fleet {
     devices: Vec<DeviceResidency>,
 }
 
 impl Fleet {
-    /// Take in `device`'s summary, in place of any it gave before.
     pub fn adopt(&mut self, device: DeviceResidency) {
         match self
             .devices
@@ -47,8 +39,6 @@ impl Fleet {
         });
     }
 
-    /// Drop the cards of other devices `listed` (their keys) no longer
-    /// names; this device's stays.
     pub fn keep_listed(&mut self, listed: &[String]) {
         self.devices
             .retain(|device| device.current || listed.contains(&device.key));
@@ -58,16 +48,11 @@ impl Fleet {
         &self.devices
     }
 
-    /// This device's summary, once read.
     pub fn this_device(&self) -> Option<&DeviceResidency> {
         self.devices.iter().find(|device| device.current)
     }
 }
 
-/// One list of the person's workspaces, each once: what this device holds
-/// of it and what losing this device would cost, and which of the person's
-/// devices keep it. This device's rows free its cache and keep a workspace
-/// here.
 pub fn page(actions: &Actions<Settings>, fleet: &Fleet, busy: bool) -> Vec<SettingsSection> {
     if fleet.devices().is_empty() {
         return Vec::new();
@@ -90,7 +75,6 @@ pub fn page(actions: &Actions<Settings>, fleet: &Fleet, busy: bool) -> Vec<Setti
     vec![section(&t("settings-storage-workspaces"), rows(items))]
 }
 
-/// A device's name as the workspace rows list it.
 fn device_name(device: &DeviceResidency) -> String {
     if device.current && device.label.is_empty() {
         t("settings-storage-this-device-unnamed")
@@ -235,8 +219,6 @@ mod tests {
         }
     }
 
-    /// Summaries are kept by device: a newer one replaces the device's
-    /// last, and this device comes first.
     #[test]
     fn summaries_are_kept_one_per_device_with_this_one_first() {
         let mut fleet = Fleet::default();

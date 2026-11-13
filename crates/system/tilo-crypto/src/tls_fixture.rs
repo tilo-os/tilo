@@ -1,11 +1,7 @@
 //! Loopback TLS credentials for disposable registry fixtures.
-//!
-//! Kept behind the `tls-fixture` feature so the kernel recipe can build the
-//! signer without this test-only certificate path as an input.
 
 use zeroize::Zeroize;
 
-/// Ephemeral CA and server credentials for a loopback TLS fixture.
 pub struct TlsFixture {
     pub ca_certificate_pem: String,
     pub server_private_key_pem: String,

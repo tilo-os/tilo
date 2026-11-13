@@ -1,6 +1,6 @@
-//! What the sound settings found by search are set to, as the page reads
-//! them: the stored preferences, and the devices and levels as last read
-//! (nothing of those until the area has read them).
+//! What the sound settings found by search are set to, as the page reads them:
+//! the stored preferences, and the devices and levels as last read (nothing of
+//! those until the area has read them).
 
 use super::{AudioModel, area};
 use crate::i18n::{t, t_args};
@@ -27,7 +27,6 @@ pub(crate) fn volume(app: &SettingsApp, _: &Follows) -> Option<String> {
     })
 }
 
-/// Muting, a switch once the output level was read.
 pub(crate) fn mute(app: &SettingsApp, _: &Follows) -> Read {
     read(app, |model| {
         model.volume_error.is_none().then_some(model.muted)
@@ -35,8 +34,6 @@ pub(crate) fn mute(app: &SettingsApp, _: &Follows) -> Read {
     .map_or(Read::Value(None), Read::Switch)
 }
 
-/// A stored yes-or-no, a switch where the area read that this device
-/// `offers` it.
 fn switch_where(app: &SettingsApp, offers: impl FnOnce(&AudioModel) -> bool, on: bool) -> Read {
     if read(app, |model| Some(offers(model))).unwrap_or(false) {
         Read::Switch(on)

@@ -138,9 +138,7 @@ const PAYLOAD_PATHS: [&str; 3] = [
 
 #[derive(Clone, Copy, Debug)]
 pub struct SystemRuntimeRegistry {
-    /// Where translated (ARM) runtimes learn whether the image includes them.
     provider_manifest: Option<&'static str>,
-    /// Whether to require the on-demand Windows payload to be merged.
     require_payload: bool,
 }
 
@@ -244,8 +242,6 @@ impl SystemRuntimeRegistry {
             ))),
             Layer::Proton if matches!(runner.version.as_str(), PINNED_PROTON | "10.0-4") => {
                 let mut image = RuntimeImage {
-                    // Exact paths installed by os/Containerfile. UMU owns the
-                    // Steam Runtime and protonfix invocation contract.
                     binds: vec![
                         runtime_bind("/usr/libexec/tilo-umu-run", "/usr/libexec/tilo-umu-run"),
                         runtime_bind("/usr/libexec/umu_run.py", "/usr/libexec/umu_run.py"),
@@ -253,11 +249,8 @@ impl SystemRuntimeRegistry {
                         runtime_bind("/usr/bin/env", "/usr/bin/env"),
                         runtime_bind("/usr/bin/python3", "/usr/bin/python3"),
                         runtime_bind("/bin/sh", "/bin/sh"),
-                        // The pinned Steam entry points invoke these native
-                        // helpers, including after the ARM emulation handoff.
                         runtime_bind("/usr/bin/readlink", "/usr/bin/readlink"),
                         runtime_bind("/usr/bin/getopt", "/usr/bin/getopt"),
-                        // pressure-vessel probes its nested bwrap with `true`.
                         runtime_bind("/usr/bin/true", "/usr/bin/true"),
                         runtime_bind("/usr/bin/bwrap", "/usr/bin/bwrap"),
                         runtime_bind(PROTON_HOST, PROTON_MOUNT),
@@ -366,7 +359,6 @@ pub struct AudioBinding {
     pub protocol: AudioProtocol,
     /// Broker-owned filtered socket. It must live under this lease.
     pub host_socket: PathBuf,
-    /// Whether capture is enabled on the proxy. Playback is always allowed.
     pub input_enabled: bool,
 }
 
@@ -474,9 +466,6 @@ pub struct CapsuleCommandPlan {
     /// Bubblewrap flags and the fixed in-sandbox command. Host paths here are
     /// derived only from daemon configuration, capsule state, or resolved grants.
     pub bwrap_argv: Vec<String>,
-    /// UMU needs a nested Bubblewrap for Steam Runtime. Proton retains the
-    /// outer bwrap, Landlock and network namespace; Wine additionally gets
-    /// the Tilo baseline syscall filter.
     pub seccomp_profile: Option<SeccompProfile>,
     pub capsule_id: String,
     pub runner_label: String,
@@ -582,8 +571,6 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             argv.extend(["--dir".to_string(), directory.to_string()]);
         }
         launcher::profile::push_system_profile(&mut argv, network == NetworkShape::Unrestricted);
-        // A Windows program draws with its own device (Wine's Vulkan and
-        // OpenGL): the GPU nodes are no longer in the default app profile.
         launcher::profile::push_gpu_devices(&mut argv);
         for (fd, destination) in [
             (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
@@ -749,8 +736,6 @@ fn map_granted_files(
     landlock_read: &mut Vec<PathBuf>,
     landlock_write: &mut Vec<PathBuf>,
 ) {
-    // (host path, mount point, writable) of every file grant, for the
-    // private-store masks below.
     let mut mounted: Vec<(PathBuf, PathBuf, bool)> = Vec::new();
     for (index, source) in capabilities.ro_paths.iter().enumerate() {
         if is_host_microphone_endpoint(capabilities, source) {
@@ -768,10 +753,6 @@ fn map_granted_files(
     }
     for (index, source) in capabilities.rw_paths.iter().enumerate() {
         if is_host_microphone_endpoint(capabilities, source) {
-            // `CapabilityPlan`'s native-app projection includes the host
-            // PipeWire socket and `/dev/snd` for a microphone grant. A Wine
-            // capsule gets neither: both would bypass its short-lived audio
-            // proxy and turn an output capability into raw device access.
             continue;
         }
         if source.starts_with("/dev") {
@@ -1520,8 +1501,6 @@ mod tests {
             std::fs::create_dir(&path).unwrap();
             std::fs::write(path.join("value"), "replacement").unwrap();
         }
-        // Exercise the real executor and descriptor transfer without requiring
-        // Wine, a GPU, or the production Landlock kernel for this mount test.
         command.seccomp_profile = None;
         command.bwrap_argv = [
             "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",

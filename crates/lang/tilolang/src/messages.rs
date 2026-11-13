@@ -5,9 +5,9 @@
 //! stable id, so renaming a declaration keeps its translations as it keeps its data. The
 //! compiler writes the package's source catalogue from its source, `locales/en-US.ftl`, the way
 //! it writes `app.ids`; translations sit beside it and may refine any message with Fluent's
-//! selectors (an irregular plural, a gender, another word order). The source catalogue may be
-//! refined the same way: a message under a `# refined` comment is the author's, and writing the
-//! catalogue again keeps it as written.
+//! selectors (a gender, a noun the app words its own way, another word order). The source
+//! catalogue may be refined the same way: a message under a `# refined` comment is the author's,
+//! and writing the catalogue again keeps it as written.
 
 use std::fmt::Write as _;
 
@@ -471,6 +471,33 @@ mod tests {
         let catalogue = source_catalogue(&meta);
         assert!(catalogue.contains("d-7vjyuy7c = Remind"), "{catalogue}");
         assert!(catalogue.contains(".w-due = Due { $d }"), "{catalogue}");
+    }
+
+    /// A type's noun in the catalogue says what one of it is called and what several are: a name
+    /// that already names several is one of them and all of them, an irregular plural is
+    /// English's, and a word English counts no number of keeps one form.
+    #[test]
+    fn a_types_noun_is_one_of_it_and_several() {
+        let mut meta = PackageMeta::default();
+        for (id, name) in [("t1", "Tasks"), ("t2", "Person"), ("t3", "Today")] {
+            meta.types.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "doc": "",
+                    "fields": [],
+                }))
+                .expect("a type"),
+            );
+        }
+        let catalogue = source_catalogue(&meta);
+        for noun in [
+            "[one] task\n       *[other] tasks",
+            "[one] person\n       *[other] people",
+            "[one] today\n       *[other] today",
+        ] {
+            assert!(catalogue.contains(noun), "{noun} of\n{catalogue}");
+        }
     }
 
     /// A view the compiler makes of a loop body is a part of the view it stands in: it has no

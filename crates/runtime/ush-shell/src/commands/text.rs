@@ -38,7 +38,6 @@ pub fn lookup(name: &str) -> Option<Command> {
     })
 }
 
-/// The operands, or standard input when there are none.
 fn or_stdin(operands: Vec<String>) -> Vec<String> {
     if operands.is_empty() {
         vec!["-".into()]
@@ -47,7 +46,6 @@ fn or_stdin(operands: Vec<String>) -> Vec<String> {
     }
 }
 
-/// The result of a command body: its status, or the stop that ended it.
 fn finish(result: Result<i32, Stop>) -> i32 {
     match result {
         Ok(status) | Err(Stop(status)) => status,
@@ -168,7 +166,6 @@ fn cat(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     status
 }
 
-/// A copy stopped by its reader or by its writer.
 enum CatError {
     Stop(Stop),
     Io(io::Error),

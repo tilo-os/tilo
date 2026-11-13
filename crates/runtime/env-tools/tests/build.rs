@@ -30,8 +30,6 @@ fn sandbox_or_skip() -> bool {
     }
 }
 
-/// A store over one runtime tree that keeps sealed trees by the hash of
-/// their listing.
 struct FakeStore {
     runtimes: Vec<(PackageId, PathBuf)>,
     kept: PathBuf,
@@ -263,7 +261,6 @@ fn set_runtime_rebuilds_every_tool_or_none() {
     let builder = Builder::new(store, NoCatalog, dir.path().join("state"))
         .with_network(NetworkChoice::Offline);
 
-    // `pkg install hello` on the old runtime, through the record's seam.
     let mut env = Environment::new("work", "2026.10", "x86_64", &old);
     let mut progress = Vec::new();
     let tool = ToolBuilder::build(&builder, &old, &packages(&["hello"]), &mut progress).unwrap();

@@ -26,7 +26,6 @@ pub(crate) const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// `NetworkManager` may take 40 seconds to form.
 pub(crate) const MIRACAST_READY_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// How long a session to a receiver speaking `protocol` may take to show.
 pub(crate) fn ready_timeout(protocol: ProjectionProtocol) -> Duration {
     match protocol {
         ProjectionProtocol::Miracast => MIRACAST_READY_TIMEOUT,
@@ -34,13 +33,10 @@ pub(crate) fn ready_timeout(protocol: ProjectionProtocol) -> Duration {
     }
 }
 
-/// How long a stopping session may take to release its receiver and helpers.
 pub(crate) const SESSION_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The external programs sessions run, resolved once when the service starts.
 #[derive(Clone, Debug)]
 pub(crate) struct Helpers {
-    /// The `AirPlay` sender.
     pub(crate) doubletake: String,
 }
 

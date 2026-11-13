@@ -10,8 +10,6 @@ use ui::tilo_resource::{Replica, Resource as _};
 use crate::resource::{TypstEditorShell, Workspace};
 use ui::widget::DrawChild;
 
-/// A workspace of the bundled examples, presented to an editor showing
-/// the first, synced once so it compiled.
 fn live_fixture(viewport: (u32, u32)) -> ui::framework::testing::TestApp<TypstEditorShell> {
     let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
     for invoke in TypstEditorShell::scenario(None) {
@@ -26,9 +24,6 @@ fn fresh() -> (TypstApp, AutoCommit) {
     workspace(None)
 }
 
-/// The outline lists the open document's headings beside the source, and
-/// going to one puts the source's caret on its line, from the toolbar's
-/// toggle and the heading's published effect alike.
 #[test]
 fn the_outline_goes_to_a_heading_in_the_source() {
     use crate::actions::TypstEffect;
@@ -63,7 +58,6 @@ fn the_outline_goes_to_a_heading_in_the_source() {
     assert!(!app.outline.visible());
 }
 
-/// [`fresh`] with the examples a capture of `scenario` shows.
 fn workspace(scenario: Option<&str>) -> (TypstApp, AutoCommit) {
     let mut replica = Replica::<Workspace>::new();
     for invoke in TypstEditorShell::scenario(scenario) {
@@ -81,7 +75,6 @@ fn present(app: &mut TypstApp, doc: &AutoCommit) {
     app.present_state(&Rc::new(Workspace::read(doc).unwrap()));
 }
 
-/// The source of the file `app` shows, as `doc` holds it.
 fn shown_source(app: &TypstApp, doc: &AutoCommit) -> String {
     let state = Workspace::read(doc).unwrap();
     app.current
@@ -239,9 +232,6 @@ impl ui::host::FilePicker for PathlessHost {
     }
 }
 
-/// Where files have no paths (a browser page), Open reads the chosen
-/// file's contents, and Save and Export PDF hand the host the source and
-/// the PDF, instead of failing for want of a path.
 #[test]
 fn open_save_and_export_work_where_files_have_no_paths() {
     let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -331,9 +321,6 @@ fn failed_save_keeps_its_retry_destination_and_success_clears_the_failure() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A file written by an action while the window shows its blank
-/// untitled file opens; one written beside a file with words in it
-/// leaves that file on screen.
 #[test]
 fn a_new_file_opens_over_a_blank_one_but_never_over_work() {
     let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
@@ -475,8 +462,6 @@ fn cursor(p: Point) -> WindowEvent {
 
 use ui::synthetic_input::mouse_press;
 
-/// Pump one event through the production `Widget::handle_event`, returning
-/// whether it was consumed.
 fn send(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
     let mut taffy = TaffyTree::<()>::new();
     let mut nodes = HashMap::new();
@@ -488,8 +473,6 @@ fn send(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
         .handled
 }
 
-/// Run one real draw pass so retained control geometry is measured,
-/// exactly as they are for the live pointer path.
 fn render_once(app: &mut TypstApp) {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
@@ -642,13 +625,10 @@ use winit::keyboard::ModifiersState;
 
 use ui::synthetic_input::char_key;
 
-/// A vertical wheel notch (`+` = up/away). A tilt component can be supplied
-/// via `x` for the horizontal-pan path.
 fn wheel(x: f32, y: f32) -> WindowEvent {
     ui::synthetic_input::mouse_wheel(x, y)
 }
 
-/// Like [`send`] but with explicit modifiers held.
 fn send_mods(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent, mods: Modifiers) -> bool {
     let mut taffy = TaffyTree::<()>::new();
     let mut nodes = HashMap::new();
@@ -880,9 +860,6 @@ fn control_rects(app: &TypstApp) -> Vec<(String, Rect)> {
         .map(|child| (child.name().to_string(), child.get_rect()))
         .collect()
 }
-/// An empty source shows the preview's empty state, not the blank white
-/// page it compiles to; writing something brings the pages, and a late
-/// result for text since deleted does not bring them back.
 #[test]
 fn an_empty_document_previews_as_empty_not_as_a_blank_page() {
     let mut live = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
@@ -915,9 +892,6 @@ fn an_empty_document_previews_as_empty_not_as_a_blank_page() {
     assert_eq!(app.status_right_label(), "1 page, 125%");
 }
 
-/// The window bar holds the editor's controls, so the body holds none: the
-/// panes have the window from its top edge to the status bar at every width,
-/// which is what the 40 px row above them used to take.
 #[test]
 fn the_panes_have_the_window_from_its_top_edge() {
     for width in [320.0, 360.0, 390.0, 480.0, 560.0, 720.0, 800.0, 1280.0] {
@@ -938,8 +912,6 @@ fn the_panes_have_the_window_from_its_top_edge() {
     }
 }
 
-/// The bar says where the window is — the document's name, in the one place
-/// a person looks first — and holds every command the row used to.
 #[test]
 fn the_bar_says_where_the_window_is_and_holds_every_command() {
     let (mut app, _) = fresh();
@@ -981,8 +953,6 @@ fn the_bar_says_where_the_window_is_and_holds_every_command() {
     );
 }
 
-/// A document with changes nobody has written yet says so beside its name;
-/// writing it to a file says no more.
 #[test]
 fn the_bar_marks_an_unsaved_document_until_it_is_saved() {
     let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
@@ -1024,9 +994,6 @@ fn the_bar_marks_an_unsaved_document_until_it_is_saved() {
     .unwrap();
 }
 
-/// The window's search finds in the source: a query is matched in the text the
-/// editor shows, and stepping to a match puts the caret there and scrolls it
-/// into view.
 #[test]
 fn the_windows_search_finds_in_the_source() {
     use ui::widget::{FindOptions, Findable};
@@ -1055,9 +1022,6 @@ fn the_windows_search_finds_in_the_source() {
     assert!(app.editor.find("", FindOptions::default()).is_empty());
 }
 
-/// The window's search is offered the source through the app itself, which is
-/// what makes Ctrl+F open the bar over the file instead of the platform
-/// search (`APP-typst-01`).
 #[test]
 fn the_window_offers_the_searchable_source_to_the_bar() {
     let (mut app, _doc) = fresh();
@@ -1109,8 +1073,6 @@ fn resize_reflows_between_split_and_compact() {
     assert!(!app.compact, "reflowed back to split after widening");
     assert!(app.preview_rect.area() > 0.0);
 }
-/// Larger text narrows what fits in one pane: the compact layout is chosen
-/// from the space the text leaves, and the panes still have the whole window.
 #[test]
 fn text_scale_compacts_before_the_panes_collide() {
     let (mut app, _doc) = fresh();
@@ -1137,8 +1099,6 @@ fn text_scale_compacts_before_the_panes_collide() {
     }
 }
 
-/// The bar's views pick the pane a narrow window shows, and its slots run
-/// the commands the row's buttons ran — zoom among them.
 #[test]
 fn the_bars_views_pick_the_pane_and_its_slots_run_the_commands() {
     let mut app = live_fixture((560, 720));

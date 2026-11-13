@@ -584,10 +584,9 @@ impl Desk {
     /// Run the host until it settles, the broker carrying between the two: Tasks' record to
     /// Today, which joined it to read, and what Today asks of Tasks' door to Tasks.
     fn settle(&mut self) {
-        let mut quiet_since = std::time::Instant::now();
+        let began = std::time::Instant::now();
         let mut handed = Vec::new();
         loop {
-            let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
             let mut changed = self.host.turn();
             self.tasks.take();
             self.today.take();
@@ -604,12 +603,19 @@ impl Desk {
                 changed = true;
             }
             changed |= self.carry_asks();
-            if changed || woken {
-                quiet_since = std::time::Instant::now();
-            } else if quiet_since.elapsed() > std::time::Duration::from_millis(300) {
+            let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
+            if !changed && !woken && !self.host.owes_work() {
                 return;
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(
+                began.elapsed() < SETTLE_LIMIT,
+                "the host owes work after {}s: {} opening, {} running",
+                began.elapsed().as_secs(),
+                self.host.opening(),
+                self.host.instances().count()
+            );
+            if !changed {
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
     }

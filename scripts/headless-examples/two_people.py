@@ -55,6 +55,15 @@ def front_workspace(session: Session) -> dict | None:
     return next(iter(held.values()), None)
 
 
+def name_person(state: Path, name: str) -> None:
+    """Give the person whose state `state` is the profile name `name`, in their active identity
+    record, where their own card's rename keeps it."""
+    record = state / "config/tilo/identity/primary.json"
+    held = json.loads(record.read_text())
+    held["display_name"] = name
+    record.write_text(json.dumps(held))
+
+
 def owner_of(workspace: dict) -> str | None:
     """The person who governs a workspace, as its policy names them."""
     owner = (workspace.get("policy") or {}).get("owner")
@@ -110,6 +119,7 @@ def joined(
     tapps: Callable[[Path], list[Path]] | None = None,
     build_first: bool = False,
     remote: str | None = None,
+    names: tuple[str, str] | None = None,
 ) -> Iterator[tuple[Session, Session, dict, str]]:
     """The host's session and the peer's, in one workspace, both standing in it.
 
@@ -117,7 +127,8 @@ def joined(
     `tapps` builds what both sessions install besides `apps`, from the host's prepared state, so an
     app that is not the tree's own signed package is installed by both. What is yielded is the two
     sessions, the workspace's row from the host's desk, and the link the peer came in by; both
-    sessions are stopped on the way out.
+    sessions are stopped on the way out. `names` are the host's and the peer's profile names, as
+    each person's own card keeps the name they gave; without them each goes by their account's.
     """
     out = Path(out).resolve()
     if build_first:
@@ -129,6 +140,11 @@ def joined(
     try:
         for session in (host, peer):
             prepare(session.state, apps=apps)
+        # A person's identity is made as their session first starts: each is named once it is.
+        for session, name in zip((host, peer), names or ()):
+            session.start(apps=apps, fresh=True, out=out, tag="naming")
+            session.stop()
+            name_person(session.state, name)
         installed = tapps(host.state) if tapps is not None else None
         host.start(apps=apps, fresh=True, out=out, tag="host", tapps=installed)
         workspace = front_workspace(host)

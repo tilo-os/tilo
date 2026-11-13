@@ -30,7 +30,6 @@ pub const NDK_VERSION: &str = "29.0.14206865";
 /// API 29 is the first level that requires Vulkan 1.1 on 64-bit devices.
 pub const MIN_SDK: u32 = 29;
 pub const TARGET_SDK: u32 = 36;
-/// bundletool turns a module into an Android App Bundle.
 pub const BUNDLETOOL_VERSION: &str = "1.18.1";
 const JAVA_RELEASE: &str = "11";
 const ACTIVITY: &str = "so.tilo.android.TiloActivity";
@@ -41,7 +40,6 @@ const CMDLINE_TOOLS_BUILD: &str = "13114758";
 const EPOCH_SECS: u64 = 315_619_200;
 
 impl PackageArch {
-    /// The Android ABI directory an architecture's libraries go in.
     #[must_use]
     pub const fn android_abi(self) -> &'static str {
         match self {
@@ -61,7 +59,6 @@ impl PackageArch {
     }
 }
 
-/// Where the Android SDK, NDK and JDK tools this machine has are.
 #[derive(Debug, Clone)]
 pub struct Toolchain {
     pub sdk: Option<PathBuf>,
@@ -216,7 +213,6 @@ impl Toolchain {
     }
 }
 
-/// How bundletool runs.
 #[derive(Debug, Clone)]
 pub enum Bundletool {
     Jar(PathBuf),
@@ -348,7 +344,6 @@ fn tool_runs(program: &Path, arg: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// One requirement of an Android build and whether this machine meets it.
 #[derive(Debug, Clone)]
 pub struct ToolCheck {
     pub name: &'static str,
@@ -373,11 +368,8 @@ pub enum SystemTool {
 /// A family of systems, by the package manager that installs a [`SystemTool`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackageManager {
-    /// Fedora, RHEL and their kin.
     Dnf,
-    /// Debian, Ubuntu and their kin.
     Apt,
-    /// Homebrew on macOS.
     Brew,
 }
 
@@ -574,7 +566,6 @@ fn system_checks(
     (checks, system_missing)
 }
 
-/// Check everything an Android build, install and package needs.
 #[must_use]
 pub fn doctor() -> DoctorReport {
     let tools = Toolchain::discover();
@@ -862,7 +853,6 @@ fn run_quiet(command: &mut Command) -> Result<()> {
 /// What the APK's manifest says about the app, from `tilo-app.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AndroidMetadata {
-    /// The Cargo package.
     pub package: String,
     /// The Android application id: `[package].id`, with `-` as `_`.
     pub application_id: String,
@@ -1079,7 +1069,6 @@ pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool)
     )
 }
 
-/// Which Cargo target is the app's Android library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LibraryTarget {
     /// A `cdylib` example named `<package>-android`, built with the
@@ -1090,7 +1079,6 @@ pub enum LibraryTarget {
     Lib,
 }
 
-/// The app's Android library target.
 pub fn library_target(app_dir: &Path, package: &str) -> Result<LibraryTarget> {
     let manifest_path = app_dir.join("Cargo.toml");
     let manifest: toml::Table = std::fs::read_to_string(&manifest_path)
@@ -1279,7 +1267,6 @@ impl Keystore {
     }
 }
 
-/// Which key signs a build.
 #[derive(Debug, Clone, Default)]
 pub enum Signing {
     /// `~/.android/debug.keystore`, the key Android Studio also signs debug
@@ -1414,7 +1401,6 @@ pub struct BuildRequest {
     /// Cargo profile; `dev` unless `package`.
     pub profile: String,
     pub signing: Signing,
-    /// Also produce an Android App Bundle (needs bundletool).
     pub bundle: bool,
     pub features: Vec<String>,
     pub no_default_features: bool,
@@ -2353,7 +2339,6 @@ impl Adb {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 
-    /// The device's primary architecture.
     pub fn arch(&self) -> Result<PackageArch> {
         let abi = self.shell(&["getprop", "ro.product.cpu.abi"])?;
         PackageArch::of_android_abi(&abi).ok_or_else(|| {

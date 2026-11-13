@@ -1740,3 +1740,55 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     );
     relay.shutdown().await;
 }
+
+/// Someone the operator declares an owner of the home workspace holds it by
+/// their root from that moment: a server key of theirs lists the workspace,
+/// enters it, and invites the next person in, with no device of theirs ever
+/// having joined it.
+#[tokio::test]
+async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device_joined() {
+    use tilo_action_policy::roles::governance;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let home = open(workspaces).await;
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+
+    let ada = SigningKey::from_bytes(&rand::random());
+    let ada_person = ada.verifying_key().to_bytes();
+    workspaces
+        .set_member_administrator(
+            &home,
+            workspaces.serving_certificate(),
+            rand::random(),
+            ada_person,
+        )
+        .await
+        .unwrap();
+
+    let backend_key = SigningKey::from_bytes(&rand::random());
+    let backend = certified(&ada, &backend_key, DeviceCapabilities::server_key_grant());
+    let listed = listed_for(&host, &backend).await;
+    let lounge = listed
+        .iter()
+        .find(|listed| listed.workspace == home)
+        .unwrap_or_else(|| panic!("the declared owner's key lists the home: {listed:?}"))
+        .clone();
+
+    let entering = own_as_key(&host, &backend, json!({"room": home})).await;
+    assert_eq!(entering.workspace.workspace, home);
+    join(workspaces, &entering, &backend).await;
+    let issued = govern(
+        &host,
+        &lounge,
+        &backend,
+        governance::INVITE,
+        json!({"role": "editor"}),
+    )
+    .await
+    .unwrap();
+    assert!(issued["invitation"].is_string(), "{issued}");
+    relay.shutdown().await;
+}

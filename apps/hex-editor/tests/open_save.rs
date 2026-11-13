@@ -1,7 +1,6 @@
-//! The file lifecycle through the production paths: a file named on the
-//! command line opens as its own buffer, keystrokes edit it through the
-//! framework's door (undone per run of typing), the palette and agents edit
-//! it through the same actions, and Ctrl+S writes it back to disk.
+//! The file lifecycle through the production paths: a file named on the command line
+//! opens as its own buffer, typing and the palette's actions edit it, and Ctrl+S
+//! writes it back to disk.
 
 #![allow(
     clippy::unwrap_used,
@@ -54,8 +53,8 @@ fn a_launched_file_is_its_own_buffer_typed_into_undone_and_saved_back() {
     assert_eq!(state.name(), Some("Bytes Grün with spaces.bin"));
     assert_eq!(state.bytes, [0x00, 0x11, 0x22, 0x33]);
 
-    // Two nibbles over the first byte, then one more byte: one run of
-    // typing, one undo step.
+    // Two nibbles over the first byte, then one more byte: one run of typing, one undo
+    // step.
     app.harness()
         .perform_named("hex_view", &A11yAction::Focus)
         .unwrap();
@@ -75,7 +74,6 @@ fn a_launched_file_is_its_own_buffer_typed_into_undone_and_saved_back() {
     assert!(app.undo());
     assert_eq!(app.state().bytes, [0xAB, 0x11, 0x22, 0x33]);
 
-    // Ctrl+S writes the buffer back to the file it was launched on.
     ctrl(&mut app, "s");
     assert_eq!(std::fs::read(&path).unwrap(), [0xAB, 0x11, 0x22, 0x33]);
 
@@ -141,12 +139,10 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         .is_err(),
         "an offset past the end is refused"
     );
-    // An undoable delete runs at once and offers Undo.
     app.call("delete-byte", serde_json::json!({})).unwrap();
     assert_eq!(app.state().bytes.len(), 4, "one byte deleted at once");
     assert!(app.undo());
     assert_eq!(app.state().bytes, [0x7F, 0x00, 0xFF, 0xEE, 0x33]);
-    // An agent deletes in one call, confirmed.
     app.invoke_confirmed(HexEditor::DELETE_BYTES.with(DeleteBytes { offset: 0, len: 2 }))
         .unwrap();
     assert_eq!(app.state().bytes, [0xFF, 0xEE, 0x33]);
@@ -158,7 +154,6 @@ fn agents_edit_the_bytes_through_the_published_actions() {
     app.call("goto-offset", serde_json::json!({})).unwrap();
     assert_eq!(app.state().bytes, [0x7F, 0x00, 0xFF, 0xEE, 0x33]);
 
-    // Saving to a path an agent names writes there.
     let (_out, target) = file("copy.bin", &[]);
     app.effect_confirmed(&HexEffect::SaveAs {
         path: target.clone().try_into().unwrap(),
@@ -169,8 +164,8 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         [0x7F, 0x00, 0xFF, 0xEE, 0x33]
     );
 
-    // A relative path is refused for every effect taking a path: it would
-    // land wherever the app runs.
+    // A relative path is refused for every effect taking a path: it would land
+    // wherever the app runs.
     for id in ["open-file", "save-as"] {
         let mut arguments = serde_json::Map::new();
         arguments.insert("path".into(), "relative-copy.bin".into());
@@ -227,9 +222,8 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
     assert_eq!(std::fs::read(&chosen).unwrap(), [0xFF, 2, 3]);
 }
 
-/// A file larger than a host may hand the app is refused before it is read
-/// whole, through the same door a person's chooser and an agent's path use,
-/// and the open buffer stays as it was.
+/// A file larger than a host may hand the app is refused through the same door a
+/// person's chooser and an agent's path use, and the open buffer stays as it was.
 #[test]
 fn a_file_too_large_to_hold_is_refused_and_the_buffer_kept() {
     let mut app = TestApp::<HexEditorShell>::new().unwrap();
@@ -262,12 +256,10 @@ fn a_file_too_large_to_hold_is_refused_and_the_buffer_kept() {
     assert_eq!(app.state().bytes, b"KEEP");
 }
 
-/// A file whose size already says it is too large is refused from its size,
-/// without reading the limit's worth of it first: on a projected folder that
-/// read would download it from a peer only to be thrown away. The bytes this
-/// process read (`rchar` in `/proc/self/io`, every thread's `read` calls)
-/// stay below the limit only if the refusal came before the bounded read,
-/// whoever the test runs as.
+/// A file whose size already says it is too large is refused from its size, without
+/// reading the limit's worth first: on a projected folder that read would download it
+/// from a peer only to throw it away. This process's `rchar` stays below the limit only
+/// if the refusal came before the bounded read.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_file_too_large_to_hold_is_refused_by_its_size_unread() {
@@ -370,8 +362,6 @@ fn the_executable_opens_a_path_edits_and_saves_it() {
     assert_eq!(std::fs::read(&path).unwrap(), [0xAB, 0x11, 0x22, 0x33]);
 }
 
-/// What an agent does to the bytes is history the person reads in their
-/// language: the app's sentence for each edit and verb.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use hex_editor::model::BufferEdit;
@@ -462,9 +452,8 @@ fn two_replicas_converge() {
     assert_eq!(app.state().bytes, expected);
 }
 
-/// With no file to open (a page whose chooser cannot answer, or bytes to
-/// write from scratch), "New empty file" and Ctrl+N start an empty buffer
-/// that typing fills.
+/// With no file to open, "New empty file" and Ctrl+N start an empty buffer that typing
+/// fills.
 #[test]
 fn a_new_empty_file_starts_a_buffer_typing_fills() {
     let mut app = TestApp::<HexEditorShell>::new().unwrap();
@@ -494,9 +483,8 @@ fn a_new_empty_file_starts_a_buffer_typing_fills() {
     assert_eq!(fresh.state().name(), Some("Untitled.bin"));
 }
 
-/// A guest's own "Open file" goes straight to their chooser: picking a file
-/// on their own device is their decision, so the workspace asks no consent
-/// first, and the pick opens.
+/// A guest's own "Open file" goes straight to their chooser: a file on their own device
+/// is their decision, so the workspace asks no consent first.
 #[test]
 fn a_guests_open_file_asks_no_workspace_consent() {
     let mut app = TestApp::<HexEditorShell>::new().unwrap();

@@ -34,9 +34,11 @@ under the bar is what this refuses, in production Rust under `apps/`:
   filter or find: a literal, or a Fluent key named so or whose English
   message says so.
 
-A line may be exempt, with its reason, in a comment after its code, or a
-statement in a comment on its own line before it: `// window-bar: <reason>`. The reasons are a closed set
-(`EXEMPT`); any other fails.
+A line may be exempt, with its reason, by wrapping it in
+`ui::window_toolbar::exempt!(<reason>, { ... })`. The reason is a variant of
+`ui::window_toolbar::Exemption`, so a reason outside the closed set does not
+compile; this check reads the call, never a comment, so tidying comments
+around a control never takes its exemption away.
 
 Code that still does any of this is listed in `app_toolbars_baseline.txt`,
 one line per file and rule with how many it may still have. A count only
@@ -71,18 +73,9 @@ RULES = (
     "own-search",
 )
 
-# Why a line may keep a control of its own: the reasons
-# `// window-bar: <reason>` accepts (docs/policies.md, "Exceptions").
-EXEMPT = {
-    "picker": "type-ahead inside a popover or dialog (emoji, keyboard layout, Open with, a city lookup)",
-    "form": "a field that enters data",
-    "service": "no window bar exists (the on-screen keyboard)",
-    "fullscreen": "presenting or playing back with the window's chrome hidden",
-    "fallback": "drawn only when no window bar hosts the window",
-    "wizard": "step navigation inside a flow",
-    "list-new": "a list column's own New, heading the list it adds to, so the bar's one \"+\" stays the strip's new tab",
-}
-EXEMPTION = re.compile(r"//\s*window-bar:\s*([A-Za-z-]*)")
+# The call an app wraps a control of its own in, with its reason: the reason
+# is a variant of `ui::window_toolbar::Exemption`, which the compiler checks.
+EXEMPTION = re.compile(r"\bexempt\s*!\s*[\(\{\[]")
 
 PATTERNS = {
     "window-header": re.compile(r"\bimpl\b[^{;]*\bWindowHeader\s+for\b"),
@@ -143,30 +136,14 @@ def messages(root: Path) -> dict[str, str]:
     return found
 
 
-def exemptions(text: str) -> tuple[set[int], list[tuple[int, str]]]:
-    """The lines a `// window-bar: <reason>` comment exempts, and the
-    comments naming a reason that is not one of `EXEMPT`, by line. A comment
-    after code exempts its line; a comment on a line of its own exempts the
-    statement after it, through the line that ends it (`;`, `,`, `{`, `}`)."""
-    exempt: set[int] = set()
-    unknown: list[tuple[int, str]] = []
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        found = EXEMPTION.search(line)
-        if not found:
-            continue
-        if found.group(1) not in EXEMPT:
-            unknown.append((index + 1, found.group(1)))
-            continue
-        exempt.add(index + 1)
-        if line[:found.start()].strip():
-            continue
-        for after in range(index + 1, len(lines)):
-            exempt.add(after + 1)
-            code = lines[after].split("//", 1)[0].rstrip()
-            if code.endswith((";", ",", "{", "}")):
-                break
-    return exempt, unknown
+def exemptions(code: str) -> list[tuple[int, int]]:
+    """The spans `exempt!(<reason>, { ... })` exempts, from the call's start to
+    the bracket that closes it: what the app wraps in the call is the control
+    the window bar has a slot for, and it is not counted."""
+    spans = []
+    for found in EXEMPTION.finditer(code):
+        spans.append((found.start(), rust_source.matching(code, found.end() - 1)))
+    return spans
 
 
 def asks_to_search(code: str, literals: list, start: int, close: int,
@@ -189,10 +166,10 @@ def count_file(text: str, catalog: dict[str, str] | None = None) -> Counter:
     counts: Counter = Counter()
     lexed, literals = rust_source.lex(text)
     code = rust_source.blank_test_items(lexed)
-    exempt, _ = exemptions(text)
+    exempt = exemptions(code)
 
     def counted(offset: int) -> bool:
-        return rust_source.line_number(text, offset) not in exempt
+        return not any(start <= offset < end for start, end in exempt)
 
     searches: set[int] = set()
     for rule, pattern in PATTERNS.items():
@@ -249,23 +226,10 @@ def load_baseline(path: Path) -> dict[tuple[str, str], int]:
     return allowed
 
 
-def unknown_exemptions(root: Path) -> list[str]:
-    errors = []
-    for path in sources(root):
-        _, unknown = exemptions(path.read_text(errors="replace"))
-        relative = path.relative_to(root).as_posix()
-        errors.extend(
-            f"{relative}:{line}: window-bar exemption {reason!r} is not one of "
-            f"{', '.join(sorted(EXEMPT))} (docs/policies.md, \"Exceptions\")"
-            for line, reason in unknown
-        )
-    return errors
-
-
 def check(root: Path, baseline_path: Path) -> list[str]:
     found = scan(root)
     allowed = load_baseline(baseline_path)
-    errors = unknown_exemptions(root)
+    errors: list[str] = []
     # The baseline's findings name it from the top of the tree.
     listed = (baseline_path.relative_to(root).as_posix()
               if baseline_path.is_relative_to(root) else baseline_path.name)

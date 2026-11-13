@@ -1,64 +1,55 @@
 //! Trees, documents and workspaces a test starts from.
 //!
-//! A test that opens an app on some files, or a desktop on a workspace, wrote
-//! that starting point itself, and every test wrote it a little differently:
-//! its own `tempfile::tempdir`, its own directory names, its own idea of where
-//! an app keeps a document. Two costs follow. A temporary directory has no
-//! owner here, so nothing is left to look in when a fixture leaks, and the
-//! same tree is described a few hundred times over.
+//! A test that opens an app on some files, or a desktop on a workspace, wrote that starting point
+//! itself, and every test wrote it a little differently: its own `tempfile::tempdir`, its own
+//! directory names, its own idea of where an app keeps a document. Two costs follow. A temporary
+//! directory has no owner here, so nothing is left to look in when a fixture leaks, and the same
+//! tree is described a few hundred times over.
 //!
-//! A [`Fixture`] is where all of that goes: one temporary directory for the
-//! test's files, [`file`](Fixture::file), [`files`](Fixture::files) and
-//! [`dir`](Fixture::dir) to put them in it, [`workspace`](Fixture::workspace)
-//! to seed the workspace document a desktop opens on, and
-//! [`release`](Fixture::release) for a test that needs the tree to be gone
-//! before the fixture drops.
+//! A [`Fixture`] is where all of that goes: one temporary directory for the test's files,
+//! [`file`](Fixture::file), [`files`](Fixture::files) and [`dir`](Fixture::dir) to put them in it,
+//! [`workspace`](Fixture::workspace) to seed the workspace document a desktop opens on, and
+//! [`release`](Fixture::release) for a test that needs the tree to be gone before the fixture
+//! drops.
 //!
-//! The fixture holds no environment. The directory it makes is a directory, at
-//! a path the test passes around; only [`TestHome`](crate::TestHome) owns the
-//! XDG variables, so a test that wants a home points the variables at a
-//! fixture's directory with a [`ScopedEnv`](crate::ScopedEnv), or uses
-//! [`TestHome`](crate::TestHome) and puts its files under
+//! The fixture holds no environment. The directory it makes is a directory, at a path the test
+//! passes around; only [`TestHome`](crate::TestHome) owns the XDG variables, so a test that wants a
+//! home points the variables at a fixture's directory with a [`ScopedEnv`](crate::ScopedEnv), or
+//! uses [`TestHome`](crate::TestHome) and puts its files under
 //! [`TestHome::root`](crate::TestHome::root).
 
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-/// The name of the document a workspace opens with, as the workspace
-/// document type stores it.
+/// The name of the document a workspace opens with, as the workspace document type stores it.
 pub const WORKSPACE_DOCUMENT: &str = "workspace";
 
 /// A temporary directory a test builds its starting point in.
 ///
-/// Every path is relative to [`root`](Self::root), and the whole tree is
-/// removed when the fixture is dropped, or at [`release`](Self::release) for
-/// a test that has to see the tree gone.
+/// Every path is relative to [`root`](Self::root), and the whole tree is removed when the fixture
+/// is dropped, or at [`release`](Self::release) for a test that has to see the tree gone.
 pub struct Fixture {
-    /// `None` once [`release`](Self::release) took the directory back.
     root: Option<tempfile::TempDir>,
 }
 
 impl Fixture {
-    /// An empty fixture.
     pub fn new() -> io::Result<Self> {
         Ok(Self::at(
             tempfile::Builder::new().prefix("tilo-fixture-").tempdir()?,
         ))
     }
 
-    /// A fixture of the tree under the temporary directory `dir`.
     #[must_use]
     pub fn at(dir: tempfile::TempDir) -> Self {
         Self { root: Some(dir) }
     }
 
-    /// The fixture's directory, which exists until the fixture is released.
-    /// A released fixture is the empty path, which no test can hold: releasing
-    /// one takes it by value.
+    /// The fixture's directory, which exists until the fixture is released. A released fixture is
+    /// the empty path, which no test can hold: releasing one takes it by value.
     #[must_use]
     pub fn root(&self) -> &Path {
-        // A released fixture is not reachable: `release` takes the fixture by
-        // value, so no test holds one to ask.
+        // A released fixture is not reachable: `release` takes the fixture by value, so no test
+        // holds one to ask.
         self.root
             .as_ref()
             .map_or_else(|| Path::new(""), tempfile::TempDir::path)
@@ -69,8 +60,8 @@ impl Fixture {
     /// # Errors
     ///
     /// Returns the I/O error if the directory cannot be created, and
-    /// [`InvalidInput`](io::ErrorKind::InvalidInput) for a path that is
-    /// absolute or climbs above the root.
+    /// [`InvalidInput`](io::ErrorKind::InvalidInput) for a path that is absolute or climbs above
+    /// the root.
     pub fn dir(&self, path: impl AsRef<Path>) -> io::Result<PathBuf> {
         let path = self.resolve(path.as_ref())?;
         std::fs::create_dir_all(&path)?;
@@ -82,9 +73,8 @@ impl Fixture {
     /// # Errors
     ///
     /// Returns the I/O error if the file cannot be written, and
-    /// [`InvalidInput`](io::ErrorKind::InvalidInput) for a path that is
-    /// absolute or climbs above the root, so a fixture never writes outside
-    /// the directory it owns.
+    /// [`InvalidInput`](io::ErrorKind::InvalidInput) for a path that is absolute or climbs above
+    /// the root, so a fixture never writes outside the directory it owns.
     pub fn file(&self, path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<PathBuf> {
         let path = self.resolve(path.as_ref())?;
         if let Some(parent) = path.parent() {
@@ -94,8 +84,8 @@ impl Fixture {
         Ok(path)
     }
 
-    /// Write every `(path, bytes)` pair, as a test that starts from a small
-    /// tree of files lists it, in the order given.
+    /// Write every `(path, bytes)` pair, as a test that starts from a small tree of files lists it,
+    /// in the order given.
     ///
     /// # Errors
     ///
@@ -114,9 +104,9 @@ impl Fixture {
     /// Write `entries` into the workspace document a desktop opens with, under
     /// [`data`](Self::data)/[`WORKSPACE_DOCUMENT`].
     ///
-    /// The entries are the workspace stored as JSON, so a test seeds the
-    /// document the desktop reads rather than reaching into the desktop after
-    /// it started. A caller that builds them writes its own JSON object.
+    /// The entries are the workspace stored as JSON, so a test seeds the document the desktop reads
+    /// rather than reaching into the desktop after it started. A caller that builds them writes its
+    /// own JSON object.
     pub fn workspace(&self, entries: &str) -> io::Result<PathBuf> {
         let entries = entries.trim();
         let document =
@@ -127,9 +117,8 @@ impl Fixture {
         )
     }
 
-    /// The fixture's `$XDG_DATA_HOME`-shaped directory: where an app keeps
-    /// its documents below a home, and where [`workspace`](Self::workspace)
-    /// writes. It is created on first use.
+    /// The fixture's `$XDG_DATA_HOME`-shaped directory: where an app keeps its documents below a
+    /// home, and where [`workspace`](Self::workspace) writes. It is created on first use.
     #[must_use]
     pub fn data(&self) -> PathBuf {
         self.root().join("data")
@@ -159,8 +148,8 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        // `TempDir` removes the tree; dropping the field here says so at the
-        // one place the fixture decides a tree is over.
+        // `TempDir` removes the tree; dropping the field here says so at the one place the fixture
+        // decides a tree is over.
         self.root.take();
     }
 }
@@ -172,7 +161,6 @@ mod tests {
 
     #[test]
     fn a_fixture_writes_below_its_root_and_refuses_paths_outside_it() {
-        // Phase: files_and_directories_are_created_below_the_root.
         {
             let fixture = Fixture::new().unwrap();
             let root = fixture.root().to_path_buf();
@@ -188,7 +176,6 @@ mod tests {
             assert_eq!(fixture.data(), root.join("data"));
         }
 
-        // Phase: a_path_that_leaves_the_tree_is_refused.
         {
             let fixture = Fixture::new().unwrap();
             for path in ["/etc/passwd", "../outside", "a/../../outside"] {
@@ -205,7 +192,6 @@ mod tests {
             );
         }
 
-        // Phase: releasing_removes_the_tree.
         {
             let fixture = Fixture::new().unwrap();
             let root = fixture.root().to_path_buf();
@@ -230,8 +216,7 @@ mod tests {
         );
     }
 
-    // The fixture hands out a directory and nothing else: two of them in one
-    // test see two trees.
+    // The fixture hands out a directory and nothing else: two of them in one test see two trees.
     scenario! {
         fn two_fixtures_in_one_test_own_two_trees;
 

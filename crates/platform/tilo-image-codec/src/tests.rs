@@ -144,7 +144,6 @@ fn rgba_validation_checks_zero_overflow_dimension_byte_ceiling_and_exact_length(
     );
 }
 
-/// A native codec future, which is ready at once.
 fn now<F: std::future::Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
     match future

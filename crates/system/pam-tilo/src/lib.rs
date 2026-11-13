@@ -1,24 +1,22 @@
-//! `pam_tilo`: every sign-in surface asks `tilo-authd`, which checks the
-//! secret by unwrapping the person's user key (docs/security/sign-in.md §5.2).
+//! `pam_tilo`: every sign-in surface asks `tilo-authd`, which checks the secret
+//! by unwrapping the person's user key (docs/security/sign-in.md §5.2).
 //!
 //! Module arguments:
 //! - `socket=PATH`: the daemon's socket, for tests.
 //! - `boot_sign_in=SERVICE`: when the PAM service is SERVICE (the greeter's),
-//!   start the session of the person who signed in at boot without asking
-//!   again, once. Any other service steps aside.
-//! - `fingerprint`: no secret; succeed when tilo-authd holds the person's key
-//!   for a session of theirs running now, the one time a fingerprint may
-//!   confirm them (sign-in.md §4.3), and step aside otherwise. The service
-//!   puts the fingerprint module behind this step.
+//!   start the session of the person who signed in at boot once, without asking
+//!   again. Any other service steps aside.
+//! - `fingerprint`: no secret; succeed when tilo-authd holds the person's key for
+//!   a session of theirs running now, the one time a fingerprint may confirm
+//!   them (sign-in.md §4.3), and step aside otherwise.
 //! - `use_first_pass`, `try_first_pass`, `use_authtok`: as for every module;
 //!   libpam's `pam_get_authtok` reads them.
 //!
-//! When the daemon cannot be reached the module answers
-//! `PAM_AUTHINFO_UNAVAIL` without prompting, and the image's stack ends
-//! there: the daemon is the only check of a secret, and checks the old
-//! password itself for people not yet moved off it. A migrated person's old
-//! hash may still be in `/etc/shadow` for an older image that can boot, so
-//! nothing on this one may check it.
+//! When the daemon cannot be reached the module answers `PAM_AUTHINFO_UNAVAIL`
+//! without prompting, and the image's stack ends there: the daemon is the only
+//! check of a secret, and checks the old password itself for people not yet moved
+//! off it. A migrated person's old hash may still be in `/etc/shadow` for an older
+//! image that can boot, so nothing on this one may check it.
 
 mod ffi;
 
@@ -65,7 +63,6 @@ impl Args {
     }
 }
 
-/// What a refusal means to the stack.
 fn status_of(refusal: Option<Refusal>) -> Status {
     match refusal {
         // Not a local account: some other module may know them.
@@ -77,7 +74,6 @@ fn status_of(refusal: Option<Refusal>) -> Status {
     }
 }
 
-/// What the screen says about a refused secret.
 fn message(reply: &Reply) -> Option<String> {
     let wait = reply.retry_in_s.map(|s| s.div_ceil(60).max(1));
     match reply.error? {

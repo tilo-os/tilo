@@ -3,30 +3,14 @@
 use crate::dictionary::Dictionary;
 use crate::distance::{damerau_levenshtein_within, weighted_edit_cost};
 
-/// Largest edit distance a suggestion may sit from the queried word.
 const MAX_EDIT_DISTANCE: usize = 2;
 
-/// Suggest up to `max` corrections for `word`, drawn from `dict`.
+/// Up to `max` corrections for `word`, drawn from every dictionary word within
+/// Damerau/Levenshtein distance `<= 2`, the closest first.
 ///
-/// Candidates are every dictionary word within Damerau/Levenshtein distance
-/// `<= 2` of `word` (compared case-insensitively). They are ranked by:
+/// # Errors
 ///
-/// 1. a *weighted* edit cost, ascending — the same integer distance, but with a
-///    transposition charged slightly less than a substitution/indel, so the most
-///    common typos (e.g. "teh" -> "the") float to the top of an otherwise
-///    tied group, then
-/// 2. word length, ascending (prefer the shorter, more common-looking word),
-///    then
-/// 3. lexicographic order, for a stable, deterministic result.
-///
-/// The scan is bounded two ways: the dictionary is consulted only for words
-/// whose length is within `+-2` of the query (so e.g. a 12-letter typo never
-/// compares against 3-letter words), and the distance function itself bails out
-/// the moment a comparison exceeds the bound. That keeps a full-dictionary scan
-/// fast enough for interactive use even on the ~75k-word builtin list.
-///
-/// If `word` is already in the dictionary it is *not* returned as its own
-/// suggestion. An empty `word` or `max == 0` yields an empty list.
+/// Never.
 pub fn suggest(dict: &Dictionary, word: &str, max: usize) -> Vec<String> {
     if max == 0 || word.is_empty() {
         return Vec::new();
@@ -37,7 +21,6 @@ pub fn suggest(dict: &Dictionary, word: &str, max: usize) -> Vec<String> {
     let min_len = needle_len.saturating_sub(MAX_EDIT_DISTANCE);
     let max_len = needle_len.saturating_add(MAX_EDIT_DISTANCE);
 
-    // (weighted_cost, length, word) — collected then sorted by the ranking above.
     let mut scored: Vec<(f64, usize, &str)> = Vec::new();
 
     for cand in dict.words_in_len_range(min_len, max_len) {

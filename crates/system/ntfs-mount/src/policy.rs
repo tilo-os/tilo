@@ -1,17 +1,5 @@
 //! When the person must be asked, what the prompt offers first, and what a
 //! "Remember" may keep.
-//!
-//! - Every drive needs consent; a remembered choice is the only thing that
-//!   stands in for it, and only for an internal drive (D2, D5).
-//! - The prompt pre-selects "Open" only for an internal drive on the disk
-//!   this computer runs from, such as the Windows partition next to it;
-//!   everything else starts at "Open safely" (D4).
-//! - A remembered internal drive must sit at the exact recorded location on
-//!   an internal controller, with no hot-pluggable link, not removable,
-//!   present since start-up, and still show every recorded identifier (D5).
-//! - An external drive is never remembered for "Open": remembering it keeps
-//!   "Open safely" pre-selected for the same identifiers, and it is still
-//!   asked about on every insertion (D7).
 
 use serde::{Deserialize, Serialize};
 
@@ -19,19 +7,15 @@ use crate::identity::Identity;
 use crate::protocol::{Mode, Placement};
 use crate::topology::Topology;
 
-/// What the service knows about one attached NTFS volume.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DriveFacts {
     pub topology: Topology,
     pub identity: Identity,
-    /// D5 criterion 4: the disk was attached when this computer started.
     pub present_at_boot: bool,
-    /// On the same physical disk as the running system's root.
     pub on_install_disk: bool,
 }
 
 impl DriveFacts {
-    /// D5 criteria 1 to 4.
     pub fn is_internal(&self) -> bool {
         self.topology.is_internal() && self.present_at_boot
     }
@@ -45,20 +29,18 @@ impl DriveFacts {
     }
 }
 
-/// What a remembered choice is bound to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Binding {
-    /// An internal drive at this exact place in the hardware.
     Internal {
         device_path: String,
         identity: Identity,
     },
-    /// Any drive showing these identifiers. Pre-selects only.
-    External { identity: Identity },
+    External {
+        identity: Identity,
+    },
 }
 
-/// A remembered choice for one drive, kept per person.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
     pub id: String,
@@ -75,7 +57,6 @@ impl Grant {
         }
     }
 
-    /// Whether this grant speaks for the drive `facts` describes.
     pub fn applies_to(&self, facts: &DriveFacts) -> bool {
         match &self.binding {
             Binding::Internal {
@@ -92,7 +73,6 @@ impl Grant {
     }
 }
 
-/// How the service treats a drive for one person.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Assessment<'a> {
     pub remembered: Option<&'a Grant>,
@@ -102,7 +82,6 @@ pub struct Assessment<'a> {
     pub can_remember_open: bool,
 }
 
-/// Decide how `facts` is treated, given the person's remembered `grants`.
 pub fn assess<'a>(facts: &DriveFacts, grants: &'a [Grant]) -> Assessment<'a> {
     let remembered = grants.iter().find(|grant| grant.applies_to(facts));
     let internal = facts.is_internal();
@@ -186,7 +165,6 @@ pub fn remember(facts: &DriveFacts, mode: Mode, id: String, label: String) -> Op
     }
 }
 
-/// Whether a remembered grant may be switched to `mode`.
 pub fn mode_allowed(grant: &Grant, mode: Mode) -> bool {
     mode == Mode::OpenSafely || matches!(grant.binding, Binding::Internal { .. })
 }
@@ -218,7 +196,6 @@ mod tests {
         }
     }
 
-    /// A USB stick that copied every identifier of the internal drive.
     fn forged_stick() -> DriveFacts {
         let mut facts = internal_facts();
         facts.topology = Topology {

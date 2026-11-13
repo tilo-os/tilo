@@ -181,7 +181,7 @@ impl StatePeer {
                 if install.installation.installed_by != member.person {
                     return Err("a bot is installed by the person installing it".into());
                 }
-                let authority = member.authority(&bound);
+                let authority = member.authority(bound);
                 member
                     .policy
                     .check_action(&authority, governance::INSTALL_BOT, &cx, false)
@@ -222,7 +222,7 @@ impl StatePeer {
                 } else {
                     governance::INSTALL_BOT
                 };
-                let authority = member.authority(&bound);
+                let authority = member.authority(bound);
                 member
                     .policy
                     .check_action(&authority, action, &cx, false)
@@ -614,7 +614,7 @@ impl StatePeer {
         member
             .policy
             .check_action(
-                &member.authority(&bound),
+                &member.authority(bound),
                 action,
                 &Context::at_time(now),
                 false,
@@ -725,7 +725,7 @@ impl StatePeer {
             .user_public_key;
         let cx = Context::at_time(now);
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let old = self.bot_grants(id, now)?;
         let mut reissued = Vec::with_capacity(old.len());
         for grant in &old {

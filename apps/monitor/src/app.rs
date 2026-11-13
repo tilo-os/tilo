@@ -1,17 +1,7 @@
-//! The Monitor window: a two-tab activity monitor (Processes / Resources)
-//! built from the window shell and toolkit widgets. The [`MonitorState`]
-//! the view shares with its effect handler holds the machine's readings and
-//! what the window shows of them; the [`MonitorApp`] widget lays it out.
-//!
-//! The window is one [`NavShell`]. The window bar holds the tabs as its
-//! views, Refresh, the sampling cadence and the list's view options, and its
-//! search narrows the process list (`window_bar`). The content is the active tab
-//! (`crate::view::ProcessesPane` or `crate::view::ResourcesPane`); the
-//! selected process is the inspector. The shared table layout (sort, tree
-//! mode) lives on [`crate::resource::Monitor`]; the tab, filter and
-//! selection are this window's own; the live process snapshot never leaves
-//! this machine, and the person's preferences
-//! ([`crate::prefs::MonitorPreferences`]) are a personal settings section.
+//! The Monitor window: a two-tab activity monitor (Processes / Resources) over
+//! [`MonitorState`], which holds this machine's readings and what the window shows
+//! of them. The shared table layout is the document's; the tab, filter and
+//! selection belong to this window, and the process list never leaves this machine.
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -49,17 +39,13 @@ use crate::view::{
 use ui::charts::RollingSeries;
 use ui::widget::DrawChild;
 
-/// A process is only the same action resource for the lifetime identified by
-/// its kernel start-time tick.  In particular, do not use a bare PID here:
-/// PIDs can be recycled while a palette entry, history item, or collaborator's
-/// action is waiting to execute.
+/// The process resource id carries the kernel start tick: a bare PID can be recycled
+/// while an action waits to run.
 fn process_resource_id(pid: u32, started_at: u64) -> String {
     format!("process:{pid}:started:{started_at}")
 }
 
-/// Decode the canonical, wire-safe process resource id. Keep parsing
-/// deliberately strict so a malformed target can never silently fall back to
-/// a PID-only action.
+/// Parse strictly, so a malformed target never falls back to a PID-only action.
 pub(crate) fn parse_process_resource_id(id: &str) -> Option<(u32, u64)> {
     let (pid, started_at) = id.strip_prefix("process:")?.split_once(":started:")?;
     Some((pid.parse().ok()?, started_at.parse().ok()?))
@@ -95,28 +81,23 @@ pub enum SortKey {
 }
 
 impl SortKey {
-    /// Numeric columns default to descending (biggest first); text
-    /// columns default to ascending.
+    /// Numeric columns default to descending, text columns to ascending.
     fn default_desc(self) -> bool {
         !matches!(self, SortKey::Name | SortKey::User)
     }
 }
 
-/// A process table can contain thousands of kernel entries. Keep the
-/// contextual resource projection small; exact process resources remain
-/// resolvable on demand through [`Widget::resource`].
+/// Published rows stay bounded; other processes resolve on demand through
+/// [`Widget::resource`].
 const MAX_CONTEXT_PROCESS_RESOURCES: usize = 64;
-/// Process names originate with the operating system and are rendered in
-/// global/remote action surfaces. Bound and flatten them before publishing so
-/// an unusual process name cannot force unbounded text shaping or line breaks.
+/// Bound and flatten process names before publishing: they reach global and remote
+/// action surfaces.
 const MAX_PROCESS_RESOURCE_LABEL_CHARS: usize = 160;
 
-/// Sample depth of the per-process CPU sparkline shown in the inspector —
-/// a shorter window than the whole-system charts so the line stays readable.
+/// A shorter window than the whole-system charts, so the sparkline stays readable.
 const PROC_SPARK_CAP: usize = 48;
 
-/// A stable one-line label for a process resource. The identity stays in the
-/// opaque PID-generation id; this display label is deliberately bounded.
+/// The identity stays in the id; this display label is bounded.
 fn process_resource_label(process: &ProcessInfo) -> String {
     let mut label = String::new();
     let mut chars = process.name.chars();
@@ -132,9 +113,7 @@ fn process_resource_label(process: &ProcessInfo) -> String {
     format!("{} ({})", label, process.pid)
 }
 
-/// One exact, PID-generation-bound process row. This is shared by the
-/// bounded contextual catalogue and lazy direct resolution, keeping every
-/// visible, searched, and agent-invoked action contract identical.
+/// One process row, bound to its PID generation.
 pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
     let id = process_resource_id(process.pid, process.started_at);
     let row = LiveRow::new(
@@ -159,7 +138,6 @@ pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
     .fold(row, |row, effect| row.effect(&effect))
 }
 
-/// `value` as one line of searchable text, bounded like a published label.
 fn indexed_text(value: &str) -> String {
     value
         .chars()
@@ -168,8 +146,6 @@ fn indexed_text(value: &str) -> String {
         .collect()
 }
 
-/// `process` as a search hit: found by its name, user or PID, and opening
-/// the exact PID generation it names.
 fn process_search_entry(process: &ProcessInfo) -> ui::tilo_resource::SearchEntry {
     let id = process_resource_id(process.pid, process.started_at);
     ui::tilo_resource::SearchEntry::new(
@@ -201,25 +177,18 @@ enum MenuChoice {
     EndApp,
 }
 
-/// What the inspector currently shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Inspected {
-    /// Not built for the current state yet.
     Stale,
-    /// Nothing: the Resources tab, or no processes to inspect.
     Hidden,
-    /// The "no process selected" state.
     Nothing,
-    /// A process, by a fingerprint of everything its detail shows.
     Process(u64),
 }
 
-/// The first child of `node`.
 fn first_child(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
 
-/// The content column: the active tab's pane.
 fn tab_content(shared: &Shared, shown_tab: &Rc<std::cell::Cell<Tab>>) -> Switch<Tab> {
     let shared = Rc::clone(shared);
     let shown_tab = Rc::clone(shown_tab);
@@ -239,91 +208,66 @@ fn tab_content(shared: &Shared, shown_tab: &Rc<std::cell::Cell<Tab>>) -> Switch<
 pub(crate) struct MonitorState {
     model: MonitorModel,
     sampler: Sampler,
-    /// Retained global-search/directory index. Its entries carry the same
-    /// PID-generation ids as every resource action and update only per sample.
+    /// Retained search index; its entries carry the same PID-generation ids.
     prefs: Prefs,
-    /// The person's Monitor preferences when hosted, and the value last
-    /// stored, which tells a change made here from one made elsewhere.
+    /// The person's preferences when hosted, and the value last stored.
     preferences: Option<(Setting<MonitorPreferences>, MonitorPreferences)>,
 
     tab: Tab,
     sort_key: SortKey,
     sort_desc: bool,
-    /// Tree view (parent→child with disclosure) vs a flat sorted list.
     tree_mode: bool,
-    /// Whether a parent row shows its summed subtree usage or only its own.
+    /// Whether a parent row shows its summed subtree use or only its own.
     sum_mode: SumMode,
-    /// pids the person has expanded in the tree (collapsed otherwise).
     expanded: HashSet<u32>,
     filter: String,
     selected_pid: Option<u32>,
-    /// Rolling per-process CPU history, keyed by the kernel process generation,
-    /// feeding the inspector's sparkline.
+    /// Per-process CPU history, keyed by the kernel process generation.
     proc_cpu_hist: HashMap<(u32, u64), RollingSeries>,
 
     last_refresh: Instant,
-    /// Never sample the live machine — the seeded snapshot is the whole model.
+    /// Never sample the live machine: the seeded snapshot is the whole model.
     sample_only: bool,
 
     shared: Shared,
     shown_tab: Rc<std::cell::Cell<Tab>>,
-    /// Model or view state changed since the panes were last told.
     stale: bool,
-    /// The panes were told since the window last looked: its inspector and
-    /// layout follow.
     told: bool,
     metrics_revision: u64,
     published_metrics: Option<u64>,
     published_rows: Option<u64>,
-    /// Open the inspector drawer once laid out (`detail` captures).
     reveal_detail: bool,
-    /// Open the inspector where it is a put-away sheet: a process was chosen.
     reveal: bool,
-    /// The row menu to open, for the process and where it was asked.
     menu: Option<(u32, Point, Rect)>,
-    /// What the window says in a toast next.
     toasts: Vec<String>,
-    /// The door edits and effects go through once the framework hosts the
-    /// window: the table layout as Monitor's actions, and every control
-    /// that reaches a process as a [`MonitorEffect`], so the host checks its
-    /// permission and confirmation as it does for the palette and agents.
+    /// The door edits and effects go through once the framework hosts the window, so
+    /// the host checks permission and confirmation as it does for the palette.
     dispatcher: Option<Dispatcher<Monitor>>,
-    /// The effects the controls asked for, as a test reads them.
     #[cfg(test)]
     requested: Vec<MonitorEffect>,
 }
 
-/// The [`MonitorState`] as the window and the view's effect handler share it.
 pub(crate) type State = Rc<RefCell<MonitorState>>;
 
-/// The window: the shared [`MonitorState`] in a [`NavShell`], with the row
-/// menu over it while it is open.
+/// The window: the shared [`MonitorState`] in a [`NavShell`].
 pub struct MonitorApp {
     state: State,
-    /// The table layout as the document holds it, shown as it changes;
-    /// `None` for a window outside the framework.
+    /// The table layout as the document holds it; `None` outside the framework.
     live: Option<Live<Monitor>>,
     presented: Option<(u64, u64)>,
-    /// The row menu, mounted in the window's top layer by this widget.
     context: ContextMenu,
     context_pid: Option<u32>,
     context_choices: Vec<Option<MenuChoice>>,
     rect: Rect,
     shell: NavShell,
-    /// The window bar's entries, each carrying what it asks for.
     bar: ui::framework::BarCommands<window_bar::BarCommand>,
     inspected: Inspected,
-    /// How many layouts the window has had, so a capture's drawer opens
-    /// over content that has settled at its width.
+    /// How many layouts the window has had, which a capture's drawer waits on.
     layouts: u32,
     layout_dirty: bool,
-    /// The views were handed something since the host last took the
-    /// window's structure ([`Widget::take_structure_dirty`]), which takes it
-    /// once: the layout it asks for clears `layout_dirty` on its own.
+    /// Handed to the views since the host last took the structure.
     retold: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -334,7 +278,6 @@ impl Default for MonitorApp {
 }
 
 impl MonitorApp {
-    /// The window over `state`.
     fn over(state: MonitorState) -> Self {
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::List)
@@ -359,35 +302,26 @@ impl MonitorApp {
         }
     }
 
-    /// What the window shows, shared with the view's effect handler.
     pub(crate) fn state(&self) -> std::cell::RefMut<'_, MonitorState> {
         self.state.borrow_mut()
     }
 
-    /// Construct with the deterministic, fully-populated sample snapshot. This
-    /// is what `--shots` and the tests render: a capture never ticks the
-    /// sampler, so the seeded sample is what appears — hermetic and
-    /// reproducible offline. The live window uses [`Self::new_live`] instead.
+    /// The sample snapshot: a capture never ticks the sampler.
     pub fn new() -> Self {
         Self::sample(MonitorModel::sample())
     }
 
-    /// Construct over `model`, a deterministic snapshot that is never
-    /// sampled again: what a screenshot shows.
+    /// Over `model`, a snapshot that is never sampled again.
     pub fn sample(model: MonitorModel) -> Self {
         let mut state = MonitorState::build(model, ui::time::now(), Sampler::inert());
         state.sample_only = true;
-        // Select a row from the default (collapsed) tree rather than the
-        // globally busiest process, which may be a hidden descendant: the
-        // inspector's actions must never refer to a process the person
-        // cannot see in the table.
+        // Select a row from the default collapsed tree, so the inspector never names
+        // a hidden process.
         state.selected_pid = state.busiest_visible_pid();
         state.seed_selected_spark();
         Self::over(state).published()
     }
 
-    /// Construct for a past version of the table layout: no processes, and
-    /// nothing that reads this machine.
     pub fn past() -> Self {
         let mut state =
             MonitorState::build(MonitorModel::empty(), ui::time::now(), Sampler::inert());
@@ -395,9 +329,7 @@ impl MonitorApp {
         Self::over(state).published()
     }
 
-    /// Construct for the live window: start from an empty model and sample
-    /// the machine on the first frame, so the window shows the person's
-    /// actual processes rather than fabricated sample rows.
+    /// The live window: an empty model, sampled on the first frame.
     pub fn new_live() -> Self {
         let stale = ui::time::now()
             .checked_sub(Duration::from_secs(3600))
@@ -410,13 +342,11 @@ impl MonitorApp {
         .published()
     }
 
-    /// The window with what it shows told to its panes.
     fn published(mut self) -> Self {
         self.publish();
         self
     }
 
-    /// The live window over `sampler`'s readings.
     #[cfg(test)]
     pub(crate) fn live_over(sampler: Sampler) -> Self {
         let stale = ui::time::now()
@@ -464,10 +394,8 @@ impl MonitorState {
         }
     }
 
-    /// Take the machine's newest reading. Where the session pushes them
-    /// (Linux), each arrival wakes the window and is taken here; elsewhere
-    /// the machine is read at most once per cadence. A capture never trips
-    /// this, so `--shots` shows the sample snapshot.
+    /// Take the machine's newest reading: pushed by the session on Linux, read at most
+    /// once per cadence elsewhere. A capture never trips this.
     fn maybe_refresh(&mut self) {
         if self.sample_only {
             return;
@@ -479,9 +407,8 @@ impl MonitorState {
                     .then(|| u32::try_from(self.prefs.interval_ms).unwrap_or(u32::MAX)),
             );
             if self.model.process_status == ProcessDataStatus::Loading {
-                // The first frame waits for the first reading, which the
-                // session sends at once: the window opens on the machine,
-                // not on a loading state.
+                // The first frame waits for the first reading, which the session sends
+                // at once.
                 self.refresh_live_snapshot();
                 return;
             }
@@ -498,16 +425,14 @@ impl MonitorState {
         }
     }
 
-    /// Read the machine now, as the person (or an agent) asked.
     fn refresh_live_snapshot(&mut self) {
         let selected_before = self.selected_identity();
         self.sampler.refresh_now(&mut self.model);
         self.after_refresh(selected_before);
     }
 
-    /// A new reading landed: keep the identity boundary of the selected
-    /// detail. If the OS recycled a selected PID between readings, leave no
-    /// action surface silently pointed at the replacement process.
+    /// Keep the selected lifetime across a reading; a recycled PID leaves no action
+    /// pointed at its replacement.
     fn after_refresh(&mut self, selected_before: Option<(u32, u64)>) {
         self.last_refresh = ui::time::now();
         self.clear_recycled_selection(selected_before);
@@ -516,7 +441,6 @@ impl MonitorState {
         self.clear_selection_if_filtered_out();
     }
 
-    /// Wake the window with `waker` when a pushed reading arrives.
     pub(crate) fn wake_with(&mut self, waker: ui::WakeHandle) {
         if !self.sample_only {
             self.sampler.set_waker(waker);
@@ -528,8 +452,7 @@ impl MonitorState {
         self.stale = true;
     }
 
-    /// Clear a selection when the process snapshot no longer contains the
-    /// exact lifetime that was selected before it was refreshed.
+    /// Clear a selection the new snapshot no longer holds.
     fn clear_recycled_selection(&mut self, selected_before: Option<(u32, u64)>) {
         if selected_before.is_some_and(|(pid, started_at)| {
             !self
@@ -543,8 +466,8 @@ impl MonitorState {
         }
     }
 
-    /// Fold this refresh's per-process CPU into the sparkline histories, then
-    /// prune rings for processes that have since exited.
+    /// Fold this reading's per-process CPU into the sparklines, then prune rings for
+    /// processes that exited.
     fn record_proc_cpu(&mut self) {
         for p in &self.model.processes {
             self.proc_cpu_hist
@@ -562,8 +485,6 @@ impl MonitorState {
             .retain(|identity, _| live.contains(identity));
     }
 
-    /// Seed the selected process's CPU ring with a wave around its present
-    /// load, so the sample snapshot's inspector has a history to draw.
     fn seed_selected_spark(&mut self) {
         let Some(pid) = self.selected_pid else { return };
         let Some(p) = self.model.processes.iter().find(|p| p.pid == pid) else {
@@ -574,7 +495,6 @@ impl MonitorState {
             PROC_SPARK_CAP,
             (0..PROC_SPARK_CAP).map(|i| {
                 let t = i as f32;
-                // Wander around the current reading in proportion to it.
                 (base * (1.0 + 0.35 * (t * 0.31).sin() + 0.15 * (t * 0.73).cos())).max(0.0)
             }),
         );
@@ -582,7 +502,6 @@ impl MonitorState {
         self.stale = true;
     }
 
-    /// The filtered and sorted flat process list.
     fn visible_processes(&self) -> Vec<ProcessInfo> {
         let f = self.filter.to_lowercase();
         let mut v: Vec<ProcessInfo> = self
@@ -612,9 +531,8 @@ impl MonitorState {
         v
     }
 
-    /// The rows the process table lists. In tree mode this is the flattened
-    /// parent→child forest (honouring collapse state, the sum mode, sort,
-    /// kernel preference and filter); in flat mode the sorted list at depth 0.
+    /// The rows the table lists: the flattened forest in tree mode, the sorted list at
+    /// depth 0 in flat mode.
     fn visible_rows(&self) -> Vec<Row> {
         if self.tree_mode {
             let forest = Forest::build(&self.model.processes);
@@ -645,7 +563,6 @@ impl MonitorState {
         }
     }
 
-    /// How many processes the list can show before the filter narrows it.
     fn listable_count(&self) -> usize {
         self.model
             .processes
@@ -659,14 +576,12 @@ impl MonitorState {
         self.model.processes.iter().find(|p| p.pid == pid)
     }
 
-    /// Identity of the current selection at this instant.
     fn selected_identity(&self) -> Option<(u32, u64)> {
         self.selected_process().map(|p| (p.pid, p.started_at))
     }
 
-    /// A filter or a collapse is a view boundary: never leave an actionable
-    /// inspector for a process that is no longer listed.
-    /// The listed rows changed, so the views must hear of it.
+    /// A filter or a collapse never leaves an actionable inspector for a process that
+    /// is no longer listed.
     fn clear_selection_if_filtered_out(&mut self) {
         self.stale = true;
         let Some(pid) = self.selected_pid else {
@@ -699,7 +614,6 @@ impl MonitorState {
         self.set_expanded(pid, open);
     }
 
-    /// The busiest process currently listed.
     fn busiest_visible_pid(&self) -> Option<u32> {
         self.visible_rows()
             .into_iter()
@@ -738,9 +652,8 @@ impl MonitorState {
         self.dispatcher = Some(dispatcher);
     }
 
-    /// Follow the person's Monitor preferences: this window starts from
-    /// them, stores what it changes, and takes what another window or device
-    /// changed.
+    /// Follow the person's preferences: start from them, store changes, take another
+    /// window's.
     pub(crate) fn follow_preferences(&mut self, setting: Setting<MonitorPreferences>) {
         let stored = setting.get();
         self.adopt_preferences(&stored);
@@ -755,8 +668,7 @@ impl MonitorState {
         self.clear_selection_if_filtered_out();
     }
 
-    /// Whether the stored preferences moved since this window last looked:
-    /// another window or device changed them, or this one did.
+    /// Whether the stored preferences moved since this window last looked.
     fn preferences_changed(&self) -> bool {
         self.preferences
             .as_ref()
@@ -789,7 +701,7 @@ impl MonitorState {
         }
     }
 
-    /// Adopt the shared table layout; never touch the process catalogue.
+    /// Adopt the shared table layout.
     pub(crate) fn adopt_resource_state(&mut self, state: &Monitor) {
         let layout = (state.sort, !state.ascending, !state.flat);
         if (self.sort_key, self.sort_desc, self.tree_mode) == layout {
@@ -799,7 +711,6 @@ impl MonitorState {
         self.clear_selection_if_filtered_out();
     }
 
-    /// Submit edits of the shared table layout, as one step.
     fn commit_layout(&self, edits: Vec<ui::tilo_resource::Edit<Monitor>>) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.group(|| {
@@ -810,8 +721,6 @@ impl MonitorState {
         }
     }
 
-    /// What a search hit or an agent's `open` runs: inspect the process
-    /// row its anchor names.
     pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
         let shared = Rc::clone(&self.shared);
         move |anchor| {
@@ -821,9 +730,8 @@ impl MonitorState {
         }
     }
 
-    /// Ask the host to run `effect` through the same door as the palette
-    /// and agents: its permission and confirmation are checked before the
-    /// surface answers it.
+    /// Run `effect` through the same door as the palette and agents, which checks
+    /// permission and confirmation.
     #[cfg_attr(
         not(test),
         allow(
@@ -840,8 +748,7 @@ impl MonitorState {
         self.requested.push(effect);
     }
 
-    /// The bounded contextual page of live process rows; any other process
-    /// resolves by id ([`Self::live_process_row`]).
+    /// The bounded page of live rows; any other process resolves by id.
     pub(crate) fn live_process_rows(&self) -> Vec<LiveRow> {
         self.model
             .processes
@@ -851,7 +758,6 @@ impl MonitorState {
             .collect()
     }
 
-    /// Every process running here as a search hit.
     pub(crate) fn process_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.model
             .processes
@@ -860,7 +766,6 @@ impl MonitorState {
             .collect()
     }
 
-    /// The live row of the exact process generation `id` names.
     pub(crate) fn live_process_row(&self, id: &str) -> Option<LiveRow> {
         let (pid, started_at) = parse_process_resource_id(id)?;
         self.model
@@ -922,8 +827,7 @@ impl MonitorState {
         match cadence {
             Cadence::Every(ms) => {
                 if !self.prefs.auto_refresh {
-                    // Resuming starts a fresh cadence window rather than an
-                    // immediate surprise sample.
+                    // Resuming starts a fresh cadence window.
                     self.last_refresh = ui::time::now();
                 }
                 self.prefs.interval_ms = ms;
@@ -942,8 +846,6 @@ impl MonitorState {
         }
     }
 
-    /// Ask for the effect `control` builds on the current lifetime of `pid`,
-    /// the same address the palette and agents reach it at.
     fn request_process_control(&mut self, pid: u32, control: fn(String) -> MonitorEffect) {
         if let Some(process) = self
             .model
@@ -956,7 +858,6 @@ impl MonitorState {
         }
     }
 
-    /// The live process `id` names, if it still runs.
     fn current_process(&self, id: &str) -> Result<ProcessInfo, String> {
         let (pid, started_at) =
             parse_process_resource_id(id).ok_or_else(|| format!("`{id}` names no process"))?;
@@ -968,9 +869,8 @@ impl MonitorState {
             .ok_or_else(|| "process is no longer running".into())
     }
 
-    /// Answer `effect`, however it was invoked: a control here, the
-    /// palette, an agent. The host has already checked its permission and
-    /// had a destructive one confirmed.
+    /// Answer `effect`, however it was invoked; the host has already checked its
+    /// permission and had a destructive one confirmed.
     pub(crate) fn answer(&mut self, effect: MonitorEffect) -> Result<(), String> {
         match effect {
             MonitorEffect::Refresh => {
@@ -1008,7 +908,6 @@ impl MonitorState {
         }
     }
 
-    /// End every process of `app` the person may end.
     fn end_app(&mut self, app: &str) -> Result<(), String> {
         if !self
             .model
@@ -1031,7 +930,6 @@ impl MonitorState {
         Ok(())
     }
 
-    /// Ask for End app on the app `pid` belongs to.
     fn request_end_app(&mut self, pid: u32) {
         if let Some(app) = self
             .model
@@ -1053,11 +951,8 @@ impl MonitorState {
         }
     }
 
-    /// Dispatch the real signal and reflect it in the local model. Live: the
-    /// sampler sends the actual SIGTERM/SIGKILL, then rebuilds the snapshot;
-    /// dispatch acceptance is not proof that a process has exited, so only
-    /// that fresh snapshot may remove the row. Sample: the pid isn't a real
-    /// process, so drop the seeded row locally.
+    /// Send the signal, then let the next snapshot remove the row: dispatch acceptance
+    /// is not proof that a process exited. A sample drops the seeded row locally.
     fn do_stop(&mut self, pid: u32, started_at: u64, kind: StopKind) -> bool {
         if !self.sample_only && !self.sampler.signal_if_current(pid, started_at, kind) {
             return false;
@@ -1076,8 +971,6 @@ impl MonitorState {
         true
     }
 
-    /// Complete the clipboard effect after the action broker has resolved
-    /// the current process resource and its availability contract.
     fn copy_pid(&mut self, pid: u32) {
         ui::clipboard_copy(&pid.to_string());
         self.toasts.push(format!("Copied PID {pid}"));
@@ -1112,7 +1005,6 @@ impl MonitorState {
         Placeholder::of(self.model.process_status).or(listed)
     }
 
-    /// Hand the current model, view state and selection to the views.
     fn publish(&mut self) {
         if !self.stale {
             return;
@@ -1173,10 +1065,8 @@ impl MonitorState {
         self.told = true;
     }
 
-    /// Turn the views' requests into view changes, layout edits and effects.
-    /// The views hear of them in the next `sync` or layout: telling them
-    /// rebuilds the inspector, which must never happen while
-    /// the host is routing an event through the tree it holds.
+    /// Turning requests into view changes never rebuilds the inspector while the host
+    /// routes an event through the tree it holds.
     fn apply_requests(&mut self) {
         let requests = self.shared.borrow_mut().take_requests();
         for request in requests {
@@ -1238,12 +1128,8 @@ impl MonitorState {
         }
     }
 
-    /// Stage the view state of screenshot `scenario` over the sample
-    /// machine its fixture provides ([`MonitorModel::scenario`]) and the
-    /// table layout its actions set ([`crate::resource::MonitorShell`]): a
-    /// scene a single captured frame cannot reach through live input (an
-    /// open menu, the inspector drawer, an expanded tree). Unknown names
-    /// leave the default frame.
+    /// Stage the view state a capture cannot reach through input: an open menu, the
+    /// drawer, an expanded tree.
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
             "detail" => self.reveal_detail = true,
@@ -1282,8 +1168,6 @@ impl MonitorState {
 }
 
 impl MonitorApp {
-    /// Tell the panes what changed, and follow with the inspector and the
-    /// layout when they were told.
     fn publish(&mut self) {
         let told = {
             let mut state = self.state.borrow_mut();
@@ -1297,7 +1181,6 @@ impl MonitorApp {
         }
     }
 
-    /// Show the table layout the document holds now, when it changed since.
     fn follow_document(&mut self) {
         let Some(live) = &self.live else {
             return;
@@ -1308,8 +1191,6 @@ impl MonitorApp {
         self.state.borrow_mut().adopt_resource_state(&shown);
     }
 
-    /// Do what the state asked of the window: say its toasts, open the row
-    /// menu and the inspector sheet.
     fn answer_state(&mut self) {
         let (toasts, menu, reveal) = {
             let mut state = self.state.borrow_mut();
@@ -1330,14 +1211,11 @@ impl MonitorApp {
         }
     }
 
-    /// Run what the state asked for since: the views' requests, then what
-    /// they ask of the window.
     fn apply_requests(&mut self) {
         self.state.borrow_mut().apply_requests();
         self.answer_state();
     }
 
-    /// Open the row menu for `pid` at `at`, marking its row.
     fn open_context_menu(&mut self, pid: u32, at: Point, row: Rect) {
         let state = self.state.borrow();
         let shell = &self.shell;
@@ -1347,8 +1225,7 @@ impl MonitorApp {
             menu.push(item);
             choices.push(choice);
         };
-        // "Show details" only earns a place where the inspector is a put-away
-        // sheet; beside the table the right-click already showed them.
+        // "Show details" only earns a place where the inspector is a put-away sheet.
         if shell.geometry().inspector == InspectorPlacement::Sheet && !shell.is_inspector_open() {
             push(
                 MenuItem::selection("Show details"),
@@ -1414,8 +1291,7 @@ impl MonitorApp {
         self.context_pid = None;
     }
 
-    /// The inspector follows the selection on the Processes tab; it is gone
-    /// on the Resources tab and when there is nothing to list.
+    /// The inspector follows the selection on the Processes tab.
     fn show_inspector(&mut self) {
         let state = Rc::clone(&self.state);
         let state = state.borrow();
@@ -1451,8 +1327,7 @@ impl MonitorApp {
                 .find(|p| p.pid == ppid)
                 .map(|p| p.name.clone())
         });
-        // A summed row reads more than the process alone; the inspector names
-        // both, so the row and the detail never seem to disagree.
+        // A summed row reads more than the process alone; the inspector names both.
         let with_children = if state.tree_mode && state.sum_mode == SumMode::SumSubtree {
             state
                 .shared
@@ -1492,8 +1367,6 @@ impl MonitorApp {
         self.shell.set_inspector_title(process.name.clone());
     }
 
-    /// Open the inspector where it is a put-away sheet, so choosing a process
-    /// on a narrow window shows it.
     fn reveal_inspector(&mut self) {
         if self.shell.geometry().inspector == InspectorPlacement::Sheet
             && !self.shell.is_inspector_open()
@@ -1503,9 +1376,8 @@ impl MonitorApp {
     }
 }
 
-/// The view of the table layout: `window` takes part in the resource, and
-/// its [`MonitorState`] answers the effects and publishes this machine's
-/// processes.
+/// The view of the table layout; [`MonitorState`] answers the effects and publishes
+/// this machine's processes.
 pub(crate) fn window(cx: &ViewCx<Monitor>, mut window: MonitorApp) -> Element {
     window.live = Some(cx.live().clone());
     let state = Rc::clone(&window.state);
@@ -1516,7 +1388,6 @@ pub(crate) fn window(cx: &ViewCx<Monitor>, mut window: MonitorApp) -> Element {
         state.attach_framework(cx.dispatcher());
         state.attach_actions(cx.actions());
     }
-    // A search hit, or an agent's `open`, shows the process it names.
     cx.on_open(state.borrow().opener());
     {
         let answer = Rc::clone(&state);
@@ -1538,26 +1409,21 @@ pub(crate) fn window(cx: &ViewCx<Monitor>, mut window: MonitorApp) -> Element {
     let (rows, row, entries) = (Rc::clone(&state), Rc::clone(&state), state);
     cx.publishing(
         Publishes::new()
-            // The processes on this machine, beneath the processes door:
-            // inspect, copy the PID, stop or kill one. Not document state.
+            // The processes on this machine: inspect, copy the PID, stop or kill one.
             .live_rows(move || rows.borrow().live_process_rows())
             .live_row(move |id| row.borrow().live_process_row(id))
-            // Every process running here, each found by its name, user or
-            // PID and opening its exact generation, the tail beyond the
-            // published rows too.
+            // Every process here, also beyond the published rows.
             .search_entries(move || entries.borrow().process_search_entries())
-            // Processes are the machine's state of the moment: a closed
-            // Monitor leaves none in the system's search index to open into
-            // one that has ended.
+            // A closed Monitor leaves nothing in the search index to open into a process
+            // that ended.
             .search_entries_while_running(),
         Box::new(window),
     )
 }
 
 impl MonitorState {
-    /// Keyboard commands of the window: Ctrl+R refreshes, Ctrl+1 and Ctrl+2
-    /// switch tabs, Delete kills the selected process (through its confirmed
-    /// action). Returns whether the key was consumed.
+    /// Ctrl+R refreshes, Ctrl+1 and Ctrl+2 switch tabs, Delete kills the selection
+    /// through its confirmed action.
     fn handle_shortcut(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let WindowEvent::KeyboardInput { event: key, .. } = event else {
             return false;
@@ -1594,8 +1460,7 @@ impl Widget for MonitorApp {
         self.dirty = true;
         self.follow_document();
         {
-            // The preferences follow the person's settings, never the
-            // shared document.
+            // The preferences follow the person's settings, never the shared document.
             let mut monitor = self.state.borrow_mut();
             monitor.sync_preferences();
             monitor.maybe_refresh();
@@ -1608,8 +1473,7 @@ impl Widget for MonitorApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        // The window bar's slots are pressed between events: carry out what
-        // they asked.
+        // The window bar's slots are pressed between events: carry out what they asked.
         let asked = self.take_window_toolbar_events();
         if asked {
             self.apply_requests();
@@ -1644,8 +1508,7 @@ impl Widget for MonitorApp {
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));
         }
         self.layouts = self.layouts.saturating_add(1);
-        // Open the drawer once the content behind it has settled at its
-        // width, so the window under the drawer is the one the person sees.
+        // Open the drawer once the content behind it has settled at its width.
         if self.state.borrow().reveal_detail
             && self.shell.geometry().inspector != InspectorPlacement::None
             && self.layouts > 2
@@ -1741,10 +1604,8 @@ impl Widget for MonitorApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // What changed since the last frame reaches the views with the next
-        // tree; the shell reports its own changes.
-        // A sync that rebuilt the inspector (`retold`, taken here)
-        // and preferences another window or device changed count too.
+        // What changed since the last frame reaches the views with the next tree; a
+        // rebuilt inspector and preferences changed elsewhere count too.
         let retold = std::mem::take(&mut self.retold);
         let state = self.state.borrow();
         let pending = state.stale || retold || state.preferences_changed();
@@ -1761,8 +1622,8 @@ impl Widget for MonitorApp {
         let mut consider = |deadline: Instant| {
             next = Some(next.map_or(deadline, |current: Instant| current.min(deadline)));
         };
-        // Pushed readings wake the window themselves; only a machine read
-        // on the window's own cadence needs a deadline.
+        // Pushed readings wake the window themselves; only a machine read needs a
+        // deadline.
         if !state.sample_only && state.prefs.auto_refresh && !state.sampler.is_pushed() {
             consider(
                 state
@@ -1816,7 +1677,6 @@ mod tests {
         MonitorApp::new()
     }
 
-    /// The effect the app's controls last asked the host for.
     fn taken(a: &MonitorApp) -> Option<MonitorEffect> {
         a.state().requested.pop()
     }
@@ -1854,9 +1714,7 @@ mod tests {
         harness
     }
 
-    /// The centre of the first widget whose test id or accessible name is
-    /// `name`, or of the first accessible node naming it or holding it as
-    /// its value (a table cell), among those on screen.
+    /// The centre of the first widget or accessible node named `name`.
     fn center_of(harness: &FrameHarness, name: &str) -> Option<(f64, f64)> {
         fn number(value: &serde_json::Value, key: &str) -> Option<f64> {
             value.get(key)?.as_f64()
@@ -1911,8 +1769,6 @@ mod tests {
         harness.relayout();
     }
 
-    /// The tree folds, sums and filters; the flat list sorts; kernel threads
-    /// are hidden until asked for.
     #[test]
     fn process_list_sorts_filters_and_folds_the_tree() {
         {
@@ -1975,8 +1831,6 @@ mod tests {
         }
     }
 
-    /// A selection names one listed process lifetime; filtering it away or
-    /// recycling its PID clears it.
     #[test]
     fn selection_follows_the_listed_process_lifetime() {
         let mut a = app();
@@ -2017,7 +1871,6 @@ mod tests {
         );
     }
 
-    /// What the panes ask for becomes view state, layout edits and effects.
     #[test]
     fn requests_from_the_panes_change_the_view() {
         let mut a = app();
@@ -2079,8 +1932,6 @@ mod tests {
         );
     }
 
-    /// The row menu offers the process's actions and asks for their
-    /// effects; it never signals by itself.
     #[test]
     fn row_menu_asks_for_the_process_effects() {
         let mut a = app();
@@ -2122,7 +1973,6 @@ mod tests {
         );
     }
 
-    /// Process rows are generation-exact, bounded and contract-confirmed.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2247,7 +2097,6 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(a.state().selected_pid, Some(process.pid));
-            // The window says it on its next frame.
             a.answer_state();
             let copied = format!("Copied PID {}", process.pid);
             assert_eq!(a.shell.toast_text(), Some(copied.as_str()));
@@ -2293,8 +2142,6 @@ mod tests {
         }
     }
 
-    /// The window lays out at desktop, narrow and phone sizes: the inspector
-    /// docks where it leaves the table its room and is a sheet below that.
     #[test]
     fn window_lays_out_at_every_size() {
         for (viewport, placement) in [
@@ -2316,12 +2163,10 @@ mod tests {
         }
     }
 
-    /// Press the window bar's slot `id`, as the desktop's bar does.
     fn press(harness: &mut FrameHarness, id: &str) {
         harness.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
-    /// Press the window bar's entry named `name`.
     fn press_named(harness: &mut FrameHarness, name: &str) {
         harness.press_window_action(name).unwrap();
     }
@@ -2330,9 +2175,6 @@ mod tests {
         ui::window_toolbar::declared().expect("the window declares its slots")
     }
 
-    /// The tabs are the bar's views, the cadence its menu button, the
-    /// list's options its actions; the window draws none of them, and the
-    /// bar's search narrows the list.
     #[test]
     fn the_window_bar_switches_views_and_holds_the_lists_options() {
         let mut harness = window(app(), (390, 844));

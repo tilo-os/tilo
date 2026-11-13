@@ -253,7 +253,8 @@ fn record_document(
     record: &str,
 ) -> Option<PathBuf> {
     let directory =
-        app_state::DocStore::workspace_record_dir_at(data_home, package, workspace, record).ok()?;
+        app_state::DocStore::workspace_document_dir_at(data_home, package, workspace, record)
+            .ok()?;
     Some(directory.join(DOCUMENT_FILE))
 }
 

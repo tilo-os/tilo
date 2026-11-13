@@ -1,4 +1,4 @@
-//! Transport-independent client for the workspace identity service.
+//! The workspace identity service's client, over any connected stream.
 
 use std::io::{self, Read, Write};
 use std::sync::Mutex;
@@ -10,12 +10,11 @@ use crate::{NotAvailable, wire};
 trait BrokerIo: Read + Write + Send {}
 impl<T: Read + Write + Send> BrokerIo for T {}
 
-/// Public identity metadata plus a live capability to request host signatures.
-///
-/// This owns no private key and has no app-local key-store fallback. A successful
-/// metadata exchange does not authenticate the stream's peer or validate its
-/// certificate. Host handoff authentication and downstream certificate/route
-/// admission remain mandatory. `Debug` never prints the stream or certificate.
+/// Public identity metadata and a live capability to ask the host for
+/// signatures. It owns no private key and has no app-local key store; a
+/// successful metadata exchange authenticates neither the peer nor its
+/// certificate, which host handoff and route admission still decide. `Debug`
+/// never prints the stream or the certificate.
 pub struct BrokerSigningIdentity {
     metadata: BrokerMetadata,
     stream: Mutex<BrokerTransport>,
@@ -28,9 +27,8 @@ enum BrokerTransport {
 }
 
 /// Public identity metadata the host reports for a broker connection.
-///
-/// Receiving it authenticates nothing: the certificate is opaque and
-/// unchecked. Deliberately not `Debug`, so the certificate is never printed.
+/// Receiving it authenticates nothing, and the certificate stays opaque.
+/// Deliberately not `Debug`, so the certificate is never printed.
 pub struct BrokerMetadata {
     profile_photo: Option<crate::ProfilePhoto>,
     display_name: String,
@@ -52,21 +50,10 @@ impl std::fmt::Debug for BrokerSigningIdentity {
 }
 
 impl BrokerSigningIdentity {
-    /// Exchange metadata over a caller-owned, connected broker stream.
-    ///
-    /// Works with synchronous Windows pipe/file adapters as well as Unix
-    /// sockets. The stream must implement blocking `Read`/`Write` semantics;
-    /// the caller configures any I/O deadlines before transferring ownership.
-    /// Use on the SDK signing worker, not the UI thread.
-    ///
-    /// This performs no discovery, authentication, enrollment or authorization
-    /// handshake. The host must already have authenticated and bound this
-    /// connection to the app/workspace. The caller must authenticate the host.
-    /// A raw endpoint name or same-account connection is not such evidence.
-    ///
-    /// # Errors
-    /// Returns [`NotAvailable::ConnectionFailed`] for I/O, malformed metadata,
-    /// or a broker refusal, preserving the existing service protocol errors.
+    /// Exchange metadata over a caller-owned, connected stream: a Unix socket or
+    /// a synchronous Windows pipe or file adapter, with blocking `Read`/`Write`
+    /// and any I/O deadline set by the caller. Call it on the SDK signing worker,
+    /// not the UI thread.
     pub fn from_connected_io<S>(mut stream: S) -> Result<Self, NotAvailable>
     where
         S: Read + Write + Send + 'static,
@@ -101,17 +88,14 @@ impl BrokerSigningIdentity {
         }
     }
 
-    /// The public metadata the host reported when this connection opened.
     pub fn metadata(&self) -> &BrokerMetadata {
         &self.metadata
     }
 
-    /// Request the existing generic action grant; no local signing fallback.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         self.sign_for("generic", message)
     }
 
-    /// Request a signature under the host's live, exact action capability.
     pub fn sign_for(&self, action: &str, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         self.signature(&wire::Request::Sign {
             action: action.to_owned(),
@@ -119,18 +103,14 @@ impl BrokerSigningIdentity {
         })
     }
 
-    /// Ask the host to sign its fixed collaboration-join domain for this route.
-    ///
-    /// The host checks the workspace against the connection's launch binding.
     pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
         self.signature(&wire::Request::CollaborationJoin {
             workspace_id: workspace_id.to_owned(),
         })
     }
 
-    /// Request signing of a typed operation, retaining every route field.
-    ///
-    /// The host validates the envelope and live role; this client cannot grant it.
+    /// Ask the host to sign a typed operation, keeping every route field. The host
+    /// validates the envelope and the live role; this client cannot grant it.
     pub fn sign_collaboration_op(
         &self,
         workspace_id: &str,
@@ -146,9 +126,9 @@ impl BrokerSigningIdentity {
         })
     }
 
-    /// Ask for the content keys of one document route. The host checks the
-    /// route against the connection's launch binding and the caller's live
-    /// role; it never hands out keys of another app or workspace.
+    /// The content keys of one document route. The host checks the route against
+    /// the connection's launch binding and the caller's live role, and never hands
+    /// out the keys of another app or workspace.
     pub fn channel_keys(
         &self,
         workspace_id: &str,
@@ -184,7 +164,6 @@ impl BrokerSigningIdentity {
 }
 
 impl BrokerMetadata {
-    /// Parse the host's answer to [`wire::Request::Metadata`].
     pub(super) fn from_reply(response: wire::Response) -> Result<Self, NotAvailable> {
         match response {
             wire::Response::Metadata {
@@ -239,25 +218,19 @@ impl BrokerMetadata {
         }
     }
 
-    /// Normalized public photo of this exact connection-bound root identity.
-    /// As with the other metadata, receiving pixels authenticates nothing.
     pub fn profile_photo(&self) -> Option<&crate::ProfilePhoto> {
         self.profile_photo.as_ref()
     }
 
-    /// Human-picked name supplied by the host.
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
-    /// Avatar RGB supplied by the host.
     pub fn avatar_color(&self) -> [u8; 3] {
         self.avatar_color
     }
-    /// Root/group public key supplied by the host.
     pub fn group_public_key(&self) -> [u8; 32] {
         self.group_public_key
     }
-    /// Device public key supplied by the host.
     pub fn signing_public_key(&self) -> [u8; 32] {
         self.signing_public_key
     }
@@ -271,11 +244,9 @@ impl BrokerMetadata {
     pub fn total_shares(&self) -> u16 {
         self.total_shares
     }
-    /// Share index supplied by the host.
     pub fn share_index(&self) -> u16 {
         self.share_index
     }
-    /// Whether the host reports a 1-of-1 identity.
     pub fn is_single_device(&self) -> bool {
         self.single_device
     }
@@ -356,8 +327,8 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
-    // Intentionally not a Unix socket: exercises the public constructor with
-    // the same short-read/write contract as a synchronous Windows pipe adapter.
+    /// Not a Unix socket: it exercises the public constructor with the short
+    /// reads and writes a synchronous Windows pipe adapter gives.
     struct FragmentedIo {
         input: Cursor<Vec<u8>>,
         output: Arc<Mutex<Vec<u8>>>,

@@ -681,7 +681,6 @@ fn reads_and_entry_names_are_bounded_and_validated() {
     }
 }
 
-// Every target and adversarial link remains below this owned TempDir.
 fn assert_symlink_directory_requirement(file_target: &str, directory_target: &str) {
     let (temp, _authority, session, root) = granted_root();
     std::fs::write(temp.path().join("data"), b"data").unwrap();
@@ -713,8 +712,6 @@ fn assert_symlink_directory_requirement(file_target: &str, directory_target: &st
 
 #[test]
 fn a_symlink_with_a_trailing_directory_component_requires_a_directory() {
-    // (file target, directory target): trailing slash, trailing dot, and the
-    // nested links that preserve the trailing directory requirement.
     for (file_target, directory_target) in [
         ("data/", "folder/"),
         ("data/.", "folder/."),

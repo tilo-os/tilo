@@ -28,9 +28,7 @@ pub const DEFAULT_SIZE: usize = 128 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Split {
-    /// Blanks and newlines, with quotes.
     Words,
-    /// Between this byte, unquoted.
     Delimiter(u8),
 }
 
@@ -50,7 +48,6 @@ struct Opts {
     arg_file: Option<String>,
 }
 
-/// What stopped reading or running, already reported, with this status.
 struct Fail(i32);
 
 /// Input items, read a chunk at a time so a long input (`yes | xargs`) is
@@ -60,7 +57,6 @@ struct Items {
     buf: Vec<u8>,
     at: usize,
     eof: bool,
-    /// The `-E` string was read: nothing after it is an item.
     ended: bool,
 }
 
@@ -165,11 +161,9 @@ impl Items {
     }
 }
 
-/// Command lines, built from the items as they are read.
 struct Batcher {
     items: Items,
     command: Vec<String>,
-    /// An item read but not fitted on the command line before it.
     carry: Option<(String, bool)>,
     built_any: bool,
     done: bool,
@@ -245,10 +239,8 @@ impl Batcher {
     }
 }
 
-/// How the commands run so far went.
 #[derive(Default)]
 struct State {
-    /// Set when no more commands are to start, with xargs' status.
     stop: Option<i32>,
     failed: bool,
 }
@@ -257,7 +249,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// One digit-only option value.
 fn count(ctx: &Ctx<'_>, flag: &str, value: &str, least: usize) -> Result<usize, i32> {
     match value.parse::<usize>() {
         Ok(n) if n >= least => Ok(n),
@@ -486,7 +477,6 @@ pub fn xargs(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     }
 }
 
-/// How many commands run at once.
 fn workers(asked: usize) -> usize {
     #[cfg(not(target_family = "wasm"))]
     {

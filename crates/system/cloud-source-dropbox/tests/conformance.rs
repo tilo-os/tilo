@@ -29,7 +29,6 @@ fn bearer(token: &str) -> Credential {
     }
 }
 
-/// An in-process fake Dropbox.
 struct FakeFixture {
     server: FakeDropbox,
     credentials: Arc<SwitchableCredential>,

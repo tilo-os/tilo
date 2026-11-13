@@ -1,12 +1,10 @@
-//! Result addresses: what is returned, and what two engines' results are
-//! compared by.
+//! Result addresses: what is returned, and what two engines' results are compared by.
 //!
-//! Ported from metasearch2's `urls.rs` (CC0-1.0, see `PROVENANCE.md`) with
-//! one change: metasearch2 rewrites every address to its normal form, which
-//! upgrades `http` to `https` and can break a link to a site that serves only
-//! one. Here the normal form is only the comparison key ([`dedup_key`]); the
-//! returned address keeps its scheme and path and loses only its fragment and
-//! known tracking parameters ([`clean`]).
+//! Ported from metasearch2's `urls.rs` (CC0-1.0, see `PROVENANCE.md`) with one change:
+//! metasearch2 rewrites every address to its normal form, which upgrades `http` to
+//! `https` and can break a link to a site that serves only one. Here the normal form is
+//! only the comparison key ([`dedup_key`]); the returned address keeps its scheme and
+//! path and loses only its fragment and tracking parameters ([`clean`]).
 
 use url::Url;
 
@@ -22,13 +20,9 @@ const TRACKING_PARAMS: &[&str] = &[
     "fbclid",
     "gclid",
     "msclkid",
-    // Bing appends it to some result links.
     "msockid",
 ];
 
-/// `url` as a web address worth returning: absolute `http`/`https`, without
-/// its fragment or tracking parameters. `None` for anything else (relative
-/// links, `javascript:`, an engine's own internal links).
 pub fn clean(url: &str) -> Option<String> {
     let mut url = Url::parse(url.trim()).ok()?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -49,7 +43,6 @@ fn strip_tracking(url: &mut Url) {
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
     if kept.len() == url.query_pairs().count() {
-        // Nothing to strip: leave the query exactly as the page wrote it.
         return;
     }
     if kept.is_empty() {
@@ -59,9 +52,6 @@ fn strip_tracking(url: &mut Url) {
     }
 }
 
-/// The key two results are the same page by: scheme-less, `www.`-less,
-/// without a trailing slash, fragment or tracking parameters, path
-/// percent-decoded.
 pub fn dedup_key(url: &str) -> String {
     let Ok(mut parsed) = Url::parse(url.trim()) else {
         return url.trim().to_owned();

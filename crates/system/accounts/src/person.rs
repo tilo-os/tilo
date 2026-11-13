@@ -1,26 +1,6 @@
 //! The person's accounts as a record of their own: the accounts they
 //! configured follow them to every device they sign in on, never to a
 //! collaborator.
-//!
-//! [`PersonAccounts`] is a resource kept in the person's own scope,
-//! a [`SharedRecord`]: its owner app ([`ACCOUNTS_OWNER`], Settings) and Mail,
-//! whose provider sign-in adds mail accounts, edit it through its actions;
-//! every other app reads it. Each app process keeps a copy of the one
-//! record, in step with the others where their personal store carries it;
-//! the apps the session shows in its own process share the session's copy. It holds what an
-//! account *is* — its type, its name, its connection settings — and never
-//! a credential: secrets stay in this device's
-//! [`SecretVault`](crate::SecretVault) under the account's id, so a device
-//! that has not been signed in yet shows the account and asks for its
-//! secret.
-//!
-//! Services that run outside any app (the storage daemon, the credential
-//! custodian, the file manager's remote places) read this device's
-//! [`AccountStore`] file. The editors keep that file a projection of the
-//! record ([`PersonAccounts::project_in`]); it is never edited directly. A
-//! file that is not a projection yet holds accounts configured on this
-//! device before the record kept them: the first editor to open takes them
-//! in once ([`PersonAccounts::taking_in`]).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -45,7 +25,6 @@ pub fn secret_keeper(type_id: &str) -> Option<&'static str> {
 }
 
 /// A Tilo identity's public connection metadata, edited in shared accounts.
-/// Its config contains `userPublicKey` and an HTTPS `origin`, never credentials.
 pub const TILO_IDENTITY_TYPE: &str = "tilo.identity";
 
 /// Public fields needed to choose an existing browser identity. This is a
@@ -109,11 +88,6 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
 impl PersonAccounts {
     /// What the record holds: the accounts the person configured, without their secrets, and
     /// the one each type uses.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -140,7 +114,6 @@ impl PersonAccounts {
     }
 
     /// Existing enabled identity accounts for this profile and exact host.
-    /// Unknown config keys are not exported; secrets are never consulted.
     #[must_use]
     pub fn browser_accounts(&self, root: &str, origin: &str) -> Vec<BrowserAccount> {
         if root.len() != 64 || !root.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -178,9 +151,6 @@ impl PersonAccounts {
     }
 
     /// Publish this signed-in identity's public browser connection metadata.
-    /// This changes the Settings account record only; it creates no credential,
-    /// certificate, room membership or content key. Republishing preserves a
-    /// person's disabled choice and chosen account name.
     #[action]
     pub fn publish_browser_identity(
         &mut self,

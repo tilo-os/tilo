@@ -49,6 +49,10 @@ pub(crate) struct Shared {
     /// The apps the person opens, when this session starts them.
     #[cfg(target_os = "linux")]
     pub(crate) launch: Option<Rc<crate::apps::Apps>>,
+    /// This device's app lists, as last read: what the desk offers a card for, and what opening
+    /// one of its verbs finds.
+    #[cfg(target_os = "linux")]
+    pub(crate) lists: crate::lists::Lists,
     /// The windows this device left open, asked for again one at a time into
     /// the tabs they were in.
     #[cfg(target_os = "linux")]

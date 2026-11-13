@@ -1,19 +1,13 @@
-//! The kernel's backlight events. The backlight class announces every level
-//! change, from a sysfs write or a firmware hotkey alike, as a `change`
-//! uevent, and a backlight that appears or goes as `add` or `remove`; a
-//! follower sleeps on the uevent socket until one of those arrives.
+//! The kernel's backlight events: the backlight class announces every level change,
+//! from a sysfs write or a firmware hotkey alike.
 
-/// What happened to a backlight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BacklightEvent {
-    /// A backlight's level changed.
     Level,
-    /// A backlight appeared or went away.
     Devices,
 }
 
-/// The backlight event in one kernel uevent message
-/// (`ACTION@DEVPATH\0KEY=VALUE\0...`), if it is one.
+/// The backlight event in one kernel uevent message (`ACTION@DEVPATH\0KEY=VALUE\0...`), if it is one.
 pub fn backlight_event(message: &[u8]) -> Option<BacklightEvent> {
     let mut fields = message.split(|&byte| byte == 0);
     let header = fields.next()?;
@@ -36,9 +30,7 @@ pub fn backlight_event(message: &[u8]) -> Option<BacklightEvent> {
     }
 }
 
-/// Call `event` for every backlight event the kernel sends, on the calling
-/// thread, for as long as the uevent socket is open. Returns why it could
-/// not be opened or stopped reading.
+/// Calls `event` for every backlight event, on the calling thread, while the uevent socket is open.
 #[cfg(target_os = "linux")]
 pub fn follow(mut event: impl FnMut(BacklightEvent)) -> Result<(), String> {
     use rustix::net::netlink::{self, SocketAddrNetlink};

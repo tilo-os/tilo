@@ -1649,7 +1649,7 @@ impl SessionDoors {
         doors: &tilo_session_core::door::Doors,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         search: &crate::search::SessionSearch,
-        shows: std::rc::Rc<dyn Fn(&str) -> bool>,
+        shows: &std::rc::Rc<dyn Fn(&str) -> bool>,
         look: &mut tilo_session_core::door::Look<'_>,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
@@ -1666,7 +1666,7 @@ impl SessionDoors {
                     search.find_soon(
                         &needle,
                         workspace.as_deref(),
-                        std::rc::Rc::clone(&shows),
+                        std::rc::Rc::clone(shows),
                         FIND_WITHIN,
                         done,
                     );

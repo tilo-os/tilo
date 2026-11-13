@@ -768,8 +768,7 @@ impl crate::sync::SayPresence for Say {
     fn say(
         &self,
         workspace: WorkspaceId,
-        sequence: u32,
-        presence: &collab_types::presence::Presence,
+        frames: &[(u32, collab_types::presence::Presence)],
     ) -> Result<(), String> {
         let plane = self
             .0
@@ -778,7 +777,7 @@ impl crate::sync::SayPresence for Say {
             .get(&workspace)
             .map(|joined| Arc::clone(&joined.plane))
             .ok_or_else(|| "this workspace has no live plane".to_owned())?;
-        tilo_live::presence::say(&plane, sequence, presence).map_err(|error| error.to_string())
+        tilo_live::presence::say(&plane, frames).map_err(|error| error.to_string())
     }
 }
 

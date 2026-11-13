@@ -49,7 +49,6 @@ use ui::tilo_resource;
 #[model(defaults)]
 pub struct AudioPrefs {
     /// "System sounds": master switch, volume, theme and per-event choices.
-    /// The compositor plays them; see [`settings_store::system_sounds`].
     #[serde(default)]
     pub system_sounds: settings_store::system_sounds::SystemSoundPrefs,
     /// Persistent left/right balance in UI space (`0` left, `0.5` centre,
@@ -111,7 +110,6 @@ pub struct NightLightPrefs {
     #[model(range = 2_000..=6_500)]
     pub night_light_temperature: u32,
     /// Follow the Appearance day/night schedule instead of the manual switch:
-    /// on from sunset, off from sunrise.
     #[serde(default)]
     pub night_light_schedule: bool,
 }
@@ -134,7 +132,6 @@ pub struct DisplayPrefs {
     #[model(readonly)]
     pub auto_brightness: bool,
     /// Whether the built-in panel stays put when a convertible is turned.
-    /// Changed only through [`DisplayPrefs::set_rotation_lock`].
     #[serde(default)]
     #[model(readonly)]
     pub rotation_lock: bool,
@@ -836,7 +833,6 @@ pub mod tablet_choices {
     }
 
     /// Make pad button `button` do `choice`. One button shows the map:
-    /// picking it for another moves it there.
     pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonChoice) {
         if config.pad_map_button == Some(button) {
             config.pad_map_button = None;
@@ -1104,7 +1100,6 @@ pub struct PowerPrefs {
     pub blank_minutes: u32,
     /// Idle minutes before the session locks; `0` is the explicit "Never"
     /// choice. Manual lock and the mandatory pre-suspend lock remain active.
-    /// A longer delay or never weakens the lock; a shorter one does not.
     #[serde(default = "default_lock_minutes")]
     #[model(weaker = "higher", weakest = 0, range = 0..=MINUTES_PER_DAY)]
     pub lock_minutes: u32,

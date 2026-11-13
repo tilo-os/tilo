@@ -1,12 +1,6 @@
 //! The colour this person wears everywhere, as a setting: their focus ring,
 //! text caret and text selection, the mark their collaborators see on their
 //! cursor, and their part of every presence list.
-//!
-//! It is one of the twelve presence hues (`ui::tokens::PresenceHue`), stored
-//! as `identity.colour` and read by `PresenceHue::chosen_in`; until they
-//! choose, it is derived from their identity, so every host paints them the
-//! same without asking. A colour is identity, not theme: it roams with the
-//! person's other settings.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;

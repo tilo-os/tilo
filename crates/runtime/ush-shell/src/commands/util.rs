@@ -7,7 +7,6 @@ use std::io::{self, BufRead, Read};
 use super::Ctx;
 use crate::io::Input;
 
-/// One command-line argument, after option parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
     /// An option by its spelling (`-n`, `--lines`), with its value if it
@@ -16,7 +15,6 @@ pub enum Arg {
     Operand(String),
 }
 
-/// How a command's options are spelled.
 pub struct Spec<'a> {
     /// The short options that take a value (`n` for `head -n 3`).
     pub short_values: &'a str,
@@ -118,7 +116,6 @@ pub fn value(v: Option<&String>) -> &str {
     v.map_or("", String::as_str)
 }
 
-/// Standard input as a reader.
 pub struct Stdin(pub Input);
 
 impl Read for Stdin {
@@ -161,7 +158,6 @@ pub fn lines<E: From<io::Error>>(
     }
 }
 
-/// `bytes` split into lines, each with its terminator if it had one.
 pub fn split_lines(bytes: &[u8], delimiter: u8) -> Vec<&[u8]> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -178,12 +174,10 @@ pub fn split_lines(bytes: &[u8], delimiter: u8) -> Vec<&[u8]> {
     out
 }
 
-/// `line` without its terminator.
 pub fn chomp(line: &[u8], delimiter: u8) -> &[u8] {
     line.strip_suffix(&[delimiter]).unwrap_or(line)
 }
 
-/// A calendar date and time of day.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Civil {
     pub year: i64,

@@ -1,17 +1,9 @@
 //! Reverse-DNS package ids and the namespaces that own them.
 //!
-//! A package id is lowercase reverse DNS with at least three labels
-//! (`com.example.notes`). A namespace is a shorter prefix of it
-//! (`com.example`), and a publisher may claim an id only inside a namespace the
-//! registry has verified for its key. Two kinds of proof exist, both documented
-//! for publishers in `docs/publishing.md`:
-//!
-//! - a **domain** `example.com` gives `com.example`;
-//! - a **forge account** gives `io.github.<account>`, `org.codeberg.<account>`,
-//!   or the reversed host of another Forgejo or Gitea instance followed by the
-//!   account (`org.example.git.<account>` for `git.example.org`).
-//!
-//! [`TILO_NAMESPACE`] belongs to Tilo itself.
+//! An id is lowercase reverse DNS with at least three labels (`com.example.notes`), and a publisher
+//! may claim one only inside a namespace the registry verified for its key: by DNS (`example.com`
+//! gives `com.example`) or by a forge account (`io.github.<account>`). `docs/publishing.md` has both
+//! proofs for publishers. [`TILO_NAMESPACE`] is Tilo's own.
 
 pub const TILO_NAMESPACE: &str = "so.tilo";
 
@@ -46,8 +38,7 @@ pub fn valid_namespace(namespace: &str) -> bool {
     labels_valid(namespace, 2)
 }
 
-/// Whether `namespace` owns the package id `id`: `id` is `namespace` followed
-/// by at least one more label.
+/// Whether `id` sits inside `namespace`: `namespace` followed by one more label.
 #[must_use]
 pub fn namespace_owns(namespace: &str, id: &str) -> bool {
     id.strip_prefix(namespace)
@@ -63,7 +54,6 @@ pub fn domain_namespace(domain: &str) -> Option<String> {
     valid_namespace(&namespace).then_some(namespace)
 }
 
-/// A git forge an account namespace can be proven on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Forge {
     /// `github.com`, namespace `io.github.<account>`.
@@ -76,7 +66,6 @@ pub enum Forge {
 }
 
 impl Forge {
-    /// Parse `github`, `codeberg`, or a host name.
     #[must_use]
     pub fn parse(forge: &str) -> Option<Self> {
         match forge.to_ascii_lowercase().as_str() {
@@ -86,7 +75,6 @@ impl Forge {
         }
     }
 
-    /// The forge's host name.
     #[must_use]
     pub fn host(&self) -> &str {
         match self {
@@ -96,8 +84,8 @@ impl Forge {
         }
     }
 
-    /// The namespace `account` on this forge proves. `None` when the account
-    /// name is not a valid label (lowercased): such accounts prove by domain.
+    /// The namespace `account` on this forge proves. `None` when the name is not a valid label
+    /// (lowercased): such accounts prove by domain.
     #[must_use]
     pub fn namespace(&self, account: &str) -> Option<String> {
         let account = account.to_ascii_lowercase();

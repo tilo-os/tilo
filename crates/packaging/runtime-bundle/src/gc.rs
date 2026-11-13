@@ -1,12 +1,10 @@
 //! Collecting the per-user runtime bundles nothing needs any more.
 //!
-//! Every runtime build a device installs lands in its own
-//! `<root>/<version>/` ([`crate::bundle_root`]), and the runtime is rebuilt
-//! with every release, so without collection each app update that moves to
-//! a new build leaves the previous ~200 MB bundle behind.
+//! Each runtime build lands in its own `<root>/<version>/`, and a runtime is rebuilt with every
+//! release, so without collection each app update leaves the previous ~200 MB bundle behind.
 //!
-//! Beside the bundles the root holds the collector's state, every name of
-//! which starts with a dot and none of which is ever a bundle:
+//! Beside the bundles the root holds the collector's state, every name of which starts with a dot and
+//! none of which is a bundle:
 //!
 //! ```text
 //! <root>/
@@ -20,28 +18,19 @@
 //!   .install-<pid>/     an install's staging
 //! ```
 //!
-//! A bundle stays while an installed package names it, while it is pinned,
-//! for a grace period after it was installed (an app's first open installs
-//! the runtime and then the app, in two processes), while a launch holds it
-//! and while a running app has it mounted. Everything else is collected.
+//! A bundle stays while an installed package names it, while it is pinned, for a grace period after
+//! its install (an app's first open installs the runtime, then the app, in two processes), while a
+//! launch holds it and while a running app has it mounted.
 //!
-//! A launch holds `.launches/<version>` shared ([`BundleRoot::hold_launch`])
-//! from before it looks the bundle up until its sandbox exits; `flock(2)`
-//! drops the hold with the launcher however it ends. That covers the moment
-//! between choosing a bundle and the sandbox mounting it, which the mount
-//! table cannot show. A collection takes the same file exclusively without
-//! waiting before it moves a bundle and keeps it across the move and the
-//! deletion, so a launch sees each bundle either whole or gone, never in
-//! between, and a busy one is kept.
+//! A launch holds `.launches/<version>` shared ([`BundleRoot::hold_launch`]) from before it looks the
+//! bundle up until its sandbox exits, which covers the moment between choosing a bundle and mounting
+//! it. A collection takes the same file exclusively without waiting, and keeps it across the move and
+//! the deletion, so a launch sees each bundle whole or gone and a busy one is kept.
 //!
-//! Collection is crash-safe because a bundle leaves the version namespace in
-//! one `rename(2)` before any of its files is deleted: a directory in
-//! `.trash/` is never found by a version lookup (it lies one level deeper,
-//! under a name no version has a `bundle.toml` at), so a collection stopped
-//! halfway leaves either the whole bundle or none of it selectable. The next
-//! collection empties the trash. Nothing outside the root is touched and no
-//! symbolic link is followed. Bundle directories are never written to, so a
-//! bundle sealed with fs-verity stays sealed until it is gone.
+//! A bundle leaves the version namespace in one `rename(2)` before any file is deleted, so a
+//! collection stopped halfway leaves either the whole bundle or none of it selectable; the next
+//! collection empties the trash. Nothing outside the root is touched, no link is followed, and bundle
+//! directories are never written, so a sealed bundle stays sealed.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -50,29 +39,20 @@ use std::path::{Path, PathBuf};
 
 use advisory_lock::{FileLock, LockMode, TryLockError};
 
-/// The lock installs share and a collection holds alone.
 pub const GC_LOCK_FILE: &str = ".gc.lock";
-/// Where a bundle goes before it is deleted.
 pub const TRASH_DIR: &str = ".trash";
-/// When each bundle was last installed.
 pub const LEASES_DIR: &str = ".leases";
-/// The bundles kept until unpinned.
 pub const PINS_DIR: &str = ".pins";
-/// The launch leases: each running launch holds its bundle's file shared.
 pub const LAUNCHES_DIR: &str = ".launches";
-/// The name prefix of an install's staging directory.
 pub const STAGING_PREFIX: &str = ".install-";
 /// How long a freshly installed bundle stays without anything naming it:
 /// long enough for the app install that follows a runtime install.
 pub const DEFAULT_GRACE_SECS: u64 = 60 * 60;
 
-/// Why a bundle was kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kept {
-    /// An installed package names it.
     Referenced,
     Pinned,
-    /// It was installed within the grace period.
     Leased,
     /// A running app has it mounted.
     InUse,
@@ -81,14 +61,11 @@ pub enum Kept {
     Launching,
 }
 
-/// What one collection did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Collected {
-    /// Another install or collection held the lock; nothing was looked at.
     pub busy: bool,
     /// Bundles removed (or, on a dry run, that would be), with their bytes.
     pub removed: Vec<(String, u64)>,
-    /// Bundles kept, and why.
     pub kept: Vec<(String, Kept)>,
     /// Bytes of earlier collections' trash and of abandoned install staging
     /// removed this time.
@@ -96,7 +73,6 @@ pub struct Collected {
 }
 
 impl Collected {
-    /// Every byte this collection freed.
     #[must_use]
     pub fn freed_bytes(&self) -> u64 {
         self.removed
@@ -107,28 +83,21 @@ impl Collected {
     }
 }
 
-/// Settings for one [`BundleRoot::collect`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// How long a lease keeps a bundle; see [`DEFAULT_GRACE_SECS`].
     pub grace_secs: u64,
     /// Unix seconds now.
     pub now: u64,
-    /// Report what would be removed, removing nothing.
     pub dry_run: bool,
 }
 
-/// Whether a running app holds the bundle at a path, which carries a
-/// version. Taken fresh by [`InUse`] for each look.
+/// Whether a running app holds the bundle at a path.
 pub type Holds = Box<dyn Fn(&Path, &str) -> bool>;
 
-/// A fresh look at what running apps hold.
 pub type InUse<'a> = &'a dyn Fn() -> Holds;
 
-/// The bundle versions installed packages name, read under the lock.
 pub type References<'a> = &'a dyn Fn() -> io::Result<BTreeSet<String>>;
 
-/// A directory of per-user runtime bundles.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BundleRoot {
     root: PathBuf,
@@ -170,13 +139,11 @@ impl BundleRoot {
         tilo_files::native::atomic::write(&path, now.to_string().as_bytes())
     }
 
-    /// Keep `version` until [`Self::unpin`].
     pub fn pin(&self, version: &str) -> io::Result<()> {
         let path = self.state_file(PINS_DIR, version)?;
         tilo_files::native::atomic::write(&path, b"")
     }
 
-    /// Stop keeping `version` for its pin alone.
     pub fn unpin(&self, version: &str) -> io::Result<()> {
         remove_file_if_present(&self.state_file(PINS_DIR, version)?)
     }
@@ -187,7 +154,6 @@ impl BundleRoot {
             .is_ok_and(|path| path.is_file())
     }
 
-    /// Unix seconds of `version`'s last install, if recorded.
     #[must_use]
     pub fn leased_at(&self, version: &str) -> Option<u64> {
         let path = self.state_file(LEASES_DIR, version).ok()?;
@@ -204,7 +170,6 @@ impl BundleRoot {
         FileLock::open_current(&path, LockMode::Shared)
     }
 
-    /// `version`'s launch lease, exclusively, when no launch holds it.
     fn take_launch(&self, version: &str) -> io::Result<Option<FileLock>> {
         let path = self.state_file(LAUNCHES_DIR, version)?;
         match FileLock::try_open_current(&path, LockMode::Exclusive) {
@@ -214,7 +179,6 @@ impl BundleRoot {
         }
     }
 
-    /// Whether a launch holds `version`, creating nothing.
     fn launch_busy(&self, version: &str) -> io::Result<bool> {
         check_version(version)?;
         let path = self.root.join(LAUNCHES_DIR).join(version);
@@ -281,7 +245,6 @@ impl BundleRoot {
         Ok(purged)
     }
 
-    /// [`Self::purge`] for a caller that holds the version's launch lease.
     fn purge_taken(&self, trashed: &Path, holds: &Holds) -> io::Result<bool> {
         let version = self.trashed_name(trashed)?;
         if holds(trashed, version) {
@@ -291,7 +254,6 @@ impl BundleRoot {
         Ok(true)
     }
 
-    /// The version a path directly inside this root's trash was.
     fn trashed_name<'p>(&self, trashed: &'p Path) -> io::Result<&'p str> {
         let trash = self.root.join(TRASH_DIR);
         trashed
@@ -400,8 +362,6 @@ impl BundleRoot {
         Ok(out)
     }
 
-    /// Every bundle directory: plain directories directly under the root
-    /// whose name is a version. State, trash and staging start with a dot.
     fn bundles(&self) -> io::Result<Vec<(String, PathBuf)>> {
         let mut found = Vec::new();
         for entry in fs::read_dir(&self.root)? {
@@ -455,7 +415,6 @@ impl BundleRoot {
         Ok(bytes)
     }
 
-    /// Drop the lease of every bundle that is gone once it has expired.
     fn forget_stale_leases(&self, options: &Options) -> io::Result<()> {
         let leases = self.root.join(LEASES_DIR);
         let Ok(entries) = fs::read_dir(&leases) else {
@@ -513,7 +472,6 @@ impl BundleRoot {
         Ok(trash)
     }
 
-    /// `<root>/<dir>/<version>`, its directory created.
     fn state_file(&self, dir: &str, version: &str) -> io::Result<PathBuf> {
         check_version(version)?;
         let dir = self.root.join(dir);
@@ -532,7 +490,6 @@ impl BundleRoot {
     }
 }
 
-/// The version a trash entry `<version>.<pid>.<nanos>` was.
 fn trashed_version(name: &str) -> &str {
     name.rsplitn(3, '.').nth(2).unwrap_or(name)
 }
@@ -557,7 +514,6 @@ fn check_version(version: &str) -> io::Result<()> {
     }
 }
 
-/// Remove a directory tree, or a file or link, without following links.
 fn remove_entry(path: &Path) -> io::Result<()> {
     let result = match fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
@@ -577,9 +533,6 @@ fn remove_file_if_present(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Replace `path` in one rename. The temporary name starts with a dot, so a
-/// leftover one reads as an expired lease of no bundle and is dropped.
-/// Bytes of the regular files under `path`, links not followed.
 fn tree_size(path: &Path) -> u64 {
     let mut total = 0u64;
     let mut stack = vec![path.to_path_buf()];
@@ -612,7 +565,6 @@ mod tests {
         }
     }
 
-    /// A bundle of `bytes` bytes at `version`, as an install leaves it.
     fn bundle(root: &BundleRoot, version: &str, bytes: usize) {
         let dir = root.bundle(version);
         fs::create_dir_all(dir.join("lib")).unwrap();
@@ -633,8 +585,6 @@ mod tests {
         Box::new(|_: &Path, _: &str| false)
     }
 
-    /// Whether a version lookup — the launcher's rule: `<root>/<v>/bundle.toml`
-    /// exists — would select `version`.
     fn selectable(root: &BundleRoot, version: &str) -> bool {
         root.bundle(version)
             .join(crate::BUNDLE_MANIFEST_FILENAME)
@@ -748,8 +698,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = BundleRoot::new(dir.path());
         bundle(&root, "v1", 10);
-        // The first look sees nothing; by the second, a sandbox has mounted
-        // the bundle, and its mount followed the directory into the trash.
         let looked = std::cell::Cell::new(false);
         let in_use = || -> Holds {
             if looked.replace(true) {
@@ -773,8 +721,6 @@ mod tests {
         let root = BundleRoot::new(dir.path());
         bundle(&root, "v1", 4096);
         bundle(&root, "v2", 10);
-        // The collection renamed v1 out and was killed while deleting it:
-        // its manifest is still there, its toolkit already gone.
         let trashed = root.retire("v1").unwrap().unwrap();
         fs::remove_file(trashed.join("lib/libruntime_dylib.so")).unwrap();
         assert!(trashed.join(crate::BUNDLE_MANIFEST_FILENAME).exists());
@@ -786,7 +732,6 @@ mod tests {
         env.set(crate::RUNTIME_DIR_ENV, dir.path());
         assert_eq!(crate::resolve_bundle_path("v1"), None);
         assert!(crate::resolve_bundle_path("v2").is_some());
-        // The trash itself is not a version either.
         assert_eq!(crate::resolve_bundle_path(TRASH_DIR), None);
         drop(env);
         let collected = root
@@ -911,7 +856,6 @@ mod tests {
         let trashed = root.retire("v1").unwrap().unwrap();
         assert!(!root.purge(&trashed, &nothing_held()).unwrap());
         assert!(trashed.join("lib/libruntime_dylib.so").exists());
-        // Nor by the trash sweep of a collection while the hold lasts.
         root.collect(&refs(&[]), &nothing_held, options()).unwrap();
         assert!(trashed.join("lib/libruntime_dylib.so").exists());
         drop(launch);
@@ -920,8 +864,6 @@ mod tests {
         assert!(!trashed.exists());
     }
 
-    /// Wait until a thread of this process is blocked taking a lock on
-    /// `lease`, as the kernel lists it.
     fn waiting_on(lease: &Path) {
         #[cfg(target_os = "linux")]
         {
@@ -947,8 +889,6 @@ mod tests {
         bundle(&root, "v1", 4096);
         let (seen_tx, seen_rx) = std::sync::mpsc::channel();
         let launcher = std::cell::RefCell::new(None);
-        // The collection's second look at the mount table runs after the
-        // rename and before the deletion: a launch arrives right then.
         let looks = std::cell::Cell::new(0);
         let in_use = || -> Holds {
             looks.set(looks.get() + 1);
@@ -985,7 +925,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = BundleRoot::new(dir.path());
         bundle(&root, "v1", 10);
-        // Launches of builds only the system root has leave a lease here.
         drop(root.hold_launch("system-only").unwrap());
         let held = root.hold_launch("system-held").unwrap();
         root.collect(&refs(&["v1"]), &nothing_held, options())
@@ -996,12 +935,8 @@ mod tests {
         drop(held);
     }
 
-    /// N runtime updates, each moving the app to a new build: the bytes the
-    /// bundle root holds with and without collection.
     #[test]
     fn disk_after_runtime_updates() {
-        // A runtime bundle is ~205 MB on x86_64; a 1:1000 scale keeps the
-        // test fast and the ratio exact.
         const UPDATES: usize = 10;
         const BUNDLE_BYTES: usize = 205_000;
         let kept = tempfile::tempdir().unwrap();
@@ -1011,8 +946,6 @@ mod tests {
             BundleRoot::new(collected.path()),
         );
         for update in 0..UPDATES {
-            // Each update installs the build the updated app names; the
-            // collection after it runs once the install's grace has passed.
             let version = format!("2026.07+native.{update:02}");
             for root in [&kept, &collected] {
                 bundle(root, &version, BUNDLE_BYTES);

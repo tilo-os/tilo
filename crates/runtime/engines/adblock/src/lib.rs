@@ -1,16 +1,9 @@
-//! The `WebView`'s filter-list compiler, as an engine library beside the
-//! shared runtime (`libtilo_adblock_engine.so`).
+//! The `WebView`'s filter-list compiler, as its own library in the runtime bundle
+//! (`libtilo_adblock_engine.so`).
 //!
-//! adblock-rust (with its regex and domain-resolution tables) compiles
-//! Brave/EasyList filter lists into `WebKit` content-blocker rules. Only an
-//! app that blocks ads in a `WebView` (the browser) ever does that, and only
-//! when it refreshes its lists. Inside `libruntime_dylib.so` every app
-//! process mapped and relocated it; here the toolkit opens it the first time
-//! `ui::webview::adblock::compile_filter_lists_chunked` runs
-//! (tilo-engine-loader), and no app names it.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crate it provides. Outside
-//! the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
 // Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
 // nothing names, and without it in the crate graph this library would link
@@ -23,10 +16,8 @@ pub use tilo_content_blocker;
 
 #[cfg(feature = "thin")]
 use tilo_ui::webview::adblock::{AdblockError, ChunkedFilter, CompileFn, EngineEntry};
-
 /// The entry the toolkit opens (`ui::webview::adblock::ENGINE_ENTRY`): the
-/// compiler, as the toolkit's [`CompileFn`]. Its type is checked here
-/// against the toolkit's definition.
+/// compiler, its type checked here against the toolkit's [`CompileFn`].
 #[cfg(feature = "thin")]
 #[unsafe(no_mangle)]
 pub extern "Rust" fn tilo_adblock_engine_entry() -> CompileFn {

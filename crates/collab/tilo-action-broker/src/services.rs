@@ -904,6 +904,8 @@ pub struct HostServices {
     pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
     /// What each application declared it may do on the door; without it none declared anything.
     pub app_action_access: Option<crate::app_actions::AppActionAccessResolver>,
+    /// The resource kinds each application declared; without it no app's reach is known.
+    pub app_resource_kinds: Option<crate::app_actions::AppResourceKindsResolver>,
     /// Records grants people give apps for other apps' actions; without it no grant is asked.
     pub app_action_grants: Option<Arc<dyn AppActionGrants>>,
     /// Where the launchable action catalogue survives a restart; without it it lives as long as
@@ -972,6 +974,7 @@ impl HostServices {
         "nearby_transfer",
         "file_clipboard",
         "app_action_access",
+        "app_resource_kinds",
         "app_action_grants",
         "launchable_catalogue",
         "record_content",

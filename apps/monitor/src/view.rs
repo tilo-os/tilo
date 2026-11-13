@@ -1,12 +1,7 @@
-//! The Monitor window's widgets.
-//!
-//! The window is one [`ui::widget::NavShell`]. Its content is the active tab:
-//! `ProcessesPane` (the summary tiles and the process table, which the
-//! window bar's search narrows) or `ResourcesPane` (the system dashboard). The selected process
-//! is the inspector (`process_detail`). [`crate::app::MonitorApp`] owns the
-//! model and the shared view state; the panes meet it in a `Bridge`: the
-//! app publishes what they show, the panes queue what the person asked for,
-//! and the app turns each request into a view change or a document action.
+//! The Monitor window's widgets: the Processes tab (summary tiles over the process
+//! table) and the Resources tab (the dashboard), plus the process inspector.
+//! [`crate::app::MonitorApp`] owns the model; the panes meet it in a [`Bridge`],
+//! publishing what they show and queueing what the person asked for.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -40,7 +35,6 @@ use crate::resource::CATALOG;
 use crate::tree::SumMode;
 use ui::widget::DrawChild;
 
-/// One row of the process table: what the list shows of a process.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ProcessRow {
     pub pid: u32,
@@ -49,13 +43,11 @@ pub(crate) struct ProcessRow {
     pub cpu: f32,
     pub mem_bytes: u64,
     pub threads: usize,
-    /// Depth in the process tree; 0 in a flat list.
     pub depth: usize,
     pub has_children: bool,
     pub expanded: bool,
 }
 
-/// A whole-system statistic shown as a tile above the process table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stat {
     Cpu,
@@ -85,8 +77,7 @@ impl Stat {
         }
     }
 
-    /// What the tile's value counts, named so it cannot be confused with a
-    /// process row's different measure.
+    /// What the tile's value counts, named apart from a process row's measure.
     fn measure(self) -> &'static str {
         match self {
             Self::Cpu => "CPU load across all cores",
@@ -96,24 +87,20 @@ impl Stat {
         }
     }
 
-    /// The dashboard section that shows this statistic in full.
     fn section_id(self) -> String {
         format!("monitor.section.{}", self.id())
     }
 }
 
-/// How often this window samples the machine, or whether it has paused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cadence {
     Every(u64),
     Paused,
 }
 
-/// The sampling cadences the window bar offers, in milliseconds.
 pub(crate) const INTERVALS: [u64; 5] = [1000, 1500, 2000, 3000, 5000];
 
 impl Cadence {
-    /// Every choice, in the order the bar's menu lists them.
     pub(crate) fn all() -> Vec<Self> {
         INTERVALS
             .iter()
@@ -122,7 +109,6 @@ impl Cadence {
             .collect()
     }
 
-    /// The choice in words, as the menu lists it.
     pub(crate) fn label(self) -> String {
         match self {
             Self::Paused => crate::resource::CATALOG.t("monitor-cadence-paused"),
@@ -144,37 +130,26 @@ fn seconds(ms: u64) -> String {
     }
 }
 
-/// What the person asked a pane for.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Request {
     Tab(Tab),
     Sort(SortKey),
     Filter(String),
     Select(u32),
-    /// Show the process row with this id (a search hit, an agent's `open`).
     Open(String),
-    /// Enter or a double click on a row.
     Activate(u32),
     SetExpanded(u32, bool),
     TreeMode(bool),
     SumChildren(bool),
     KernelThreads(bool),
     ShowStat(Stat),
-    ContextMenu {
-        pid: u32,
-        at: Point,
-        /// The row the menu acts on, marked while the menu is open.
-        row: Rect,
-    },
-    /// Sample the machine now: Refresh, or a retry of an unreadable list.
+    ContextMenu { pid: u32, at: Point, row: Rect },
     Refresh,
     End(u32),
     Kill(u32),
-    /// The inspector's End app, for the app the process belongs to.
     EndApp(u32),
 }
 
-/// What the process list shows in place of rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Placeholder {
     Loading,
@@ -196,7 +171,6 @@ impl Placeholder {
     }
 }
 
-/// The table's display options.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ListOptions {
     pub sort: SortKey,
@@ -206,15 +180,11 @@ pub(crate) struct ListOptions {
     pub kernel_threads: bool,
 }
 
-/// The state the app and its panes share.
 #[derive(Default)]
 pub(crate) struct Bridge {
-    /// Bumped whenever anything below changes.
     pub revision: u64,
-    /// Bumped when `rows` changes.
     pub rows_revision: u64,
     pub rows: Vec<ProcessRow>,
-    /// The selected row, as an index into `rows`.
     pub selected: Option<usize>,
     pub options: Option<ListOptions>,
     pub actions: Option<ui::framework::Actions<crate::resource::Monitor>>,
@@ -222,15 +192,11 @@ pub(crate) struct Bridge {
     /// How many processes the list could show, filtered or not.
     pub total: usize,
     pub placeholder: Option<Placeholder>,
-    /// Bumped when `metrics` changes.
     pub metrics_revision: u64,
     pub metrics: Option<Metrics>,
     pub process_count: usize,
     pub thread_count: usize,
-    /// A dashboard section to bring into view.
     pub reveal: Option<Stat>,
-    /// Open the row menu over this process once its row is laid out
-    /// (captures).
     pub menu_seed: Option<u32>,
     requests: Vec<Request>,
 }
@@ -259,8 +225,8 @@ fn percent_label(value: f32) -> String {
     format!("{value:.0}%")
 }
 
-/// The four whole-system tiles over the process table, each with its recent
-/// history. Pressing one opens its section of the dashboard.
+/// The four whole-system tiles over the process table; pressing one opens its
+/// section of the dashboard.
 fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
     let tiles = Stat::ALL
         .iter()
@@ -339,10 +305,8 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
                     .with_rhythm(ui::tokens::Rhythm::Tight)
                     .push(Box::new(tile))
                     .push(Box::new(Facts::new(vec![
-                        // A fresh sample says where it came from; only a sample
-                        // old enough to mislead says how old it is. Four tiles
-                        // repeating "measured 0 s ago" is noise, and a number
-                        // nobody doubts does not need a timestamp.
+                        // A fresh sample says nothing about its age; only a stale one
+                        // does.
                         Fact::text(if fact.is_stale(now) {
                             fact.caption(now)
                         } else {
@@ -358,13 +322,10 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
     StatGroup::new(tiles)
 }
 
-/// The table's shape: it is rebuilt when one of these changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TableShape {
     tree: bool,
-    /// Rows show their subtree's sum rather than the process alone.
     sum: bool,
-    /// A narrow window drops the thread and PID columns.
     compact: bool,
 }
 
@@ -453,8 +414,8 @@ fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, 
     if !shape.tree {
         return (table, keys);
     }
-    // A tree: the table indents each process under its parent and folds a
-    // parent by its chevron, or by Right and Left on the selected row.
+    // A tree: the table indents each process under its parent and folds by its
+    // chevron, or by Right and Left on the selected row.
     let folds = Rc::clone(shared);
     let table = table.tree(
         |row: &ProcessRow| row.depth,
@@ -470,7 +431,6 @@ fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, 
     (table, keys)
 }
 
-/// The column key the table sorts by, for its header indicator.
 fn column_key(sort: SortKey) -> &'static str {
     match sort {
         SortKey::Pid => "pid",
@@ -501,7 +461,6 @@ fn empty_state(kind: Placeholder) -> EmptyState {
     }
 }
 
-/// Child node ids of the last layout.
 #[derive(Default)]
 struct Nodes {
     summary: Option<NodeId>,
@@ -509,9 +468,8 @@ struct Nodes {
     body_child: Option<NodeId>,
 }
 
-/// The Processes tab: the summary tiles and the process table, or one empty
-/// state when there is nothing to list. The window bar's search narrows it
-/// ([`Filterable`]); its view options are the bar's.
+/// The Processes tab: the summary tiles and the process table, or one empty state.
+/// The window bar's search narrows it and its view options are the bar's.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent layout, structure and selection-reveal flags"
@@ -522,30 +480,24 @@ pub(crate) struct ProcessesPane {
     seen_rows: Option<u64>,
     seen_metrics: Option<u64>,
     summary: Option<StatGroup>,
-    /// The metrics changed since `summary` was built.
     summary_stale: bool,
     options: Option<ListOptions>,
     table: DataTable<ProcessRow>,
     sort_keys: Vec<SortKey>,
     shape: TableShape,
-    /// The viewport height last handed to the table.
     viewport: f64,
     row_height: f64,
     placeholder: Option<(Placeholder, EmptyState)>,
-    /// The row index the table's selection was last synchronised to.
     shown_selection: Option<usize>,
     adopted_selection: Option<usize>,
     reveal_selection: bool,
     cursor: Point,
     rect: Rect,
-    /// Below this width the pane is compact (from the last layout's theme).
     compact_below: f64,
     nodes: Nodes,
     layout_dirty: bool,
     structure_dirty: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -584,7 +536,6 @@ impl ProcessesPane {
         }
     }
 
-    /// Adopt what the app published since the last look.
     fn adopt(&mut self) {
         let shared = Rc::clone(&self.shared);
         let bridge = shared.borrow();
@@ -635,8 +586,7 @@ impl ProcessesPane {
     }
 
     fn show_sort(&mut self, options: ListOptions) {
-        // The app orders the rows (a tree sorts each group of siblings);
-        // the table keeps that order and shows which column it is by.
+        // The app orders the rows; the table keeps that order and shows the column.
         self.table
             .set_sort_indicator(column_key(options.sort), !options.descending);
     }
@@ -669,8 +619,7 @@ impl ProcessesPane {
         self.shown_selection = selected;
     }
 
-    /// Queue the row the table's own selection moved to (a click, the
-    /// arrow keys) as the shared selection.
+    /// Queue the selection the table moved to as the shared selection.
     fn queue_selection(&mut self) -> Option<u32> {
         let primary = self.table.selection().primary();
         let pid = primary.and_then(|index| self.table.view_rows().get(index).map(|row| row.pid));
@@ -684,7 +633,6 @@ impl ProcessesPane {
         pid
     }
 
-    /// Scroll the table so the selected row is in view.
     fn scroll_to_selection(&mut self) {
         let Some(index) = self.table.selection().primary() else {
             return;
@@ -693,8 +641,6 @@ impl ProcessesPane {
         self.layout_dirty = true;
     }
 
-    /// `pid`'s row as its selection lift covers it, once the rows are laid
-    /// out.
     fn row_rect(&self, pid: u32) -> Option<Rect> {
         if self.table.get_rect().width() <= 0.0 || self.viewport <= 0.0 {
             return None;
@@ -707,8 +653,8 @@ impl ProcessesPane {
         self.table.row_rect(index)
     }
 
-    /// Where a person right-clicks `pid`'s row: in its name cell, past the
-    /// name, so the menu leaves the name readable.
+    /// Where a person right-clicks `pid`'s row: past the name, so the menu leaves it
+    /// readable.
     fn row_point(&self, pid: u32) -> Option<(Point, Rect)> {
         let row = self.row_rect(pid)?;
         let name = self
@@ -718,7 +664,6 @@ impl ProcessesPane {
         Some((Point::new(row.x0 + name * 0.6, row.center().y), row))
     }
 
-    /// Open a seeded row menu once the rows are laid out.
     fn open_seeded_menu(&self) {
         let Some(pid) = self.shared.borrow().menu_seed else {
             return;
@@ -731,7 +676,6 @@ impl ProcessesPane {
         bridge.push(Request::ContextMenu { pid, at, row });
     }
 
-    /// A pane `width` wide drops columns.
     fn is_compact(&self, width: f64) -> bool {
         width > 0.0 && width < self.compact_below
     }
@@ -750,7 +694,6 @@ impl ProcessesPane {
         }
     }
 
-    /// Route an event to the table and adopt the selection it moved to.
     fn route_to_table(
         &mut self,
         event: &WindowEvent,
@@ -764,7 +707,6 @@ impl ProcessesPane {
 }
 
 impl Filterable for ProcessesPane {
-    /// The window bar's search edited the query: ask the app for it.
     fn set_filter(&mut self, query: &str) {
         let mut bridge = self.shared.borrow_mut();
         if bridge.filter != query {
@@ -897,8 +839,7 @@ impl Widget for ProcessesPane {
             let available = body_rect.height();
             self.body_mut().apply_layout(taffy, child, body_origin);
             if self.placeholder.is_none() {
-                // The table is as tall as its header plus the viewport it
-                // was given; hand it the viewport that fills the body.
+                // The table is as tall as its header plus the viewport it was given.
                 let header = (self.table.get_rect().height() - self.viewport).max(0.0);
                 let target = if self.viewport > 0.0 {
                     (available - header).max(self.row_height)
@@ -945,7 +886,6 @@ impl Widget for ProcessesPane {
         self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
-            // Every part follows the pointer, whichever one is under it.
             let mut ignored = false;
             let nodes = [self.nodes.summary, self.nodes.body_child];
             let summary = self.summary.as_mut().map(|s| s as &mut dyn Widget);
@@ -1049,10 +989,8 @@ impl Widget for ProcessesPane {
     }
 }
 
-/// Horizontal grid divisions of a history chart.
 const GRID_DIVISIONS: usize = 4;
 
-/// A chart of `series`, scaled to `max`, with its high and low axis labels.
 fn history_chart(series: Vec<Series>, max: f32, high: &str) -> Chart {
     Chart::new(series)
         .with_area(true)
@@ -1061,16 +999,14 @@ fn history_chart(series: Vec<Series>, max: f32, high: &str) -> Chart {
         .with_axis_labels(high, "0")
 }
 
-/// The top of a throughput chart's scale for a `peak` rate: a round number,
-/// one grid step at a round size above the highest grid line the peak
-/// reaches, so the series stays out of the top band that holds the scale's
-/// label.
+/// The top of a throughput chart's scale for a `peak`: a round number above the
+/// highest grid line the peak reaches, so the series stays out of the top band that
+/// holds the scale's label.
 fn axis_top(peak: f32) -> f32 {
     let below_top = (GRID_DIVISIONS - 1) as f64;
     let peak = f64::from(peak.max(1.0));
     let mut step = nice_step(peak / below_top);
-    // A 1-2-5 step one size up more than covers a shortfall, so this ends
-    // after one round.
+    // A 1-2-5 step one size up more than covers a shortfall.
     for _ in 0..2 {
         if step * below_top >= peak {
             break;
@@ -1080,7 +1016,6 @@ fn axis_top(peak: f32) -> f32 {
     (step * GRID_DIVISIONS as f64) as f32
 }
 
-/// A level gauge: `label` over a bar filled to `frac`, with its reading.
 fn level_gauge(label: impl Into<String>, reading: String, frac: f32, theme: &Theme) -> Element {
     Box::new(
         BarGauge::new(frac)
@@ -1089,7 +1024,6 @@ fn level_gauge(label: impl Into<String>, reading: String, frac: f32, theme: &The
     )
 }
 
-/// The processor: the load history and a gauge per core.
 fn processor_section(metrics: &Metrics, theme: &Theme) -> Section {
     let cpu_chart = history_chart(
         vec![
@@ -1137,7 +1071,6 @@ fn processor_section(metrics: &Metrics, theme: &Theme) -> Section {
     )
 }
 
-/// Memory and swap in use, and the memory history.
 fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
     let of = |used: u64, total: u64| format!("{} of {}", format_bytes(used), format_bytes(total));
     let history: Vec<f32> = metrics
@@ -1184,15 +1117,12 @@ fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
     )
 }
 
-/// One direction of a throughput chart: its history, current rate and name.
 struct Flow<'a> {
     history: &'a [f32],
     rate: f32,
     name: &'a str,
 }
 
-/// A section charting two flows (received and sent, read and written) on
-/// one scale.
 fn throughput_section(
     title: &str,
     flows: &[Flow<'_>; 2],
@@ -1228,7 +1158,6 @@ fn throughput_section(
     )
 }
 
-/// The machine's facts.
 fn system_section(metrics: &Metrics, process_count: usize, thread_count: usize) -> Section {
     let numeric =
         |label: &str, value: String| Property::new(label, value).with_kind(TextKind::Numeric);
@@ -1252,8 +1181,8 @@ fn system_section(metrics: &Metrics, process_count: usize, thread_count: usize) 
     )
 }
 
-/// The dashboard: processor, memory, network and disk sections in a grid
-/// that reflows by width, then the system's facts.
+/// The dashboard: processor, memory, network and disk sections in a grid that
+/// reflows by width, then the machine's facts.
 fn dashboard(
     metrics: &Metrics,
     process_count: usize,
@@ -1329,23 +1258,18 @@ fn dashboard(
     )))
 }
 
-/// The Resources tab: the system dashboard, scrolling as one page.
 pub(crate) struct ResourcesPane {
     shared: Shared,
     seen: Option<u64>,
-    /// The theme colours the dashboard was built with.
     built_with: Option<(vello::peniko::Color, vello::peniko::Color)>,
     page: Option<Scrollable>,
     offset: Rc<Cell<(f32, f32)>>,
-    /// A section to scroll to once laid out.
     reveal: Option<Stat>,
     cursor: Point,
     rect: Rect,
     node: Option<NodeId>,
     structure_dirty: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -1387,8 +1311,8 @@ impl ResourcesPane {
         }
         let bridge = self.shared.borrow();
         let Some(metrics) = bridge.metrics.as_ref() else {
-            // No reading of the machine: say so (or that it is coming)
-            // instead of a dashboard of zeros.
+            // No reading of the machine: say so, or that it is coming, instead of a
+            // dashboard of zeros.
             let state = if matches!(bridge.placeholder, Some(Placeholder::Loading)) {
                 EmptyState::new("Reading this computer's usage").busy()
             } else {
@@ -1416,7 +1340,6 @@ impl ResourcesPane {
         self.built_with = Some(key);
     }
 
-    /// Scroll the requested section to the top of the page.
     fn reveal_section(&mut self) {
         let Some(stat) = self.reveal else {
             return;
@@ -1574,22 +1497,18 @@ impl Widget for ResourcesPane {
     }
 }
 
-/// What the inspector shows of the selected process.
 pub(crate) struct ProcessDetail<'a> {
     pub process: &'a ProcessInfo,
     pub parent: Option<String>,
     pub cpu_history: Vec<f32>,
-    /// The CPU share and memory of the process with its descendants, when
-    /// the table shows summed subtrees and the process has children: the
-    /// numbers its row shows.
+    /// The CPU share and memory of the process with its descendants, when the table
+    /// shows summed subtrees and the process has children.
     pub with_children: Option<(f32, u64)>,
-    /// Where the End and Kill buttons ask for the process's effects, which
-    /// the host confirms like the palette's and an agent's.
+    /// Where End and Kill ask for the process's effects, which the host confirms as it
+    /// does the palette's and an agent's.
     pub requests: Shared,
 }
 
-/// The selected process' facts: what it runs as, what it holds and how long it
-/// has run.
 fn process_facts(detail: &ProcessDetail<'_>) -> Vec<Property> {
     let process = detail.process;
     let mut properties = Vec::new();
@@ -1650,8 +1569,8 @@ fn process_facts(detail: &ProcessDetail<'_>) -> Vec<Property> {
     properties
 }
 
-/// The inspector: the selected process's load, its facts and the actions
-/// that end it, or one empty state when nothing is selected.
+/// The inspector: the selected process's load, its facts and the actions that end
+/// it, or one empty state.
 pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
     let Some(detail) = detail else {
         return Box::new(EmptyState::new("No process selected"));

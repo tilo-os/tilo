@@ -1,50 +1,15 @@
-//! Dashboard-style perf benchmark for the incremental renderer.
-//!
-//! Builds a *large* widget tree (~250 widgets — many labels and
-//! buttons across 8 columns, a couple of complex widgets per
-//! column) and drives a realistic mix of events at it:
-//!
-//!   - 70 % `CursorMoved` events that DON'T cross widget edges —
-//!     these must be no-ops with the redraw gate.
-//!   - 20 % hover-edge crossings — these mutate hover state on
-//!     exactly one widget per event, so only that widget's cache
-//!     should invalidate.
-//!   -  5 % clicks on a `ToggleGroup` — mutates `selected`, re-
-//!      emits the picker, every other widget hits its cache.
-//!   -  5 % "complex" events (spinner-style animation ticks where
-//!      every animating widget marks itself dirty).
-//!
-//! The bench tallies:
-//!   - "no-op" events that didn't request a redraw (proves Unit 2).
-//!   - `draw_to_scene` mean cost across redrawing events.
-//!   - vello render mean cost.
-//!   - effective throughput Hz = 1 / total mean per event.
-//!
+//! Dashboard-style perf benchmark for the incremental renderer: a tree of about 250 widgets across
+//! 8 columns, driven by a mix of cursor moves that cross no edges, hover-edge crossings, clicks on a
+//! `ToggleGroup`, and animation ticks that mark every animating widget dirty.
 //! Run with:
-//! ```
+//! ```bash
 //! cargo run -p ui-examples --release --example ui-perf -- dashboard_perf_bench
 //! ```
-//! Override iterations: `TILO_UI_DASH_ITERS=2000`.
-//! Override the render target: `TILO_UI_DASH_WIDTH=3840
-//! TILO_UI_DASH_HEIGHT=2160`.
-//! Set `TILO_UI_DASH_PEER=1` to add a collaborator whose pointer (dot and
-//! name) moves on every event, drawn through the framework's presence layer;
-//! `TILO_UI_DASH_PEER=full` repaints the window on every such frame instead,
-//! the rule before #3936, for comparison.
-//! Set `TILO_UI_DASH_VERIFY=1` to run a separate retained-damage pixel
-//! parity preflight. It compares 40 (configurable: 20..=100) already-built
-//! native scenes to a persistent full-render reference; it does not produce
-//! performance measurements or accept benchmark budget gates.
-//! Set `TILO_UI_DASH_SAMPLES=<path>` to write every redrawing frame's total
-//! (microseconds, one per line) for `tools/perf/record.py emit`; the
-//! scheduled performance lane records `render.ui.frame_us.4k` from it.
-//! Native masked sparse fine shading is enabled by default when supported;
-//! set `VELLO_SPARSE_FINE=0` to disable it. The raster-pixel metric remains
-//! the actual fine-shaded native pixels; profile output separately accounts
-//! for the coarse prefix work, so sparse mode is not described as eliminating it.
-//! Set `VELLO_GPU_DISPATCH_TIMESTAMPS=1` together with
-//! `VELLO_GPU_TIMESTAMPS=1` for an opt-in, profile-only per-dispatch GPU
-//! timing breakdown. It rejects acceptance budgets.
+//! `TILO_UI_DASH_ITERS` sets the iterations, `TILO_UI_DASH_WIDTH`/`TILO_UI_DASH_HEIGHT` the render
+//! target. `TILO_UI_DASH_PEER=1` adds a collaborator whose pointer moves on every event (drawn
+//! through the presence layer); `TILO_UI_DASH_PEER=full` repaints the window on every such frame
+//! instead, for comparison. `TILO_UI_DASH_VERIFY=1` runs a retained-damage pixel parity preflight
+//! against a persistent full-render reference instead of measuring. `TILO_UI_DASH_SAMPLES=<path>`
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -70,8 +35,6 @@ use winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 
-/// Narrows the canvas size (bounded, well under 10,000px) from `u32` to
-/// `f32` for taffy's available-space measurement.
 #[allow(
     clippy::cast_precision_loss,
     reason = "canvas dimensions are small (<10000px), far below f32's exact-integer range"
@@ -80,8 +43,6 @@ fn canvas_f32(v: u32) -> f32 {
     v as f32
 }
 
-/// Widens a bench-loop index (bounded by `iters`, far below f64's
-/// exact-integer range) to `f64` for the per-event cursor wobble.
 #[allow(
     clippy::cast_precision_loss,
     reason = "i is bounded by the loop's iters count, far below f64's exact-integer range"
@@ -98,7 +59,6 @@ fn env_u32(name: &str, fallback: u32) -> u32 {
         .unwrap_or(fallback)
 }
 
-/// Production Vello performance paths are enabled unless explicitly opted out.
 fn env_enabled_by_default(name: &str) -> bool {
     !matches!(tilo_ui::env::var(name).as_deref(), Ok("0"))
 }
@@ -124,8 +84,6 @@ fn verification_frame_count() -> usize {
     }
 }
 
-/// Diagnostics can add work outside the normal acceptance workload, so reject
-/// budget flags rather than reporting incomparable gate results.
 #[allow(
     clippy::exit,
     reason = "mixing verifier readbacks with benchmark gates is a command-line configuration error"
@@ -143,11 +101,8 @@ fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
         "TILO_UI_DASH_GPU_BUDGET_BYTES",
         "TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB",
         "TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES",
-        // Samples of a diagnostic run are not comparable with the lane's.
         "TILO_UI_DASH_SAMPLES",
     ];
-    // Verification intentionally suppresses every profile report, whereas
-    // timestamp diagnostics compose with the frame/host profile reports.
     const VERIFICATION_ONLY_PROFILE_FLAGS: &[&str] = &[
         "TILO_UI_DASH_ALLOC_PROFILE",
         "TILO_UI_DASH_ALLOC_BREAKDOWN",
@@ -177,12 +132,9 @@ fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
     }
 }
 
-/// One panel of the dashboard: header + a column of mixed widgets.
 fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     let mut col = Column::new().push(Box::new(Text::new(title_key).with_role(TextRole::Title)));
 
-    // Twenty rows. To exercise the Unit 2 redraw gate, only
-    // widgets whose `needs_redraw` is genuinely opt-in show up
     // here — Toggle / Checkbox / Slider / DatePicker / etc. still
     // default to `true` and would peg the gate forever. Once
     // those are migrated this can grow back.
@@ -930,7 +882,6 @@ impl FrameClock {
 struct PeerBench {
     presence: PresenceCtx,
     layer: tilo_ui::presence::PresenceLayer,
-    /// `TILO_UI_DASH_PEER=full`: the rule before #3936, under which any
     /// visible collaborator repainted the whole window, for comparison.
     full_repaint: bool,
 }

@@ -1,7 +1,6 @@
-//! A release into an entry at its version limit, end to end: the publisher
-//! client uploads and submits over HTTP, the collector and the networkless
-//! promoter run as the deployed binary, and the registry's storage keeps
-//! exactly the versions the entry still lists.
+//! A release into an entry at its version limit, end to end: the publisher client uploads and
+//! submits over HTTP, the collector and the networkless promoter run as the deployed binary, and
+//! the registry's storage keeps exactly the versions the entry still lists.
 
 #![cfg(unix)]
 #![allow(
@@ -34,8 +33,7 @@ fn run(data_dir: &Path, arguments: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&crate::support::server_ok(data_dir, arguments).stdout).unwrap()
 }
 
-/// Collect the waiting request and promote it, as the collector and
-/// publisher `CronJobs` do.
+/// Collect the waiting request and promote it, as the collector and publisher `CronJobs` do.
 fn promote(data_dir: &Path, publisher_hex: &str, channel_key: &Path) -> serde_json::Value {
     let collected = run(
         data_dir,
@@ -172,8 +170,8 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
         let entry = client.entry(PACKAGE_ID).unwrap().unwrap();
         assert_eq!(entry.versions.len(), MAX_ENTRY_VERSIONS);
 
-        // Release 129: the client drops the oldest version and the server
-        // accepts that request, collects it and promotes it.
+        // Release 129: the client drops the oldest version and the server accepts that request,
+        // collects it and promotes it.
         let submitted = app_registry::publisher::publish(
             &client,
             &publisher,
@@ -198,8 +196,8 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
         assert!(versions.contains(format!("1.{}.0", MAX_ENTRY_VERSIONS + 1).as_str()));
         assert!(!versions.contains("1.1.0"));
 
-        // The retained history and the previous version index still list the
-        // dropped version, so its bytes stay until both have moved on.
+        // The retained history and the previous version index still list the dropped version, so
+        // its bytes stay until both have moved on.
         assert_eq!(promoted["pruned"]["payload_blobs"], 0, "{promoted}");
         let oldest = releases.first().unwrap();
         let oldest_digest = blake3::hash(oldest).to_hex().to_string();
@@ -227,8 +225,8 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             );
         }
 
-        // Then the dropped version leaves storage: its staged package, its
-        // thin form and the blob only it used.
+        // Then the dropped version leaves storage: its staged package, its thin form and the blob
+        // only it used.
         let pruned = run(&data_dir, &["prune-storage"]);
         assert_eq!(pruned["pruned"]["staged_artifacts"], 1, "{pruned}");
         assert_eq!(pruned["pruned"]["thin_packages"], 1, "{pruned}");
@@ -243,9 +241,8 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             reqwest::StatusCode::NOT_FOUND
         );
 
-        // Every listed version stays collectable byte for byte and servable
-        // thin, while storage keeps each package once: its root, its thin
-        // form, and blobs shared across releases.
+        // Every listed version stays collectable byte for byte and servable thin, while storage
+        // keeps each package once: its root, its thin form, and blobs shared across releases.
         for version in &entry.versions {
             let bytes = storage
                 .load_staged_artifact(&version.tapp().unwrap().tapp_blake3_hex)
@@ -296,8 +293,8 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             .sum();
         assert!(staged_bytes < next.len() as u64, "{staged_bytes} bytes");
 
-        // Under the default retention the next release keeps only the newest
-        // versions, and the server accepts and promotes the shorter entry.
+        // Under the default retention the next release keeps only the newest versions, and the
+        // server accepts and promotes the shorter entry.
         app_registry::publisher::publish(
             &client,
             &publisher,

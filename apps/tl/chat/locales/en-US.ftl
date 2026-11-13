@@ -6,8 +6,8 @@ d-so-tilo-lang-chat = Chat
 d-lmdoxbnn = Conversations
     .doc = The workspace's conversations in the sidebar's order: channels outside any category, the categories each with its own, and the direct messages, in the list as people.
     .noun = { $count ->
-        [one] conversations
-       *[other] conversationses
+        [one] conversation
+       *[other] conversations
     }
 
 d-5kzdptyg = Channels

@@ -1,14 +1,12 @@
 //! XFS project quotas: a hard limit on the bytes beneath one directory.
 //!
-//! The directory gets a project id with `PROJINHERIT`, so everything created
-//! in it later carries the id too; files already there are tagged by a walk.
-//! The project gets a hard block limit, and a write past it fails with
-//! `EDQUOT`. Setting either needs `CAP_SYS_ADMIN` on the host, which is why
-//! callers reach this through a [`crate::job::cgroup::CgroupProvider`].
+//! The directory gets a project id with `PROJINHERIT`, so everything created in it later carries
+//! the id too; files already there are tagged by a walk. The project gets a hard block limit, and a
+//! write past it fails with `EDQUOT`. Setting either needs `CAP_SYS_ADMIN` on the host, which is
+//! why callers reach this through a [`crate::job::cgroup::CgroupProvider`].
 //!
-//! Only filesystems that enforce project quotas (XFS mounted with
-//! `prjquota`) can: everything else answers [`QuotaOutcome::Unsupported`],
-//! and the caller runs the job without a disk bound.
+//! Only filesystems that enforce project quotas (XFS mounted with `prjquota`) can: everything else
+//! answers [`QuotaOutcome::Unsupported`], and the caller runs the job without a disk bound.
 
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -94,8 +92,8 @@ const FS_QUOTA_PDQ_ENFD: u16 = 1 << 5;
 const BASIC_BLOCK: u64 = 512;
 
 fn quotactl(dir: BorrowedFd<'_>, cmd: u32, id: u32, addr: *mut u8) -> io::Result<()> {
-    // SAFETY: quotactl_fd on a live descriptor; `addr` points at a buffer
-    // of the structure `cmd` reads or writes.
+    // SAFETY: quotactl_fd on a live descriptor; `addr` points at a buffer of the structure `cmd`
+    // reads or writes.
     let rc = unsafe { libc::syscall(libc::SYS_quotactl_fd, dir.as_raw_fd(), qcmd(cmd), id, addr) };
     if rc < 0 {
         return Err(io::Error::last_os_error());
@@ -103,12 +101,10 @@ fn quotactl(dir: BorrowedFd<'_>, cmd: u32, id: u32, addr: *mut u8) -> io::Result
     Ok(())
 }
 
-/// Whether the filesystem holding `dir` enforces project quotas, or why
-/// not.
+/// Whether the filesystem holding `dir` enforces project quotas, or why not.
 ///
-/// # Errors
-/// Returns a human-readable reason when quotas are off or the filesystem
-/// has none — not a failure, but the answer the caller degrades on.
+/// # Errors Returns a human-readable reason when quotas are off or the filesystem has none — not a
+/// failure, but the answer the caller degrades on.
 pub fn enforced(dir: BorrowedFd<'_>) -> Result<(), String> {
     // `struct fs_quota_stat` is 80 bytes; its flags are a u16 at offset 2.
     let mut stat = [0_u64; 16];
@@ -165,8 +161,8 @@ fn tag(fd: libc::c_int, project: u32, inherit: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Tag `dir` and everything beneath it with `project`. Symlinks, sockets,
-/// FIFOs and devices hold no blocks and are left alone.
+/// Tag `dir` and everything beneath it with `project`. Symlinks, sockets, FIFOs and devices hold no
+/// blocks and are left alone.
 fn tag_tree(dir: &Path, project: u32) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let open = |p: &Path| {
@@ -202,9 +198,8 @@ fn tag_tree(dir: &Path, project: u32) -> io::Result<()> {
 
 /// Put `dir` under project `project` with a hard limit of `bytes`.
 ///
-/// # Errors
-/// Returns why a filesystem that enforces project quotas refused; one that
-/// doesn't answers `Ok(QuotaOutcome::Unsupported)`.
+/// # Errors Returns why a filesystem that enforces project quotas refused; one that doesn't answers
+/// `Ok(QuotaOutcome::Unsupported)`.
 pub fn set_project_quota(
     dir: BorrowedFd<'_>,
     project: u32,
@@ -213,8 +208,8 @@ pub fn set_project_quota(
     if let Err(why) = enforced(dir) {
         return Ok(QuotaOutcome::Unsupported(why));
     }
-    // The descriptor may come from another process (the broker's client),
-    // so the walk goes through /proc.
+    // The descriptor may come from another process (the broker's client), so the walk goes through
+    // /proc.
     let path = format!("/proc/self/fd/{}", dir.as_raw_fd());
     let real = std::fs::read_link(&path)?;
     tag_tree(&real, project)?;
@@ -232,7 +227,6 @@ pub fn set_project_quota(
     Ok(QuotaOutcome::Applied)
 }
 
-/// Open a directory for [`set_project_quota`].
 pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;

@@ -48,9 +48,9 @@ use automerge::{
 };
 use std::{cell::Cell, io::Write};
 
-/// Counts visible rows/characters visited by the projection, including skipped prefixes,
-/// against [`Limits::scan_entries`]. Iterator internals are additionally bounded by the
-/// document operation ceiling checked in [`begin`](source::Source::begin).
+/// Counts visible rows and characters visited by the projection, including skipped prefixes,
+/// against [`Limits::scan_entries`]; iterator internals are further bounded by the document
+/// operation ceiling checked in [`begin`](source::Source::begin).
 pub struct Work {
     remaining: Cell<usize>,
 }
@@ -92,8 +92,8 @@ pub fn validate_limits(limits: Limits, max_items: usize) -> Result<(), ReadError
     Ok(())
 }
 
-/// Inert cursor scope for the actual bound tilo-doc object, using canonical counter/actor identity.
-/// The cached actor-table index is deliberately excluded. This is not a record/caller witness.
+/// Inert cursor scope for the bound tilo-doc object, from its canonical counter/actor identity; the
+/// cached actor-table index is excluded. This is not a record/caller witness.
 ///
 /// # Errors
 ///
@@ -117,11 +117,8 @@ pub fn object_fingerprint(object: &ObjId) -> Result<[u8; 32], ReadError> {
     Ok(*hash.finalize().as_bytes())
 }
 
-/// Exact winning map entry, preserving the existing app's winner semantics without converting
-/// borrowed scalar payloads to the legacy owned Value representation.
-///
+/// The exact winning map entry, without converting borrowed scalar payloads to the owned `Value`.
 /// # Errors
-///
 /// [`ReadError::Limit`] when `key` exceeds 256 bytes.
 fn field<'a>(
     doc: &'a AutoCommit,
@@ -134,8 +131,8 @@ fn field<'a>(
     Ok(doc.map_range(obj, key.to_owned()..=key.to_owned()).next())
 }
 
-/// Count the actual serde JSON representation without allocating it. The caller may reserve
-/// that exact output amount in its owner before serializing; this helper grants no credit.
+/// Count the serde JSON representation without allocating it, so the caller can reserve that exact
+/// amount before serializing.
 ///
 /// # Errors
 ///

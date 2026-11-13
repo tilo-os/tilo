@@ -1,21 +1,6 @@
 //! The installer backend's own small checks and writes: the shell scripts
 //! (`tilo-install`, `tilo-guided-partition`, `tilo-installer-profile-extract`)
 //! hand each one here instead of to an interpreter.
-//!
-//! * `check-device-label LABEL`: at most 64 UTF-8 bytes, no control
-//!   characters.
-//! * `write-machine-info PATH LABEL`: replace `PRETTY_HOSTNAME=` in
-//!   machine-info, keeping every other line, atomically and durably.
-//! * `check-prepared-choices --username … --keyvariant …`: the authenticated
-//!   prepared setup on stdin must carry the choices the backend was given.
-//! * `guided-geometry DISK SECTOR FREE_START FREE_SIZE EFI_START EFI_SIZE
-//!   BOOT_START BOOT_SIZE ROOT_START ROOT_SIZE [UUID:START:SIZE…]`: the
-//!   reviewed guided allocation, checked with unbounded integers before the
-//!   shell's signed arithmetic sees it.
-//! * `gpt map|tilo-roots|number-node UUID|node UUID|type UUID`: facts from
-//!   `sfdisk --json` on stdin.
-//! * `unpack-setup-handoff PAYLOAD DEST`: the imager's setup handoff payload
-//!   (`PATH\nSIZE\nBYTES` records) unpacked below DEST.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
@@ -44,8 +29,8 @@ const MIB: u128 = 1 << 20;
 const GIB: u128 = 1 << 30;
 const EFI_BYTES: u128 = 2 << 30;
 const MIN_ROOT_BYTES: u128 = 32 << 30;
-/// Every byte count must fit a signed 64-bit integer: the shell and the
-/// kernel use that range.
+/// Every byte count must fit a signed 64-bit integer: the shell and the kernel
+/// use that range.
 const MAX_BYTES: u128 = (1 << 63) - 1;
 
 fn text(arg: &OsStr) -> Result<&str> {
@@ -54,10 +39,8 @@ fn text(arg: &OsStr) -> Result<&str> {
 }
 
 /// `check-device-label`: what machine-info and the enrolment certificate can
-/// carry as a display name.
-///
-/// # Errors
-/// A label longer than 64 bytes or with a C0/C1 control character.
+/// carry as a display name. A label longer than 64 bytes or with a C0/C1
+/// control character is refused.
 pub fn check_device_label(label: &OsStr) -> Result<()> {
     let label = text(label)?;
     if label.len() > 64
@@ -94,9 +77,9 @@ fn machine_info(existing: &str, label: &str) -> String {
     out
 }
 
-/// `write-machine-info`: publish the new machine-info under a temporary name
-/// in the same directory, synced, renamed over the old one, and the
-/// directory synced.
+/// `write-machine-info`: publish the new machine-info under a temporary name in
+/// the same directory, synced, renamed over the old one, and the directory
+/// synced.
 pub fn write_machine_info(path: &Path, label: &OsStr) -> Result<()> {
     let label = text(label)?;
     if path.is_symlink() {
@@ -152,9 +135,9 @@ fn choices(args: &[OsString]) -> Result<[String; 10]> {
     Ok(out)
 }
 
-/// `check-prepared-choices`: an install profile in the authenticated
-/// prepared setup must equal the choices the backend acts on. The keyboard
-/// is compared as the backend splits it: Dvorak and Colemak are US variants.
+/// `check-prepared-choices`: an install profile in the authenticated prepared
+/// setup must equal the choices the backend acts on. The keyboard is compared
+/// as the backend splits it: Dvorak and Colemak are US variants.
 pub fn check_prepared_choices(args: &[OsString], input: impl std::io::Read) -> Result<()> {
     let [
         username,
@@ -234,12 +217,9 @@ fn geometry_extent(start: &str, size: &str) -> std::result::Result<(u128, u128),
     Ok((start, end))
 }
 
-/// The guided allocation rules: inside the disk's usable area, MiB aligned,
-/// a 2 GiB ESP first, an optional boot of at least 1 GiB, then a root of at
-/// least 32 GiB filling the rest, clear of every existing partition.
-///
-/// # Errors
-/// The first rule the allocation breaks.
+/// The guided allocation rules: inside the disk's usable area, MiB aligned, a
+/// 2 GiB ESP first, an optional boot of at least 1 GiB, then a root of at least
+/// 32 GiB filling the rest, clear of every existing partition.
 pub fn guided_geometry(args: &[&str]) -> std::result::Result<(), String> {
     let [
         disk,
@@ -326,8 +306,8 @@ fn sfdisk_text(value: Option<&Value>) -> String {
         .to_lowercase()
 }
 
-/// `gpt`: one fact from `sfdisk --json` on stdin. `Ok(None)` is a quiet
-/// "not found" (exit 1).
+/// `gpt`: one fact from `sfdisk --json` on stdin. `Ok(None)` is a quiet "not
+/// found" (exit 1).
 pub fn gpt(query: &str, uuid: Option<&str>, input: impl std::io::Read) -> Result<Option<String>> {
     let mut bytes = Vec::new();
     input.take(SFDISK_MAX_BYTES).read_to_end(&mut bytes)?;

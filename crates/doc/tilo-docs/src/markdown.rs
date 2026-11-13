@@ -22,17 +22,12 @@ pub struct Heading {
 
 #[derive(Debug, Clone)]
 pub struct Rendered {
-    /// The body without its `# title`, which the page's layout shows.
     pub html: String,
-    /// Every heading below the title, in order.
     pub headings: Vec<Heading>,
-    /// The prose as plain text, for search; code is left out.
     pub text: String,
-    /// Every link's target, in order, to check them against the site.
     pub links: Vec<String>,
 }
 
-/// One fenced block's info string: `python example=create-workspace`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Info {
     pub language: String,
@@ -68,7 +63,6 @@ pub fn language_label(language: &str, in_example: bool) -> &'static str {
     }
 }
 
-/// The order an example's tabs are shown in, whatever order the page has them.
 fn tab_rank(language: &str) -> usize {
     ["curl", "python", "typescript", "ts", "sh", "bash", "shell"]
         .iter()
@@ -125,7 +119,6 @@ pub fn render(markdown: &str) -> Rendered {
                 let (first, after) = read_block(kind, rest);
                 rest = after;
                 let mut group = vec![first];
-                // The blocks right after it with the same example id are its tabs.
                 while let Some((Event::Start(Tag::CodeBlock(kind)), tail)) = rest.split_first() {
                     let (block, after) = read_block(kind, tail);
                     if block.info.example.is_none()
@@ -183,7 +176,6 @@ fn inert(event: Event<'_>) -> Event<'_> {
     }
 }
 
-/// The events before the first that is `end`, and those after it.
 fn split_before<'e, 'a>(
     events: &'e [Event<'a>],
     end: impl Fn(&Event<'a>) -> bool,
@@ -207,8 +199,6 @@ fn plain_text(events: &[Event<'_>]) -> String {
         .collect::<String>()
 }
 
-/// The prose as plain text: the title and code left out, and the words of
-/// two blocks or two lines kept apart.
 fn prose(events: &[Event<'_>]) -> String {
     let mut text = String::new();
     let mut skipping = false;
@@ -250,8 +240,6 @@ fn heading_number(level: HeadingLevel) -> u8 {
     }
 }
 
-/// The code block whose start was `kind` and whose text and end begin
-/// `events`, and the events after it.
 fn read_block<'e, 'a>(
     kind: &CodeBlockKind<'a>,
     events: &'e [Event<'a>],
@@ -272,7 +260,6 @@ fn read_block<'e, 'a>(
     (Block { info, code }, after)
 }
 
-/// One code block, or an example's blocks as tabs, with a copy button.
 fn code_group(mut blocks: Vec<Block>) -> String {
     blocks.sort_by_key(|block| tab_rank(&block.info.language));
     let example = blocks.first().and_then(|block| block.info.example.clone());

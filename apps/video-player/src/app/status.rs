@@ -1,28 +1,21 @@
-//! What the picture area says while there is no picture: nothing is open, a
-//! first frame is coming, or the open failed.
-//!
-//! It is drawn on media: it reads the letterbox's colours, never a window
-//! surface, so it looks the same in every theme.
+//! What the picture area says while there is no picture: nothing is open, a first frame is
+//! coming, or the open failed. It is drawn on the letterbox, so it looks the same in every
+//! theme.
 
 use super::{Affine, Icon, PlayerState, Rect, Scene, TextRenderer, Theme, fill_rect};
 use ui::paint::PaintCtx;
 use ui::vello::kurbo::Point;
 use ui::widget::{EmptyState, EmptyStateContent};
 
-/// The theme for what is drawn on the picture area: the person's theme on
-/// the letterbox, which is near-black in every theme, so its ink and its
-/// primary action are re-derived to read there.
+/// The theme for what is drawn on the picture area: the letterbox is near-black in every
+/// theme, so its ink and primary action are re-derived to read there.
 fn media_theme(theme: &Theme) -> Theme {
     theme.on_ground(theme.tokens.colors.media.letterbox)
 }
 
-/// What the picture area says while there is nothing to show.
 enum MediaStatus<'a> {
-    /// Nothing is open.
     Idle,
-    /// A source is open and its first frame has not arrived.
     Loading,
-    /// The open failed; the decoder's reason.
     Failed(&'a str),
 }
 
@@ -42,9 +35,8 @@ impl PlayerState {
         })
     }
 
-    /// The picture area with no picture: nothing open, a first frame still
-    /// coming, or a failed open. Text only, on the letterbox, inked for it.
-    /// Returns nothing to hit-test when there is no action to offer.
+    /// The picture area with no picture: nothing open, a frame still coming, or a failed
+    /// open. `None` when there is no action to offer.
     pub(super) fn paint_media_status(
         &mut self,
         scene: &mut Scene,
@@ -65,8 +57,8 @@ impl PlayerState {
                 &[("codec", ui::i18n::ArgValue::from(codec.clone()))],
             )
         });
-        // The decoder state's action lists the formats; every other one opens
-        // a video, which can also be dropped.
+        // The decoder state's action lists the formats; every other one opens a video,
+        // which can also be dropped.
         let lists_formats = matches!(status, MediaStatus::Failed(_)) && codec_message.is_some();
         let content = match status {
             MediaStatus::Idle => EmptyStateContent {
@@ -112,8 +104,7 @@ impl PlayerState {
         self.status_action_rect = status_action.unwrap_or(Rect::ZERO);
     }
 
-    /// How the person reaches the library from an empty picture: the window
-    /// bar's sidebar button, while the library is away.
+    /// How the person reaches the library from an empty picture: the bar's sidebar button.
     fn empty_picture_hint(&self) -> Option<&'static str> {
         (!self.library_visible)
             .then_some("Open Library in the window bar for videos you played before.")

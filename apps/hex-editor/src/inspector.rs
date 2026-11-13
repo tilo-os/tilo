@@ -1,33 +1,23 @@
-//! Data inspector — interpret the bytes at the cursor as the common
-//! scalar types, in either endianness, plus a couple of binary-format
-//! niceties (binary / octal of the first byte, and a LEB128 varint).
-//!
-//! The inspector is pure: it takes a byte slice and an offset and yields
-//! a list of `(label, value, byte_width)` rows. `byte_width` lets the
-//! view highlight exactly the bytes a given interpretation consumes.
+//! The data inspector: the bytes at the cursor read as the common scalar types in
+//! either endianness, plus binary and octal of the first byte and a LEB128 varint.
+//! Pure: a byte slice and an offset become `(label, value, byte_width)` rows.
 
 use crate::model::Endian;
 
-/// One row of the inspector table.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Interpretation {
-    /// Display name, e.g. "u16", "f32", "uleb128".
     pub label: &'static str,
-    /// Rendered value, or "—" when there aren't enough bytes.
     pub value: String,
-    /// How many bytes this interpretation reads starting at the cursor.
-    /// 0 when not enough bytes were available.
+    /// How many bytes this interpretation reads at the cursor; 0 when too few were
+    /// available.
     pub width: usize,
 }
 
-/// Read up to `n` bytes starting at `offset` into a fixed array,
-/// returning None if the slice is too short.
 fn read_n(bytes: &[u8], offset: usize, n: usize) -> Option<Vec<u8>> {
     bytes.get(offset..offset + n).map(<[u8]>::to_vec)
 }
 
-/// Order bytes per endianness so we can always treat them little-endian
-/// after this normalisation.
+/// Bytes in little-endian order, whatever the endianness.
 fn ordered(mut raw: Vec<u8>, endian: Endian) -> Vec<u8> {
     if endian == Endian::Big {
         raw.reverse();
@@ -58,10 +48,8 @@ macro_rules! int_row {
     }};
 }
 
-/// Decode an unsigned LEB128 varint starting at `offset`. Returns the
-/// decoded value and the number of bytes consumed, or None if the slice
-/// ends mid-varint (continuation bit set on the last available byte) or
-/// the value overflows u64.
+/// An unsigned LEB128 varint at `offset`: the value and the bytes it took, or `None`
+/// when the slice ends mid-varint or the value overflows.
 pub fn decode_uleb128(bytes: &[u8], offset: usize) -> Option<(u64, usize)> {
     let mut result: u64 = 0;
     let mut shift: u32 = 0;
@@ -69,7 +57,6 @@ pub fn decode_uleb128(bytes: &[u8], offset: usize) -> Option<(u64, usize)> {
     for &b in bytes.get(offset..)? {
         consumed += 1;
         let low = u64::from(b & 0x7F);
-        // Guard against shifting past the width of u64.
         if shift >= 64 {
             return None;
         }
@@ -82,7 +69,7 @@ pub fn decode_uleb128(bytes: &[u8], offset: usize) -> Option<(u64, usize)> {
     None
 }
 
-/// Decode a signed LEB128 varint. Sign-extends the final group.
+/// A signed LEB128 varint, the final group sign-extended.
 pub fn decode_sleb128(bytes: &[u8], offset: usize) -> Option<(i64, usize)> {
     let mut result: i64 = 0;
     let mut shift: u32 = 0;
@@ -96,7 +83,6 @@ pub fn decode_sleb128(bytes: &[u8], offset: usize) -> Option<(i64, usize)> {
         result |= low << shift;
         shift += 7;
         if b & 0x80 == 0 {
-            // Sign-extend if the sign bit of this group is set.
             if shift < 64 && (b & 0x40) != 0 {
                 result |= -1i64 << shift;
             }
@@ -106,7 +92,6 @@ pub fn decode_sleb128(bytes: &[u8], offset: usize) -> Option<(i64, usize)> {
     None
 }
 
-/// Produce the full inspector table for the cursor at `offset`.
 pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretation> {
     let mut rows = single_byte_rows(bytes, offset);
     rows.extend(integer_rows(bytes, offset, endian));
@@ -115,7 +100,6 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
     rows
 }
 
-/// The five single-byte views: i8, u8, bin, oct, char.
 fn single_byte_rows(bytes: &[u8], offset: usize) -> Vec<Interpretation> {
     let mut rows = Vec::new();
     match bytes.get(offset).copied() {
@@ -159,7 +143,6 @@ fn single_byte_rows(bytes: &[u8], offset: usize) -> Vec<Interpretation> {
     rows
 }
 
-/// The six endianness-aware fixed-width integer views: i16/u16/i32/u32/i64/u64.
 fn integer_rows(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretation> {
     vec![
         int_row!("i16", bytes, offset, endian, 2, i16, i16::from_le_bytes),
@@ -171,7 +154,6 @@ fn integer_rows(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretati
     ]
 }
 
-/// The two endianness-aware IEEE-754 float views: f32/f64.
 fn float_rows(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretation> {
     let f32_row = match read_n(bytes, offset, 4) {
         Some(raw) => {
@@ -202,7 +184,7 @@ fn float_rows(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretation
     vec![f32_row, f64_row]
 }
 
-/// The two byte-stream varint views (endianness does not apply).
+/// The varint views, where endianness does not apply.
 fn leb128_rows(bytes: &[u8], offset: usize) -> Vec<Interpretation> {
     let uleb = match decode_uleb128(bytes, offset) {
         Some((v, n)) => Interpretation {
@@ -231,8 +213,7 @@ fn na(label: &'static str) -> Interpretation {
     }
 }
 
-/// Format a float compactly: trim noise but keep enough precision to be
-/// useful when eyeballing a buffer.
+/// A float, compact: enough precision to read a buffer, without noise.
 fn format_float(v: f64) -> String {
     if v == 0.0 {
         "0".to_string()
@@ -245,7 +226,6 @@ fn format_float(v: f64) -> String {
             "-inf".to_string()
         }
     } else if v.abs() >= 1e-4 && v.abs() < 1e9 {
-        // Plain decimal with up to 6 significant fractional digits.
         let s = format!("{v:.6}");
         let trimmed = s.trim_end_matches('0').trim_end_matches('.');
         trimmed.to_string()
@@ -254,8 +234,7 @@ fn format_float(v: f64) -> String {
     }
 }
 
-/// Render a byte as a quoted printable char, or its escape for control
-/// bytes so the inspector never emits a glyph that breaks the layout.
+/// A byte as a quoted printable char, or its escape for control bytes.
 fn printable_char(b: u8) -> String {
     match b {
         0x20..=0x7E => format!("'{}'", b as char),
@@ -271,7 +250,6 @@ fn printable_char(b: u8) -> String {
 mod tests {
     use super::*;
 
-    /// (case, bytes, endian, row label, expected value, expected width)
     type InspectCase<'a> = (
         &'a str,
         &'a [u8],
@@ -285,7 +263,6 @@ mod tests {
     fn inspect_rows_decode_values_and_consumed_width() {
         let one_le = 1.0f32.to_le_bytes();
         let cases: &[InspectCase<'_>] = &[
-            // u16 respects endianness.
             (
                 "u16 little",
                 &[0x34, 0x12],
@@ -302,7 +279,6 @@ mod tests {
                 Some("13330"),
                 None,
             ), // 0x3412
-            // i8 sign-extends while u8 does not.
             (
                 "i8 of 0xFF",
                 &[0xFF],
@@ -335,9 +311,7 @@ mod tests {
                 Some("0o245"),
                 None,
             ),
-            // f32 round-trips 1.0.
             ("f32 one", &one_le, Endian::Little, "f32", Some("1"), None),
-            // A short buffer yields dashes for wide types; u8 is still fine.
             (
                 "short u32",
                 &[0x01],
@@ -367,17 +341,14 @@ mod tests {
 
     #[test]
     fn leb128_decodes_multi_byte_and_negative_and_rejects_truncation() {
-        // 624485 = 0xE5 0x8E 0x26 in ULEB128.
         let (v, n) = decode_uleb128(&[0xE5, 0x8E, 0x26], 0).unwrap();
         assert_eq!(v, 624_485);
         assert_eq!(n, 3);
 
-        // -123456 encodes as 0xC0 0xBB 0x78.
         let (v, n) = decode_sleb128(&[0xC0, 0xBB, 0x78], 0).unwrap();
         assert_eq!(v, -123_456);
         assert_eq!(n, 3);
 
-        // Continuation bit set with no following byte.
         assert!(decode_uleb128(&[0x80], 0).is_none());
     }
 }

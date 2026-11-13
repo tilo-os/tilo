@@ -188,7 +188,11 @@ build) shows a service's log.
 with that cargo drop-in (run as `<command> build ARGS…`) instead of with
 `t build`, for when `t` cannot bring a build back to your machine. It must
 leave what it builds in `./target` as cargo would, the bundle's
-`<target>/<profile>/<package>.wasm` included.
+`<target>/<profile>/<package>.wasm` included. A drop-in that also runs a
+program on its builder and brings a directory of its target dir back
+(`<command> --fetch PATH exec PROGRAM ARGS…`) gets the bundle's WebAssembly
+steps too, so wasm-bindgen and wasm-opt need not be on your machine; without
+one they run here.
 
 `TILO_SH_BUNDLE` names a desktop bundle built elsewhere
 (`build.sh OUT --bundle desktop`) for the native stack to serve instead of

@@ -20,7 +20,6 @@ pub enum SecretKind {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Request {
-    /// Check a person's secret. The peer is root or that person.
     Verify {
         user: String,
         secret: Zeroizing<String>,
@@ -48,7 +47,6 @@ pub enum Request {
         recovery: Option<Zeroizing<String>>,
         new: Zeroizing<String>,
     },
-    /// Add a recovery wrapper, proven by the current secret. Root only.
     AddRecovery {
         user: String,
         secret: Zeroizing<String>,
@@ -83,25 +81,17 @@ pub enum Request {
     },
 }
 
-/// Why a request did not succeed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Refusal {
-    /// The secret is not this person's.
     Wrong,
     /// The TPM refuses tries until its lockout decays.
     LockedOut,
-    /// No usable record and no old password to check against.
     NotEnrolled,
-    /// The asking process may not ask this about this person.
     NotPermitted,
-    /// A new secret is too weak to stand alone on a machine without a TPM.
     WeakSecret,
-    /// No boot sign-in for this person is waiting.
     NoBootSignIn,
-    /// The request could not be carried out; trying again later may work.
     Unavailable,
-    /// The request was not understood.
     BadRequest,
 }
 
@@ -110,7 +100,6 @@ pub struct Reply {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<Refusal>,
-    /// Wrong secrets left before the TPM makes everyone wait.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tries_left: Option<u32>,
     /// Seconds until another try is possible.

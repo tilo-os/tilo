@@ -1,10 +1,8 @@
-//! The git client's controls, as slots in the window's bar
-//! ([`ui::window_toolbar`]): the repository as the location, Changes, History
-//! and Branches as the views, the list column's toggle in the sidebar slot,
-//! Fetch, Pull and Push as actions, opening another repository in the bar's
-//! menu on every screen, and on the Changes screen the diff's layout and
-//! syntax highlighting there too. History is the bar's own control; the
-//! client draws no header row.
+//! The git client's controls as slots in the window's bar ([`ui::window_toolbar`]):
+//! the repository as the location, the three screens as views, the list column's
+//! toggle in the sidebar slot, Fetch, Pull and Push as actions, opening another
+//! repository in the bar's menu, and on the Changes screen the diff's layout and
+//! syntax highlighting. The client draws no header row.
 
 use ui::framework::RunMode;
 use ui::window_toolbar::{
@@ -29,8 +27,8 @@ pub(crate) enum BarCommand {
 }
 
 impl GitClientState {
-    /// The window bar's slots for what the window shows now; none of the
-    /// client's while no repository is open.
+    /// The bar's slots for what the window shows now; none of the client's while no repository is
+    /// open.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         if self.awaiting_repo {
             return WindowToolbar::default();
@@ -52,8 +50,7 @@ impl GitClientState {
             bar.entry(icon, t(name), BarCommand::Effect(effect))
                 .in_menu()
         };
-        // Every screen has a menu, so the views stand where they stood when
-        // the screen changes.
+        // Every screen has a menu, so the views stand where they stood when the screen changes.
         actions.push(
             effect(
                 "folder-open",
@@ -75,8 +72,8 @@ impl GitClientState {
                     .in_menu(),
                 effect("code", "git-syntax-name", GitClientEffect::SyntaxHighlight)
                     .on(self.settings.syntax_highlight),
-                // The two controls that make an unreadable diff readable sit
-                // beside the layout, not behind them in the palette.
+                // The two controls that make an unreadable diff readable sit beside the layout, not
+                // behind it in the palette.
                 effect(
                     "ruler",
                     "git-whitespace-name",
@@ -88,8 +85,8 @@ impl GitClientState {
             ]);
         }
         WindowToolbar {
-            // Branches has no list column: its toggle holds its place, so
-            // the location stands where it does on the other screens.
+            // Branches has no list column: its toggle holds its place, so the location stands where
+            // it does on the other screens.
             sidebar: Some(self.screen.has_list() && self.drawer.is_open()),
             sidebar_unavailable: !self.screen.has_list(),
             location: Some(self.location()),
@@ -109,8 +106,8 @@ impl GitClientState {
         }
     }
 
-    /// The repository, by name; an editable path but on a past version, so
-    /// typing another one opens that repository.
+    /// The repository by name, an editable path but on a past version, where typing another one
+    /// opens that repository.
     fn location(&self) -> ToolbarLocation {
         let live = self.mode != RunMode::Past;
         ToolbarLocation {
@@ -132,8 +129,7 @@ impl GitClientState {
         }
     }
 
-    /// Run what the person did in the window's bar, then declare the slots
-    /// for what the window shows now.
+    /// Run what the person did in the bar, then declare the slots for what the window shows now.
     pub(super) fn run_window_toolbar(&mut self) {
         for event in ui::window_toolbar::take_events() {
             self.run_window_bar_event(&event);
@@ -198,8 +194,7 @@ impl GitClientState {
         }
     }
 
-    /// Run `effect` as the client's published action, or `fallback` where
-    /// nothing publishes it.
+    /// Run `effect` as the client's published action, or `fallback` where nothing publishes it.
     fn dispatch_or(&mut self, effect: &GitClientEffect, fallback: impl FnOnce(&mut Self)) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
@@ -208,22 +203,19 @@ impl GitClientState {
         }
     }
 
-    /// Whether Fetch, Pull and Push can act: not on a past version, nor
-    /// while a transfer runs.
+    /// Whether Fetch, Pull and Push can act: not on a past version, nor while a transfer runs.
     fn can_run_remote(&self) -> bool {
         self.mode != RunMode::Past && self.remote_job.is_none()
     }
 
-    /// A diff preference as stored, which a press may have changed since the
-    /// last sync.
+    /// A diff preference as stored, which a press may have changed since the last sync.
     fn diff_preference(&self, of: impl Fn(&crate::settings::Settings) -> bool) -> bool {
         self.preferences
             .as_ref()
             .map_or_else(|| of(&self.settings), |preferences| of(&preferences.get()))
     }
 
-    /// The diff layout as stored, which a press may have changed since the
-    /// last sync.
+    /// The diff layout as stored, which a press may have changed since the last sync.
     fn diff_layout(&self) -> DiffLayout {
         self.preferences
             .as_ref()

@@ -1,20 +1,12 @@
-//! `tilo-doc` — the private document engine behind the rich-text and workbook
-//! resources.
-//!
-//! Apps do not depend on this crate. The public write path is
-//! `tilo_document::RichTextAction`. [`DocMut`] exists only so
-//! that resource's `Action::apply` can mutate storage; it is not an app API.
-//!
-//! A rich-text document and a workbook are versioned resources: every edit is a
-//! change on a CRDT-backed history that merges concurrent edits and replays
-//! deterministically, read back as a plain snapshot ([`DocSnapshot`],
-//! [`WorkbookSnapshot`]) and compared with structural diffs ([`diff`]). Binary
-//! inputs such as images are referenced by content address; the bytes live in
-//! the caller's `tilo_content` store, never in the document.
-//!
-//! File formats are not storage: importing and exporting `.docx`, `.odt`, `.md`
-//! and the rest is the job of the `tilo-doc-codecs` crate, which projects files
-//! into and out of these resources.
+//! `tilo-doc`: the private document engine behind the rich-text and workbook
+//! resources. Apps do not depend on this crate; the public write path is
+//! `tilo_document::RichTextAction`, and [`DocMut`] exists only so that resource's
+//! `Action::apply` can mutate storage. Both resources are versioned: every edit is
+//! a change on a CRDT history that merges concurrent edits and replays
+//! deterministically, read back as a plain snapshot and compared with structural
+//! diffs ([`diff`]). Binary inputs are referenced by content address and live in
+//! the caller's `tilo_content` store; file formats are the job of
+//! `tilo-doc-codecs`.
 
 pub mod diff;
 pub mod document;

@@ -72,7 +72,6 @@ pub fn add(handoff: &Handoff, description: &str) -> io::Result<()> {
     })?;
     let set_up = keyctl(KEYCTL_SET_TIMEOUT, serial, c_long::from(TIMEOUT_S), 0)
         .and_then(|_| keyctl(KEYCTL_LINK, serial, c_long::from(KEY_SPEC_USER_KEYRING), 0))
-        // Last: the permissions it ends with no longer let anyone link it.
         .and_then(|_| {
             keyctl(
                 KEYCTL_SETPERM,
@@ -90,7 +89,6 @@ pub fn add(handoff: &Handoff, description: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Read and destroy the handoff. More than one is ambiguous and none is used.
 pub fn take(description: &str) -> io::Result<Option<Handoff>> {
     let found = ours(description)?;
     let payloads: Vec<_> = found

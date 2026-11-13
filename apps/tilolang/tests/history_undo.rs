@@ -43,18 +43,6 @@ fn tasks() -> Bundle {
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
 }
 
-/// The id the package gave its action named `name`.
-fn action_id(bundle: &Bundle, name: &str) -> String {
-    bundle
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == name)
-        .unwrap_or_else(|| panic!("the package declares `{name}`"))
-        .id
-        .clone()
-}
-
 /// An agent's run of `issue-7`, acting for ada, as the broker stamps its changes.
 fn marked_run() -> (ActionInvoker, ActionContext) {
     (
@@ -223,7 +211,6 @@ fn undo_named_from_a_view_takes_back_a_step_and_a_run_in_a_tilolang_host() {
 /// own views, and the framework's door, as every window of the app has them.
 struct InProcess {
     app: ui::framework::testing::HostedApp,
-    add: String,
 }
 
 impl InProcess {
@@ -235,7 +222,6 @@ impl InProcess {
             Box::leak(Box::new(tilolang_app::definition()))
         });
         Self {
-            add: action_id(&tasks(), "new_task"),
             app: ui::framework::testing::HostedApp::open(definition, "ada").expect("the app opens"),
         }
     }
@@ -277,14 +263,9 @@ impl Window for InProcess {
         let specs = self.app.harness().resources();
         let mut all = Vec::new();
         flattened(&specs, &mut all);
-        let id = (name == "new_task").then(|| self.add.clone());
         all.iter()
             .find(|spec| spec.id.as_str() == resource)
-            .and_then(|spec| {
-                spec.actions
-                    .iter()
-                    .find(|action| id.as_deref().is_some_and(|id| action.id == id))
-            })
+            .and_then(|spec| spec.actions.iter().find(|action| action.id == name))
             .map_or_else(
                 || {
                     panic!(
@@ -346,7 +327,6 @@ struct Hosted {
     window: FrameHarness,
     sent: Rc<RefCell<Vec<CollabRequest>>>,
     inbox: Rc<RefCell<VecDeque<CollabEvent>>>,
-    add: String,
     next: u64,
 }
 
@@ -396,7 +376,6 @@ impl Hosted {
             window,
             sent,
             inbox,
-            add: action_id(&bundle, "new_task"),
             next: 0,
         }
     }
@@ -507,11 +486,7 @@ impl Window for Hosted {
     }
 
     fn action(&mut self, resource: &str, name: &str) -> String {
-        let want = if name == "new_task" {
-            self.add.clone()
-        } else {
-            name.to_owned()
-        };
+        let want = name.to_owned();
         for _ in 0..400 {
             let found = self
                 .published()

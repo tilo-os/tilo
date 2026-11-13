@@ -2,28 +2,16 @@
 
 pub use tilo_platform_caps::{Availability, availability, available};
 
-/// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
 
-/// One capability of this crate, for [`availability`] and [`Unsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// Durable per-app storage: [`AppPaths::data`](crate::AppPaths::data),
-    /// `config`, `cache` and `state`.
     AppStorage,
-    /// Scratch space for one session: [`AppPaths::runtime`](crate::AppPaths::runtime).
     Runtime,
-    /// The user's content folders: [`AppPaths::user_dir`](crate::AppPaths::user_dir).
     UserDirs,
-    /// The mounted collaborative workspace:
-    /// [`AppPaths::workspace_root`](crate::AppPaths::workspace_root).
     WorkspaceRoot,
-    /// A directory holding the font catalog:
-    /// [`AppPaths::font_root`](crate::AppPaths::font_root).
     FontRoot,
-    /// Locations that are operating-system paths:
-    /// [`Location::native_path`](crate::Location::native_path).
     NativePaths,
 }
 

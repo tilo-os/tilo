@@ -28,7 +28,6 @@ pub type NativeSend<'a> = Pin<
 #[cfg(all(target_os = "linux", feature = "sms-dbus"))]
 pub type NativeReceive<'a> =
     Pin<Box<dyn Future<Output = Result<crate::sms_runtime::ReceivedSms, SendError>> + Send + 'a>>;
-/// Implemented by account-owned runtimes; authority remains in the host gate.
 pub trait NativeAdapter: Send {
     fn owner(&self) -> &Owner;
     /// Read-only source from the exact host-owned SMS runtime, never an app input.
@@ -56,7 +55,6 @@ pub trait NativeAdapter: Send {
     ) -> NativeReceive<'a> {
         Box::pin(async { Err(SendError::Unavailable) })
     }
-    /// Admit recipient evidence only from the runtime's own SDK subscription.
     #[cfg(feature = "whatsapp-sdk")]
     fn whatsapp_receipt(
         &mut self,
@@ -65,7 +63,6 @@ pub trait NativeAdapter: Send {
     ) -> Result<crate::whatsapp::Evidence, SendError> {
         Err(SendError::Unavailable)
     }
-    /// Whether this adapter owns this precise SDK instance, without I/O.
     #[cfg(feature = "whatsapp-sdk")]
     fn whatsapp_source(&self, _source: &Arc<whatsapp_rust::Client>) -> bool {
         false
@@ -222,7 +219,6 @@ impl ExternalBroker {
         let history = History::open(&root.join("history"), adapter.owner(), key)?;
         Self::new(adapter, history, scope, authority)
     }
-    /// Bind an already verified runtime and encrypted store; creates no grant.
     pub fn new(
         adapter: Box<dyn NativeAdapter>,
         history: History,

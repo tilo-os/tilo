@@ -1354,6 +1354,7 @@ doc = false
 "tilo-window-share" = { path = "../../../crates/session/window-share", default-features = false, features = ["default", "dmabuf"] }
 "tilo-winit-0_30_13" = { package = "tilo-winit", path = "../../../vendor/winit", default-features = false, features = ["ahash", "bytemuck", "memmap2", "percent-encoding", "rwh_06", "sctk", "sctk-adwaita", "wayland", "wayland-backend", "wayland-client", "wayland-csd-adwaita-notitle", "wayland-dlopen", "wayland-protocols", "wayland-protocols-plasma", "wayland-scanner", "x11", "x11-dl", "x11rb"] }
 "tilo-winit-x11" = { path = "../../../crates/sdk/winit-x11", default-features = false, features = [] }
+"tilo-words" = { path = "../../../crates/text/tilo-words", default-features = false, features = [] }
 "tilo-workspace-agent" = { path = "../../../crates/platform/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
@@ -2468,6 +2469,7 @@ doc = false
 "tilo-view-macros" = { path = "../../../crates/sdk/view-macros", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-winit-0_30_13" = { package = "tilo-winit", path = "../../../vendor/winit", default-features = false, features = ["ahash", "memmap2", "rwh_06", "sctk", "sctk-adwaita", "wayland", "wayland-backend", "wayland-client", "wayland-csd-adwaita-notitle", "wayland-dlopen", "wayland-protocols", "wayland-protocols-plasma", "wayland-scanner"] }
+"tilo-words" = { path = "../../../crates/text/tilo-words", default-features = false, features = [] }
 "tilo-workspace-agent" = { path = "../../../crates/platform/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }

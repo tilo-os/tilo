@@ -15,7 +15,6 @@ use crate::portal::{
     open_regular_file, open_selected_uri,
 };
 
-/// The portal [`crate::FilePicker`].
 pub(crate) struct PortalFilePicker;
 
 impl crate::FilePicker for PortalFilePicker {
@@ -46,7 +45,6 @@ impl crate::FilePicker for PortalFilePicker {
             }
             match run(request).await {
                 Ok(uris) => match uris.into_iter().next() {
-                    // Opening may block on a slow filesystem.
                     Some(uri) => tilo_rt::app()
                         .spawn_blocking(move || open_selected_uri(&uri))
                         .await
@@ -65,16 +63,12 @@ impl crate::FilePicker for PortalFilePicker {
     }
 }
 
-/// Run one portal request on the app runtime and return the channel its
-/// outcome arrives on. Sending it wakes the event loop of the wake scope the
-/// request was made under.
 fn deliver<T: Send + 'static>(
     request: impl std::future::Future<Output = T> + Send + 'static,
 ) -> std::sync::mpsc::Receiver<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     let wake = tilo_rt::wake::WakeHandle::new();
     drop(tilo_rt::app().spawn_then(request, move |outcome| {
-        // The UI may have moved on (window closed); ignore a dead channel.
         if tx.send(outcome).is_ok() {
             wake.wake();
         }
@@ -93,7 +87,6 @@ async fn launch(req: LaunchRequest) -> LaunchOutcome {
         return LaunchOutcome::Failed("desktop-open path must be absolute".into());
     }
     let kind = req.kind;
-    // Opening may block on a slow filesystem.
     let file = tilo_rt::app()
         .spawn_blocking(move || match kind {
             LaunchKind::Open => open_regular_file(&target),
@@ -123,8 +116,6 @@ async fn launch(req: LaunchRequest) -> LaunchOutcome {
     }
 }
 
-/// Hand an open picture to the XDG Wallpaper portal; the desktop previews it
-/// and asks the user before applying.
 pub(crate) fn set_wallpaper(
     file: std::fs::File,
     target: crate::portal::WallpaperTarget,
@@ -175,8 +166,6 @@ pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
         Err(error @ (ashpd::Error::Response(_) | ashpd::Error::Portal(_))) => {
             Err(std::io::Error::other(error))
         }
-        // No portal on this session (an unsandboxed desktop without
-        // xdg-desktop-portal): the desktop's own opener.
         Err(error) => {
             tracing::debug!(%error, "no OpenURI portal; using the desktop opener");
             open::that_detached(text)
@@ -193,8 +182,6 @@ fn open_directory(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-/// What an app may show the person when the desktop's chooser fails: what
-/// happened and what to do. The desktop's own error goes to the log.
 const UNAVAILABLE: &str = "The file chooser didn't open. Try again.";
 const UNREADABLE_ANSWER: &str = "The file chooser's answer couldn't be read. Try again.";
 

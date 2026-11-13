@@ -150,6 +150,15 @@ impl LaunchpadAction {
         }
     }
 
+    /// Whether this desk, which has `installed` to open apps from, offers the verb: a card that
+    /// opens an app stands only where the app is there to open, and a card of the desk's own
+    /// (inviting someone, catching up) always stands. `installed` is the host's app catalogue, the
+    /// same answer search lists an app by.
+    #[must_use]
+    pub fn offered(self, installed: impl Fn(&str) -> bool) -> bool {
+        self.app_target().is_none_or(|(app, _)| installed(app))
+    }
+
     /// The typed action the verb invokes in its app: the app, the resource it publishes the action
     /// on, and the action. The host delivers it to the app in the workspace, launching the app
     /// first when it is closed, so the verb does what it names in one step. Only a verb that lands
@@ -231,15 +240,6 @@ impl LaunchpadAction {
             source: None,
         }
     }
-
-    /// Every verb's host action, in the order a person reads the cards.
-    #[must_use]
-    pub fn host_actions(scope: WorkspaceScope) -> Vec<HostAction> {
-        Self::ALL
-            .into_iter()
-            .map(|verb| verb.host_action(scope))
-            .collect()
-    }
 }
 
 /// What a person chose on the launchpad, waiting for the desk to take it: a card's verb, or the app
@@ -265,7 +265,10 @@ pub struct CollaborationLaunchpad {
     rect: Rect,
     /// The display the launchpad presents on when the canvas spans several.
     presentation: Option<Rect>,
-    card_rects: [Rect; 6],
+    /// The verbs this desk offers as cards, in the order a person reads them: what its host
+    /// publishes for the apps it has ([`LaunchpadAction::offered`]).
+    cards: Vec<LaunchpadAction>,
+    card_rects: Vec<Rect>,
     last_cursor: Point,
     focused: bool,
     selected: usize,
@@ -281,7 +284,7 @@ pub struct CollaborationLaunchpad {
     /// What the person chose, waiting for the desk to carry it out.
     press: Cell<Option<LaunchpadPress>>,
     targets: ui::widget::PaintedTargets,
-    target_geometry: Option<([Rect; 6], Rect)>,
+    target_geometry: Option<(Vec<Rect>, Rect)>,
 }
 
 /// Who sees what is made in the workspace the launchpad is shown in, which is what its words about
@@ -322,12 +325,13 @@ impl Default for CollaborationLaunchpad {
 }
 
 impl CollaborationLaunchpad {
-    /// A launchpad centred in its canvas.
+    /// A launchpad centred in its canvas, offering the cards [`Self::set_cards`] gives it.
     pub fn new() -> Self {
         Self {
             rect: Rect::ZERO,
             presentation: None,
-            card_rects: [Rect::ZERO; 6],
+            cards: Vec::new(),
+            card_rects: Vec::new(),
             last_cursor: Point::ZERO,
             focused: false,
             selected: 0,
@@ -354,6 +358,24 @@ impl CollaborationLaunchpad {
         self
     }
 
+    /// The verbs this desk offers, in the order a person reads them.
+    #[must_use]
+    pub fn cards(&self) -> &[LaunchpadAction] {
+        &self.cards
+    }
+
+    /// Offer `cards` instead, in the order a person reads them.
+    pub fn set_cards(&mut self, cards: Vec<LaunchpadAction>) {
+        if cards == self.cards {
+            return;
+        }
+        self.targets.cancel_pointer_press();
+        self.cards = cards;
+        self.card_rects = self.laid_out_cards();
+        self.selected = self.selected.min(self.selected_range());
+        self.dirty = true;
+    }
+
     /// Another launchpad saying the same words, for a second display's empty desk: every empty
     /// display shows the start cards, and each takes its own pointer and keyboard.
     #[must_use]
@@ -361,6 +383,7 @@ impl CollaborationLaunchpad {
         let mut pad = Self::new();
         pad.copy.clone_from(&self.copy);
         pad.scope = self.scope;
+        pad.cards.clone_from(&self.cards);
         pad
     }
 
@@ -406,7 +429,7 @@ impl CollaborationLaunchpad {
         if presentation != self.presentation {
             self.targets.cancel_pointer_press();
             self.presentation = presentation;
-            self.card_rects = self.cards();
+            self.card_rects = self.laid_out_cards();
             self.dirty = true;
         }
     }
@@ -426,19 +449,25 @@ impl CollaborationLaunchpad {
         }
     }
 
-    fn cards(&self) -> [Rect; 6] {
+    /// The cards as the last frame laid them out.
+    fn laid_out_cards(&self) -> Vec<Rect> {
         self.card_layout().0
     }
 
-    fn card_layout(&self) -> ([Rect; 6], usize) {
-        Self::card_geometry(self.presentation_rect())
+    fn card_layout(&self) -> (Vec<Rect>, usize) {
+        Self::card_geometry(self.presentation_rect(), self.cards.len())
+    }
+
+    /// The last choice a person can stand on: the "Open an app" button, after the cards.
+    fn selected_range(&self) -> usize {
+        self.cards.len()
     }
 
     /// The card drawn at `p` .
     pub fn action_at(&self, p: Point) -> Option<LaunchpadAction> {
-        LaunchpadAction::ALL
+        self.cards
             .iter()
-            .zip(self.card_rects)
+            .zip(&self.card_rects)
             .find(|(_, rect)| rect.contains(p))
             .map(|(action, _)| *action)
     }
@@ -447,9 +476,9 @@ impl CollaborationLaunchpad {
     /// `launchpad:open-app` , ...), as laid out in the last frame, so a driver can press them like
     /// a person would.
     pub fn targets(&self) -> Vec<(String, Rect)> {
-        LaunchpadAction::ALL
+        self.cards
             .iter()
-            .zip(self.card_rects)
+            .zip(self.card_rects.iter().copied())
             .map(|(action, rect)| (action.target(), rect))
             .chain(std::iter::once((
                 LAUNCHPAD_OPEN_APP.to_owned(),
@@ -476,7 +505,7 @@ impl CollaborationLaunchpad {
     /// button's minimum height tall. Card overflow is measured against this band, so the grid does
     /// not move when the button is repositioned inside it.
     fn footer_band(&self) -> Rect {
-        let last = self.card_rects[5];
+        let last = self.last_card();
         Rect::new(
             last.x0,
             last.y1 + FOOTER_TOP,
@@ -504,8 +533,16 @@ impl CollaborationLaunchpad {
             .union(self.app_button_rect())
     }
 
+    /// The corner the footer hangs from: the grid's last card, or the canvas while no card stands.
+    fn last_card(&self) -> Rect {
+        self.card_rects
+            .last()
+            .copied()
+            .unwrap_or_else(|| self.presentation_rect())
+    }
+
     fn app_button_rect(&self) -> Rect {
-        let last = self.card_rects[5];
+        let last = self.last_card();
         // Centred on the keyboard hint's line: it used to start 14 px below the grid while the hint
         // started 22 px below it, leaving their centres ~4 px apart (HIG §7: controls in one row
         // share a line).
@@ -536,9 +573,9 @@ impl CollaborationLaunchpad {
     #[allow(
         clippy::arithmetic_side_effects,
         clippy::cast_precision_loss,
-        reason = "bounded six-card renderer geometry uses f64 logical pixels"
+        reason = "bounded card renderer geometry uses f64 logical pixels"
     )]
-    fn card_geometry(rect: Rect) -> ([Rect; 6], usize) {
+    fn card_geometry(rect: Rect, count: usize) -> (Vec<Rect>, usize) {
         let content_x0 = rect.x0;
         let content_width = rect.x1 - content_x0;
         let panel_w = (content_width - 48.0).clamp(280.0, 900.0);
@@ -552,34 +589,40 @@ impl CollaborationLaunchpad {
         };
         let gap = 12.0;
         let card_w = (panel_w - gap * (columns.saturating_sub(1) as f64)) / columns as f64;
-        let rows = 6_usize.div_ceil(columns);
+        let rows = count.div_ceil(columns).max(1);
         let available_h = (rect.height() - 168.0 - gap * (rows.saturating_sub(1) as f64)).max(0.0);
         let card_h = (available_h / rows as f64).clamp(64.0, 96.0);
         let grid_h = (rows as f64).mul_add(card_h, (rows.saturating_sub(1) as f64) * gap);
         let top = rect.center().y - grid_h / 2.0 + 32.0;
-        let mut cards = [Rect::ZERO; 6];
-        for (index, card) in cards.iter_mut().enumerate() {
-            let column = index % columns;
-            let row = index / columns;
-            let x = panel_x + column as f64 * (card_w + gap);
-            let y = top + row as f64 * (card_h + gap);
-            *card = Rect::new(x, y, x + card_w, y + card_h);
-        }
+        let cards = (0..count)
+            .map(|index| {
+                let column = index % columns;
+                let row = index / columns;
+                let x = panel_x + column as f64 * (card_w + gap);
+                let y = top + row as f64 * (card_h + gap);
+                Rect::new(x, y, x + card_w, y + card_h)
+            })
+            .collect();
         (cards, columns)
     }
 
     fn sync_targets(&mut self) {
-        let geometry = (self.card_rects, self.app_button_rect());
-        if self.target_geometry != Some(geometry) {
+        let button = self.app_button_rect();
+        let unchanged = self
+            .target_geometry
+            .as_ref()
+            .is_some_and(|(cards, held)| *held == button && *cards == self.card_rects);
+        if !unchanged {
             self.targets.begin_frame();
-            for (action, rect) in LaunchpadAction::ALL.into_iter().zip(self.card_rects) {
-                self.targets.target(action.target(), rect, action.label());
+            for (action, rect) in self.cards.iter().zip(&self.card_rects) {
+                self.targets.target(action.target(), *rect, action.label());
             }
             self.targets
-                .target(LAUNCHPAD_OPEN_APP, geometry.1, t("launchpad-open-app"));
-            self.target_geometry = Some(geometry);
+                .target(LAUNCHPAD_OPEN_APP, button, t("launchpad-open-app"));
+            self.target_geometry = Some((self.card_rects.clone(), button));
         }
-        let id = LaunchpadAction::ALL
+        let id = self
+            .cards
             .get(self.selected)
             .map_or_else(|| LAUNCHPAD_OPEN_APP.to_owned(), |action| action.target());
         self.targets.focus(&id);
@@ -594,7 +637,7 @@ impl CollaborationLaunchpad {
             return false;
         }
         let (_, columns) = self.card_layout();
-        let last_index = LaunchpadAction::ALL.len();
+        let last_index = self.selected_range();
         let next = match event.logical_key {
             Key::Named(NamedKey::ArrowRight) => {
                 Some(self.selected.saturating_add(1).min(last_index))
@@ -658,7 +701,7 @@ impl Widget for CollaborationLaunchpad {
         if self.rect != old_rect {
             self.targets.cancel_pointer_press();
         }
-        let cards = self.cards();
+        let cards = self.laid_out_cards();
         if cards != self.card_rects {
             self.card_rects = cards;
             self.dirty = true;
@@ -696,7 +739,7 @@ impl Widget for CollaborationLaunchpad {
         let keyboard_hint = self.keyboard_hint();
         let (_, hint_h) = text.measure(&keyboard_hint, caption, None);
         self.hint_line_h = f64::from(hint_h);
-        self.card_rects = self.cards();
+        self.card_rects = self.laid_out_cards();
         // Leave the persistent help affordance its bottom band on laptops.
         // The grid is pushed up by the footer *band* (a fixed reservation),
         // not by where the button happens to sit inside it, so centring the
@@ -707,13 +750,13 @@ impl Widget for CollaborationLaunchpad {
             *card = *card + vello::kurbo::Vec2::new(0.0, -overflow);
         }
         self.sync_targets();
-        let cards = self.card_rects;
-        let hovered = LaunchpadAction::ALL
+        let hovered = self
+            .cards
             .iter()
             .position(|action| self.targets.interaction(&action.target()).hovered);
-        let content_left = cards.first().map_or(self.rect.x0, |card| card.x0);
-        let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - HEADING_BAND;
-        let panel_width = cards[5].x1 - content_left;
+        let content_left = self.card_rects.first().map_or(self.rect.x0, |card| card.x0);
+        let heading_y = self.card_rects.first().map_or(self.rect.y0, |card| card.y0) - HEADING_BAND;
+        let panel_width = self.last_card().x1 - content_left;
         let title = text.elide_to_width(&self.title(), heading, panel_width as f32);
         text.draw_text(
             scene,
@@ -744,7 +787,13 @@ impl Widget for CollaborationLaunchpad {
         // it (`docs/design-language.md`, "Buttons" and "Lifts"). The icon is neutral ink: secondary
         // at rest, primary while the tile is the one being pointed at or chosen; the accent is
         // never an icon at rest.
-        for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
+        for (index, (action, rect)) in self
+            .cards
+            .iter()
+            .copied()
+            .zip(self.card_rects.iter().copied())
+            .enumerate()
+        {
             let interaction = self.targets.interaction(&action.target());
             let focused = self.focused && self.selected == index;
             let hovered_here = hovered == Some(index);
@@ -823,11 +872,11 @@ impl Widget for CollaborationLaunchpad {
             theme,
             &ButtonFace::new(button, &t("launchpad-open-app"))
                 .control_size(ui::widget::ControlSize::Large)
-                .focused(self.focused && self.selected == 6)
+                .focused(self.focused && self.selected == self.selected_range())
                 .hovered(self.targets.interaction(LAUNCHPAD_OPEN_APP).hovered)
                 .pressed(self.targets.interaction(LAUNCHPAD_OPEN_APP).pressed),
         );
-        if let Some(last) = cards.last() {
+        if let Some(last) = self.card_rects.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
             let hint = text.elide_to_width(&keyboard_hint, caption, hint_width);
             // The button is centred on this line (`app_button_rect`), so the hint stays where it
@@ -882,19 +931,23 @@ impl Widget for CollaborationLaunchpad {
                 );
             }
             if let Some(id) = self.targets.focused() {
-                self.selected = LaunchpadAction::ALL
+                self.selected = self
+                    .cards
                     .iter()
                     .position(|action| action.target() == id)
-                    .unwrap_or(6);
+                    .unwrap_or_else(|| self.selected_range());
             }
             if matches!(event, WindowEvent::Focused(false)) {
                 self.focused = false;
             }
             for id in self.targets.take_activated() {
-                let choice = LaunchpadAction::ALL
-                    .into_iter()
+                let choice = self
+                    .cards
+                    .iter()
                     .find(|action| action.target() == id)
-                    .map_or(LaunchpadPress::OpenApp, LaunchpadPress::Card);
+                    .map_or(LaunchpadPress::OpenApp, |action| {
+                        LaunchpadPress::Card(*action)
+                    });
                 self.activate(choice);
             }
         }
@@ -952,10 +1005,11 @@ impl Widget for CollaborationLaunchpad {
                 .with_bounds(self.content_bounds())
                 .with_description(t("launchpad-description"))
                 .with_children(
-                    LaunchpadAction::ALL
-                        .into_iter()
+                    self.cards
+                        .iter()
+                        .copied()
                         .enumerate()
-                        .zip(self.card_rects)
+                        .zip(self.card_rects.iter().copied())
                         .map(|((index, action), bounds)| {
                             AccessNode::new(Role::Button)
                                 .with_name(action.label())
@@ -973,11 +1027,9 @@ impl Widget for CollaborationLaunchpad {
                                 .with_name(t("launchpad-open-app"))
                                 .with_action_target(LAUNCHPAD_OPEN_APP)
                                 .with_bounds(self.app_button_rect())
-                                .with_state(
-                                    AccessState::new()
-                                        .focusable(true)
-                                        .focused(self.focused && self.selected == 6),
-                                ),
+                                .with_state(AccessState::new().focusable(true).focused(
+                                    self.focused && self.selected == self.selected_range(),
+                                )),
                         ))
                         .collect(),
                 ),
@@ -986,7 +1038,7 @@ impl Widget for CollaborationLaunchpad {
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let [index] = path else { return None };
-        if *index == 6 {
+        if *index == self.selected_range() {
             Some(self.app_button_rect())
         } else {
             self.card_rects.get(*index).copied()
@@ -995,7 +1047,7 @@ impl Widget for CollaborationLaunchpad {
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let [index] = path else { return false };
-        if *index > LaunchpadAction::ALL.len() {
+        if *index > self.selected_range() {
             return false;
         }
         self.focused = true;
@@ -1017,10 +1069,10 @@ impl Widget for CollaborationLaunchpad {
         if target == LAUNCHPAD_OPEN_APP {
             return self.activate(LaunchpadPress::OpenApp);
         }
-        LaunchpadAction::ALL
-            .into_iter()
+        self.cards
+            .iter()
             .find(|verb| verb.target() == target)
-            .is_some_and(|verb| self.activate(LaunchpadPress::Card(verb)))
+            .is_some_and(|verb| self.activate(LaunchpadPress::Card(*verb)))
     }
 }
 
@@ -1043,9 +1095,17 @@ mod tests {
 
     use ui::synthetic_input::mouse_release;
 
+    /// A launchpad offering every card, as a desk whose device has every app shows: the six verbs
+    /// are its own, and none of these tests is about which apps a host has.
+    fn every_card() -> CollaborationLaunchpad {
+        let mut pad = CollaborationLaunchpad::new();
+        pad.set_cards(LaunchpadAction::ALL.to_vec());
+        pad
+    }
+
     #[test]
     fn the_sharing_copy_follows_the_workspace_scope() {
-        let mut pad = CollaborationLaunchpad::new();
+        let mut pad = every_card();
         pad.set_scope(WorkspaceScope::Private);
         assert_eq!(pad.subtitle(), t("launchpad-subtitle-private"));
         assert_ne!(
@@ -1071,7 +1131,7 @@ mod tests {
             subtitle: Some("Welcome".into()),
             ..LaunchpadCopy::default()
         };
-        let hosted = CollaborationLaunchpad::new().with_copy(copy);
+        let hosted = every_card().with_copy(copy);
         assert_eq!(hosted.subtitle(), "Welcome", "a host's own words still win");
     }
 
@@ -1080,7 +1140,10 @@ mod tests {
     /// the picture and the flags the card shows.
     #[test]
     fn every_card_publishes_one_host_action_of_its_own() {
-        let published = LaunchpadAction::host_actions(WorkspaceScope::Shared);
+        let published: Vec<_> = LaunchpadAction::ALL
+            .into_iter()
+            .map(|card| card.host_action(WorkspaceScope::Shared))
+            .collect();
         assert_eq!(published.len(), LaunchpadAction::ALL.len());
         for (action, card) in published.iter().zip(LaunchpadAction::ALL) {
             assert_eq!(action.id, card.host_id());
@@ -1099,11 +1162,68 @@ mod tests {
         );
     }
 
+    /// A card that opens an app stands only where the host has it, and a card of the desk's own
+    /// stands everywhere: the desk offers what a person can open, never a window of an app that is
+    /// not here.
+    #[test]
+    fn a_card_stands_only_where_its_app_is_installed() {
+        let only = ["so.tilo.lang.tasks"];
+        let installed = |app: &str| only.contains(&app);
+        assert_eq!(
+            LaunchpadAction::ALL
+                .into_iter()
+                .filter(|card| card.offered(installed))
+                .collect::<Vec<_>>(),
+            [LaunchpadAction::Invite, LaunchpadAction::Activity],
+            "no card of an app this device has not got, and the desk's own always"
+        );
+        assert!(
+            !LaunchpadAction::Tasks.offered(installed),
+            "this device has no Tasks app"
+        );
+        let all = |_: &str| true;
+        assert!(
+            LaunchpadAction::ALL
+                .into_iter()
+                .all(|card| card.offered(all))
+        );
+
+        // What a host narrows them to is what the desk draws, lays out and announces: two cards
+        // take two places, and nothing of the others is left to press.
+        let mut pad = every_card();
+        pad.set_cards(
+            LaunchpadAction::ALL
+                .into_iter()
+                .filter(|card| card.offered(installed))
+                .collect(),
+        );
+        pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        pad.card_rects = pad.laid_out_cards();
+        assert_eq!(pad.targets().len(), 3, "two cards and the app opener");
+        assert_eq!(pad.cards().len(), 2);
+        let announced: Vec<String> = pad
+            .accessibility()
+            .expect("the launchpad")
+            .children
+            .into_iter()
+            .filter_map(|node| node.name)
+            .collect();
+        assert_eq!(
+            announced,
+            [
+                LaunchpadAction::Invite.label(),
+                LaunchpadAction::Activity.label(),
+                t("launchpad-open-app"),
+            ],
+            "a reader hears the cards the person can press"
+        );
+    }
+
     #[test]
     fn app_opener_waits_for_pointer_release_and_cancelled_drag_does_not_open() {
-        let mut pad = CollaborationLaunchpad::new();
+        let mut pad = every_card();
         pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        pad.card_rects = pad.cards();
+        pad.card_rects = pad.laid_out_cards();
         let button = pad.app_button_rect().center();
         let mut doc = AutoCommit::new();
         deliver(&mut pad, &mut doc, &pointer_at(button));
@@ -1131,9 +1251,9 @@ mod tests {
     #[test]
     fn interrupted_app_opener_gestures_consume_release_and_can_be_retried() {
         for interruption in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {
-            let mut pad = CollaborationLaunchpad::new();
+            let mut pad = every_card();
             pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            pad.card_rects = pad.cards();
+            pad.card_rects = pad.laid_out_cards();
             pad.set_focus(true);
             let mut doc = AutoCommit::new();
             let button = pad.app_button_rect().center();
@@ -1152,9 +1272,9 @@ mod tests {
 
     #[test]
     fn moving_the_launchpad_cancels_the_old_press_before_new_geometry_is_clicked() {
-        let mut pad = CollaborationLaunchpad::new();
+        let mut pad = every_card();
         pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        pad.card_rects = pad.cards();
+        pad.card_rects = pad.laid_out_cards();
         let mut doc = AutoCommit::new();
         let button = pad.app_button_rect().center();
         deliver(&mut pad, &mut doc, &pointer_at(button));
@@ -1171,9 +1291,9 @@ mod tests {
 
     #[test]
     fn app_opener_keyboard_repeat_is_consumed_without_a_second_request() {
-        let mut pad = CollaborationLaunchpad::new();
+        let mut pad = every_card();
         pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        pad.card_rects = pad.cards();
+        pad.card_rects = pad.laid_out_cards();
         pad.focus_synthetic_accessibility(&[6]);
         let mut doc = AutoCommit::new();
         assert!(deliver(&mut pad, &mut doc, &named_key(NamedKey::Enter)));
@@ -1239,7 +1359,7 @@ mod tests {
     #[test]
     fn launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size() {
         fn compact_large_text_heading_stays_below_top_chrome() {
-            let mut pad = CollaborationLaunchpad::new();
+            let mut pad = every_card();
             pad.rect = Rect::new(0.0, 48.0, 800.0, 700.0);
             let theme = Theme::dark().with_text_scale(2.0);
             let mut text = TextRenderer::new();
@@ -1260,7 +1380,7 @@ mod tests {
 
         fn desktop_app_button_has_visible_bounds_in_compact_layouts() {
             for (width, height) in [(1280.0, 752.0), (960.0, 492.0), (460.0, 712.0)] {
-                let mut pad = CollaborationLaunchpad::new();
+                let mut pad = every_card();
                 pad.rect = Rect::new(0.0, 48.0, width, height + 48.0);
                 for scale in [1.0, 1.5, 2.0] {
                     let theme = Theme::dark().with_text_scale(scale);
@@ -1300,7 +1420,8 @@ mod tests {
                 Rect::new(0.0, 0.0, 1200.0, 720.0),
                 Rect::new(0.0, 0.0, 460.0, 760.0),
             ] {
-                let (cards, _) = CollaborationLaunchpad::card_geometry(rect);
+                let (cards, _) =
+                    CollaborationLaunchpad::card_geometry(rect, LaunchpadAction::ALL.len());
                 assert!(
                     cards
                         .iter()
@@ -1317,11 +1438,11 @@ mod tests {
 
     #[test]
     fn a_canvas_across_two_displays_centres_on_the_presenting_one() {
-        let mut pad = CollaborationLaunchpad::new();
+        let mut pad = every_card();
         pad.rect = Rect::new(0.0, 48.0, 2048.0, 768.0);
         let right = Rect::new(1024.0, 0.0, 2048.0, 768.0);
         pad.set_presentation_area(Some(right));
-        let cards = pad.cards();
+        let cards = pad.laid_out_cards();
         let x0 = cards.iter().map(|c| c.x0).fold(f64::INFINITY, f64::min);
         let x1 = cards.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
         assert!(
@@ -1335,11 +1456,11 @@ mod tests {
         let left = Rect::new(0.0, 0.0, 1024.0, 768.0);
         pad.set_presentation_area(Some(left));
         assert!(
-            pad.cards()
+            pad.laid_out_cards()
                 .iter()
                 .all(|c| c.x0 >= left.x0 && c.x1 <= left.x1),
             "moving to the other display moves the grid there: {:?}",
-            pad.cards()
+            pad.laid_out_cards()
         );
     }
 
@@ -1360,7 +1481,7 @@ mod tests {
     #[test]
     fn launchpad_cards_route_to_their_owning_apps_by_click_or_assistive_action() {
         fn desktop_launchpad_exposes_an_app_opener() {
-            let pad = CollaborationLaunchpad::new();
+            let pad = every_card();
             assert!(
                 pad.accessibility()
                     .unwrap()
@@ -1421,7 +1542,7 @@ mod tests {
         }
 
         fn assistive_activation_takes_the_same_choice_as_a_card_click() {
-            let mut launchpad = CollaborationLaunchpad::new();
+            let mut launchpad = every_card();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
@@ -1447,9 +1568,9 @@ mod tests {
     #[test]
     fn a_card_publishes_its_own_action_by_click_or_keyboard() {
         fn a_clicked_card_publishes_its_own_action_not_the_launcher() {
-            let mut pad = CollaborationLaunchpad::new();
+            let mut pad = every_card();
             pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            pad.card_rects = pad.cards();
+            pad.card_rects = pad.laid_out_cards();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let notes = pad.card_rects[1].center();
@@ -1466,9 +1587,9 @@ mod tests {
         }
 
         fn arrow_keys_move_and_enter_opens_the_selected_card() {
-            let mut pad = CollaborationLaunchpad::new();
+            let mut pad = every_card();
             pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            pad.card_rects = pad.cards();
+            pad.card_rects = pad.laid_out_cards();
             pad.set_focus(true);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;

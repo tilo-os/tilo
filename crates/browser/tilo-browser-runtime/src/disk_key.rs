@@ -13,25 +13,25 @@ use durable_store::StorageKey;
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) enum DiskKey {
     Record {
-        package: String,
+        #[serde(rename = "package")]
+        app: String,
         workspace: String,
         record: String,
     },
     Package {
-        package: String,
+        #[serde(rename = "package")]
+        app: String,
     },
     /// One workspace's index. A profile outlives any one build, and its rows
     /// were written under this name, so the name it is stored under stays.
     WorkspaceIndex {
-        package: String,
+        #[serde(rename = "package")]
+        app: String,
         workspace: String,
     },
     /// Rows of the removed package-global record key. Main dropped the key
     /// without a migration; a page skips these rows instead of failing to load.
-    PackageRecord {
-        package: String,
-        record: String,
-    },
+    PackageRecord { package: String, record: String },
     View {
         device: String,
         workspace: String,
@@ -42,19 +42,22 @@ pub(crate) enum DiskKey {
 impl From<&StorageKey> for DiskKey {
     fn from(key: &StorageKey) -> Self {
         match key.clone() {
-            StorageKey::Record {
-                package,
+            StorageKey::Document {
+                app,
                 workspace,
-                record,
+                document,
             } => Self::Record {
-                package,
+                app: app.to_string(),
                 workspace,
-                record,
+                record: document,
             },
-            StorageKey::Package { package } => Self::Package { package },
-            StorageKey::WorkspaceIndex { package, workspace } => {
-                Self::WorkspaceIndex { package, workspace }
-            }
+            StorageKey::App { app } => Self::Package {
+                app: app.to_string(),
+            },
+            StorageKey::WorkspaceIndex { app, workspace } => Self::WorkspaceIndex {
+                app: app.to_string(),
+                workspace,
+            },
             StorageKey::View {
                 device,
                 workspace,
@@ -105,15 +108,15 @@ impl DiskKey {
         };
         Ok(match kind {
             "record" => Self::Record {
-                package: text("package")?,
+                app: text("package")?,
                 workspace: text("workspace")?,
                 record: text("record")?,
             },
             "package" => Self::Package {
-                package: text("package")?,
+                app: text("package")?,
             },
             "workspaceIndex" => Self::WorkspaceIndex {
-                package: text("package")?,
+                app: text("package")?,
                 workspace: text("workspace")?,
             },
             "packageRecord" => Self::PackageRecord {
@@ -135,18 +138,19 @@ impl DiskKey {
     pub(crate) fn into_key(self) -> Option<StorageKey> {
         Some(match self {
             Self::Record {
-                package,
+                app,
                 workspace,
                 record,
-            } => StorageKey::Record {
-                package,
+            } => StorageKey::Document {
+                app: app.into(),
                 workspace,
-                record,
+                document: record,
             },
-            Self::Package { package } => StorageKey::Package { package },
-            Self::WorkspaceIndex { package, workspace } => {
-                StorageKey::WorkspaceIndex { package, workspace }
-            }
+            Self::Package { app } => StorageKey::App { app: app.into() },
+            Self::WorkspaceIndex { app, workspace } => StorageKey::WorkspaceIndex {
+                app: app.into(),
+                workspace,
+            },
             Self::PackageRecord { .. } => return None,
             Self::View {
                 device,
@@ -168,16 +172,16 @@ mod tests {
 
     fn keys() -> Vec<StorageKey> {
         vec![
-            StorageKey::Record {
-                package: "so.tilo.notes".into(),
+            StorageKey::Document {
+                app: "so.tilo.notes".into(),
                 workspace: "w".into(),
-                record: "r".into(),
+                document: "r".into(),
             },
-            StorageKey::Package {
-                package: "so.tilo.notes".into(),
+            StorageKey::App {
+                app: "so.tilo.notes".into(),
             },
             StorageKey::WorkspaceIndex {
-                package: "so.tilo.notes".into(),
+                app: "so.tilo.notes".into(),
                 workspace: "w".into(),
             },
             StorageKey::View {

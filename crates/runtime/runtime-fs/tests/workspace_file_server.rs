@@ -604,8 +604,6 @@ fn append_final_effect_gate_observes_independently_expired_lifetime() {
     let lifetime_calls = Arc::clone(&calls);
     session
         .attach_lifetime(Arc::new(move || {
-            // Fast in-memory native lifetime: once armed, the first check observes
-            // live custody and the next observes its independent retirement.
             !armed_lifetime.load(Ordering::Acquire)
                 || lifetime_calls.fetch_add(1, Ordering::AcqRel) == 0
         }))

@@ -19,8 +19,6 @@ fn first_id(items: &Items) -> Id {
     items.items.ids().next().cloned().expect("an item")
 }
 
-/// The resource on its own: an item needs a title, its fields are edited at
-/// their paths, and a verb refuses an item that does not exist.
 #[test]
 fn items_are_added_edited_and_removed() {
     let mut items = Replica::<Items>::new();
@@ -44,8 +42,6 @@ fn items_are_added_edited_and_removed() {
     assert!(items.state().expect("items").items.is_empty());
 }
 
-/// The app starts empty, the draft field and Add button create an item, its
-/// row edits it, and removing it is one undo step.
 #[test]
 fn the_list_starts_empty_and_rows_edit_their_item() {
     let mut app = TestApp::<App>::new().expect("the app opens");
@@ -77,7 +73,6 @@ fn the_list_starts_empty_and_rows_edit_their_item() {
     assert_eq!(titles(&app.state()), ["Buy milk"]);
 }
 
-/// Items are stored: they survive a relaunch with no save step.
 #[test]
 fn items_survive_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");

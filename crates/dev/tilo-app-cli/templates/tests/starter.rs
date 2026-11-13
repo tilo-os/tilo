@@ -3,13 +3,10 @@ use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Invoke, Replica, TestApp};
 
-/// The edit of the name: a field edit at its path, as the name field makes it.
 fn name(text: &str) -> Invoke<Greeting> {
     Invoke::edit(&Greeting::paths().name.replace(text)).expect("an edit")
 }
 
-/// The resource on its own: edits and verbs applied the way every surface
-/// applies them, with no window.
 #[test]
 fn greeting_actions_edit_the_name() {
     let mut greeting = Replica::<Greeting>::new();
@@ -19,8 +16,6 @@ fn greeting_actions_edit_the_name() {
     assert_eq!(greeting.state().expect("greeting").name, "");
 }
 
-/// The app as it runs: the field edits the name, the greeting follows the
-/// resource, and the edit is one undo step.
 #[test]
 fn the_name_field_edits_the_greeting() {
     let mut app = TestApp::<App>::new().expect("the app opens");
@@ -41,7 +36,6 @@ fn the_name_field_edits_the_greeting() {
     assert_eq!(app.state().name, "");
 }
 
-/// Permissions apply to every action: a viewer's edit is refused.
 #[test]
 fn a_viewer_cannot_edit() {
     let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
@@ -49,7 +43,6 @@ fn a_viewer_cannot_edit() {
     assert_eq!(app.state().name, "");
 }
 
-/// State is stored: it survives a relaunch with no save step.
 #[test]
 fn the_name_survives_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");
@@ -58,8 +51,6 @@ fn the_name_survives_a_relaunch() {
     assert_eq!(app.state().name, "Grace");
 }
 
-/// The same resource syncs in both directions, updates the live view, and
-/// keeps a collaborator's edit when the local participant undoes theirs.
 #[test]
 fn collaboration_updates_the_view_and_undo_preserves_peer_edits() {
     let mut app = TestApp::<App>::for_person("ada").expect("the app opens");

@@ -1,33 +1,7 @@
-//! The tilolang host's door: where the session hands a tilolang host each app
-//! instance it runs.
-//!
-//! A tilolang host is one process per room and author that runs the tilolang
-//! apps of that author in that room, each as an instance of its own
-//! (`docs/designs/app-language/ui-host.md`). It has no app identity of its own:
-//! everything an instance is arrives over this door, from the session, which
-//! made it as that app's launch:
-//!
-//! 1. the instance's broker connection, which the session attested against a
-//!    launch record of the instance carrying the app's creation record and
-//!    launch ticket, exactly as for a launched app;
-//! 2. its identity-service connection;
-//! 3. its verified module, in a sealed memfd ([`Module`]);
-//! 4. its window: the patch connection to the window's process, which shows
-//!    what the instance sends and reports what the person did;
-//! 5. for an app whose types hold an outside service's resources, its connection
-//!    to the app's origin connector (`crate::origin_connector`).
-//!
-//! A message is one `SOCK_SEQPACKET` packet in the framing of `jobs`: the verb
-//! [`INSTANCE_VERB`] and the request ([`InstanceRequest`], JSON), with the four
-//! descriptors in that order.
-//!
-//! A host whose author is an agent task runs no app instance: the session hands it
-//! the task instead ([`TASK_VERB`], [`TaskRequest`]), with the task's program
-//! connection to the agent door and every app its programs are compiled against:
-//! a tilolang app's verified module, and a native app's signed surface
-//! (`docs/designs/app-language/agents.md`, "How a program runs"). The host never names an app to the session: the
-//! broker and the compositor attribute each connection from the session's own
-//! records. An instance ends when its window's connection closes.
+//! The tilolang host's door: where the session hands a host each app instance it
+//! runs. The host has no app identity of its own — it runs one process per
+//! workspace and author, and everything an instance is arrives over this door,
+//! from the session that launched it.
 
 use std::io;
 
@@ -36,39 +10,27 @@ use tilo_formats::RegionFormats;
 
 pub use crate::windows::Descriptor;
 
-/// The variable the host reads its door's descriptor from.
 pub const DOOR_FD_ENV: &str = "TILO_SVC_TILOLANG_HOST_FD";
 
-/// The variable naming the host's storage: the one directory of its room and
-/// author, keyed by package inside.
 pub const STORAGE_ENV: &str = "TILO_TILOLANG_HOST_STORAGE";
 
-/// The variable the launcher sets for a tilolang app's window whose instance a tilolang host
-/// runs: the window presents what the instance sends over the patch connection its window door
-/// carries (`crate::windows::PATCH_VERB`), and holds none of the app's data.
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 
 pub const INSTANCE_VERB: &[u8] = b"instance";
 
-/// The verb of the person's formats and language, as the session hands them to a host whose
-/// instances are already running: which clock their dates and times read by, or which language
-/// their windows read in, changed in Settings. The request is the [`Locale`], JSON; the door
-/// carries no descriptor with it.
+/// The person's formats and language, as the session hands them to a host whose
+/// instances are already running.
 pub const LOCALE_VERB: &[u8] = b"locale";
 
 /// The person's region formats and language, as the session hands them to a host whose instances
 /// are already running ([`LOCALE_VERB`]).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Locale {
-    /// The clock and the date style their dates and times read by.
     pub formats: RegionFormats,
-    /// The language their windows read in (`de-DE`), as [`InstanceRequest::language`] names it;
-    /// empty where the session names none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub language: String,
 }
 
-/// The verb of a task handed to a task's host.
 pub const TASK_VERB: &[u8] = b"task";
 
 /// The verb the host says on its door when an instance ended (its window closed, or it never
@@ -80,34 +42,23 @@ pub const ENDED_VERB: &[u8] = b"ended";
 /// shows. A host gone without saying it ended unheard (killed, or crashed).
 pub const EXITING_VERB: &[u8] = b"exiting";
 
-/// What a host says on its door.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FromHost {
     /// The instance of this window ended (its window closed, or it never opened).
     Ended(u64),
-    /// The host exits, for this reason.
     Exiting(String),
 }
 
-/// The largest request: a few names and numbers.
 pub const MAX_MESSAGE: usize = 4096;
 
-/// The largest module the door carries.
 pub const MAX_MODULE: u64 = 64 << 20;
 
-/// The session's request to run one more app instance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceRequest {
-    /// The app's package id, as the session launched it.
     pub app: String,
-    /// The room the instance runs in.
     pub room: String,
-    /// The window's instance: the durable id its tab keeps.
     pub instance: u64,
-    /// The participant at the window, whose steps the instance's undo takes
-    /// back.
     pub person: String,
-    /// The length of the module in its memfd.
     pub module_len: u64,
     /// The id whose room record the instance opens, when it is not the app's own: an app renamed
     /// keeps using the record of its earliest id, as the installed catalogue believes the same
@@ -142,8 +93,6 @@ pub struct InstanceRequest {
     /// a window asked for another is refused rather than shown that one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
-    /// The item the window opens on, by its anchor (a search hit's, an agent's `open`, the
-    /// conversation a send landed in): the instance shows it as its `open` would.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reveal: Option<String>,
     /// The tilolang apps installed here, by id, each with the id its records are kept under: a
@@ -154,46 +103,29 @@ pub struct InstanceRequest {
     pub installed: std::collections::BTreeMap<String, String>,
 }
 
-/// An action to run against a record at its origin, as the broker admitted it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Change {
-    /// The action's subject resource and the action, as the app publishes them.
     pub resource: String,
     pub action: String,
     /// The arguments, by parameter name, as the caller gave them.
     #[serde(default)]
     pub arguments: serde_json::Map<String, serde_json::Value>,
-    /// Who invokes (`tilo_actions::ActionInvoker`), as the broker admitted them: an agent acting
-    /// for its person.
     pub invoker: serde_json::Value,
-    /// The run the change is a step of (`tilo_actions::ActionContext`), as the broker set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<serde_json::Value>,
-    /// What the task's preview planned, when it planned: the applied result is compared with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<serde_json::Value>,
 }
 
-/// The session's request to run an agent task's programs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRequest {
-    /// The task: the agent run whose programs the host runs, their code's author.
     pub task: String,
-    /// The room the task works in.
     pub room: String,
-    /// The person the task acts for, as its programs' `me`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person: Option<String>,
-    /// The length of the apps in their memfd ([`encode_apps`]).
     pub apps_len: u64,
-    /// The id whose records an app keeps, by the app's id, for each app that keeps another's:
-    /// an app renamed keeps using the record of its earliest id
-    /// ([`InstanceRequest::records_under`]).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub records_under: std::collections::BTreeMap<String, String>,
-    /// The apps whose records the session changes itself, the packages it runs: a program's
-    /// change of one goes to its record. A change of any other app is the app's own action,
-    /// invoked where the app runs.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub changed_at_record: std::collections::BTreeSet<String>,
 }
@@ -201,20 +133,14 @@ pub struct TaskRequest {
 /// The descriptors a task arrives with, in the order the door carries them.
 #[derive(Debug)]
 pub struct TaskFds {
-    /// The program connection to the agent door: the task's programs come in on it, and what
-    /// they read and invoke goes out on it, as the task.
     pub program: Descriptor,
-    /// Every app the task's programs may name, in a sealed memfd ([`encode_apps`]).
     pub apps: Descriptor,
 }
 
-/// What the session hands a host.
 #[derive(Debug)]
 pub enum Handed {
     Instance(InstanceRequest, InstanceFds),
     Task(TaskRequest, TaskFds),
-    /// The person's formats and language, which their instances' clock and dates read by, and
-    /// their windows read in, from now on.
     Locale(Locale),
 }
 
@@ -277,7 +203,6 @@ pub struct Module {
 const MODULE_MAGIC: &[u8; 8] = b"tlmodul1";
 
 impl Module {
-    /// The module of the package whose payload is `payload`.
     pub fn read(payload: &std::path::Path) -> io::Result<Self> {
         let wasm = std::fs::read(payload.join("app.wasm"))?;
         let ids = match std::fs::read_to_string(payload.join("app.ids")) {
@@ -420,14 +345,14 @@ impl App {
 }
 
 /// The descriptors one instance arrives with, in the order the door carries
-/// them.
+/// them: at most a session's PTY master, its private lease and, when
+/// negotiated, its editor capability.
 #[derive(Debug)]
 pub struct InstanceFds {
     pub broker: Descriptor,
     pub identity: Descriptor,
     pub module: Descriptor,
     pub window: Descriptor,
-    /// The connection to the app's origin connector, for an app with one.
     pub origin: Option<Descriptor>,
 }
 
@@ -439,16 +364,10 @@ fn unsupported() -> io::Error {
     )
 }
 
-/// A connected pair of door ends: the session keeps one and hands the other
-/// to the host it starts.
-///
-/// # Errors
-/// The socket error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     crate::windows::pair()
 }
 
-/// The door the session handed this process at its start, once.
 #[must_use]
 pub fn take_door() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
@@ -589,7 +508,6 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
     {
         use std::os::fd::AsFd as _;
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
-        // The verb, its separator and the request.
         let mut buffer = vec![
             0_u8;
             MAX_MESSAGE
@@ -657,10 +575,6 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
     }
 }
 
-/// Say on the host's end of `door` that the instance of the window `instance` ended.
-///
-/// # Errors
-/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn send_ended(door: &Descriptor, instance: u64) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -683,13 +597,11 @@ pub fn send_exiting(door: &Descriptor, reason: &str) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        // Cut on a character boundary to what the door carries.
         let room = MAX_MESSAGE.saturating_sub(EXITING_VERB.len().saturating_add(1));
         let end = (0..=reason.len().min(room))
             .rev()
             .find(|end| reason.is_char_boundary(*end))
             .unwrap_or(0);
-        // A NUL separates the door's fields.
         let reason = reason.get(..end).unwrap_or_default().replace('\0', " ");
         crate::door::send(door.as_fd(), &[EXITING_VERB, reason.as_bytes()], &[])
     }
@@ -700,8 +612,6 @@ pub fn send_exiting(door: &Descriptor, reason: &str) -> io::Result<()> {
     }
 }
 
-/// The next thing the host behind the session's `door` says; `None` at end of file, when the
-/// host is gone.
 pub fn receive_from_host(door: &Descriptor) -> io::Result<Option<FromHost>> {
     #[cfg(target_os = "linux")]
     {
@@ -777,7 +687,6 @@ mod tests {
             received_fds.origin.is_none(),
             "an app without an origin has no connection"
         );
-        // An app with an origin brings its connection to the connector as the fifth.
         let fds = InstanceFds {
             origin: Some(connection()),
             ..fds

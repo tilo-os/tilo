@@ -37,6 +37,8 @@ chrono = { workspace = true, features = ["std", "clock"] }
 # The device's clock, which is the person's: the same clock their window's dates and days read
 # by, so what an instance writes as today is the day their window shows it under.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+# One rule for which language a locale names, shared with the packs.
+tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 serde_json.workspace = true
 # A record the door hands over travels as base64 on the program connection.
 base64.workspace = true

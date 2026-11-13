@@ -1,10 +1,6 @@
-//! The new-container form: one labelled field per draft entry, each showing
-//! the draft's collaborative text at its path in the record.
-//!
-//! Every edit in a field is a field edit of its text through the resource's
-//! dispatcher ([`TextControl`]), so the draft merges with a second person
-//! typing in the same form, undoes a word at a time, and shows a restore or
-//! an agent's edit as it lands.
+//! The new-container form: one labelled field per draft entry, each showing the draft's
+//! text at its path. An edit is a field edit through the record's dispatcher, so the
+//! draft merges with a second person typing in the same form.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,12 +15,10 @@ use ui::widget::{
 use crate::draft::CreateField;
 use crate::resource::Containers;
 
-/// The installed images' references, which the image field suggests. The
-/// app keeps it current as the engine changes.
+/// The installed images, which the image field suggests.
 pub(crate) type InstalledImages = Rc<RefCell<Vec<String>>>;
 
-/// One draft field over the draft's text of its field; a field can suggest
-/// what to type (the image field offers the installed images).
+/// One draft field over its text; a field can suggest what to type.
 pub(crate) struct DraftInput {
     field: CreateField,
     text: TextControl<Autocomplete, Containers>,
@@ -36,8 +30,7 @@ impl DraftInput {
         let input = input.with_placeholder(field.placeholder());
         let mut control =
             Autocomplete::with_input(input).with_id(&format!("container_create_{}", field.key()));
-        // The field keeps what its text is; suggesting does not make it a
-        // search.
+        // The field keeps what its text is; suggesting does not make it a search.
         control.input_mut().set_kind(kind);
         if field == CreateField::Image {
             let images = Rc::clone(images);
@@ -57,7 +50,6 @@ impl DraftInput {
         self.text.control_mut().input_mut()
     }
 
-    /// Edit the draft through `dispatcher` from now on.
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Containers>) {
         self.text.attach(dispatcher);
     }
@@ -83,8 +75,8 @@ impl ui::widget::Decorator for DraftInput {
         &mut self.text
     }
 
-    /// The field answers for its node, so input the host routes by node
-    /// (keys, accessibility actions) reaches the control's splices.
+    /// The field answers for its node, so input the host routes by node reaches its
+    /// splices.
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,

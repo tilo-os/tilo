@@ -1,25 +1,18 @@
-//! A small, tolerant HTML tree and the CSS selector subset the engine
-//! scrapers and the page reader need.
+//! A small, tolerant HTML tree and the CSS selector subset the engine scrapers and the
+//! page reader need.
 //!
-//! Result pages and arbitrary web pages are rarely valid markup, and none of
-//! the callers here render anything: they pick a few elements out by selector
-//! and read their text and attributes. So this builds a plain node tree the
-//! way a forgiving reader would — unknown tags are kept, a stray end tag is
-//! ignored, an end tag closes everything opened inside it, and the handful of
-//! implied closes that change which element text belongs to (`<p>`, `<li>`,
-//! table cells, `<option>`) are honoured. Scripts and styles are kept as raw
-//! text and never read as markup. Nothing is fetched or run.
+//! Result pages and arbitrary web pages are rarely valid markup, and no caller renders
+//! anything: they pick elements out by selector and read their text and attributes, so
+//! this builds a plain node tree the way a forgiving reader would, keeping unknown tags
+//! and ignoring stray end tags. Scripts and styles stay raw text, and nothing is fetched
+//! or run.
 //!
-//! The input is capped at [`MAX_INPUT`] bytes and the tree at [`MAX_NODES`]
-//! nodes, so a hostile page costs a bounded amount of memory.
+//! The input is capped at [`MAX_INPUT`] bytes and the tree at [`MAX_NODES`] nodes.
 
 use std::fmt;
 
-/// The most markup read; the rest of a larger page is ignored.
 pub const MAX_INPUT: usize = 4 * 1024 * 1024;
-/// The most nodes the tree holds; parsing stops there.
 pub const MAX_NODES: usize = 200_000;
-/// How deep elements nest before further opens are treated as siblings.
 const MAX_DEPTH: usize = 256;
 
 /// Elements that never have content or an end tag.
@@ -29,7 +22,6 @@ const VOID: &[&str] = &[
 ];
 /// Elements whose content is text that is never read as markup.
 const RAW_TEXT: &[&str] = &["script", "style", "textarea", "title", "xmp", "noscript"];
-/// Elements that close an open `<p>` when they start.
 const CLOSES_P: &[&str] = &[
     "address",
     "article",
@@ -81,14 +73,12 @@ struct Node {
     children: Vec<NodeId>,
 }
 
-/// A parsed page.
 #[derive(Debug, Clone)]
 pub struct Document {
     nodes: Vec<Node>,
 }
 
 impl Document {
-    /// The root node: the parent of the top-level elements.
     pub const ROOT: NodeId = 0;
 
     /// Parse `html`, however malformed. Never fails.
@@ -108,7 +98,6 @@ impl Document {
         builder.doc
     }
 
-    /// The element's lower-case tag name, or `None` for text and the root.
     pub fn name(&self, id: NodeId) -> Option<&str> {
         match &self.nodes.get(id)?.kind {
             Kind::Element { name, .. } => Some(name),
@@ -116,7 +105,6 @@ impl Document {
         }
     }
 
-    /// An attribute's value (entities decoded); `None` when it is absent.
     pub fn attr(&self, id: NodeId, attr: &str) -> Option<&str> {
         match &self.nodes.get(id)?.kind {
             Kind::Element { attrs, .. } => attrs
@@ -134,25 +122,20 @@ impl Document {
         }
     }
 
-    /// The node's children in document order.
     pub fn children(&self, id: NodeId) -> &[NodeId] {
         self.nodes.get(id).map_or(&[], |n| n.children.as_slice())
     }
 
-    /// The node's parent; `None` for the root.
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
         self.nodes.get(id)?.parent
     }
 
-    /// Every descendant of `id`, in document order, not including `id`.
     pub fn descendants(&self, id: NodeId) -> Descendants<'_> {
         let mut stack: Vec<NodeId> = self.children(id).to_vec();
         stack.reverse();
         Descendants { doc: self, stack }
     }
 
-    /// All text under `id`, as written (whitespace kept), skipping scripts and
-    /// styles.
     pub fn text(&self, id: NodeId) -> String {
         let mut out = String::new();
         self.push_text(id, &mut out);
@@ -174,14 +157,12 @@ impl Document {
         }
     }
 
-    /// The elements under `scope` that match `selector`, in document order.
     pub fn select(&self, scope: NodeId, selector: &Selector) -> Vec<NodeId> {
         self.descendants(scope)
             .filter(|&id| selector.matches(self, id))
             .collect()
     }
 
-    /// The first element under `scope` that matches `selector`.
     pub fn select_first(&self, scope: NodeId, selector: &Selector) -> Option<NodeId> {
         self.descendants(scope)
             .find(|&id| selector.matches(self, id))
@@ -208,7 +189,6 @@ fn is_hidden_text(name: &str) -> bool {
     matches!(name, "script" | "style" | "template" | "noscript")
 }
 
-/// Depth-first iterator over a subtree; see [`Document::descendants`].
 pub struct Descendants<'a> {
     doc: &'a Document,
     stack: Vec<NodeId>,
@@ -265,7 +245,6 @@ impl Builder {
         } else {
             raw.to_owned()
         };
-        // Adjacent text (split by a skipped comment) joins one node.
         let parent = self.current();
         if let Some(&last) = self.doc.nodes.get(parent).and_then(|p| p.children.last())
             && let Some(Node {
@@ -283,8 +262,6 @@ impl Builder {
         self.doc.name(id)
     }
 
-    /// Pop up to and including the innermost open `name`, if it is open
-    /// below any of `boundaries`.
     fn close(&mut self, name: &str, boundaries: &[&str]) -> bool {
         let mut found = None;
         for (depth, &id) in self.stack.iter().enumerate().rev() {
@@ -334,7 +311,6 @@ impl Builder {
         }
     }
 
-    /// Open an element; whether it was pushed as the new current element.
     fn start_tag(
         &mut self,
         name: String,
@@ -370,8 +346,6 @@ impl Builder {
         }
     }
 
-    /// Read one piece of markup at `from_lt` (which starts with `<`) and
-    /// return what follows it.
     fn markup<'a>(&mut self, from_lt: &'a str) -> &'a str {
         let after = from_lt.get(1..).unwrap_or_default();
         if let Some(comment) = after.strip_prefix("!--") {
@@ -383,7 +357,6 @@ impl Builder {
         if let Some(end_tag) = after.strip_prefix('/') {
             let name_len = tag_name_len(end_tag);
             if name_len == 0 {
-                // `</>` or `</ x`: not a tag; skip to its `>`.
                 return end_tag.find('>').map_or("", |end| skip(end_tag, end, 1));
             }
             let name = end_tag
@@ -395,7 +368,6 @@ impl Builder {
         }
         let name_len = tag_name_len(after);
         if name_len == 0 {
-            // A lone `<` in text.
             self.push_text("<", false);
             return after;
         }
@@ -416,7 +388,6 @@ impl Builder {
     }
 }
 
-/// `s` after the `len`-byte match found at `at`.
 fn skip(s: &str, at: usize, len: usize) -> &str {
     s.get(at.saturating_add(len)..).unwrap_or_default()
 }
@@ -432,7 +403,6 @@ fn tag_name_len(s: &str) -> usize {
         .map_or(s.len(), |(i, _)| i)
 }
 
-/// The raw text of a script-like element and what follows its end tag.
 fn raw_text_until_end<'a>(s: &'a str, name: &str) -> (&'a str, &'a str) {
     let closing = format!("</{name}");
     let mut search_from = 0;
@@ -447,7 +417,6 @@ fn raw_text_until_end<'a>(s: &'a str, name: &str) -> (&'a str, &'a str) {
         let after = s
             .get(at.saturating_add(closing.len())..)
             .unwrap_or_default();
-        // `</scriptx` does not end a script.
         if after
             .chars()
             .next()
@@ -469,7 +438,6 @@ fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
         .position(|w| w.eq_ignore_ascii_case(needle))
 }
 
-/// Attributes of a start tag up to its `>`; whether it ended `/>`; the rest.
 fn parse_attrs(mut s: &str) -> (Vec<(String, String)>, bool, &str) {
     let mut attrs: Vec<(String, String)> = Vec::new();
     loop {
@@ -492,7 +460,6 @@ fn parse_attrs(mut s: &str) -> (Vec<(String, String)>, bool, &str) {
             .find(|&(_, c)| c.is_ascii_whitespace() || matches!(c, '=' | '>' | '/'))
             .map_or(s.len(), |(i, _)| i);
         let name_end = if name_end == 0 {
-            // A stray `=` or quote; step over one character.
             c.len_utf8()
         } else {
             name_end
@@ -525,7 +492,6 @@ fn parse_attrs(mut s: &str) -> (Vec<(String, String)>, bool, &str) {
     }
 }
 
-/// Decode character references. Unknown named references stay as written.
 pub fn decode_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_owned();
@@ -620,7 +586,6 @@ fn truncate_at_char(s: &str, max: usize) -> &str {
     s.get(..end).unwrap_or_default()
 }
 
-/// A selector that did not parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectorError(String);
 
@@ -690,8 +655,6 @@ impl Compound {
     }
 }
 
-/// One selector chain, stored right to left: the subject first, then each
-/// ancestor step with the combinator that led to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Complex {
     subject: Compound,
@@ -722,21 +685,10 @@ impl Complex {
     }
 }
 
-/// A parsed CSS selector list.
-///
-/// Supported: type, `#id`, `.class`, `[attr]`, `[attr=value]` (quoted or
-/// not), `:not(compound)`, `:first-child`, the descendant and child (`>`)
-/// combinators, and `,` lists. That is what result-page scraping needs; a
-/// selector outside it is an error rather than a silent mismatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selector(Vec<Complex>);
 
 impl Selector {
-    /// Parse `css`.
-    ///
-    /// # Errors
-    ///
-    /// [`SelectorError`] for syntax outside the supported subset.
     pub fn parse(css: &str) -> Result<Self, SelectorError> {
         let mut list = Vec::new();
         for part in split_top_level(css, ',') {
@@ -753,7 +705,6 @@ impl Selector {
     }
 }
 
-/// Split on `sep` outside brackets and parentheses.
 fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
@@ -777,7 +728,6 @@ fn split_top_level(s: &str, sep: char) -> Vec<&str> {
 }
 
 fn parse_complex(s: &str) -> Option<Complex> {
-    // Tokenise into compounds and combinators.
     let mut steps: Vec<(Combinator, Compound)> = Vec::new();
     let mut rest = s.trim();
     let mut pending = Combinator::Descendant;
@@ -798,8 +748,6 @@ fn parse_complex(s: &str) -> Option<Complex> {
             return None;
         }
     }
-    // Store right to left: each compound keeps the combinator that joins it
-    // to the one on its right.
     let mut compounds = steps.into_iter().rev();
     let (mut joining, subject) = compounds.next()?;
     let mut ancestors = Vec::new();
@@ -909,8 +857,6 @@ fn matching_paren(s: &str) -> Option<usize> {
     None
 }
 
-/// Collapse runs of whitespace (including non-breaking spaces) to one space
-/// and trim the ends.
 pub fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for word in s

@@ -1,16 +1,13 @@
 //! The portable engine: hayro, a memory-safe PDF rasteriser, in this process.
 //!
-//! It answers the same requests as the pdfium backend from the same types:
-//! page geometry, rendering, the characters of a page for the text layer,
-//! links, annotations, the outline and a form's fields, which it reads but
-//! does not draw. What it does not do yet:
+//! It answers the same requests as the pdfium backend from the same types,
+//! reading a form's fields but not drawing them. What it does not do yet:
 //!
-//! - annotation appearances and form widgets are not drawn (page content
-//!   only);
+//! - annotation appearances and form widgets are not drawn (page content only);
 //! - export, images wrapped as pages and encrypted documents answer
 //!   [`Error::Unavailable`];
-//! - a region render crops a full-page render at the same scale (cached for
-//!   the tiles that follow) instead of rasterising only the region.
+//! - a region render crops a full-page render at the same scale (cached for the
+//!   tiles that follow) instead of rasterising only the region.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -37,19 +34,16 @@ use crate::model::{
 };
 use crate::text::{MAX_PAGE_CHARS, RawChar};
 
-/// Outline entries read before the rest is ignored: a cyclic or hostile
-/// outline cannot make this loop forever.
+/// Outline entries read before the rest is ignored, so a hostile outline cannot
+/// loop forever.
 const MAX_OUTLINE_ENTRIES: usize = 10_000;
 
-/// Form fields read before the rest is ignored, the same way: a cyclic or
-/// hostile field tree cannot make this loop forever.
 const MAX_FORM_FIELDS: usize = 10_000;
 
-/// Widgets read across a form, and the options listed for one choice field.
 const MAX_FORM_WIDGETS: usize = 20_000;
 const MAX_FORM_OPTIONS: usize = 10_000;
 
-/// How deep a field tree is walked: nesting deeper than this is not a form.
+/// How deep a field tree is walked: deeper nesting is not a form.
 const MAX_FIELD_DEPTH: usize = 64;
 
 // Form field flag bits, as the PDF spec numbers them from one.
@@ -63,7 +57,6 @@ const FIELD_FLAG_COMBO: u32 = 1 << 17;
 struct Doc {
     pdf: Pdf,
     pages: Vec<PageGeometry>,
-    /// Page object → index, for destinations that name a page by reference.
     page_ids: HashMap<ObjectIdentifier, usize>,
     /// The last full-page render, which the tiles of one view crop from.
     last_render: Option<FullRender>,
@@ -78,7 +71,6 @@ struct FullRender {
     pixels: Arc<Vec<u8>>,
 }
 
-/// Documents open in the portable engine.
 #[derive(Default)]
 pub(crate) struct Engine {
     docs: HashMap<u64, Doc>,
@@ -103,8 +95,8 @@ fn geometry_of(page: &Page<'_>) -> PageGeometry {
     PageGeometry { user_box, rotation }
 }
 
-/// A PDF text string: UTF-16 with a byte-order mark, UTF-8 with one, or
-/// `PDFDocEncoding` (read as Latin-1, which agrees on every printable code).
+/// A PDF text string: UTF-16 or UTF-8 with a byte-order mark, else
+/// `PDFDocEncoding`, read as Latin-1.
 fn text_string(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         let units: Vec<u16> = rest
@@ -174,7 +166,6 @@ fn pixels_for(value: f32) -> Result<u16> {
     Ok(rounded as u16)
 }
 
-/// Rotate a tightly packed RGBA image clockwise by `turns` quarter turns.
 fn rotate(pixels: &[u8], width: u32, height: u32, turns: u8) -> (Vec<u8>, u32, u32) {
     let turns = turns % 4;
     if turns == 0 {
@@ -613,8 +604,8 @@ fn annotation_kind(subtype: &str) -> AnnotationKind {
     }
 }
 
-/// The kind a field's `/FT` and `/Ff` describe together: a button is a push
-/// button or a radio group by its flags, a choice a combo box or a list box.
+/// The kind `/FT` and `/Ff` describe together: a button is a push button or a
+/// radio group by its flags, a choice a combo box or a list box.
 fn field_kind(field_type: Option<&str>, flags: u32) -> FieldKind {
     match field_type {
         Some("Tx") => FieldKind::Text,
@@ -661,9 +652,8 @@ fn choice_options(options: &Array<'_>) -> Vec<String> {
         .collect()
 }
 
-/// The widgets a terminal field is drawn with: the field itself when it
-/// carries its own `/Rect` (a field merged with its widget), plus every kid
-/// that is a widget rather than a field of its own.
+/// The widgets a terminal field is drawn with: the field itself when it has its
+/// own `/Rect`, plus every kid that is a widget rather than a field.
 fn field_widgets<'a>(field: &Dict<'a>, kids: &[Dict<'a>]) -> Vec<Dict<'a>> {
     let mut widgets = Vec::new();
     if field.contains_key(b"Rect") {
@@ -841,9 +831,8 @@ impl Doc {
     }
 }
 
-/// What a field inherits from its ancestors when it does not set it itself:
-/// `/FT`, `/Ff`, `/V` and `/Opt` are read from the nearest ancestor that has
-/// them, as the PDF form model defines.
+/// What a field takes from its ancestors when it sets none of it: `/FT`, `/Ff`,
+/// `/V` and `/Opt` come from the nearest ancestor that has them.
 #[derive(Clone, Default)]
 struct Inherited {
     field_type: Option<String>,
@@ -856,7 +845,6 @@ struct Inherited {
 /// count has a ceiling, so a cyclic or hostile tree ends.
 struct FormWalk<'a> {
     doc: &'a Doc,
-    /// The page each annotation object is listed on.
     pages_of_annots: HashMap<ObjectIdentifier, usize>,
     seen: HashSet<ObjectIdentifier>,
     fields: usize,
@@ -889,8 +877,6 @@ impl<'a> FormWalk<'a> {
         }
     }
 
-    /// Walk `field`, one node of a field tree whose parent is named `parent`
-    /// and hands down `inherited`.
     fn walk(&mut self, field: &Dict<'_>, parent: &str, inherited: &Inherited, depth: usize) {
         if self.fields >= MAX_FORM_FIELDS || depth > MAX_FIELD_DEPTH {
             return;
@@ -978,8 +964,6 @@ impl<'a> FormWalk<'a> {
         });
     }
 
-    /// The page a widget is drawn on: the one whose `/Annots` lists it, else
-    /// the one its `/P` names.
     fn widget_page(&self, widget: &Dict<'_>) -> Option<usize> {
         if let Some(id) = widget.obj_id()
             && let Some(page) = self.pages_of_annots.get(&id)
@@ -1021,8 +1005,8 @@ fn name_tree_lookup<'a>(node: &Dict<'a>, name: &[u8], depth: usize) -> Option<Ob
     None
 }
 
-/// Collects the page's glyphs in content order as [`RawChar`]s, inserting
-/// the word spaces the content stream leaves implicit in glyph positions.
+/// Collects a page's glyphs in content order as [`RawChar`]s, inserting the word
+/// spaces the content stream leaves implicit in glyph positions.
 #[derive(Default)]
 struct TextDevice {
     chars: Vec<RawChar>,
@@ -1167,7 +1151,6 @@ mod tests {
 
     #[test]
     fn quarter_turns_rotate_clockwise() {
-        // 2×1: red, blue.
         let px = [255, 0, 0, 255, 0, 0, 255, 255];
         let (out, w, h) = rotate(&px, 2, 1, 1);
         assert_eq!((w, h), (1, 2));

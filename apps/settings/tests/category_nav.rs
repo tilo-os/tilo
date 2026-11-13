@@ -1,16 +1,4 @@
 //! Click-driven navigation proof.
-//!
-//! This is the regression guard for the bug where clicking a sidebar category
-//! did NOT switch the content pane. It drives a *real pointer click* at the
-//! row's exported bounds through the window a host runs, whose sidebar rows
-//! run the pane's published open action, and asserts:
-//!
-//! 1. the selected category became the clicked one (read back from the app,
-//!    NOT set directly — that would be tautological);
-//! 2. the sidebar marks exactly that category's row active; and
-//! 3. the content pane for the new category actually renders.
-//!
-//! A test runs per category, so every entry is exercised end to end.
 
 #![allow(
     clippy::expect_used,
@@ -32,15 +20,10 @@ use ui::widget::DrawChild;
 // activation and must click visible rows rather than coordinates below clip.
 const VIEWPORT: (u32, u32) = (1200, 1800);
 
-/// Is the row for `label` currently drawn selected? Read from the list's
-/// published semantics.
 fn row_is_active(app: &mut Window, label: &str) -> bool {
     window_row(app, label).is_some_and(|row| row.selected)
 }
 
-/// Render the app's surface and report whether the scene encoded any draw
-/// commands — proof the composition, including the new category's content
-/// pane, actually paints rather than collapsing to nothing.
 fn renders_something(app: &mut Window) -> bool {
     app.with_widget::<ui::widget::NavShell, _>(|shell| {
         let theme = ui::Theme::dark();
@@ -59,7 +42,6 @@ fn active_row_count(app: &mut Window) -> usize {
     window_rows(app).iter().filter(|row| row.selected).count()
 }
 
-/// Click `target`'s visible row and assert the click reached it.
 fn click(app: &mut Window, target: Category) {
     let rect = window_row(app, &target.label())
         .unwrap_or_else(|| panic!("no sidebar row for {target:?}"))
@@ -75,8 +57,6 @@ fn click(app: &mut Window, target: Category) {
     click_category(app, target);
 }
 
-/// The shared click-and-assert routine: starting from a fresh window on the
-/// default category, click `target`'s row and assert navigation reached it.
 fn click_navigates_to(target: Category) {
     let mut app = window(VIEWPORT);
     assert_eq!(
@@ -112,7 +92,6 @@ fn click_navigates_to(target: Category) {
         "exactly one sidebar row may be active after navigating to {target:?}"
     );
 
-    // The composition (with the new category's content pane) paints.
     assert!(
         renders_something(&mut app),
         "the {target:?} content pane must render after navigating to it"
@@ -173,8 +152,6 @@ fn clicking_permissions_updates_or_about_navigates_to_its_pane() {
     }
 }
 
-/// A second click on a *different* category after a first proves repeated
-/// navigation keeps working (not just the first switch off the default).
 #[test]
 fn two_consecutive_clicks_navigate() {
     let mut app = window(VIEWPORT);

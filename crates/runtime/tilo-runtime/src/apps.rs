@@ -28,7 +28,7 @@ use std::{
     },
 };
 use tilo_action_broker::{
-    app_actions::{AppActionAccess, AppActionAccessResolver},
+    app_actions::{AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver},
     services::{
         AuthenticatedApplicationLaunch, LaunchContent, LaunchPlace, LaunchableApplication,
         Launched as LaunchOutcome, LauncherServices,
@@ -191,6 +191,13 @@ impl Apps {
     pub fn access_resolver(self: &Arc<Self>) -> AppActionAccessResolver {
         let apps = Arc::clone(self);
         Arc::new(move |app_id| apps.declared_access(app_id))
+    }
+
+    /// [`Self::declared_resource_kinds`] as the broker asks it.
+    #[must_use]
+    pub fn resource_kinds_resolver(self: &Arc<Self>) -> AppResourceKindsResolver {
+        let apps = Arc::clone(self);
+        Arc::new(move |app_id| apps.declared_resource_kinds(app_id).unwrap_or_default())
     }
 
     /// What people call `app_id`: its installed name, else one derived from

@@ -1,24 +1,17 @@
 //! systemd's password agent protocol
-//! (<https://systemd.io/PASSWORD_AGENTS/>), for early boot's own agents.
+//! (<https://systemd.io/PASSWORD_AGENTS/>).
 //!
-//! A request is an `ask.*` file in [`ASK_DIR`], and an agent answers it with
-//! one datagram, `+` followed by the answer, to the request's socket. The
-//! socket checks that the sender is root.
-//!
-//! Two agents use it: `tilo-sibling-unlock` answers systemd-cryptsetup's
-//! passphrase request with what another of the owner's devices released,
-//! and `tilo-boot-signin` carries the volume's requests to the boot screen
-//! while the person uses another way in, so they can go back to signing in.
+//! A request is an `ask.*` file in [`ASK_DIR`]; an agent answers it with one
+//! datagram, `+` followed by the answer, to the request's socket, which checks
+//! that the sender is root.
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
-/// Where systemd's password requests appear.
 pub const ASK_DIR: &str = "/run/systemd/ask-password";
 
-/// One parsed `ask.*` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
     pub id: String,
@@ -30,7 +23,6 @@ pub struct Ask {
     pub not_after: u64,
 }
 
-/// Parses the `[Ask]` section of a request file.
 pub fn parse(text: &str) -> Result<Ask> {
     let mut in_ask = false;
     let (mut id, mut message, mut socket, mut pid, mut not_after) =
@@ -70,9 +62,9 @@ pub fn parse(text: &str) -> Result<Ask> {
 
 /// Whether a request is cryptsetup's, for the volume on `device`.
 ///
-/// systemd-cryptsetup names its request `cryptsetup:<source device>`; the
-/// source may be spelt as any link to the same block device, so both sides
-/// are resolved before they are compared.
+/// systemd-cryptsetup names its request `cryptsetup:<source device>`, and the
+/// source may be any link to the same block device, so both sides are resolved
+/// before they are compared.
 pub fn is_for(ask: &Ask, device: &Path) -> bool {
     let Some(source) = ask.id.strip_prefix("cryptsetup:") else {
         return false;
@@ -97,8 +89,8 @@ fn monotonic_micros() -> u64 {
         .saturating_add(u64::try_from(now.tv_nsec).unwrap_or(0) / 1000)
 }
 
-/// Whether the request is still waiting: its program runs and its deadline,
-/// if any, has not passed.
+/// Whether the request is still waiting: its program runs and its deadline, if
+/// any, has not passed.
 pub fn live(ask: &Ask) -> bool {
     if ask.not_after != 0 && monotonic_micros() > ask.not_after {
         return false;
@@ -107,7 +99,6 @@ pub fn live(ask: &Ask) -> bool {
         .is_none_or(|pid| Path::new(&format!("/proc/{pid}")).exists())
 }
 
-/// The pending requests for `device` in `dir`, oldest name first.
 pub fn pending(dir: &Path, device: &Path) -> Vec<Ask> {
     requests(dir)
         .into_iter()
@@ -115,7 +106,6 @@ pub fn pending(dir: &Path, device: &Path) -> Vec<Ask> {
         .collect()
 }
 
-/// Every live request in `dir`, oldest name first.
 pub fn requests(dir: &Path) -> Vec<Ask> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -137,7 +127,6 @@ pub fn requests(dir: &Path) -> Vec<Ask> {
         .collect()
 }
 
-/// Sends `passphrase` as the answer to `ask`.
 pub fn answer(ask: &Ask, passphrase: &str) -> Result<()> {
     let mut reply = Zeroizing::new(Vec::with_capacity(passphrase.len().saturating_add(1)));
     reply.push(b'+');

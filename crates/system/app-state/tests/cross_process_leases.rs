@@ -13,7 +13,7 @@ use durable_store::{DurableStore, Lease, StorageKey, StoreError};
 use tempfile::TempDir;
 
 fn key() -> StorageKey {
-    StorageKey::record("so.tilo.test", "room-a", "held")
+    StorageKey::document("so.tilo.test", "room-a", "held")
 }
 
 fn take(store: &FsStore, shared: bool) -> Result<(Lease, bool), StoreError> {

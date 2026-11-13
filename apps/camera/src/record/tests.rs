@@ -95,7 +95,6 @@ fn concurrent_scans_and_handoffs_converge() {
     );
 }
 
-/// What an agent records reads as Camera's sentences.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};

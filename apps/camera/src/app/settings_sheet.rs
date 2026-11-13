@@ -28,10 +28,7 @@ pub(super) type ActionQueue = Rc<RefCell<Vec<Action>>>;
 pub(super) struct SettingsSheet {
     pub(super) dialog: ModalDialog<Form>,
     states: States,
-    /// What the controls run, once Camera is open on a record.
     actions: Option<Actions<Record>>,
-    /// Whether the form offers a default lens: only where there is more
-    /// than one camera to start with.
     lenses: bool,
 }
 
@@ -47,7 +44,6 @@ struct States {
     geotag: LocalState<bool>,
 }
 
-/// One choice: its stored value and its visible label.
 fn options<T: Copy>(
     all: &[T],
     value: fn(T) -> &'static str,
@@ -74,7 +70,6 @@ fn timer_value(timer: Timer) -> &'static str {
     }
 }
 
-/// `control`, running `effect`; inert until Camera is open on a record.
 fn bound<I: 'static, C: ActionControl<I>>(
     control: C,
     actions: Option<&Actions<Record>>,
@@ -125,7 +120,6 @@ impl States {
         }
     }
 
-    /// The form, its controls bound to these values.
     fn form(&self, actions: Option<&Actions<Record>>, lenses: bool) -> Form {
         let mut capture = FormSection::new(crate::CATALOG.t("camera-settings-capture"))
             .grouped()
@@ -217,13 +211,11 @@ impl SettingsSheet {
         }
     }
 
-    /// Bind the controls to Camera's published effects.
     pub(super) fn attach(&mut self, actions: &Actions<Record>) {
         self.actions = Some(actions.clone());
         *self.dialog.content_mut() = self.states.form(self.actions.as_ref(), self.lenses);
     }
 
-    /// Whether the sheet offers a default lens.
     #[cfg(test)]
     pub(super) fn offers_lenses(&self) -> bool {
         self.lenses

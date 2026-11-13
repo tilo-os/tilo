@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
-use tilo_desktop::launchpad::CollaborationLaunchpad;
+use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop_model::{DesktopTree, Strip, StripId, Tab, TileContent, Workspace, WorkspaceSlot};
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
@@ -87,6 +87,7 @@ impl Desk {
             Box::new(surface),
             handle.clone(),
             CollaborationLaunchpad::new(),
+            Rc::new(|| LaunchpadAction::ALL.to_vec()),
             Rc::clone(&asks),
             Vec::new(),
         );

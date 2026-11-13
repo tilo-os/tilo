@@ -2056,6 +2056,7 @@ impl ActorState {
         // A remote-action retry is byte-identical on purpose; the
         // receiving host deduplicates it by invocation id instead.
         if (matches!(&msg, NeighbourMsg::RemoteInput { .. })
+            || said_again_on_purpose(&msg)
             || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
             && let Some(tx) = self.subscribers.get(&ws)
         {
@@ -2131,6 +2132,7 @@ impl ActorState {
     /// always news: the shell takes the device's identity anew each time.
     fn is_news(&mut self, ws: WorkspaceId, msg: &NeighbourMsg, fingerprint: [u8; 32]) -> bool {
         matches!(msg, NeighbourMsg::IdentityHello { .. })
+            || said_again_on_purpose(msg)
             || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
     }
 
@@ -2322,6 +2324,7 @@ impl ActorState {
                 &mut self.recent_input,
             ),
             _ if self.topics.contains_key(&ws) => self.is_news(ws, &msg, fingerprint),
+            _ if said_again_on_purpose(&msg) => true,
             _ => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
         };
         if !new && !replayed {
@@ -3182,6 +3185,15 @@ fn remember_governance(
 
 fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
+}
+
+/// Whether `msg` is said again byte for byte on purpose, so that every saying of it is news. A
+/// device says which windows of another it views every few seconds for as long as it views them,
+/// and the device hosting them stops naming a viewer it no longer hears: an ask dropped as a
+/// repeat of the first would leave the viewer unnamed from then on. It says what the viewer wants
+/// now, so a copy that came over another route changes nothing.
+const fn said_again_on_purpose(msg: &NeighbourMsg) -> bool {
+    matches!(msg, NeighbourMsg::SurfaceViewRequest { .. })
 }
 
 /// Remote input is not deduplicated for good: a second click or key press is

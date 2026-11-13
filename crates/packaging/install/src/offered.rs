@@ -1,5 +1,5 @@
-//! `tilo-install update` from a registry: the store client resolves the
-//! package the way `app update` does, and the download is held to the offer.
+//! `tilo-install update` from a registry: the store client resolves the package as `app update`
+//! does, and the download is held to the signed offer.
 
 use std::fmt::Write as _;
 
@@ -7,8 +7,7 @@ use package_store::InstalledPackage;
 
 use super::{Error, TrustFlags};
 
-/// A package a configured registry offers, downloaded and checked against
-/// the signed offer, with what `check` must then hold it to.
+/// A package a configured registry offers, downloaded, with what `check` must then hold it to.
 pub(super) struct Offered {
     pub(super) staged: app_cli::install::StagedPackage,
     pub(super) source: String,
@@ -16,14 +15,12 @@ pub(super) struct Offered {
     pub(super) payload: Option<app_registry::HttpBlobs>,
 }
 
-/// Resolve `entry` the way `app update` does — through the store's
-/// `registries.toml` and its verified catalogue — and download the offer. A
-/// runtime package takes the newest package of the runtime build it provides,
-/// as `app` updates an installed runtime.
+/// Resolve `entry` the way `app update` does — through the store's `registries.toml` and its
+/// verified catalogue — and download the offer. A runtime package takes the newest package of the
+/// runtime build it provides, as `app` updates an installed runtime.
 ///
-/// The download is checked against the signed registry entry (length and
-/// BLAKE3); `check` then also holds the package to the entry's publisher and
-/// package root, on top of the trust flags the user passed.
+/// The download is checked against the signed registry entry (length and BLAKE3); `check` then also
+/// holds the package to the entry's publisher and package root, on top of the user's trust flags.
 pub(super) fn fetch_from_registries(
     entry: &InstalledPackage,
     version_req: Option<&str>,
@@ -46,8 +43,7 @@ pub(super) fn fetch_from_registries(
     };
     let provides = provided_runtime(entry)?;
     let newest = match &provides {
-        // The catalogue lists apps and language packs; a runtime is found by
-        // the build it provides.
+        // The catalogue lists apps and language packs; a runtime is found by the build it provides.
         Some(runtime) => app_cli::runtime_offer_from_enabled(runtime).map_err(fetch_error)?,
         None => listing
             .apps
@@ -104,8 +100,7 @@ pub(super) fn fetch_from_registries(
     })
 }
 
-/// The runtime build (`tilo-runtime/<v>`) an installed runtime package
-/// provides; `None` for any other package.
+/// The `tilo-runtime/<v>` build an installed runtime package provides; `None` for any other kind.
 fn provided_runtime(entry: &InstalledPackage) -> Result<Option<String>, Error> {
     let manifest =
         tilo_app_package::Manifest::from_toml_str(&std::fs::read_to_string(&entry.manifest_path)?)

@@ -39,7 +39,6 @@ pub fn cpu_pool() -> &'static rayon::ThreadPool {
     })
 }
 
-/// The most workers a library's own parallel work gets in this process.
 const LIBRARY_THREADS: usize = 16;
 
 /// Build rayon's process-wide pool before a library builds it, so its size is
@@ -91,8 +90,6 @@ where
     CpuTask(rx)
 }
 
-/// The pending result of [`cpu()`]. Dropping it discards the result; work
-/// that has not started yet is skipped.
 #[derive(Debug)]
 pub struct CpuTask<R>(oneshot::Receiver<Option<R>>);
 
@@ -112,7 +109,6 @@ mod tests {
 
     #[test]
     fn cpu_work_runs_on_the_pool_and_reports_panics() {
-        // phase: cpu_work_runs_on_the_cpu_pool_not_the_runtime
         {
             let (name, in_runtime) = crate::block_on(cpu(|| {
                 (
@@ -125,7 +121,6 @@ mod tests {
             assert!(name.unwrap().starts_with("tilo-cpu-"));
             assert!(!in_runtime);
         }
-        // phase: a_panicking_job_reports_failure
         {
             let result = crate::block_on(cpu(|| -> u8 { panic!("job failure") })).unwrap();
             assert!(matches!(result, Err(Error::TaskFailed)));

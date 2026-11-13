@@ -34,12 +34,8 @@ use std::time::Instant;
 
 use crate::network::Network;
 
-/// Top-level entries of the runtime tree that are mounted rather than
-/// linked. Everything else at the top that is a symlink (`bin -> usr/bin`) is
-/// recreated as one.
 const MOUNTED: &[&str] = &["usr", "etc", "var", "proc", "dev", "tmp", "run"];
 
-/// The links a merged-`/usr` root has at its top, when the target exists.
 const MERGED_USR: &[(&str, &str)] = &[
     ("bin", "usr/bin"),
     ("sbin", "usr/sbin"),
@@ -47,7 +43,6 @@ const MERGED_USR: &[(&str, &str)] = &[
     ("lib64", "usr/lib64"),
 ];
 
-/// The subtrees the upper covers; a tool's files live under these.
 pub const UPPER_SUBTREES: &[&str] = &["usr", "etc"];
 
 /// Who the build's root is, outside its namespace.
@@ -64,7 +59,6 @@ pub enum Identity {
 }
 
 impl Identity {
-    /// The best this host offers, probed once per process.
     pub fn detect() -> Self {
         static DETECTED: std::sync::OnceLock<Identity> = std::sync::OnceLock::new();
         *DETECTED.get_or_init(|| {
@@ -81,10 +75,8 @@ impl Identity {
     }
 }
 
-/// The `unshare` prefix that enters a namespace with subordinate ids.
 const UNSHARE_SUBORDINATE: &[&str] = &["--user", "--map-root-user", "--map-auto", "--"];
 
-/// Output of a sandboxed command beyond which it is treated as runaway.
 const OUTPUT_LIMIT: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -107,7 +99,6 @@ pub enum SandboxError {
     UnsupportedGatedNetwork,
 }
 
-/// Captured result of one command inside the sandbox.
 #[derive(Debug)]
 pub struct Ran {
     pub success: bool,
@@ -195,7 +186,6 @@ impl BuildSandbox {
         self
     }
 
-    /// The upper: `usr/` and `etc/` holding everything the transaction wrote.
     pub fn upper(&self) -> PathBuf {
         self.scratch.join("upper")
     }
@@ -204,12 +194,6 @@ impl BuildSandbox {
         &self.runtime
     }
 
-    /// The bwrap argument vector that enters the sandbox and runs `program`.
-    ///
-    /// # Errors
-    ///
-    /// [`SandboxError::Io`] when the runtime's top level can't be listed or
-    /// the dnf cache can't be created.
     pub fn bwrap_args(
         &self,
         program: &[&str],
@@ -268,7 +252,6 @@ impl BuildSandbox {
             })?;
             extend(&[&"--bind", cache, &"/var/cache/libdnf5"]);
         }
-        // After the mounts: the network's resolv.conf binds over the overlay.
         for arg in network {
             extend(&[arg]);
         }
@@ -307,12 +290,6 @@ impl BuildSandbox {
         self.run_on(&self.network, argv, timeout)
     }
 
-    /// [`Self::run`] with no network, whatever the sandbox's is: for
-    /// queries of the rpm database.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::run`].
     pub fn run_offline(&self, argv: &[&str], timeout: Duration) -> Result<Ran, SandboxError> {
         self.run_on(&Network::Offline, argv, timeout)
     }
@@ -449,7 +426,6 @@ impl BuildSandbox {
             Err(ChildPid::Exited(out)) => return out.map_err(SandboxError::from),
             Err(ChildPid::Failed(reason)) => return Err(SandboxError::Egress(reason)),
         };
-        // Both ends the child holds are in it by now.
         drop((info_write, block_read));
         let attached = tilo_egress::Netns::of_process(pid)
             .map_err(|e| format!("the sandbox's namespaces: {e}"))
@@ -559,7 +535,6 @@ impl BuildSandbox {
     }
 }
 
-/// A close-on-exec pipe: `(read, write)`.
 #[cfg(target_os = "linux")]
 fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds: [RawFd; 2] = [-1, -1];
@@ -619,7 +594,6 @@ fn parse_child_pid(info: &[u8]) -> Option<u32> {
     let rest = text.split_once("\"child-pid\"")?.1;
     let rest = rest.trim_start().strip_prefix(':')?.trim_start();
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    // A number is complete once something follows it.
     (rest.len() > digits.len())
         .then(|| digits.parse().ok())
         .flatten()
@@ -709,7 +683,6 @@ mod tests {
         let scratch = root.path().join("scratch");
         std::fs::create_dir_all(runtime.join("usr")).unwrap();
         let bwrap = root.path().join("bwrap");
-        // Any attempted spawn, including a host-network fallback, leaves a marker.
         std::fs::write(
             &bwrap,
             "#!/bin/sh\nprintf started > \"$0.started\"\nexit 0\n",

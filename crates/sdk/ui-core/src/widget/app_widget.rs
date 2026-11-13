@@ -606,10 +606,10 @@ mod component_adapter {
                 Some(previous) => reads.carry(previous.reads),
                 None => reads,
             };
-            // The language the pass read in, not the one that stands now:
-            // words loading while it ran (another window's page) are read
-            // again by the next pass, which shows what they say.
-            let locale = reads.locale.unwrap_or(now.standing.locale);
+            // The language that stands now: a pass words loaded while it ran
+            // read in two languages, and proves nothing (see `PassReading`),
+            // so the next pass shows them in the one that stands.
+            let locale = now.standing.locale;
             self.witness = match (now.revision, now.document) {
                 (Some(revision), Some(document)) => Some(crate::component_inputs::Witness {
                     revision,

@@ -1,21 +1,6 @@
 //! Content sealed under its own key: the bytes a record references (a
 //! picture, an attachment), encrypted before they leave the writer's device,
 //! so whoever stores or carries them holds ciphertext alone.
-//!
-//! Every item has a key of its own, which travels in the reference the
-//! record keeps, so the record's readers, and only they, open it: a fresh
-//! random one, or one derived from the members' secret and the bytes, so the
-//! same bytes stored twice are one item (`tilo_content::ContentStore`). The content
-//! is sealed in chunks of [`CHUNK`] bytes, each XChaCha20-Poly1305 under a
-//! nonce made of its index and whether it is the last, so a reader opens and
-//! checks each chunk as it streams in, and a stream cut short or reordered
-//! fails to open. A key seals one item only, so a nonce derived from the
-//! chunk's position is never used twice under it; sealing the same bytes
-//! under the same key gives the same ciphertext.
-//!
-//! Layout: `"TCB" ‖ version (0x01) ‖ chunk₀ ‖ … ‖ chunkₙ`, each chunk its
-//! sealed bytes and 16-byte tag. Every chunk but the last holds [`CHUNK`]
-//! bytes; the last holds the rest, possibly none.
 
 use std::io::{self, Read};
 
@@ -26,7 +11,6 @@ use crate::error::{Error, Result};
 use crate::keys::SymmetricKey;
 use crate::label::Label;
 
-/// The header every sealed item starts with.
 pub const HEADER: &[u8; 4] = b"TCB\x01";
 /// Plaintext bytes in each chunk but the last.
 pub const CHUNK: usize = 64 * 1024;
@@ -97,7 +81,6 @@ impl<R: Read> Chunks<R> {
         }
     }
 
-    /// The next chunk and whether it is the last; `None` past the last.
     fn next_chunk(&mut self) -> io::Result<Option<(Vec<u8>, bool)>> {
         if self.done {
             return Ok(None);
@@ -123,7 +106,6 @@ impl<R: Read> Chunks<R> {
         Ok(Some((chunk, last)))
     }
 
-    /// Copy what is ready to `buf`, making the next output with `make`.
     fn read_with(
         &mut self,
         buf: &mut [u8],
@@ -152,7 +134,6 @@ fn invalid(why: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, why)
 }
 
-/// Seals what `inner` yields as it is read: a [`Read`] of the sealed item.
 pub struct SealReader<R> {
     cipher: XChaCha20Poly1305,
     chunks: Chunks<R>,

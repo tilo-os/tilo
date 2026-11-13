@@ -21,7 +21,6 @@ pub struct Reading {
     pub taken_ms: u64,
     pub window_ms: u64,
     pub system: Option<SystemStats>,
-    /// `None` when the reading did not include processes.
     pub processes: Option<Vec<ProcessStats>>,
     pub apps: Vec<AppUsage>,
 }
@@ -57,7 +56,6 @@ impl Reading {
     }
 }
 
-/// The counters a rate is measured from.
 #[derive(Default)]
 struct Previous {
     at_ms: Option<u64>,
@@ -65,11 +63,9 @@ struct Previous {
     cpu_cores: Vec<CpuTicks>,
     disks: HashMap<String, (u64, u64)>,
     interfaces: HashMap<String, (u64, u64)>,
-    /// `(pid, started_at)` → cumulative processor ticks.
     processes: HashMap<(u32, u64), u64>,
 }
 
-/// Turns readings into rates against the reading before.
 pub struct Collector {
     probe: Box<dyn Probe>,
     policy: EndPolicy,
@@ -95,7 +91,6 @@ impl Collector {
         &self.policy
     }
 
-    /// Forget the counters: the next reading starts a new interval.
     pub fn reset(&mut self) {
         self.previous = Previous::default();
     }

@@ -1,18 +1,12 @@
-//! Capture for an app its sandbox confines (macOS Seatbelt), brokered by the
-//! host that launched it.
+//! Capture for an app its sandbox confines (macOS Seatbelt), brokered by the host
+//! that launched it.
 //!
-//! A confined app can reach no camera or microphone: macOS gates both
-//! through TCC, which the sandbox profile does not grant. The host, which
-//! holds the TCC permission, captures on the app's behalf instead. The app
-//! inherits one control socket ([`CAPTURE_FD_ENV`]); for each capture it
-//! creates a socket pair and sends one end with its request, and the host
-//! answers on that end — granted or refused — and then streams records to it
-//! until either side closes it or the grant goes. The app names a device and
-//! a format, never a device handle.
-//!
-//! [`crate::VideoCapture::open_camera`] and
-//! [`crate::AudioCapture::open_microphone`] take this path by themselves in
-//! such an app, so its code is the same wherever it runs.
+//! macOS gates camera and microphone through TCC, which the sandbox profile does
+//! not grant, so the host that holds the permission captures on the app's behalf.
+//! The app inherits one control socket ([`CAPTURE_FD_ENV`]) and, for each capture,
+//! creates a socket pair and sends one end with its request: the host answers on
+//! that end, then streams records to it until either side closes it or the grant
+//! goes.
 
 use std::collections::VecDeque;
 use std::io::{self, IoSlice, IoSliceMut, Read as _, Write as _};
@@ -34,16 +28,13 @@ use crate::{
 };
 use tilo_lock::MutexRecover as _;
 
-/// The inherited control socket, as a descriptor number.
 pub const CAPTURE_FD_ENV: &str = "TILO_SVC_CAPTURE_FD";
 
 const MAX_REQUEST: usize = 512;
 const MAX_REASON: u32 = 4096;
 const MAX_AUDIO_SAMPLES: u32 = 1 << 20;
-/// How long a stream waits for a frame before checking its grant again.
 const IDLE: Duration = Duration::from_millis(10);
 
-/// What an app asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     Camera { width: u32, height: u32 },
@@ -80,7 +71,6 @@ impl Request {
     }
 }
 
-/// One record on a capture stream.
 #[derive(Clone, Debug, PartialEq)]
 enum Record {
     Granted,
@@ -126,7 +116,6 @@ fn write_record(mut stream: &UnixStream, record: &Record) -> io::Result<()> {
     stream.write_all(&payload)
 }
 
-/// The next record; `None` at the end of the stream.
 fn read_record(stream: &mut UnixStream) -> io::Result<Option<Record>> {
     let mut head = [0_u8; 13];
     match stream.read_exact(&mut head) {
@@ -192,8 +181,6 @@ fn send_with_fd(socket: &UnixDatagram, bytes: &[u8], fd: &OwnedFd) -> io::Result
     Ok(())
 }
 
-/// Receive one message and the descriptor attached to it, if any; `None`
-/// when the peer closed the socket.
 fn recv_with_fd(socket: &UnixDatagram) -> io::Result<Option<(Vec<u8>, Option<OwnedFd>)>> {
     let mut bytes = vec![0_u8; MAX_REQUEST];
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
@@ -213,8 +200,6 @@ fn recv_with_fd(socket: &UnixDatagram) -> io::Result<Option<(Vec<u8>, Option<Own
         Err(Errno::CONNRESET | Errno::NOTCONN) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    // A descriptor the kernel attached is owned from here on; any other
-    // control message is ignored.
     let mut fd = None;
     for message in control.drain() {
         if let RecvAncillaryMessage::ScmRights(mut fds) = message
@@ -230,28 +215,16 @@ fn recv_with_fd(socket: &UnixDatagram) -> io::Result<Option<(Vec<u8>, Option<Own
     Ok(Some((bytes, fd)))
 }
 
-/// Whether a device may be captured for the app a control socket serves.
 pub trait Policy: Send + Sync {
-    /// Whether a capture of `device` may start now, asking the person where
-    /// nobody has decided yet.
     fn admit(&self, device: DeviceKind) -> Result<(), String>;
-    /// Whether a running capture of `device` may go on.
     fn allows(&self, device: DeviceKind) -> bool;
 }
 
-/// Where the host's own captures come from.
 pub trait Sources: Send + Sync {
-    /// # Errors
-    ///
-    /// The camera cannot start.
     fn camera(&self, request: &CameraRequest) -> Result<VideoCapture, CaptureError>;
-    /// # Errors
-    ///
-    /// The microphone cannot start.
     fn microphone(&self, request: &MicrophoneRequest) -> Result<AudioCapture, CaptureError>;
 }
 
-/// The host's own devices, through this crate's native backends.
 pub struct SystemSources;
 
 impl Sources for SystemSources {
@@ -263,9 +236,9 @@ impl Sources for SystemSources {
     }
 }
 
-/// Serve one app's capture requests on `control` until it closes it: each
-/// admitted by `policy` is captured from `sources` on a thread of its own
-/// and streamed until the app hangs up or `policy` stops allowing it.
+/// Serve one app's capture requests on `control` until it closes it: each admitted
+/// by `policy` is captured from `sources` on a thread of its own and streamed until
+/// the app hangs up or `policy` stops allowing it.
 pub fn serve(
     control: &UnixDatagram,
     policy: &Arc<dyn Policy>,
@@ -335,8 +308,7 @@ fn stream_to(stream: &UnixStream, request: &Request, policy: &dyn Policy, source
     }
 }
 
-/// Grant, then send what `next` produces until the app hangs up, the
-/// capture ends or its grant goes.
+/// Grant, then send what `next` produces until the app hangs up or the grant goes.
 fn pump(
     stream: &UnixStream,
     policy: &dyn Policy,
@@ -364,8 +336,6 @@ fn pump(
     }
 }
 
-/// The broker of an app whose host passed it one ([`CAPTURE_FD_ENV`]). The
-/// descriptor is taken once, by the first call.
 pub(crate) fn from_env() -> Option<Arc<Client>> {
     static CLIENT: OnceLock<Option<Arc<Client>>> = OnceLock::new();
     CLIENT
@@ -388,23 +358,18 @@ pub(crate) fn from_env() -> Option<Arc<Client>> {
         .clone()
 }
 
-/// An app's end of the control socket.
 pub struct Client {
     control: UnixDatagram,
 }
 
-/// What a brokered capture has received so far.
 struct Received {
     state: CaptureState,
     latest: Option<Frame>,
     samples: VecDeque<f32>,
     sample_rate: u32,
-    /// Told when `state` changes.
     wake: Option<Wake>,
 }
 
-/// A running brokered capture: what the stream delivered, and the stream,
-/// which is shut down when the capture is dropped.
 struct Brokered {
     received: Arc<Mutex<Received>>,
     stream: UnixStream,
@@ -422,7 +387,6 @@ impl Client {
         Self { control }
     }
 
-    /// Ask the host for `request` and receive its stream in the background.
     fn start(&self, request: &Request) -> Result<Brokered, CaptureError> {
         let failed =
             |error: io::Error| CaptureError::Failed(format!("the capture broker: {error}"));
@@ -452,12 +416,6 @@ impl Client {
         })
     }
 
-    /// A camera through the host.
-    ///
-    /// # Errors
-    ///
-    /// The request could not be sent; a refusal arrives as
-    /// [`CaptureState::Failed`].
     pub fn camera(&self, request: &CameraRequest) -> Result<VideoCapture, CaptureError> {
         let inner = self.start(&Request::Camera {
             width: request.width,
@@ -468,11 +426,6 @@ impl Client {
         })
     }
 
-    /// A microphone through the host.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::camera`].
     pub fn microphone(&self, request: &MicrophoneRequest) -> Result<AudioCapture, CaptureError> {
         let inner = self.start(&Request::Microphone {
             sample_rate: request.sample_rate,
@@ -566,7 +519,6 @@ impl AudioSource for Brokered {
     }
 }
 
-/// Synthetic devices, for tests of code that brokers or consumes capture.
 #[cfg(any(test, feature = "test-support"))]
 pub mod synthetic {
     use super::{
@@ -755,9 +707,6 @@ mod tests {
         );
     }
 
-    /// While the person has not answered, nothing changes and nothing
-    /// wakes the app; their answer, either way, wakes it once, and the
-    /// state it then reads is that answer.
     #[test]
     fn the_persons_answer_wakes_an_app_that_sleeps_until_then() {
         for allow in [true, false] {
@@ -823,10 +772,6 @@ mod tests {
         until(|| Some(camera.state()).filter(|s| *s == CaptureState::Ended));
     }
 
-    /// The host's real default camera and microphone through the broker.
-    /// Opt-in, since it turns the camera on and may ask for the TCC
-    /// permission: `TILO_CAPTURE_DEVICE_TEST=1 cargo test -p tilo-capture
-    /// --features camera,microphone`.
     #[cfg(all(native_camera, native_microphone))]
     #[test]
     fn the_default_devices_stream_through_the_broker_when_asked() {

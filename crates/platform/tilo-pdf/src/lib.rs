@@ -1,9 +1,8 @@
 //! `tilo-pdf` — Tilo's one PDF engine API.
 //!
-//! Every PDF consumer (the PDF viewer, thumbnails, previews) goes through
-//! this crate. The API is engine independent: documents, pages, bitmaps,
-//! text layers, links, outlines, form fields, annotations and edits are
-//! this crate's own types, and no engine type is visible outside the crate.
+//! Every PDF consumer (the PDF viewer, thumbnails, previews) goes through this
+//! crate, whose types are engine independent: no engine type is visible outside
+//! the crate.
 //!
 //! ## Engines
 //!
@@ -14,11 +13,10 @@
 //! | annotation appearances and form widgets | ✅ | not drawn |
 //! | export, images as pages, encrypted files | ✅ | `Unavailable` |
 //!
-//! On Linux and macOS the engine is pdfium in the sandboxed helper when a
-//! pdfium library is installed. hayro ([`Engine::portable`]) is a memory-safe
-//! Rust rasteriser, so parsing in process does not carry the risk that makes
-//! pdfium a separate, confined process: it is the only engine on the web and
-//! the fallback wherever pdfium or its helper is unavailable.
+//! pdfium is the engine where a pdfium library is installed. hayro
+//! ([`Engine::portable`]) is a memory-safe Rust rasteriser that needs no
+//! process of its own, so it is the engine on the web and the fallback wherever
+//! pdfium or its helper is unavailable.
 //!
 //! ## Isolation
 //!
@@ -26,12 +24,12 @@
 //! parsed in a separate helper process (`tilo-pdf-helper`) that `tilo-sandbox`
 //! confines to read-only access to the pdfium library, the system fonts and
 //! Tilo's pinned font catalog, with no network and no exec (Landlock and
-//! seccomp on Linux, Seatbelt on macOS).
-//! Documents reach the helper as read-only descriptors; pages are rendered
-//! straight into pooled shared pixel buffers and exports come back as sealed
-//! memory files, so no pixel or page is copied through the socket. If the helper crashes or hangs, the request fails
-//! with [`Error::Crashed`] or [`Error::Timeout`] and the next request starts
-//! a fresh helper, re-opening the documents it needs.
+//! seccomp on Linux, Seatbelt on macOS). Documents reach it as read-only
+//! descriptors, pages render straight into pooled shared pixel buffers and
+//! exports come back as sealed memory files, so nothing is copied through the
+//! socket. If the helper crashes or hangs the request fails with
+//! [`Error::Crashed`] or [`Error::Timeout`], and the next request starts a fresh
+//! helper.
 //!
 //! ### When the sandbox cannot be enforced
 //!
@@ -44,27 +42,15 @@
 //! A partially enforced ruleset (a kernel whose Landlock ABI is older than
 //! the one Tilo targets) counts as not enforced.
 //!
-//! Release builds then parse with hayro, never with an unconfined pdfium. A
-//! development build instead parses with pdfium in this process, saying so on
-//! stderr, exactly as it does when no helper binary is installed — unless [`REQUIRE_SANDBOX_ENV`] is set, which
-//! an environment that promises a sandbox-capable kernel (a CI runner with
-//! Landlock) does so that an unconfined helper is a failure there. Tests
-//! whose assertions need the helper itself go through [`sandboxed_for_test`]:
-//! they stand down on a host that cannot confine it, and fail when the
-//! variable is set.
+//! Release builds then parse with hayro, never with an unconfined pdfium; a
+//! development build parses with pdfium in this process instead, saying so on
+//! stderr, exactly as it does when no helper binary is installed — unless
+//! [`REQUIRE_SANDBOX_ENV`] is set, which an environment that promises a
+//! sandbox-capable kernel (a CI runner with Landlock) does so that an
+//! unconfined helper is a failure there. Tests whose assertions need the helper
+//! itself go through [`sandboxed_for_test`]: they stand down on a host that
+//! cannot confine it, and fail when the variable is set.
 //!
-//! ## Shape
-//!
-//! - [`Engine`] — a handle to the engine (cheap to clone). [`Engine::shared`]
-//!   is the process-wide instance.
-//! - [`Document`] — an open document: page geometry ([`PageGeometry`]),
-//!   rendering ([`Document::render`], [`Document::render_tile`]), the text
-//!   layer ([`Document::text`] → [`TextLayer`]) with selection and copy,
-//!   search, links, outline, form fields, annotations, and
-//!   [`Document::export`], which writes [`Edits`] as real PDF objects.
-//!
-//! A second engine would slot in as another backend behind [`Engine`]; the
-//! text analysis in [`text`] only needs the engine's raw characters.
 
 #![cfg_attr(
     test,
@@ -181,7 +167,6 @@ impl Bitmap {
         self.height
     }
 
-    /// The RGBA pixels, `width * height * 4` bytes.
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         (*self.pixels).as_ref()
@@ -245,28 +230,23 @@ const DEV_OVERRIDES: bool = cfg!(debug_assertions);
 /// see [When the sandbox cannot be enforced](crate#when-the-sandbox-cannot-be-enforced).
 pub const REQUIRE_SANDBOX_ENV: &str = "TILO_REQUIRE_PDF_SANDBOX";
 
-/// Whether this environment promises that the helper can confine itself
-/// ([`REQUIRE_SANDBOX_ENV`] is set), so [`Error::Unconfined`] is a failure
-/// rather than a property of the host.
+/// Whether [`REQUIRE_SANDBOX_ENV`] is set, making [`Error::Unconfined`] a
+/// failure rather than a property of the host.
 #[cfg(unix)]
 fn sandbox_required() -> bool {
     std::env::var_os(REQUIRE_SANDBOX_ENV).is_some_and(|v| !v.is_empty())
 }
 
-/// The gate for every test whose assertions need the sandboxed helper
-/// itself — its confinement, or the pinned appearance fonts compiled into it
-/// — rather than any engine. Tests that only need documents opened use
-/// [`Engine::shared`] and run everywhere.
+/// The gate for tests whose assertions need the sandboxed helper itself — its
+/// confinement, or the pinned fonts compiled into it — rather than any engine.
+/// Tests that only need documents opened use [`Engine::shared`].
 ///
-/// The engine is [`HelperGate::Sandboxed`] when it is the helper. Otherwise
-/// the test stands down, saying on stderr that `what` went unchecked: on a
-/// host that cannot confine the helper, and where no helper binary is built
-/// (the in-process engine of a development build).
+/// Otherwise the test stands down, saying on stderr that `what` went unchecked.
 ///
 /// # Panics
 ///
-/// When the host cannot confine the helper and [`REQUIRE_SANDBOX_ENV`] is
-/// set: the environment promised a sandbox.
+/// When the host cannot confine the helper and [`REQUIRE_SANDBOX_ENV`] is set:
+/// the environment promised a sandbox.
 pub fn sandboxed_for_test(engine: Result<Engine>, what: &str) -> HelperGate {
     match engine {
         Ok(engine) if engine.is_sandboxed() => HelperGate::Sandboxed(engine),
@@ -294,12 +274,11 @@ pub fn sandboxed_for_test(engine: Result<Engine>, what: &str) -> HelperGate {
 }
 
 /// The first page of `pdf`, rasterised through [`Engine::shared`] to fit a
-/// `width` x `height` box: straight-alpha RGBA pixels and their size. `None`
-/// when no engine is available or the document is unreadable.
+/// `width` x `height` box: straight-alpha RGBA pixels and their size, or `None`
+/// when no engine answers or the document is unreadable.
 ///
-/// Its signature is a file preview's (`tilo_thumbnail::PdfRasteriser`): an
-/// app that links this engine hands it to the thumbnailer once, and every
-/// other app's previews stay free of the engine.
+/// Its signature is a file preview's (`tilo_thumbnail::PdfRasteriser`), so only
+/// the app that hands it over links the engine.
 pub fn first_page_preview(pdf: &[u8], width: u32, height: u32) -> Option<(Vec<u8>, u32, u32)> {
     let doc = Engine::shared().ok()?.open_bytes(pdf).ok()?;
     let page = doc.page_size(0)?;
@@ -326,12 +305,10 @@ pub fn first_page_preview(pdf: &[u8], width: u32, height: u32) -> Option<(Vec<u8
 }
 
 /// The `pdf`'s pages in order, each rasterised through [`Engine::shared`] to
-/// fit a `width` x `height` box; [`Self::render`] one page at a time, and how
+/// fit a `width` x `height` box: [`Self::render`] one page at a time, and how
 /// many the document holds.
 ///
-/// A print preview pages through this: the person checks page 7 of 40 before
-/// forty pages are printed, so the count and any page have to come from the
-/// same open document.
+/// A print preview needs the count and any page from the same open document.
 pub struct PagePreview {
     doc: Document,
 }
@@ -346,7 +323,6 @@ impl PagePreview {
         })
     }
 
-    /// How many pages the document has.
     #[must_use]
     pub fn page_count(&self) -> usize {
         self.doc.page_count()
@@ -382,18 +358,13 @@ impl PagePreview {
     }
 }
 
-/// What [`sandboxed_for_test`] decided.
 #[derive(Debug)]
 pub enum HelperGate {
-    /// The helper runs confined here: run the test against it.
     Sandboxed(Engine),
-    /// It cannot, and nothing promised it could: the test stands down.
     StandDown,
-    /// The engine failed for a reason unrelated to the sandbox.
     Failed(Error),
 }
 
-/// Where the helper binary is looked for, in order.
 #[cfg(unix)]
 fn helper_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -419,14 +390,12 @@ fn helper_candidates() -> Vec<PathBuf> {
 }
 
 impl Engine {
-    /// The engine every consumer should use: pdfium in the sandboxed helper
-    /// where a pdfium library is installed, otherwise the portable engine.
-    /// In development builds without an installed helper, or on a host that
-    /// cannot confine it, pdfium runs in process (with a warning on stderr);
-    /// release builds never parse with pdfium in process and use the portable
-    /// engine instead. A process that confined itself to a policy refusing
-    /// `exec` (an app worker) always gets the portable engine: it could not
-    /// start the helper. See
+    /// The engine every consumer should use: pdfium in the sandboxed helper where a
+    /// pdfium library is installed, otherwise the portable engine. A development
+    /// build without a usable helper parses with pdfium in process, warning on
+    /// stderr; a release build never does. A process that confined itself to a
+    /// policy refusing `exec` (an app worker) always gets the portable engine: it
+    /// could not start the helper. See
     /// [When the sandbox cannot be enforced](crate#when-the-sandbox-cannot-be-enforced).
     ///
     /// # Errors
@@ -539,10 +508,9 @@ impl Engine {
         Ok(Self::portable())
     }
 
-    /// The portable engine: hayro, a memory-safe rasteriser, in this
-    /// process. Available on every target, and the default wherever pdfium is
-    /// not installed; see
-    /// [Engines](crate#engines) for what it does not do yet.
+    /// The portable engine: hayro, a memory-safe rasteriser, in this process. It is
+    /// available on every target and is what [`Self::new`] falls back to; see
+    /// [Engines](crate#engines) for what it does not do.
     #[must_use]
     pub fn portable() -> Self {
         Self::from_backend(Backend::Portable(Mutex::new(portable::Engine::default())))
@@ -557,7 +525,6 @@ impl Engine {
         }
     }
 
-    /// Whether documents are parsed in the sandboxed helper.
     #[must_use]
     pub fn is_sandboxed(&self) -> bool {
         #[cfg(unix)]
@@ -598,7 +565,6 @@ impl Engine {
         }
     }
 
-    /// Open `bytes` in whichever engine this is.
     fn open_owned(&self, bytes: &[u8], kind: OpenKind, password: Option<&str>) -> Result<Document> {
         if let Some(mut engine) = self.portable_engine() {
             if kind == OpenKind::Image {
@@ -744,7 +710,6 @@ impl Engine {
         }
     }
 
-    /// Process id of the running helper (sandboxed engine only).
     #[must_use]
     pub fn helper_pid(&self) -> Option<u32> {
         match &self.inner.backend {
@@ -754,7 +719,6 @@ impl Engine {
         }
     }
 
-    /// How many helper processes this engine has started so far.
     #[must_use]
     pub fn helpers_started(&self) -> u64 {
         match &self.inner.backend {
@@ -765,8 +729,8 @@ impl Engine {
     }
 }
 
-/// A read-only descriptor for the document behind `fd`, and its length when
-/// it had to be copied into a memory file.
+/// A read-only descriptor for the document behind `fd`, with its length when it
+/// had to be copied into a memory file.
 #[cfg(unix)]
 fn readonly_document_fd(fd: std::os::fd::BorrowedFd<'_>) -> Result<(OwnedFd, Option<u64>)> {
     let file = File::from(fd.try_clone_to_owned()?);
@@ -801,12 +765,10 @@ const TEXT_CACHE_PAGES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
-    /// 0-based page.
     pub page: usize,
     pub hit: TextMatch,
 }
 
-/// An open document. Closed when dropped.
 pub struct Document {
     engine: Engine,
     id: u64,
@@ -846,7 +808,6 @@ macro_rules! dispatch {
 }
 
 impl Document {
-    /// Facts fetched at open.
     #[must_use]
     pub fn info(&self) -> &DocumentInfo {
         &self.info
@@ -857,7 +818,6 @@ impl Document {
         self.info.pages.len()
     }
 
-    /// Geometry of page `page` (0-based).
     #[must_use]
     pub fn page(&self, page: usize) -> Option<PageGeometry> {
         self.info.pages.get(page).copied()
@@ -873,13 +833,11 @@ impl Document {
         &self.info.metadata
     }
 
-    /// The engine this document is open in.
     #[must_use]
     pub fn engine(&self) -> &Engine {
         &self.engine
     }
 
-    /// Render a page (or a region of it) at a scale.
     pub fn render(&self, page: usize, options: &RenderOptions) -> Result<Bitmap> {
         let size = self
             .page_size(page)
@@ -925,7 +883,6 @@ impl Document {
         )
     }
 
-    /// The raw characters the engine extracted from a page, in engine order.
     pub fn raw_text(&self, page: usize) -> Result<Vec<text::RawChar>> {
         dispatch!(self, s => s.text(self.id, page), local => local.0.text(self.id, page), p => p.text(self.id, page))
     }
@@ -969,7 +926,6 @@ impl Document {
         Ok(layer)
     }
 
-    /// Search the whole document, stopping after `limit` hits.
     pub fn search(
         &self,
         query: &str,
@@ -996,22 +952,18 @@ impl Document {
         Ok(out)
     }
 
-    /// Link areas on a page.
     pub fn links(&self, page: usize) -> Result<Vec<Link>> {
         dispatch!(self, s => s.links(self.id, page), local => local.0.links(self.id, page), p => p.links(self.id, page))
     }
 
-    /// Annotations present in the file on a page.
     pub fn annotations(&self, page: usize) -> Result<Vec<AnnotationInfo>> {
         dispatch!(self, s => s.annotations(self.id, page), local => local.0.annotations(self.id, page), p => p.annotations(self.id, page))
     }
 
-    /// The interactive form's fields (empty without a form).
     pub fn form_fields(&self) -> Result<Vec<FormField>> {
         dispatch!(self, s => s.form_fields(self.id), local => local.0.form_fields(self.id), p => p.form_fields(self.id))
     }
 
-    /// The outline (bookmarks).
     pub fn outline(&self) -> Result<Vec<OutlineEntry>> {
         dispatch!(self, s => s.outline(self.id), local => local.0.outline(self.id), p => p.outline(self.id))
     }

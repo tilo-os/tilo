@@ -31,16 +31,11 @@ pub(super) struct PageRaster {
     generation: u64,
     pub(super) images: PageImages,
     pub(super) tiles: TileCache<TileKey>,
-    /// Renders asked for and not yet delivered.
     pending: HashSet<PageKey>,
-    /// The page renders and tiles last handed to the renderer, most
-    /// important first.
     batch: Vec<PageKey>,
     tile_batch: Vec<TileKey>,
     heading: Heading,
-    /// A page or thumbnail on screen is not yet drawn sharp.
     pub(super) pending_visuals: bool,
-    /// Page renders delivered, in order, with the document version.
     #[cfg(test)]
     pub(super) delivered: Vec<(u64, PageKey)>,
 }
@@ -64,7 +59,6 @@ impl Default for PageRaster {
     }
 }
 
-/// What a frame draws each page and thumbnail from.
 #[derive(Default)]
 pub(super) struct FramePages {
     pub(super) pages: HashMap<usize, ImageData>,
@@ -73,9 +67,6 @@ pub(super) struct FramePages {
 }
 
 impl PageRaster {
-    /// Show a new compile of the document. A page that looks as it did keeps
-    /// its bitmaps, wherever it moved; a changed page keeps its old ones as
-    /// stand-ins until it renders again, so an edit never blanks the view.
     pub(super) fn show(&mut self, document: Arc<TypstPages>) {
         if let Some(old) = &self.document {
             let mut by_look: HashMap<u128, Vec<usize>> = HashMap::new();
@@ -119,16 +110,12 @@ impl PageRaster {
         self.retire(old);
     }
 
-    /// Let go of `document`, a compile no longer shown: the renderer's
-    /// worker drops it, so tearing down its pages costs no frame.
     fn retire(&self, document: Option<Arc<TypstPages>>) {
         if let (Some(renderer), Some(document)) = (&self.renderer, document) {
             renderer.retire(document);
         }
     }
 
-    /// The selectable text of `page` of the compile shown.
-    /// The compile shown, by address; 0 with none.
     pub(super) fn document_address(&self) -> usize {
         self.document
             .as_ref()
@@ -139,7 +126,6 @@ impl PageRaster {
         self.document.as_ref().map(|document| document.text(page))
     }
 
-    /// Show no pages.
     pub(super) fn clear(&mut self) {
         let old = self.document.take();
         self.retire(old);
@@ -197,13 +183,11 @@ impl PageRaster {
             .is_some_and(PageRenderer::wants_frames)
     }
 
-    /// Renders delivered for this preview so far.
     #[cfg(test)]
     pub(super) fn rendered(&self) -> u64 {
         self.renderer.as_ref().map_or(0, PageRenderer::rendered)
     }
 
-    /// The pages asked of the renderer and not yet delivered.
     #[cfg(test)]
     pub(super) fn pending_pages(&self) -> std::collections::BTreeSet<usize> {
         self.pending.iter().map(|(page, _)| *page).collect()
@@ -235,13 +219,11 @@ impl PageRaster {
     }
 }
 
-/// The width bucket a page `width` screen pixels wide renders at.
 fn page_bucket(width: f64) -> u32 {
     tilo_page_raster::bucket_for(((width * SUPERSAMPLE).round() as u32).clamp(96, 4096))
 }
 
 impl PreviewPane {
-    /// The screen rect of page `i`.
     pub(super) fn page_rect(&self, i: usize) -> Option<Rect> {
         let b = self.boxes.get(i)?;
         let tl = self
@@ -253,7 +235,6 @@ impl PreviewPane {
         Some(Rect::new(tl.x, tl.y, br.x, br.y))
     }
 
-    /// The pages whose screen rects may meet `top..=bottom`, by bisection.
     pub(super) fn pages_between(&self, top: f64, bottom: f64) -> std::ops::Range<usize> {
         let main = self.viewport.rect();
         let content_y = |y: f64| self.viewport.screen_to_content(Point::new(main.x0, y)).y;

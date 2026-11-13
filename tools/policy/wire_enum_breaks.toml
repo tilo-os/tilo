@@ -232,3 +232,8 @@ reason = "`MemberOf` named a space, which no longer exists, and no attestation i
 file = "crates/collab/tilo-peer-state/src/members/op.rs"
 enum = "MembershipOpCommand"
 reason = "the operations are kept under a new key prefix (`members_v3`): a workspace reads no operation stored under the old one, so no bytes written in the old layout are ever decoded as this enum"
+
+[[break]]
+file = "crates/collab/action-policy/src/member.rs"
+enum = "Actor"
+reason = "an app is no longer a kind of actor: it acts as the person whose session runs it, and `Acting.app` names the app the change was made through; the acting a change records is written and read by one build, and records written before this change are not carried over"

@@ -375,6 +375,7 @@ dependencies = [
  "serde_json",
  "settings-store",
  "tempfile",
+ "tilo-paths",
  "tilo-resource",
  "url",
  "uuid",
@@ -2662,6 +2663,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-face",
  "tilo-lock",
+ "tilo-paths",
  "tilo-resource",
  "tilo-sort",
  "toml 1.0.6+spec-1.1.0",
@@ -4235,6 +4237,7 @@ name = "durable-store"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
+ "tilo-app-id",
  "workspace-hack",
 ]
 
@@ -17209,6 +17212,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
+ "tilo-app-id",
  "tilo-clock",
 ]
 
@@ -17234,6 +17238,7 @@ dependencies = [
  "tilo-selector",
  "tilo-test-env",
  "tilo-wake",
+ "tilo-words",
  "tracing",
  "unicode-normalization",
  "uuid",
@@ -17538,6 +17543,7 @@ name = "tilo-app-id"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -17648,6 +17654,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",
+ "tilo-app-id",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-cli-kit",
@@ -17946,6 +17953,7 @@ dependencies = [
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-app-id",
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -19437,6 +19445,7 @@ dependencies = [
  "fluent",
  "serde_json",
  "tilo-actions",
+ "tilo-paths",
  "unic-langid",
  "workspace-hack",
 ]
@@ -20742,6 +20751,7 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-paths",
  "tilo-platform-caps",
  "tilo-test-env",
  "unic-langid",
@@ -21003,6 +21013,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
+ "tilo-paths",
  "tilo-test-env",
  "tilo-user-identity",
  "tilo-workspace-join",
@@ -22330,6 +22341,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-app-id",
  "tilo-app-state",
  "tilo-appearance",
  "tilo-automerge",
@@ -22934,6 +22946,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-words"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-workspace-agent"
 version = "0.1.0"
 dependencies = [
@@ -23034,7 +23053,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-clock",
+ "tilo-paths",
  "tilo-ui-graph",
+ "tilo-words",
  "tilolang-lex",
  "unicode-segmentation",
  "wasm-encoder 0.252.0",
@@ -23135,6 +23156,7 @@ dependencies = [
  "tilo-formats",
  "tilo-history",
  "tilo-net",
+ "tilo-paths",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-startup-metrics",
@@ -28725,6 +28747,7 @@ dependencies = [
  "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
+ "tilo-words",
  "tilo-workspace-agent",
  "tilo-workspace-directory",
  "tilo-workspace-emoji",

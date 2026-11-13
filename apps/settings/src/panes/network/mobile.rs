@@ -1,23 +1,4 @@
-//! Mobile — the modem's data connection and its SIMs, under Network.
-//!
-//! It exists only on a device with a modem: `ModemManager` lists one, or
-//! `NetworkManager` or the kernel does while `ModemManager` cannot be
-//! asked. The first page shows its card next to Wi-Fi; the card opens the
-//! modem's page, one of the Network pane's, which shows and changes mobile data, the operator, technology and
-//! signal, roaming, the APN, the preferred network types, the data used
-//! this period, metering, and the SIMs: their state, the PIN and the PUK
-//! after a lockout, the PIN lock, and which SIM is in use where a modem has
-//! several.
-//!
-//! As the rest of Network, every read and change runs off the UI thread
-//! through a [`MobileService`] (the device's `ModemManager` and
-//! `NetworkManager`, or a scripted modem in a capture or test), and every
-//! setting is a [`MobileEffect`]. PINs and PUKs are asked with the
-//! window's password prompt ([`codes`]) and handed to the change in zeroed
-//! buffers; they are never drawn and never reach a document.
-//!
-//! The card and the page are view code over the model ([`Page`]), built
-//! within Network's page.
+//! Mobile: the modem's data connection and its SIMs, under Network.
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
@@ -62,20 +43,16 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`MobileArea`].
 pub fn area(app: &SettingsApp) -> Option<&MobileArea> {
     app.areas().find()
 }
 
-/// Whether a connection's data counts against a limit, by the key the
-/// metered action takes.
 const METERED: &[(&str, &str)] = &[
     ("automatic", "net-mobile-metered-automatic"),
     ("metered", "net-mobile-metered-yes"),
     ("unmetered", "net-mobile-metered-no"),
 ];
 
-/// Mobile data and the SIMs of this device's modems.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum MobileEffect {
@@ -166,7 +143,6 @@ pub enum MobileEffect {
     CancelMobileForm,
 }
 
-/// Answer `effect`: a change starts on a worker and reports when it lands.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: MobileEffect,
@@ -192,8 +168,6 @@ fn area_of(app: &SettingsApp) -> Result<&MobileArea, String> {
     area(app).ok_or_else(crate::area::missing)
 }
 
-/// Mobile data, as search shows it: a switch once the modem was read,
-/// "no modem" where there is none.
 pub(crate) fn mobile_data(app: &SettingsApp, _: &Follows) -> Read {
     let listed = app.radios().now().map(|radios| radios.wwan);
     let model = area(app).and_then(|area| area.model.get());
@@ -208,7 +182,6 @@ pub(crate) fn mobile_data(app: &SettingsApp, _: &Follows) -> Read {
     }
 }
 
-/// The mobile data switch where search finds it.
 pub(crate) fn mobile_data_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
     cx.setting(t("net-mobile-data"))
         .id("network.mobile")
@@ -219,11 +192,8 @@ pub(crate) fn mobile_data_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
         )
 }
 
-/// What the Mobile section keeps for the window: the model, read when
-/// first needed.
 pub struct MobileArea {
     reach: Reach,
-    /// The modem a capture shows; `None` in a live window.
     sample: Option<MobileSample>,
     model: OnceCell<Rc<RefCell<MobileModel>>>,
 }
@@ -237,7 +207,6 @@ impl MobileArea {
         }
     }
 
-    /// The area over `service` in place of the device's modems.
     #[cfg(test)]
     pub(crate) fn over(cx: &AreaContext, service: Arc<dyn MobileService>) -> Self {
         let area = Self::new(cx);
@@ -250,8 +219,6 @@ impl MobileArea {
         area
     }
 
-    /// The model over this device's modems, or over a scripted one for a
-    /// capture.
     pub fn model(&self) -> &Rc<RefCell<MobileModel>> {
         self.model.get_or_init(|| {
             let model = if self.reach.devices {
@@ -269,15 +236,12 @@ impl MobileArea {
         })
     }
 
-    /// Take in background results, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
             model.borrow_mut().poll_background();
         }
     }
 
-    /// Whether the device has a modem: as read, else as the kernel lists
-    /// it; `None` while neither has said.
     fn present(&self) -> Option<bool> {
         if let Some(model) = self.model.get()
             && let Ok(model) = model.try_borrow()
@@ -292,8 +256,6 @@ impl MobileArea {
             .filter(|wwan| !wwan)
     }
 
-    /// What cannot be done now: every mobile setting without a modem, and
-    /// unlocking a SIM that asks for nothing.
     pub(crate) fn statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         let mut unavailable = |id: &'static str, code: &str, reason: &str| {
@@ -355,17 +317,12 @@ impl MobileArea {
     }
 }
 
-/// Everything the section shows, read in one pass off the UI thread.
 pub(crate) struct MobileSnapshot {
     modems: Result<MobileReading, ModemError>,
     profile: Result<Option<MobileProfile>, String>,
-    /// `NetworkManager`'s radios: whether it lists a modem, and its WWAN
-    /// switch.
     radios: Result<os_actions::RadioState, String>,
 }
 
-/// A change carried out off the UI thread. Codes are zeroed when it is
-/// dropped.
 #[derive(Debug)]
 pub(crate) enum MobileChange {
     Data(bool),
@@ -373,7 +330,6 @@ pub(crate) enum MobileChange {
         uuid: Option<String>,
         on: bool,
     },
-    /// `None` for the APN the operator database names.
     Apn {
         uuid: Option<String>,
         apn: Option<String>,
@@ -385,27 +341,17 @@ pub(crate) enum MobileChange {
     Modem(ModemChange),
 }
 
-/// What carries out the section's reads and changes: `ModemManager` and
-/// `NetworkManager` on a device, a scripted modem in a capture or test.
 pub(crate) trait MobileService: Send + Sync {
-    /// Read the modems, the data connection and the radios.
     fn snapshot(&self) -> MobileSnapshot;
-    /// Carry out `change`.
     fn change(&self, change: &MobileChange) -> Result<(), ModemError>;
-    /// Follow the modems: `changed` is called, on another thread, each time
-    /// the modem service or the network service reports a change (signal,
-    /// operator, registration, the data connection), for as long as the
-    /// answer is held. `None` when nothing can be followed.
     fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
         None
     }
 }
 
-/// This device's modems.
 struct DeviceModem;
 
 impl DeviceModem {
-    /// The data profile to change: the one read, else one made now.
     fn profile(uuid: Option<&str>) -> Result<String, ModemError> {
         if let Some(uuid) = uuid {
             return Ok(uuid.to_owned());
@@ -468,9 +414,6 @@ impl MobileService for DeviceModem {
     }
 }
 
-/// A scripted modem: the one a capture shows, the one tests drive. It
-/// takes `1234` as its PIN and `12345678` as its PUK, and records every
-/// change asked of it.
 pub(crate) struct ScriptedModem {
     state: Mutex<Scripted>,
 }
@@ -487,7 +430,6 @@ const SAMPLE_MODEM: &str = "/org/freedesktop/ModemManager1/Modem/0";
 const SAMPLE_SIM: &str = "/org/freedesktop/ModemManager1/SIM/0";
 const SAMPLE_ESIM: &str = "/org/freedesktop/ModemManager1/SIM/1";
 
-/// The modem a capture of `sample` shows; none without one.
 fn sample_reading(sample: Option<MobileSample>) -> MobileReading {
     let Some(sample) = sample else {
         return MobileReading::default();
@@ -612,7 +554,6 @@ impl ScriptedModem {
         }
     }
 
-    /// What was asked of it, in order; never a code.
     #[cfg(test)]
     pub(crate) fn changes(&self) -> Vec<String> {
         self.state
@@ -621,7 +562,6 @@ impl ScriptedModem {
             .unwrap_or_default()
     }
 
-    /// Refuse every change that is not a code with `reason`.
     #[cfg(test)]
     pub(crate) fn refuse(&self, reason: &str) {
         if let Ok(mut state) = self.state.lock() {
@@ -636,7 +576,6 @@ impl ScriptedModem {
             .find(|modem| modem.sims.iter().any(|sim| sim.path == path))
     }
 
-    /// A wrong code costs a try; the last wrong PIN asks for the PUK.
     fn wrong(modem: &mut ModemInfo) -> ModemError {
         if modem.lock == SimLock::Puk {
             modem.retries.puk = modem.retries.puk.map(|left| left.saturating_sub(1));
@@ -775,20 +714,16 @@ impl MobileService for ScriptedModem {
     }
 }
 
-/// How an effect began: finished at once, or work for a worker.
 pub(crate) enum Begun {
     Done,
     Work(Box<dyn FnOnce() -> Landed + Send>),
 }
 
-/// Work that finished on a worker, for the model to take in.
 pub(crate) enum Landed {
     Read(MobileSnapshot),
     Changed(MobileChange, Result<(), ModemError>),
 }
 
-/// The Mobile section's model: the modems and the data connection as last
-/// read, the code asked for, and what is running.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent facts: read yet, listed, switched on, editor open, changed"
@@ -796,29 +731,22 @@ pub(crate) enum Landed {
 pub struct MobileModel {
     reach: Reach,
     service: Arc<dyn MobileService>,
-    /// False until the first snapshot arrives.
     loaded: bool,
     snapshot: Option<crate::channel::Receiver<MobileSnapshot>>,
     modems: Vec<ModemInfo>,
     modems_error: Option<ModemError>,
     profile: Option<MobileProfile>,
     profile_error: Option<String>,
-    /// Whether `NetworkManager` lists a modem.
     wwan_listed: bool,
-    /// `NetworkManager`'s WWAN switch: whether mobile data may be used.
     wwan_enabled: bool,
     in_flight: usize,
     notice: Option<String>,
-    /// The SIM code the password prompt asks for.
     asking: Option<codes::Asking>,
-    /// Changes a prompt's answer started; they land here when done.
     jobs: Vec<crate::channel::Receiver<Landed>>,
     apn_open: bool,
     apn_automatic: LocalState<bool>,
     apn_text: LocalState<String>,
-    /// What tells the model the modems changed while a pane shows it.
     following: std::rc::Weak<crate::watch::Counted>,
-    /// The change count last read for.
     changes_seen: u64,
     changed: bool,
 }
@@ -830,7 +758,6 @@ impl MobileModel {
         model
     }
 
-    /// A model over `service`, its first snapshot read at once.
     pub(crate) fn loaded_from(reach: Reach, service: Arc<dyn MobileService>) -> Self {
         let mut model = Self::with_service(reach, service);
         let snapshot = model.service.snapshot();
@@ -863,10 +790,7 @@ impl MobileModel {
         }
     }
 
-    /// Where a capture of `sample` stands: abroad on the modem's page, and
-    /// a locked SIM's page with the prompt asking for its code.
     fn stage(&mut self, sample: Option<MobileSample>) {
-        // The capture of the modem's page shows the period's data used.
         if sample == Some(MobileSample::Roaming) {
             super::usage::sample(&self.reach.storage);
         }
@@ -886,17 +810,12 @@ impl MobileModel {
         }
     }
 
-    /// Whether this device has a modem: `ModemManager` lists one, or
-    /// `NetworkManager` or the kernel does while `ModemManager` cannot be
-    /// asked (the section then says why it cannot show the modem).
     fn present(&self) -> bool {
         !self.modems.is_empty()
             || (self.modems_error.is_some()
                 && (self.wwan_listed || self.reach.radios.now().is_some_and(|radios| radios.wwan)))
     }
 
-    /// The modem the section shows: the one with a SIM in use, else the
-    /// first.
     fn modem(&self) -> Option<&ModemInfo> {
         self.modems
             .iter()
@@ -904,8 +823,6 @@ impl MobileModel {
             .or_else(|| self.modems.first())
     }
 
-    /// Whether mobile data is on: the WWAN switch on, and the profile (if
-    /// any) connecting by itself.
     fn data_on(&self) -> bool {
         self.wwan_enabled
             && self
@@ -941,7 +858,6 @@ impl MobileModel {
     fn adopt(&mut self, snapshot: MobileSnapshot) {
         self.changed = true;
         if self.loaded && self.in_flight > 0 {
-            // Read before a running change landed; the read after it tells.
             return;
         }
         match snapshot.modems {
@@ -970,7 +886,6 @@ impl MobileModel {
         self.follow_lock();
     }
 
-    /// Start `change` on a worker.
     fn change(&mut self, change: MobileChange) -> Begun {
         self.in_flight += 1;
         let service = Arc::clone(&self.service);
@@ -980,8 +895,6 @@ impl MobileModel {
         }))
     }
 
-    /// The SIM `wanted` names (its path or label), else the one `fallback`
-    /// picks among the modems.
     fn sim(
         &self,
         wanted: Option<&str>,
@@ -1015,8 +928,6 @@ impl MobileModel {
         self.modem().ok_or_else(|| t("net-no-modem"))
     }
 
-    /// The network types `chosen` names (their key or their words) among
-    /// what the modem supports.
     fn modes_named(modem: &ModemInfo, chosen: &str) -> Option<NetworkModes> {
         modem
             .supported_modes
@@ -1025,7 +936,6 @@ impl MobileModel {
             .find(|modes| modes.key() == chosen || modes_shown(*modes) == chosen)
     }
 
-    /// Begin `effect`.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per effect; the longer ones call out"
@@ -1181,7 +1091,6 @@ impl MobileModel {
         })
     }
 
-    /// Take in work that landed; what the effect answers.
     pub(crate) fn land(&mut self, landed: Landed) -> EffectAnswer {
         self.changed = true;
         match landed {
@@ -1201,9 +1110,6 @@ impl MobileModel {
         }
     }
 
-    /// Say how `change` went. A wrong code is said in the prompt that asked
-    /// for it; the read that follows every change puts back what the device
-    /// holds.
     fn report(
         &mut self,
         change: &MobileChange,
@@ -1241,8 +1147,6 @@ impl MobileModel {
         }
     }
 
-    /// Run `work`, which a prompt's answer started, on a worker; it lands
-    /// in [`Self::poll_background`].
     fn start_job(&mut self, work: Box<dyn FnOnce() -> Landed + Send>) {
         let (sender, receiver) = crate::channel::channel();
         let wake = ui::WakeHandle::new();
@@ -1268,7 +1172,6 @@ impl MobileModel {
         self.changed = true;
     }
 
-    /// Take in what arrived: a read, and changes a prompt started.
     fn poll_background(&mut self) {
         let mut landed = Vec::new();
         self.jobs.retain(|job| match job.try_recv() {
@@ -1280,7 +1183,6 @@ impl MobileModel {
             Err(crate::channel::TryRecvError::Disconnected) => false,
         });
         for work in landed {
-            // What went wrong is said in the prompt and the section.
             let _ = self.land(work);
         }
         if let Some(receiver) = &self.snapshot {
@@ -1298,9 +1200,6 @@ impl MobileModel {
         }
     }
 
-    /// Read the modems again once a service reported a change, while a
-    /// pane follows them. Reads coalesce: one runs at a time, and a change
-    /// that came meanwhile is read once it lands.
     fn read_reported_changes(&mut self) {
         let Some(changes) = self
             .following
@@ -1320,7 +1219,6 @@ impl MobileModel {
         self.start_snapshot();
     }
 
-    /// The state the section shows, for agents and scripts: never a code.
     fn inspection(&self) -> serde_json::Value {
         let modems: Vec<serde_json::Value> = self
             .modems
@@ -1371,7 +1269,6 @@ fn metered_key(policy: MeteredPolicy) -> &'static str {
     }
 }
 
-/// The policy `chosen` names: its key or its words.
 fn metered_named(chosen: &str) -> Option<MeteredPolicy> {
     let key = METERED
         .iter()
@@ -1393,7 +1290,6 @@ fn metered_shown(policy: MeteredPolicy) -> String {
         .unwrap_or_default()
 }
 
-/// Network types in words: "2G to 5G, 5G preferred".
 fn modes_shown(modes: NetworkModes) -> String {
     let generations: Vec<String> = modes
         .generations()
@@ -1433,8 +1329,6 @@ fn modes_shown(modes: NetworkModes) -> String {
     }
 }
 
-/// The shared signal meter's level for `percent`, at the same steps as
-/// Wi-Fi's.
 const fn signal_level(percent: u8) -> SignalLevel {
     SignalLevel::from_bars(match percent {
         0 => 0,
@@ -1445,7 +1339,6 @@ const fn signal_level(percent: u8) -> SignalLevel {
     })
 }
 
-/// What the modem's situation is called, as the status row's title.
 fn situation(modem: &ModemInfo, data_on: bool) -> String {
     if let Some(failure) = modem.failure {
         return t(match failure {
@@ -1474,9 +1367,6 @@ fn situation(modem: &ModemInfo, data_on: bool) -> String {
     }
 }
 
-/// The modem's card or page as the view builds it: the model as it is now,
-/// and the view its controls bind through. It reads the model's state
-/// through [`std::ops::Deref`].
 pub(crate) struct Page<'a> {
     model: &'a MobileModel,
     cx: &'a ViewCx<DeviceVpnPrefs>,
@@ -1492,8 +1382,6 @@ impl std::ops::Deref for Page<'_> {
 }
 
 impl<'a> Page<'a> {
-    /// The card or page over `model`, built in the view `cx` of Network's
-    /// page, its controls bound through the app's `actions`.
     pub(crate) fn new(
         model: &'a MobileModel,
         cx: &'a ViewCx<DeviceVpnPrefs>,
@@ -1516,8 +1404,6 @@ impl<'a> Page<'a> {
         ))
     }
 
-    /// What a locked SIM needs: its PIN, or after too many wrong PINs its
-    /// PUK and a new PIN, which the password prompt asks for.
     fn unlock_rows(&self, modem: &ModemInfo) -> Vec<Item> {
         let tries = |left: Option<u32>| {
             left.map(|left| t_args("net-mobile-tries-left", &[("count", left.into())]))
@@ -1558,8 +1444,6 @@ impl<'a> Page<'a> {
         ]
     }
 
-    /// The status line: operator or situation, led by the signal meter,
-    /// with technology and roaming.
     fn status_row(&self, modem: &ModemInfo) -> ListRow {
         let mut details: Vec<String> = Vec::new();
         if modem.usable() {
@@ -1586,7 +1470,6 @@ impl<'a> Page<'a> {
         status
     }
 
-    /// Roaming, metering, network types, APN and the data used.
     fn data_rows(&self, modem: &ModemInfo) -> Vec<Item> {
         let mut items = Vec::new();
         let profile = self.profile.as_ref();
@@ -1689,7 +1572,6 @@ impl<'a> Page<'a> {
         items
     }
 
-    /// The SIMs, the number, the PIN lock and changing the PIN.
     fn sim_rows(&self, modem: &ModemInfo) -> Vec<Item> {
         let mut items = Vec::new();
         let kind = |sim: &SimCard| match sim.kind {
@@ -1741,8 +1623,6 @@ impl<'a> Page<'a> {
         items
     }
 
-    /// The PIN lock and changing the PIN; the password prompt asks for the
-    /// codes either needs.
     fn pin_rows(&self, modem: &ModemInfo) -> Vec<Item> {
         let mut items = Vec::new();
         if let Some(enabled) = modem.pin_enabled {
@@ -1780,7 +1660,6 @@ impl<'a> Page<'a> {
         items
     }
 
-    /// The mobile data switch, which a modem that cannot connect holds off.
     fn data_switch(&self, modem: &ModemInfo) -> El {
         Box::new(
             self.actions.bind_effect(
@@ -1792,9 +1671,6 @@ impl<'a> Page<'a> {
         )
     }
 
-    /// The first page's Mobile card, next to Wi-Fi: the data switch, how
-    /// the modem stands (its row opens the modem's page), and what a
-    /// locked SIM needs. Nothing without a modem.
     pub(crate) fn card(&self) -> Vec<SettingsSection> {
         if !self.loaded || !self.present() {
             return Vec::new();
@@ -1822,14 +1698,11 @@ impl<'a> Page<'a> {
         )]
     }
 
-    /// The modem's page: Mobile data with its switch and settings, then
-    /// the SIM.
     pub(crate) fn page_sections(&self) -> Vec<SettingsSection> {
         if !self.loaded || !self.present() {
             return Vec::new();
         }
         let Some(modem) = self.modem() else {
-            // A modem listed that ModemManager cannot describe.
             let reason = self
                 .modems_error
                 .as_ref()
@@ -1876,8 +1749,6 @@ impl<'a> Page<'a> {
 }
 
 impl MobileModel {
-    /// Take in what arrived, the codes answered and what the modems
-    /// reported; whether what the page shows changed.
     pub(super) fn poll(&mut self) -> bool {
         self.poll_background();
         self.poll_codes();
@@ -1885,15 +1756,10 @@ impl MobileModel {
         std::mem::take(&mut self.changed)
     }
 
-    /// Follow the modems for a page that shows the model, for as long as
-    /// the answer is held; pages share one follow.
     pub(super) fn follow(&mut self) -> Rc<crate::watch::Counted> {
         if let Some(held) = self.following.upgrade() {
             return held;
         }
-        // Nothing was followed while no pane showed the model: a model
-        // already read reads the modems again once; a first read on its way
-        // covers it.
         self.changes_seen = if self.loaded { u64::MAX } else { 0 };
         let service = Arc::clone(&self.service);
         crate::watch::shared(&mut self.following, move || {

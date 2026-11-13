@@ -1,16 +1,9 @@
-//! The person's trusted devices, as the host's identity actions answer
-//! them.
-//!
-//! The host keeps the root-signed device fleet and the root key a
-//! revocation is signed with. Settings asks it for the list and to revoke
-//! one, through the action door, so neither the fleet file nor any secret
-//! enters this process; the answers never enter widget or Automerge state.
+//! The person's trusted devices, as the host's identity actions answer them.
 
 use ui::icons::Icon;
 use ui::tilo_actions::remote::identity_admin::{self, FleetDevice, KeyKind};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
-/// One of the person's devices, as the host listed it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -23,30 +16,16 @@ pub struct DeviceView {
     pub current: bool,
     pub revoked: bool,
     pub can_host: bool,
-    /// A device of the person's, or a key acting for them (an agent's grant,
-    /// a script's key).
     pub kind: KeyKind,
-    /// The browser profile it is a tab of, by the profile's id: a browser
-    /// keeps a key per open tab, and the pane shows them as one entry.
     pub browser: Option<String>,
-    /// The agent it runs ("Claude Code"), as its sessions named it.
     pub agent: Option<String>,
-    /// When the person's root certified it, ms since the epoch.
     pub issued_ms: Option<i64>,
-    /// When its access ends by itself, ms since the epoch.
     pub expires_ms: Option<i64>,
-    /// When it was last connected to the person's host, ms since the epoch.
     pub last_active_ms: Option<i64>,
-    /// Connected to the person's host now.
     pub online: bool,
-    /// The one workspace an agent's key reaches; every one of theirs when
-    /// `None`.
     pub workspace: Option<String>,
 }
 
-/// The machine a device's label names, as the words that name it: the label
-/// is what the device called itself ("Pixel 9", "Safari on iPad", "Framework
-/// 16"), and the list knows nothing else of what it is.
 const PHONE_WORDS: &[&str] = &[
     "phone", "pixel", "android", "galaxy", "mobile", "oneplus", "redmi", "xiaomi", "huawei",
     "motorola", "moto",
@@ -74,15 +53,10 @@ const DESKTOP_WORDS: &[&str] = &[
     "server",
 ];
 
-/// The picture a device's row shows: a phone, a tablet, a laptop or a desktop
-/// as its label names it, and a computer where the label names no kind.
 #[must_use]
 pub fn device_icon(label: &str) -> Icon {
     let label = label.to_lowercase();
     let named = |words: &[&str]| words.iter().any(|word| label.contains(word));
-    // A tablet is read before a phone, since "Galaxy Tab S9" names both, and a
-    // laptop before the desktop words it shares: "Mac mini" and "MacBook Pro"
-    // are one each.
     if named(TABLET_WORDS) {
         Icon::Tablet
     } else if named(LAPTOP_WORDS) {
@@ -96,7 +70,6 @@ pub fn device_icon(label: &str) -> Icon {
     }
 }
 
-/// Ask the host for the devices trusted under the workspace's identity.
 pub(crate) fn list(remote: &ui::RemoteActions) -> ui::InvocationCall {
     remote.invoke(
         identity_admin::target(identity_admin::DEVICES),
@@ -105,9 +78,6 @@ pub(crate) fn list(remote: &ui::RemoteActions) -> ui::InvocationCall {
     )
 }
 
-/// Ask the host to revoke `device` for `reason` (`lost`, `stolen`,
-/// `retired` or `compromised`). Choosing the destructive row is the
-/// person's confirmation; the host signs the revocation with the root key.
 pub(crate) fn revoke(
     remote: &ui::RemoteActions,
     device: &[u8; 32],
@@ -124,7 +94,6 @@ pub(crate) fn revoke(
     )
 }
 
-/// The devices the host's list answered.
 pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView>, String> {
     let listed: Vec<FleetDevice> =
         serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))
@@ -132,7 +101,6 @@ pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView
     views(listed)
 }
 
-/// The devices `listed` names, as the pane shows them.
 pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String> {
     listed
         .into_iter()
@@ -187,9 +155,6 @@ pub(crate) fn settled(
 mod tests {
     use super::*;
 
-    /// A device's row shows the machine it says it is: the phone, tablet,
-    /// laptop or desktop its label names, and a computer where its label
-    /// names none.
     #[test]
     fn a_device_shows_the_machine_its_label_names() {
         for (label, icon) in [

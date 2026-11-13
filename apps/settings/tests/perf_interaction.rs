@@ -1,11 +1,7 @@
 //! What the interactions a person feels cost Settings on the UI thread: a wheel
-//! notch, a keystroke, a view switch and a click on an item, each through
-//! the production host path on the app's capture fixture at the Yoga's
-//! logical size, with the frame passes and named scopes each step ran.
-//! These report: the numbers say where the frame goes. A sidebar hover is
-//! held to the two rows it moved between and the pointer-motion budget.
-//!
-//! `cargo test -p settings --profile fast --test it perf_interaction -- --nocapture`
+//! notch, a keystroke, a view switch and a click on an item, each through the
+//! production host path on the app's capture fixture at the Yoga's logical
+//! size, with the frame passes and named scopes each step ran.
 #![allow(
     clippy::expect_used,
     reason = "a measurement fails loudly when the app does not open"
@@ -17,8 +13,6 @@ fn interaction_costs() {
         .expect("settings opens its capture");
 }
 
-/// What opening settings costs on the UI thread, warm (its record already on the
-/// profile): from the host preparing the launch to the first frame drawn.
 #[test]
 fn start_cost() {
     ui::framework::testing::perf::start::<settings::SettingsShell>(8)
@@ -26,10 +20,6 @@ fn start_cost() {
         .print();
 }
 
-/// What launching settings costs cold, one process per launch as on a device:
-/// from the process starting to its first frame drawn, fonts and every
-/// other per-process cache empty. The first frame builds the window's
-/// widget tree once.
 #[test]
 fn cold_start() {
     let start = ui::framework::testing::perf::cold_start(
@@ -45,10 +35,6 @@ fn cold_start() {
     );
 }
 
-/// Moving the pointer down the sidebar and back: each motion moves the
-/// hover from one row to the next, which repaints those two rows and
-/// nothing else, asks for no layout, and costs no more than any other
-/// pointer motion.
 #[test]
 fn sidebar_hover() {
     ui::framework::testing::perf::sidebar_sweep::<settings::SettingsShell>(2)

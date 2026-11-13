@@ -7,16 +7,12 @@ use serde::Deserialize;
 /// The `CloudDocs` zone of ordinary iCloud Drive items. App libraries
 /// (Pages, Keynote, third-party apps) live in zones of their own.
 pub const DEFAULT_ZONE: &str = "com.apple.CloudDocs";
-/// The iCloud Drive root folder.
 pub const ROOT_ID: &str = "FOLDER::com.apple.CloudDocs::root";
-/// Where trashed items go.
 pub const TRASH_ID: &str = "FOLDER::com.apple.CloudDocs::TRASH_ROOT";
 
-/// One item as drivews describes it; folders listed with their children.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DriveItem {
-    /// `<TYPE>::<zone>::<docwsid>`.
     pub drivewsid: String,
     pub docwsid: String,
     pub zone: String,
@@ -24,7 +20,6 @@ pub struct DriveItem {
     pub extension: Option<String>,
     pub parent_id: Option<String>,
     pub etag: Option<String>,
-    /// `FILE`, `FOLDER`, `APP_LIBRARY`, `APP_CONTAINER`.
     #[serde(rename = "type")]
     pub kind: Option<String>,
     pub size: Option<u64>,
@@ -49,7 +44,6 @@ impl DriveItem {
         self.kind.as_deref() == Some("FILE")
     }
 
-    /// `name.extension`, the name a person sees.
     pub fn full_name(&self) -> String {
         match self.extension.as_deref() {
             Some(extension) if !extension.is_empty() => format!("{}.{extension}", self.name),
@@ -58,14 +52,12 @@ impl DriveItem {
     }
 }
 
-/// `{"items": [...]}` (renameItems, moveItems, moveItemsToTrash).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Items {
     pub items: Vec<DriveItem>,
 }
 
-/// `{"folders": [...]}` (createFolders).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Folders {
@@ -86,7 +78,6 @@ pub struct ContentToken {
     pub url: String,
 }
 
-/// One entry of `upload/web`'s answer.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct UploadSlot {
@@ -130,7 +121,6 @@ pub struct UpdateResult {
     pub document: Option<Document>,
 }
 
-/// `update/documents`' answer.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct UpdateResponse {

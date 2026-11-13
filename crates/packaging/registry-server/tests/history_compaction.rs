@@ -1,6 +1,5 @@
-//! Snapshot history compaction end to end: a real server over HTTP on real
-//! storage, snapshots signed by the real CLI, and the native client verifying
-//! what it serves.
+//! Snapshot history compaction end to end: a real server over HTTP on real storage, snapshots
+//! signed by the real CLI, and the native client verifying what it serves.
 
 #![cfg(unix)]
 #![allow(
@@ -181,8 +180,8 @@ fn a_client_synced_before_compaction_verifies_the_latest_and_still_rejects_rollb
     assert_eq!(history.last().unwrap().0, last);
     let compaction = registry.storage.history_compaction().unwrap().unwrap();
     assert_eq!(compaction.through_sequence, oldest_retained - 1);
-    // The record names the member the oldest retained snapshot signed as its
-    // predecessor: the signed chain commits to the pruned prefix.
+    // The record names the member the oldest retained snapshot signed as its predecessor: the
+    // signed chain commits to the pruned prefix.
     let through = &signed[usize::try_from(oldest_retained - 2).unwrap()];
     assert_eq!(
         compaction.through_snapshot_hash_hex,
@@ -205,8 +204,8 @@ fn a_client_synced_before_compaction_verifies_the_latest_and_still_rejects_rollb
             .is_none()
     );
 
-    // A rollback to an older signed snapshot is refused before the client
-    // ever sees the latest one, and the refusal says it is behind.
+    // A rollback to an older signed snapshot is refused before the client ever sees the latest one,
+    // and the refusal says it is behind.
     let latest = registry.storage.load_snapshot().unwrap().unwrap();
     registry.serve_raw(&signed[1]);
     assert!(matches!(
@@ -230,8 +229,8 @@ fn a_client_synced_before_compaction_verifies_the_latest_and_still_rejects_rollb
     registry.serve_raw(&latest);
     assert_eq!(native_sync(&config, native_dir.path()).unwrap(), last);
 
-    // Replaying a snapshot from before the compaction point, or forking the
-    // newest checkpoint, is still refused afterwards.
+    // Replaying a snapshot from before the compaction point, or forking the newest checkpoint, is
+    // still refused afterwards.
     registry.serve_raw(&signed[2]);
     assert!(matches!(
         native_sync(&config, native_dir.path()),
@@ -248,16 +247,16 @@ fn a_client_synced_before_compaction_verifies_the_latest_and_still_rejects_rollb
     ));
     registry.serve_raw(&latest);
 
-    // The server cannot be led into reusing a pruned sequence either: a lost
-    // pointer does not restart the channel at sequence 1.
+    // The server cannot be led into reusing a pruned sequence either: a lost pointer does not
+    // restart the channel at sequence 1.
     std::fs::remove_file(registry.dir.path().join("published-snapshot.json")).unwrap();
     let restart = registry.run(&["sign-snapshot"]);
     assert!(!restart.status.success());
     assert!(String::from_utf8_lossy(&restart.stderr).contains("compacted through sequence"));
     registry.serve_raw(&latest);
 
-    // Operators roll back to a retained snapshot as before, and are told when
-    // the one they ask for was compacted.
+    // Operators roll back to a retained snapshot as before, and are told when the one they ask for
+    // was compacted.
     let pruned = registry.run(&["rollback-snapshot", "--to-sequence", "3"]);
     assert!(!pruned.status.success());
     assert!(String::from_utf8_lossy(&pruned.stderr).contains("was compacted"));

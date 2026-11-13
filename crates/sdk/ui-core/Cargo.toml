@@ -251,6 +251,8 @@ runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", opt
 runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
+# The typed id of the app a record set belongs to.
+tilo-app-id.workspace = true
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true

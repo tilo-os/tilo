@@ -82,7 +82,6 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
         matches!(refused, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "private_view"),
         "{refused:?}"
     );
-    // Nor may anyone but the person choose their theme.
     assert!(
         app.call_by(
             ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
@@ -121,7 +120,6 @@ fn appearance_inspection_follows_current_shared_custom_choices_without_exporting
     assert!(inspected.get("custom_themes").is_none());
     assert!(!inspected.to_string().contains("never-export"));
     assert_eq!(app.settings::<AppearancePrefs>().get(), current);
-    // Reversible accessibility changes preserve custom references/documents.
     edit_field(
         &mut app,
         APPEARANCE,

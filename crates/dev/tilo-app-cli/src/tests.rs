@@ -79,15 +79,12 @@ fn minimal_generated_graph_app(root: &Path) {
     .unwrap();
 }
 
-/// add screen resolves the app and emits a valid graph; every screen template is valid, accessible and
-/// model-bound; the screen template wires locales, navigation and graph atomically.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring() {
-    // Phase: add_screen_resolves_app_and_emits_a_valid_graph.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -134,7 +131,6 @@ fn add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring() {
         );
     }
 
-    // Phase: every_screen_template_is_valid_accessible_and_model_bound.
     {
         for (template, expected) in [
             (ScreenTemplate::Blank, "body"),
@@ -189,7 +185,6 @@ fn add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring() {
         }
     }
 
-    // Phase: screen_template_wires_locales_navigation_and_graph_atomically.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -283,15 +278,12 @@ fn add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring() {
     }
 }
 
-/// A malformed translation prevents all screen publication; add screen extends only a generated
-/// registry; push and back navigation are wired atomically.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn add_screen_publishes_all_or_nothing_into_generated_registries_only() {
-    // Phase: malformed_translation_prevents_all_screen_publication.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -334,7 +326,6 @@ fn add_screen_publishes_all_or_nothing_into_generated_registries_only() {
         );
     }
 
-    // Phase: add_screen_extends_only_a_generated_registry.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -399,7 +390,6 @@ fn add_screen_publishes_all_or_nothing_into_generated_registries_only() {
         );
     }
 
-    // Phase: add_screen_can_wire_push_and_back_navigation_atomically.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -478,16 +468,12 @@ fn add_screen_publishes_all_or_nothing_into_generated_registries_only() {
     }
 }
 
-/// The add wizard builds a reviewed linked settings screen, cancels before writing and requires a
-/// terminal, reviews and builds a typed form component, creates, registers and mounts a display
-/// component, and mounts an interactive form component.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn the_add_wizard_reviews_before_building_screens_and_components() {
-    // Phase: add_wizard_builds_a_reviewed_linked_settings_screen.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -532,7 +518,6 @@ fn the_add_wizard_reviews_before_building_screens_and_components() {
         assert!(transcript.contains("Add this artifact [Y/n]:"));
     }
 
-    // Phase: add_wizard_cancels_before_writing_and_requires_a_terminal.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -559,7 +544,6 @@ fn the_add_wizard_reviews_before_building_screens_and_components() {
         );
     }
 
-    // Phase: add_wizard_reviews_and_builds_a_typed_form_component.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -579,7 +563,6 @@ fn the_add_wizard_reviews_before_building_screens_and_components() {
         assert!(transcript.contains("Artifact: component \"profile-card\" (form)"));
     }
 
-    // Phase: add_wizard_can_create_register_and_mount_a_display_component.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -602,7 +585,6 @@ fn the_add_wizard_reviews_before_building_screens_and_components() {
         assert!(transcript.contains("mounted in \"main\""));
     }
 
-    // Phase: add_wizard_can_mount_an_interactive_form_component.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -630,11 +612,8 @@ fn the_add_wizard_reviews_before_building_screens_and_components() {
     }
 }
 
-/// The component wizard exposes the source-agnostic tree, sparse list, sparse table and advanced
-/// text templates.
 #[test]
 fn the_component_wizard_exposes_every_component_template() {
-    // Phase: component_wizard_exposes_the_source_agnostic_tree_template.
     {
         let mut input = std::io::Cursor::new(b"3\n".to_vec());
         let mut output = Vec::new();
@@ -646,7 +625,6 @@ fn the_component_wizard_exposes_every_component_template() {
         assert!(transcript.contains("Any ListModel shown as a tree"));
     }
 
-    // Phase: component_wizard_exposes_the_sparse_list_template.
     {
         let mut input = std::io::Cursor::new(b"4\n".to_vec());
         let mut output = Vec::new();
@@ -658,7 +636,6 @@ fn the_component_wizard_exposes_every_component_template() {
         assert!(transcript.contains("Any ListModel"));
     }
 
-    // Phase: component_wizard_exposes_the_sparse_table_template.
     {
         let mut input = std::io::Cursor::new(b"5\n".to_vec());
         let mut output = Vec::new();
@@ -670,7 +647,6 @@ fn the_component_wizard_exposes_every_component_template() {
         assert!(transcript.contains("Any TableModel"));
     }
 
-    // Phase: component_wizard_exposes_the_advanced_text_template.
     {
         let mut input = std::io::Cursor::new(b"6\n".to_vec());
         let mut output = Vec::new();
@@ -683,16 +659,12 @@ fn the_component_wizard_exposes_every_component_template() {
     }
 }
 
-/// add component registers typed accessible Rust without overwriting work; mount validation
-/// publishes nothing on failure; generated graph apps auto-register compatible components;
-/// template replacement requires compatible graph props; stateful form components mount.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn components_register_and_mount_only_with_compatible_typed_props() {
-    // Phase: add_component_registers_typed_accessible_rust_without_overwriting_work.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -797,7 +769,6 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         );
     }
 
-    // Phase: graph_component_mount_validation_publishes_nothing.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("graph-app");
@@ -883,7 +854,6 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         );
     }
 
-    // Phase: generated_graph_apps_auto_register_compatible_components.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("graph-app");
@@ -933,7 +903,6 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         syn::parse_file(&library).expect("generated root is valid Rust");
     }
 
-    // Phase: component_template_replacement_requires_compatible_graph_props.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("graph-app");
@@ -1014,7 +983,6 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         assert!(registry.contains("profile_card::register_ui_graph(context)"));
     }
 
-    // Phase: generated_graph_apps_mount_stateful_form_components.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("graph-form-app");
@@ -1159,11 +1127,8 @@ fn component_registry_returns_the_last_registration_directly() {
     );
 }
 
-/// List, table and text components preserve their generic sparse, column and model boundaries and
-/// expose the standard polygon and custom engine paths.
 #[test]
 fn component_templates_keep_their_generic_model_boundaries() {
-    // Phase: add_list_component_preserves_the_generic_sparse_model_boundary.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -1195,7 +1160,6 @@ fn component_templates_keep_their_generic_model_boundaries() {
         assert!(registry.contains("pub mod activity_list;"));
     }
 
-    // Phase: add_table_component_preserves_the_generic_column_and_model_boundary.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -1227,7 +1191,6 @@ fn component_templates_keep_their_generic_model_boundaries() {
         assert!(registry.contains("pub mod results_table;"));
     }
 
-    // Phase: add_text_component_exposes_standard_polygon_and_custom_engine_paths.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -1255,15 +1218,12 @@ fn component_templates_keep_their_generic_model_boundaries() {
     }
 }
 
-/// Component generation is dry-run safe and localises template copy, refuses an app-owned registry
-/// and Rust keywords, and a generated file batch rolls back an earlier publication.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn component_generation_is_safe_localised_and_transactional() {
-    // Phase: component_generation_is_dry_run_safe_and_localizes_template_copy.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("starter");
@@ -1369,7 +1329,6 @@ fn component_generation_is_safe_localised_and_transactional() {
         );
     }
 
-    // Phase: component_generation_refuses_app_owned_registry_and_rust_keywords.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -1403,7 +1362,6 @@ fn component_generation_is_safe_localised_and_transactional() {
         assert!(keyword.to_string().contains("Rust identifier"));
     }
 
-    // Phase: generated_file_batch_rolls_back_an_earlier_publication.
     {
         let temp = tempfile::tempdir().unwrap();
         let first = temp.path().join("first.txt");
@@ -1436,16 +1394,12 @@ fn component_generation_is_safe_localised_and_transactional() {
     }
 }
 
-/// Screen scenarios scaffold a reachable semantic workflow and reject an app root without the
-/// router; planning is deterministic and prevalidates the suite; a named plan carries its viewport;
-/// execution isolates state and accumulates failures.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
-    // Phase: screen_scenario_scaffolds_a_reachable_semantic_workflow.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("preferences");
@@ -1501,7 +1455,6 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         );
     }
 
-    // Phase: screen_scenario_rejects_an_app_root_that_does_not_use_the_router.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("starter");
@@ -1533,7 +1486,6 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         assert!(!scenario.exists());
     }
 
-    // Phase: scenario_planning_is_deterministic_and_prevalidates_the_suite.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("scenario-app");
@@ -1578,7 +1530,6 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         );
     }
 
-    // Phase: named_scenario_plan_carries_the_requested_viewport.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("scenario-app");
@@ -1614,7 +1565,6 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         }
     }
 
-    // Phase: scenario_execution_isolates_state_and_accumulates_failures.
     {
         let temp = tempfile::tempdir().unwrap();
         let case = |name: &str, script: &str| ScenarioCasePlan {
@@ -1649,7 +1599,6 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         assert!(outcome.failed[0].detail.contains('7'));
     }
 
-    // Phase: scenario_build_runs_outside_the_isolated_state.
     {
         let temp = tempfile::tempdir().unwrap();
         let manifest = temp.path().join("Cargo.toml");
@@ -1692,11 +1641,8 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
     }
 }
 
-/// add artifact protects work with a side-effect-free dry run and rejects traversal and non-app
-/// directories.
 #[test]
 fn add_artifact_protects_work_and_stays_inside_the_app() {
-    // Phase: add_artifact_protects_work_and_dry_run_has_no_side_effects.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -1742,7 +1688,6 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
         );
     }
 
-    // Phase: add_artifact_rejects_traversal_and_non_app_directories.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -1797,18 +1742,12 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
     }
 }
 
-/// add locale registers immediately and protects app-owned setup; the Fluent contract reports
-/// missing and stale entries; an invalid source is rejected before publishing; locale sync
-/// preserves translations and can resolve drift, validates every catalog before publishing any;
-/// a catalog that is already there is registered without replacing its text; an app-owned
-/// registry is never rewritten.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn locales_are_registered_validated_and_synced_without_losing_translations() {
-    // Phase: add_locale_is_immediately_registered_and_protects_app_owned_setup.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -1916,7 +1855,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         assert_eq!(std::fs::read_to_string(registry_path).unwrap(), app_owned);
     }
 
-    // Phase: fluent_contract_reports_missing_and_stale_entries_and_attributes.
     {
         let source = parse_fluent_catalog(
                 "title = Hello\n    .aria-label = Greeting\nbutton = Submit\ncount = { $count ->\n    [one] One\n   *[other] { NUMBER($count) }\n}\n-term = Brand\n",
@@ -1938,7 +1876,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         );
     }
 
-    // Phase: add_locale_rejects_an_invalid_source_before_publishing.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -1961,7 +1898,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         assert_eq!(std::fs::read(registry_path).unwrap(), registry_before);
     }
 
-    // Phase: locale_sync_preserves_translations_and_can_explicitly_resolve_all_drift.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -2065,7 +2001,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         }));
     }
 
-    // Phase: locale_sync_validates_every_catalog_before_publishing_any.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -2105,7 +2040,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         );
     }
 
-    // Phase: an_existing_catalog_is_registered_without_replacing_its_text.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -2138,7 +2072,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         );
     }
 
-    // Phase: add_locale_refuses_an_app_without_the_generated_registry.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -2161,16 +2094,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
     }
 }
 
-/// The UI graph builder round-trips structural edits atomically; property edits are nested, typed
-/// and atomic; edit batches mix operations and roll back together; the tools insert, inspect and
-/// edit app components.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
-    // Phase: ui_graph_builder_round_trips_structural_edits_atomically.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let graph = temp.path().join("ui/main.json");
@@ -2238,7 +2167,6 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         assert!(std::fs::read_to_string(&graph).unwrap().ends_with('\n'));
     }
 
-    // Phase: ui_graph_property_edits_are_nested_typed_and_atomic.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let graph = temp.path().join("ui/main.json");
@@ -2308,7 +2236,6 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
     }
 
-    // Phase: ui_graph_edit_batches_mix_operations_and_roll_back_together.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let graph = temp.path().join("ui/main.json");
@@ -2385,7 +2312,6 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         assert!(edit_ui_graph_batch(&graph, Vec::new()).is_err());
     }
 
-    // Phase: ui_graph_tools_insert_inspect_and_edit_app_components.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let graph = temp.path().join("ui/main.json");
@@ -2452,11 +2378,8 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
     }
 }
 
-/// The explicit UI builder plan is deterministic, the source-checkout builder manifest is
-/// discoverable, and UI graph init protects existing work without force.
 #[test]
 fn the_ui_builder_is_planned_deterministically_and_found_from_a_checkout() {
-    // Phase: explicit_ui_builder_plan_is_deterministic.
     {
         let plan = ui_builder_plan(
             Path::new("ui/main.json"),
@@ -2467,7 +2390,6 @@ fn the_ui_builder_is_planned_deterministically_and_found_from_a_checkout() {
         assert_eq!(plan.args, [OsString::from("ui/main.json")]);
     }
 
-    // Phase: source_checkout_builder_manifest_is_discoverable.
     {
         let current = std::env::current_exe().expect("test executable");
         let manifest = find_ui_builder_manifest(Path::new("docs/app-development.md"), &current)
@@ -2476,7 +2398,6 @@ fn the_ui_builder_is_planned_deterministically_and_found_from_a_checkout() {
         assert!(manifest.ends_with("crates/dev/ui-builder/Cargo.toml"));
     }
 
-    // Phase: ui_graph_init_protects_existing_work_without_force.
     #[cfg(unix)]
     {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -2502,16 +2423,12 @@ fn the_ui_builder_is_planned_deterministically_and_found_from_a_checkout() {
     }
 }
 
-/// A complete starter is created; standalone non-interactive creation discovers the toolkit;
-/// discovery follows the executable ancestry; new app preflights workspace registration, publishes
-/// the tree and workspace member together, and a staged failure restores both.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn new_apps_are_created_whole_with_their_workspace_registration() {
-    // Phase: creates_complete_starter.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -2576,7 +2493,6 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(report.summary().contains("Ready for `tilo-app run`"));
     }
 
-    // Phase: standalone_noninteractive_creation_discovers_the_toolkit.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("scripted-app");
@@ -2591,7 +2507,6 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(doctor_app(&destination).unwrap().is_ready());
     }
 
-    // Phase: toolkit_discovery_follows_the_tilo_app_cli_executable_ancestry.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let ui = temp.path().join("crates/sdk/ui-core");
@@ -2604,7 +2519,6 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         );
     }
 
-    // Phase: new_app_preflights_workspace_registration_before_creating_files.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let root = temp.path();
@@ -2629,7 +2543,6 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         );
     }
 
-    // Phase: new_app_publishes_complete_tree_and_workspace_member_together.
     #[cfg(unix)]
     {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -2685,7 +2598,6 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         );
     }
 
-    // Phase: staged_new_app_failure_restores_workspace_and_empty_destination.
     #[cfg(unix)]
     {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -2731,16 +2643,12 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
     }
 }
 
-/// The interactive wizard retries invalid fields and builds the selected template, declines before
-/// publishing any files, prompts and retries the toolkit path before review, accepts the discovered
-/// toolkit default, and reports end of input as cancellation.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
-    // Phase: interactive_wizard_retries_invalid_fields_and_builds_the_selected_template.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -2774,7 +2682,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         assert!(source.contains("cx.each("), "{source}");
     }
 
-    // Phase: interactive_wizard_declines_before_publishing_any_files.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("notes");
@@ -2795,7 +2702,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         assert!(transcript.contains("answer `yes` or `no`"));
     }
 
-    // Phase: standalone_wizard_prompts_and_retries_the_toolkit_path_before_review.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let toolkit = temp.path().join("toolkit-ui");
@@ -2839,7 +2745,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         );
     }
 
-    // Phase: standalone_wizard_accepts_the_discovered_toolkit_default.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("notes");
@@ -2877,7 +2782,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         );
     }
 
-    // Phase: standalone_wizard_answers_git_to_build_against_the_tilo_repository.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("notes");
@@ -2909,7 +2813,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         assert!(manifest.contains(standalone::DEFAULT_SDK_GIT), "{manifest}");
     }
 
-    // Phase: interactive_wizard_reports_end_of_input_as_cancellation.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let mut req = request(temp.path().join("cancelled"));
@@ -2927,9 +2830,6 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
     }
 }
 
-/// The framework is recognised from the parsed items, so a path-qualified
-/// `#[resource]` attribute and a `ResourceApp` kept outside `src/lib.rs`
-/// count, while the same words in a comment or a string do not.
 #[test]
 fn doctor_recognises_the_framework_by_its_parsed_items() {
     let app = |files: &[(&str, &str)]| {
@@ -2976,16 +2876,12 @@ fn doctor_recognises_the_framework_by_its_parsed_items() {
     assert_eq!(mentioned[1].0, DoctorStatus::Fail, "{mentioned:#?}");
 }
 
-/// Doctor accumulates actionable failures, accepts registered document actions without widget
-/// glue, finds the SDK in target-specific dependencies, and rejects one invalid
-/// target-specific UI dependency.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn doctor_reports_actionable_failures_in_app_manifests() {
-    // Phase: doctor_accumulates_actionable_failures.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         std::fs::write(
@@ -3013,7 +2909,6 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
         assert!(summary.contains("Not ready"));
     }
 
-    // Phase: doctor_accepts_registered_document_actions_without_widget_operation_glue.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         std::fs::create_dir(temp.path().join("src")).expect("source directory");
@@ -3031,7 +2926,6 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
         assert_eq!(checks[0].status, DoctorStatus::Pass, "{checks:#?}");
     }
 
-    // Phase: doctor_finds_tilo_app_sdk_in_target_specific_dependencies.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let app = temp.path().join("app");
@@ -3059,7 +2953,6 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
         assert!(checks[0].detail.contains("sdk"));
     }
 
-    // Phase: doctor_rejects_one_invalid_target_specific_ui_dependency.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let manifest = r#"
@@ -3082,15 +2975,12 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
     }
 }
 
-/// Doctor validates generated screens, locales and scenarios, preflights graph component factories
-/// and typed props, and marks app-owned component contexts unverifiable.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn doctor_validates_generated_screens_components_and_contracts() {
-    // Phase: doctor_validates_generated_screens_locales_and_scenarios.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("project-maker");
@@ -3171,7 +3061,6 @@ fn doctor_validates_generated_screens_components_and_contracts() {
         }));
     }
 
-    // Phase: doctor_preflights_graph_component_factories_and_typed_props.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("component-app");
@@ -3238,7 +3127,6 @@ fn doctor_validates_generated_screens_components_and_contracts() {
         }));
     }
 
-    // Phase: doctor_marks_app_owned_component_contexts_as_unverifiable.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("custom-context");
@@ -3268,12 +3156,8 @@ fn doctor_validates_generated_screens_components_and_contracts() {
     }
 }
 
-/// A dry run writes nothing; the summary prints copyable commands for shell-unsafe paths;
-/// ambiguous or unsafe names are rejected; the workspace-relative UI path is computed; the template
-/// prompt accepts names and shortcuts.
 #[test]
 fn creation_inputs_are_validated_and_printed_safely() {
-    // Phase: dry_run_writes_nothing.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("preview");
@@ -3287,7 +3171,6 @@ fn creation_inputs_are_validated_and_printed_safely() {
         assert!(outcome.files.contains(&PathBuf::from("surface.toml")));
     }
 
-    // Phase: an_app_outside_every_repository_becomes_one.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let lone = temp.path().join("lone");
@@ -3305,7 +3188,6 @@ fn creation_inputs_are_validated_and_printed_safely() {
         assert!(!nested.join(".git").exists());
     }
 
-    // Phase: creation_summary_prints_copyable_commands_for_shell_unsafe_paths.
     {
         let outcome = CreateOutcome {
             destination: PathBuf::from("/tmp/O'Reilly app"),
@@ -3325,14 +3207,12 @@ fn creation_inputs_are_validated_and_printed_safely() {
         assert!(summary.contains("tilo-app --help"));
     }
 
-    // Phase: rejects_ambiguous_or_unsafe_names.
     {
         for name in ["BadName", "-leading", "two--hyphens", "with space", ""] {
             assert!(validate_package_name(name).is_err(), "accepted {name:?}");
         }
     }
 
-    // Phase: computes_workspace_relative_ui_path.
     {
         assert_eq!(
             relative_path(
@@ -3343,7 +3223,6 @@ fn creation_inputs_are_validated_and_printed_safely() {
         );
     }
 
-    // Phase: template_prompt_accepts_names_and_numbers.
     {
         for (number, template) in (1..).zip(Template::ALL) {
             assert_eq!(parse_template(template.name()).unwrap(), template);
@@ -3358,15 +3237,12 @@ fn creation_inputs_are_validated_and_printed_safely() {
     }
 }
 
-/// The starter, document, collection and graph templates each compose the toolkit patterns they
-/// are meant to start from.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn each_template_composes_the_toolkit_patterns_it_teaches() {
-    // Phase: every_template_has_its_own_catalog_and_uses_only_its_messages.
     {
         for template in Template::ALL {
             let spec = AppSpec {
@@ -3417,7 +3293,6 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         }
     }
 
-    // Phase: a_new_apps_services_speak_the_runtime_version_the_image_serves.
     {
         let spec = AppSpec {
             package_name: "errands".into(),
@@ -3456,7 +3331,6 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         }
     }
 
-    // Phase: collection_template_uses_item_actions_and_starts_empty.
     {
         let spec = AppSpec {
             package_name: "errands".into(),
@@ -3479,7 +3353,6 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         assert!(app_readme(&spec).contains("item actions"));
     }
 
-    // Phase: graph_template_generates_a_valid_editable_screen.
     {
         let spec = AppSpec {
             package_name: "project-maker".into(),
@@ -3535,7 +3408,6 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         }
     }
 
-    // Phase: document_template_uses_direct_durable_bindings_and_undo_contract.
     {
         let spec = AppSpec {
             package_name: "notes".into(),
@@ -3564,15 +3436,12 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
     }
 }
 
-/// Every template uses the toolkit resource action host and generates valid Rust and actions, and
-/// generated README commands work in a workspace or standalone.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
-    // Phase: every_template_uses_the_toolkit_resource_action_host.
     {
         for template in Template::ALL {
             let spec = AppSpec {
@@ -3608,7 +3477,6 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
         }
     }
 
-    // Phase: generated_readme_commands_work_inside_workspace_or_standalone.
     {
         for workspace_member in [false, true] {
             let spec = AppSpec {
@@ -3667,7 +3535,6 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
         }
     }
 
-    // Phase: only_workspace_members_depend_on_the_workspace_hack.
     {
         for workspace_member in [false, true] {
             let spec = AppSpec {
@@ -3716,7 +3583,6 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
         }
     }
 
-    // Phase: every_template_generates_valid_rust_and_actions.
     {
         for template in Template::ALL {
             let spec = AppSpec {
@@ -3759,16 +3625,12 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
     }
 }
 
-/// The standalone UI path is discovered and overridable; task plans discover the app and forward
-/// after the separator; quality plans scope format and clippy to the package; tasks refuse to spawn
-/// when doctor fails.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
-    // Phase: standalone_ui_path_is_discovered_and_can_be_overridden.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let discovered = resolve_ui_dir(temp.path(), None, None).expect("discovered toolkit");
@@ -3786,7 +3648,6 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
         );
     }
 
-    // Phase: app_task_plan_discovers_generated_app_and_forwards_after_separator.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -3827,7 +3688,6 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
         assert!(!test.args.iter().any(|arg| arg == "samples"));
     }
 
-    // Phase: app_quality_plan_scopes_format_and_clippy_to_the_app_package.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -3893,7 +3753,6 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
         );
     }
 
-    // Phase: platform_clippy_lints_other_targets_and_leaves_the_host_to_check.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -3939,7 +3798,6 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
         assert!(plan_platform_clippy(&destination, PackagePlatform::Web, None).is_err());
     }
 
-    // Phase: app_task_refuses_to_spawn_when_doctor_fails.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         std::fs::write(
@@ -3956,11 +3814,8 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
     }
 }
 
-/// Shot plans use the standard launch flags and forward app options; inspection plans build a strict
-/// payload from an actions file and reject a non-array file.
 #[test]
 fn shot_and_inspection_plans_are_built_strictly() {
-    // Phase: shot_plan_uses_standard_launch_flags_and_forwards_app_options.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("gallery");
@@ -3993,7 +3848,6 @@ fn shot_and_inspection_plans_are_built_strictly() {
         );
     }
 
-    // Phase: inspection_plan_builds_strict_payload_from_an_actions_file.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("inspector");
@@ -4034,7 +3888,6 @@ fn shot_and_inspection_plans_are_built_strictly() {
         assert_eq!(payload["actions"][0]["perform"]["target"], "name-input");
     }
 
-    // Phase: inspection_plan_rejects_a_non_array_actions_file.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("inspector");
@@ -4059,8 +3912,6 @@ fn shot_and_inspection_plans_are_built_strictly() {
     }
 }
 
-/// Sizes parse in decimal and binary units, `[budget]` refuses unknown keys, ELF sections are
-/// read without trusting the file, and overruns name what is over and by how much.
 #[test]
 fn package_size_is_reported_against_the_app_budget() {
     assert_eq!(size::parse_size("4096").unwrap(), 4096);
@@ -4172,16 +4023,12 @@ fn package_size_is_reported_against_the_app_budget() {
     );
 }
 
-/// Package specs use the manifest entrypoint and package name, artifact collection is scoped to the
-/// manifest, output is not replaced before building, the payload overlay copies nested files and
-/// rejects symlinks, and profile names are safe Cargo arguments.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn packaging_is_scoped_safe_and_never_clobbers_output() {
-    // Phase: package_spec_uses_manifest_entrypoint_and_cargo_package_name.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -4196,7 +4043,6 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         );
     }
 
-    // Phase: cargo_artifact_collection_is_scoped_to_the_app_manifest.
     {
         let manifest = PathBuf::from("/workspace/demo/Cargo.toml");
         let executable = PathBuf::from("/workspace/target/release/demo");
@@ -4246,7 +4092,6 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         }
     }
 
-    // Phase: package_refuses_to_replace_output_before_building.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -4275,7 +4120,6 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert!(error.to_string().contains("pass --force"));
     }
 
-    // Phase: a_thin_package_needs_the_thin_feature.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -4310,7 +4154,6 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert!(error.to_string().contains("--static"), "{error:#}");
     }
 
-    // Phase: packing_signs_and_verifies_in_process.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -4364,7 +4207,6 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert!(format!("{again:#}").contains("creating"), "{again:#}");
     }
 
-    // Phase: payload_overlay_copies_nested_files_and_rejects_symlinks.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let source = temp.path().join("source");
@@ -4387,7 +4229,6 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         }
     }
 
-    // Phase: package_profile_names_are_safe_cargo_arguments.
     {
         assert!(validate_profile_name("release").is_ok());
         assert!(validate_profile_name("distribution-fast_2").is_ok());
@@ -4400,16 +4241,12 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
     }
 }
 
-/// The dev loop watches app and local UI source, ignores build and editor noise, detects a newer
-/// edit while draining, selects the default binary and reports failures, and passes app arguments and
-/// working directory to the rebuilt binary.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
-    // Phase: dev_loop_watches_app_and_local_ui_source.
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("watchable");
@@ -4454,7 +4291,6 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         );
     }
 
-    // Phase: dev_restart_filter_ignores_build_and_editor_noise.
     {
         let root = PathBuf::from("/workspace/apps/demo");
         let roots = [root.clone()];
@@ -4492,7 +4328,6 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         );
     }
 
-    // Phase: dev_build_drain_detects_a_newer_edit_without_reacting_to_noise.
     {
         let root = PathBuf::from("/workspace/apps/demo");
         let roots = [root.clone()];
@@ -4519,7 +4354,6 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         assert!(!drain_pending_restart_events(&events, &roots));
     }
 
-    // Phase: dev_candidate_build_selects_default_binary_and_reports_failures.
     #[cfg(unix)]
     {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -4581,7 +4415,6 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         assert!(error.to_string().contains("exit status: 9"), "{error:#}");
     }
 
-    // Phase: rebuilt_dev_binary_receives_app_arguments_and_app_working_directory.
     #[cfg(unix)]
     {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -4869,8 +4702,6 @@ fn doctor_accepts_the_cli_only_agent_without_a_published_surface() {
     }));
 }
 
-/// A standalone app builds what the workspace tests: every `[patch]` the SDK's graph uses, the
-/// lockfile, compiler, target flags and profiles, with the SDK from a checkout or from git.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -4909,7 +4740,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         }
     };
 
-    // Phase: a checkout nearby is used in place, by relative path.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -4978,7 +4808,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         assert!(doctor_app(&app).unwrap().is_ready());
     }
 
-    // Phase: `--ui-path` may name the checkout itself, not only one of its SDK crates.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -4994,7 +4823,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         );
     }
 
-    // Phase: without a checkout the SDK and every fork come from one pinned git commit.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -5034,7 +4862,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         assert!(report.summary().contains(rev), "{}", report.summary());
     }
 
-    // Phase: on the published SDK the app names tilo-app by version, alone.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
@@ -5078,7 +4905,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         );
     }
 
-    // Phase: Cargo's caches are never mistaken for a checkout to build against.
     {
         let home = Path::new("/home/ada/.cargo");
         assert!(standalone::in_cargo_cache(
@@ -5093,8 +4919,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     }
 }
 
-/// Inside the Tilo workspace the toolkit comes in as a dependency with the flags the host and the
-/// library share; a standalone app links every artifact for its target dynamically instead.
 #[test]
 fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace() {
     let manifest = Path::new("/apps/notes/Cargo.toml");
@@ -5785,7 +5609,6 @@ fn dev_watch_sees_saves_in_new_folders_and_leaves_build_output_out() {
     .expect("watch");
     std::fs::write(root.join("target/debug/out"), b"built").unwrap();
     std::fs::create_dir(root.join("src")).unwrap();
-    // The new folder is watched once its creation is reported.
     tilo_test_env::wait_until("the new folder to be reported", || {
         events
             .try_iter()
@@ -5914,7 +5737,6 @@ fn seal_script(path: &Path) {
     std::fs::remove_file(&draft).unwrap();
 }
 
-/// `--ui-path` may name either SDK crate of a checkout; both resolve to the same checkout.
 #[test]
 fn ui_path_accepts_either_sdk_crate() {
     for crate_dir in ["ui-core", "tilo-app"] {
@@ -5927,8 +5749,6 @@ fn ui_path_accepts_either_sdk_crate() {
     }
 }
 
-/// The dev loop supplies a runtime host only to an outside app that has none,
-/// and finds it in the checkout the app's `tilo-app` dependency resolves to.
 #[test]
 fn the_dev_loop_supplies_a_runtime_host_only_where_none_serves() {
     let env = |pairs: &'static [(&'static str, &'static str)]| {
@@ -5987,8 +5807,6 @@ fn the_dev_loop_supplies_a_runtime_host_only_where_none_serves() {
     assert_eq!(sdk_root_from_metadata(&without), None);
 }
 
-/// Only an edit confined to `locales/*.ftl` skips the build; anything else in
-/// the same batch, a removed file, or a nested path still rebuilds.
 #[test]
 fn catalog_only_edits_reload_without_a_build() {
     let app = Path::new("/apps/demo");
@@ -6074,9 +5892,6 @@ fn files_under(root: &Path) -> BTreeSet<PathBuf> {
     files
 }
 
-/// Each example in the checkout is exactly what `tilo-app new --from-example`
-/// renders for it under its own identity: the generated files are the ones
-/// `new` writes, and the example's own files are the ones the CLI embeds.
 #[test]
 fn every_example_is_what_new_renders_for_it() {
     let root = checkout_root();
@@ -6128,10 +5943,6 @@ fn every_example_is_what_new_renders_for_it() {
     }
 }
 
-/// Threads and the std clock are absent on the web: the web rules (W1, W2)
-/// record them apart as what makes an app native-only, an app for every
-/// platform fails on them (strict mode), and the web build refuses it before
-/// building anything.
 #[test]
 fn portability_lint_records_what_the_web_target_cannot_run() {
     let root = tempfile::tempdir().unwrap();
@@ -6227,8 +6038,6 @@ pub fn device_only() {
     assert!(!app.join("target/tilo-app").exists());
 }
 
-/// Every example is listed with its lesson in examples/README.md, and every
-/// example passes the portability lint.
 #[test]
 fn every_example_is_indexed_and_portable() {
     let root = checkout_root();
@@ -6255,8 +6064,6 @@ fn every_example_is_indexed_and_portable() {
     assert!(examples::find("list").is_err());
 }
 
-/// An app started from an example outside the checkout is renamed throughout
-/// and passes the same structural checks as an app from a template.
 #[test]
 fn an_app_from_an_example_is_renamed_and_ready() {
     for example in examples::ALL {

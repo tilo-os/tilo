@@ -8,7 +8,7 @@ use std::rc::Rc;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{ChromeIntent, OwnChip};
 use tilo_desktop::desktop_host::{DeskLayer, DesktopChrome, NoticeTiles};
-use tilo_desktop::launchpad::CollaborationLaunchpad;
+use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
@@ -105,6 +105,7 @@ fn page() -> (FrameHarness, Rc<Page>) {
         Box::new(surface),
         handle.clone(),
         CollaborationLaunchpad::new(),
+        Rc::new(|| LaunchpadAction::ALL.to_vec()),
         Rc::default(),
         Vec::new(),
     );

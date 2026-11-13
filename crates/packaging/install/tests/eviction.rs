@@ -1,7 +1,6 @@
-//! The size cap the collection after every change applies, on a store past
-//! it: the app a change just installed survives the sweep and opens, an app
-//! being opened is not evicted under its launch, and the use a launch
-//! records when the app closes decides which app goes first.
+//! The size cap the collection after every change applies, on a store past it: the app a change just
+//! installed survives and opens, an app being opened is not evicted under its launch, and the use
+//! recorded when a launch closes decides which app goes first.
 
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -10,17 +9,14 @@ use package_store::{Admission, Catalog, InstalledPackage, PackageStore};
 use runtime_bundle::gc::BundleRoot;
 use tilo_app_package::SigningIdentity;
 
-/// One small app's payload.
 const APP_BYTES: usize = 64 * 1024;
-/// A payload larger than the cap the tests set on its own.
 const LARGE_BYTES: usize = 4 * APP_BYTES;
 
-/// When a launch took its lease, long ago.
 fn long_ago() -> std::time::SystemTime {
     UNIX_EPOCH.checked_add(Duration::from_secs(10)).unwrap()
 }
 
-/// A store, and the publisher of everything installed into it.
+/// A store and the publisher of everything installed into it.
 struct Fixture {
     dir: tempfile::TempDir,
     store: PackageStore,
@@ -39,7 +35,6 @@ impl Fixture {
         }
     }
 
-    /// Install `id` at `version` with a payload of `len` bytes of `seed`.
     fn install(&self, id: &str, version: &str, seed: u8, len: usize) -> InstalledPackage {
         let payload = self.dir.path().join(format!("payload-{id}-{version}"));
         std::fs::create_dir_all(payload.join("bin")).unwrap();
@@ -78,8 +73,7 @@ type = "gui"
             .package
     }
 
-    /// Apps the person installed long ago and last opened at the times
-    /// given, least recently used first.
+    /// Apps last opened at the given times, least recently used first.
     fn fill(&self, apps: &[(&str, u64)]) {
         for (seed, (id, last_used)) in (1u8..).zip(apps) {
             self.install(id, "1.0.0", seed, APP_BYTES);
@@ -92,8 +86,7 @@ type = "gui"
         }
     }
 
-    /// The collection `tilo-install` and the app host run after a change,
-    /// with the store's cap at `cap` bytes.
+    /// The collection a change runs, with the store's cap at `cap` bytes.
     fn collect(&self, cap: u64, keep: Vec<String>) -> Report {
         let catalog = Catalog::at(self.store.layout().root(), None);
         let runtimes = BundleRoot::new(self.dir.path().join("runtimes"));
@@ -101,9 +94,8 @@ type = "gui"
         collect(&self.store, &catalog, &runtimes, request).unwrap()
     }
 
-    /// What a launch checks before it opens `id`: the app is installed, its
-    /// tree can be held for the launch, and the tree is whole by its signed
-    /// record.
+    /// What a launch checks before it opens `id`: installed, the tree can be held, and the tree is
+    /// whole by its signed record.
     fn opens(&self, id: &str) -> bool {
         let Some(row) = self.store.registry().unwrap().find(id).cloned() else {
             return false;
@@ -126,10 +118,8 @@ fn cap(apps: u64) -> u64 {
     apps.saturating_mul(u64::try_from(APP_BYTES).unwrap())
 }
 
-/// The person keeps more than the cap, and the app they download next is
-/// larger than the cap on its own. The sweep after its install evicts every
-/// other app it may and still cannot get under the cap: the new app must not
-/// be the last thing it evicts.
+/// The installed apps are over the cap and the app downloaded next is larger than the cap on its own:
+/// the sweep evicts every other app it may and still cannot get under, and must not evict the new one.
 #[test]
 fn a_large_app_installed_into_a_full_store_survives_the_sweep_and_opens() {
     const NEW: &str = "so.tilo.eviction-large";
@@ -166,9 +156,8 @@ fn a_large_app_installed_into_a_full_store_survives_the_sweep_and_opens() {
     );
 }
 
-/// An update keeps the app's last use, so updating the app the person used
-/// least recently makes it the first the sweep would evict. `tilo-install`
-/// keeps every app its change wrote.
+/// An update keeps the app's last use, so updating the least recently used app would make it the
+/// first the sweep evicts; `tilo-install` keeps every app its change wrote.
 #[test]
 fn an_updated_app_survives_the_sweep_its_update_runs_and_opens() {
     const OLDEST: &str = "so.tilo.eviction-oldest";
@@ -194,8 +183,8 @@ fn an_updated_app_survives_the_sweep_its_update_runs_and_opens() {
     );
 }
 
-/// A launch holds an app's tree from choosing it until its sandbox exits;
-/// the sweep leaves an app being opened alone and evicts the next one.
+/// A launch holds an app's tree until its sandbox exits; the sweep leaves it alone and evicts the
+/// next one.
 #[test]
 fn an_app_being_opened_is_not_evicted() {
     const OPENING: &str = "so.tilo.eviction-opening";
@@ -216,10 +205,9 @@ fn an_app_being_opened_is_not_evicted() {
     drop(launch);
 }
 
-/// The person opened the first app weeks ago and kept it open until today;
-/// the second they opened once, last week. Recorded at open alone, the
-/// first looks older and goes; with the use recorded when it closed, the
-/// second goes.
+/// The first app was opened weeks ago and stayed open until today; the second was opened once, last
+/// week. Recorded at open alone the first looks older and goes; recorded when it closed, the second
+/// goes.
 #[test]
 fn the_use_recorded_when_an_app_closes_decides_what_is_evicted() {
     const KEPT_OPEN: &str = "so.tilo.eviction-kept-open";
@@ -254,10 +242,9 @@ fn the_use_recorded_when_an_app_closes_decides_what_is_evicted() {
     assert!(fx.opens(KEPT_OPEN));
 }
 
-/// The person opened an app long ago and kept it open; an update replaced
-/// the build it runs on. Its row now names the new build, which nothing
-/// runs or holds, but the app is open: the sweep after a later change must
-/// evict the idle app, not the open one.
+/// An app opened long ago stayed open while an update replaced the build it runs on. Its row names
+/// the new build, which nothing runs or holds, but the app is open: a later sweep evicts the idle
+/// app, not the open one.
 #[test]
 fn an_app_updated_while_open_is_not_evicted() {
     const OPEN: &str = "so.tilo.eviction-open";

@@ -11,11 +11,8 @@ use std::io;
 #[cfg(unix)]
 use std::os::fd::{BorrowedFd, OwnedFd};
 
-/// The largest message either side sends: a verb, its fields and an answer.
 pub const MAX_MESSAGE: usize = 1024;
 
-/// The most descriptors one message carries: a tilolang instance's five
-/// (`crate::tilolang_host::InstanceFds`).
 #[cfg(unix)]
 const MAX_FDS: usize = 5;
 
@@ -30,13 +27,11 @@ pub fn encode(fields: &[&[u8]]) -> io::Result<Vec<u8>> {
     Ok(fields.join(&0))
 }
 
-/// The fields of `message`.
 #[must_use]
 pub fn decode(message: &[u8]) -> Vec<&[u8]> {
     message.split(|byte| *byte == 0).collect()
 }
 
-/// Send `fields`, with `fds` beside them, as one message over `socket`.
 #[cfg(unix)]
 pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
@@ -63,8 +58,6 @@ pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) ->
     }
 }
 
-/// One message and the descriptors that came with it, close-on-exec;
-/// `None` at end of file.
 #[cfg(unix)]
 pub fn receive(
     socket: BorrowedFd<'_>,

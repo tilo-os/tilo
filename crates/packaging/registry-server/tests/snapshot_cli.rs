@@ -33,7 +33,6 @@ fn wait_for_registry_lock_waiter(pid: u32) {
     panic!("registry CLI process never waited on the held registry lock");
 }
 
-/// The CLI arguments signing a snapshot with the key at `key_path`.
 fn sign_args(key_path: &std::path::Path) -> [&str; 5] {
     [
         "sign-snapshot",

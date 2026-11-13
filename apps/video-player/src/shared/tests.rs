@@ -1,6 +1,3 @@
-//! The shared library through the door the host uses: verbs, field edits,
-//! the invariants and merging.
-
 use super::*;
 use ui::tilo_resource::{Edit, Invoke, Replica};
 
@@ -44,8 +41,8 @@ fn annotate(library: &mut Replica<Library>, media_ref: &str, time_ms: u64, text:
         .unwrap()
 }
 
-/// Playlists hold their videos in order; renaming, reordering and editing
-/// a note are field edits; deleting a playlist takes its videos with it.
+/// Playlists hold their videos in order; renaming, reordering and editing a note are field
+/// edits; deleting a playlist takes its videos with it.
 #[test]
 fn playlists_and_annotations_change_through_verbs_and_field_edits() {
     let mut library = Replica::<Library>::new();
@@ -101,8 +98,7 @@ fn playlists_and_annotations_change_through_verbs_and_field_edits() {
     let shown = state.annotations.get(&note).unwrap();
     assert_eq!((shown.text.as_str(), shown.time_ms), ("New", 1_250));
 
-    // Undo takes a deleted playlist back, videos and all, so deleting asks
-    // nothing (the one undo step is proved in the app's tests).
+    // Undo takes a deleted playlist back, videos and all, so deleting asks nothing.
     library
         .apply(Library::DELETE_PLAYLIST.with(trip))
         .expect("an undoable delete asks nothing");
@@ -134,8 +130,8 @@ fn watch_later_is_made_once_and_holds_a_video_once() {
     assert_eq!(merged.items_of(&Id::from_raw(WATCH_LATER)).count(), 2);
 }
 
-/// Two people editing the library at once converge, and a note one deleted
-/// stays deleted though the other edited it meanwhile.
+/// Two people editing at once converge, and a note one deleted stays deleted though the
+/// other edited it meanwhile.
 #[test]
 fn concurrent_edits_converge_and_a_deleted_note_stays_deleted() {
     let mut ours = Replica::<Library>::new();
@@ -161,8 +157,8 @@ fn concurrent_edits_converge_and_a_deleted_note_stays_deleted() {
     assert!(merged.annotations.is_empty(), "the delete wins");
 }
 
-/// Where playback stands is kept for the last few videos, and only valid
-/// speeds are said.
+/// Where playback stands is kept for the last few videos, and only valid speeds are
+/// said.
 #[test]
 fn the_library_remembers_the_playback_of_the_last_videos() {
     let mut library = Replica::<Library>::new();

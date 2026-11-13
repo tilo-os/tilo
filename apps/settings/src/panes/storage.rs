@@ -1,16 +1,6 @@
 //! Storage overview. It accounts bytes here; partitioning and backup workflows
 //! remain in their specialist tools, opened with typed contextual intents.
 //! Reclaiming space is a [`StorageEffect`] the [`StorageModel`] runs.
-//!
-//! What each device holds of the person's workspaces, and what of it is
-//! only there, is `residency`: this device's storage summary is the
-//! `storage-summary` effect, which another of the person's devices asks
-//! for too, and the other devices' are theirs, asked of each through the
-//! host (`other_devices`).
-//!
-//! The page is view code over what the area keeps of the device ([`view`]),
-//! with the drives the person chose to remember beneath it: each area moves
-//! what its part of the page is keyed by when what it shows changes.
 
 mod other_devices;
 mod residency;
@@ -56,13 +46,10 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`StorageArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&StorageArea> {
     app.areas().find()
 }
 
-/// What the storage settings found by search are set to, as the page last
-/// read them: nothing until it has.
 pub(crate) mod values {
     use super::{StorageModel, area, cache_size, cache_size_shown};
     use crate::i18n::{t, t_args};
@@ -104,12 +91,8 @@ fn category_label(category: StorageCategory) -> String {
     })
 }
 
-/// How much space fetched workspace files may keep on this device: the
-/// daemon's default share of the disk, or a fixed size in gigabytes.
 const CACHE_SIZES: &[&str] = &["Automatic", "5 GB", "10 GB", "25 GB", "50 GB", "100 GB"];
 
-/// The bytes `size` (one of [`CACHE_SIZES`]) keeps; `Ok(None)` is the
-/// daemon's default.
 fn cache_budget(size: &str) -> Result<Option<u64>, String> {
     if size == "Automatic" {
         return Ok(None);
@@ -126,7 +109,6 @@ fn cache_budget(size: &str) -> Result<Option<u64>, String> {
         })
 }
 
-/// The entry of [`CACHE_SIZES`] for `budget`, if it is one of them.
 fn cache_size(budget: Option<u64>) -> Option<&'static str> {
     CACHE_SIZES
         .iter()
@@ -151,7 +133,6 @@ fn cache_size_from_label(label: &str) -> String {
         .map_or_else(|| label.to_string(), |size| (*size).to_string())
 }
 
-/// Reclaiming this device's space, and its storage tools.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum StorageEffect {
@@ -203,10 +184,6 @@ pub enum StorageEffect {
     },
 }
 
-/// Answer `effect`: a tool is opened, and caches are cleaned up, off the UI
-/// thread; freeing synced files, changing the cache policy and the
-/// residency effects run on the area's model, which asks the storage
-/// service off the UI thread.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: StorageEffect,
@@ -298,8 +275,6 @@ pub(crate) fn answer(
     }
 }
 
-/// Ask the shell to open `intent` off the UI thread; `opened` names the
-/// message it answers with once the shell took it.
 fn open_tool(
     app: &SettingsApp,
     area: &StorageArea,
@@ -318,9 +293,6 @@ fn open_tool(
     )
 }
 
-/// The Storage pane: this device's storage, then the drives the person
-/// chose to remember ([`crate::panes::drives`]), which say nothing when
-/// there are none.
 fn build_with_drives(storage: Element, drives: Element) -> Element {
     Box::new(
         ui::widget::Column::new()
@@ -331,19 +303,14 @@ fn build_with_drives(storage: Element, drives: Element) -> Element {
     )
 }
 
-/// What Storage measured of this device: what each app keeps, and the
-/// caches it could remove.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct StorageScan {
     pub(crate) snapshot: StorageSnapshot,
     pub(crate) cleanup: Option<CleanupPreview>,
-    /// The size of the disk the person's files are on, and what is used.
     pub(crate) capacity: Option<os_actions::DiskCapacity>,
 }
 
 impl StorageScan {
-    /// Measure what lies under `roots`: a walk of whole trees, the sync
-    /// replica among them.
     fn of(roots: &StorageRoots, disk: Option<&std::path::Path>) -> Self {
         Self {
             snapshot: desktop_policy::scan_storage(roots),
@@ -355,7 +322,6 @@ impl StorageScan {
         }
     }
 
-    /// Nothing could be measured: the scan ended without a result.
     fn unavailable() -> Self {
         Self {
             snapshot: StorageSnapshot {
@@ -376,19 +342,13 @@ impl StorageScan {
 /// the sync replica, a round trip to the shell — so it runs off the UI
 /// thread.
 pub(crate) trait StorageDevice: Send + Sync {
-    /// Measure the device's storage.
     fn scan(&self) -> StorageScan;
-    /// Remove every cache item `preview` lists.
     fn clean_up(&self, preview: &CleanupPreview) -> Result<(), String>;
-    /// Ask the shell to open a storage tool.
     fn open_tool(&self, intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String>;
 }
 
-/// This device's storage, or, in a window nobody uses, none: nothing is
-/// measured and the shell is not asked for a tool.
 struct DeviceStorage {
     roots: StorageRoots,
-    /// A path on the disk the person's files are on: their home.
     disk: Option<std::path::PathBuf>,
     reaches_shell: bool,
 }
@@ -439,19 +399,12 @@ impl StorageDevice for DeviceStorage {
     }
 }
 
-/// What the storage area keeps for the window: the device, and the model,
-/// scanned when first needed.
 pub struct StorageArea {
-    /// Whether it measures this device and asks its storage service.
     devices: bool,
-    /// The stand-in devices a capture shows; `None` in a live window.
     scene: Option<Rc<crate::scenarios::CaptureScene>>,
     device: std::cell::OnceCell<std::sync::Arc<dyn StorageDevice>>,
     model: std::cell::OnceCell<Rc<RefCell<StorageModel>>>,
-    /// The window's client for the action door, which asks the person's
-    /// other devices for their summaries.
     remote: ui::RemoteActions,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
@@ -467,8 +420,6 @@ impl StorageArea {
         }
     }
 
-    /// The device Storage measures and asks for tools; a capture's
-    /// measures nothing and asks no shell.
     fn device(&self) -> std::sync::Arc<dyn StorageDevice> {
         std::sync::Arc::clone(
             self.device
@@ -476,8 +427,6 @@ impl StorageArea {
         )
     }
 
-    /// Measure `device` in place of this device's storage; before the
-    /// area was first used.
     #[cfg(test)]
     pub(crate) fn use_device(&self, device: std::sync::Arc<dyn StorageDevice>) {
         assert!(
@@ -486,9 +435,6 @@ impl StorageArea {
         );
     }
 
-    /// The model, created on first use: its scan runs off the UI thread,
-    /// and only a window someone uses asks the storage service and the
-    /// person's other devices; a capture shows its stand-in devices.
     pub fn model(&self) -> &Rc<RefCell<StorageModel>> {
         self.model.get_or_init(|| {
             let mut model = StorageModel::over(self.devices, self.device());
@@ -513,8 +459,6 @@ impl StorageArea {
         })
     }
 
-    /// Take in finished background work, if the model exists, and move
-    /// what the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
         let Some(model) = self.model.get() else {
             return;
@@ -528,8 +472,6 @@ impl StorageArea {
         }
     }
 
-    /// Whether background work is still running, so the window keeps
-    /// polling.
     fn busy(&self) -> bool {
         self.model
             .get()
@@ -538,15 +480,9 @@ impl StorageArea {
     }
 }
 
-/// The Storage page as view code over what the storage area keeps of this
-/// device and, beneath it, the drives area's remembered drives: each part
-/// is built again whenever what it shows changes ([`StorageArea::poll`],
-/// [`crate::panes::drives::DrivesArea::poll`]).
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
-    // What landed while no page showed the model is taken in before the
-    // page is built.
     held.poll();
     let storage = cx.switch(&held.shown, move |cx, _| model.borrow().page(cx));
     let drives = crate::panes::drives::view(cx, app)
@@ -559,41 +495,25 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     reason = "independent facts: whether it asks the device, what runs, what changed"
 )]
 pub struct StorageModel {
-    /// Whether it asks this device's storage service.
     devices: bool,
-    /// What was last measured; `None` until the first scan lands.
     scan: Option<StorageScan>,
-    /// The scan on its way, off the UI thread.
     scanning: Option<Landing>,
-    /// Whether caches are being removed.
     cleaning: bool,
     sync_snapshot: Option<SyncStorageSnapshot>,
     sync_message: Option<String>,
-    /// Freeing synced files, off the UI thread.
     sync_result: Option<Landing>,
     snapshot_result: Option<Landing>,
-    /// The daemon's cache policy, once asked; `None` while unknown.
     cache_policy: Option<CachePolicy>,
-    /// The policy being read, or changed by the effect named.
     policy_result: Option<PolicyAnswer>,
-    /// What each of the person's devices holds of their workspaces.
     fleet: Fleet,
-    /// A capture's stand-in for this device's disk, which it never measures.
     capacity_stand_in: Option<os_actions::DiskCapacity>,
-    /// The person's other devices, asked for their summaries; `None` where
-    /// no device is reached.
     others: Option<other_devices::OtherDevices>,
-    /// The residency effect running against the storage service, and how
-    /// it ends.
     residency_job: Option<(&'static str, Landing)>,
-    /// Asked for this device's summary, answered once the next read ends.
     summary_waiting: bool,
     replies: Replies,
     changed: bool,
 }
 
-/// One read of the storage service: the synced-file accounting, and this
-/// device's storage summary from a service that answers it.
 struct SyncRead {
     snapshot: Result<SyncStorageSnapshot, String>,
     residency: Option<DeviceResidency>,
@@ -612,9 +532,6 @@ impl SyncRead {
             }
         };
         let snapshot = client.snapshot().map_err(|error| error.to_string());
-        // A service that predates the summary closes the connection. This
-        // device's card is titled "This device"; its key and name come from
-        // the host's device list, which the other devices' summaries need.
         let residency = client.residency().ok().map(|summary| DeviceResidency {
             key: String::new(),
             label: String::new(),
@@ -629,8 +546,6 @@ impl SyncRead {
 }
 
 impl StorageModel {
-    /// `device`'s storage, measured off the UI thread: the pane shows that
-    /// it is being measured until the scan lands.
     fn over(devices: bool, device: std::sync::Arc<dyn StorageDevice>) -> Self {
         Self {
             devices,
@@ -653,14 +568,11 @@ impl StorageModel {
         }
     }
 
-    /// Ask the person's other devices for their summaries through
-    /// `others`, now and whenever the figures are read again.
     fn ask_other_devices(&mut self, mut others: other_devices::OtherDevices) {
         others.refresh();
         self.others = Some(others);
     }
 
-    /// Take in the other devices' answers that arrived; whether any did.
     fn poll_other_devices(&mut self) -> bool {
         let Some(others) = self.others.as_mut() else {
             return false;
@@ -690,8 +602,6 @@ impl StorageModel {
         }
     }
 
-    /// Ask the daemon for its cache policy and, for the effect `effect`,
-    /// replace it with what `change` makes of it, off the UI thread.
     fn change_policy(
         &mut self,
         effect: Option<&'static str>,
@@ -716,8 +626,6 @@ impl StorageModel {
         self.policy_result = Some(PolicyAnswer { effect, receiver });
     }
 
-    /// Change the cache policy for the effect `id`; `reply` is told how it
-    /// ends.
     fn set_policy(
         &mut self,
         id: &'static str,
@@ -728,8 +636,6 @@ impl StorageModel {
         self.change_policy(Some(id), change);
     }
 
-    /// The caches to remove, once measured; the pane shows them being
-    /// removed until [`Self::cleaned`].
     fn begin_clean_up(&mut self) -> Result<CleanupPreview, String> {
         if self.cleaning {
             return Err(t("settings-storage-cleaning"));
@@ -746,8 +652,6 @@ impl StorageModel {
         Ok(preview)
     }
 
-    /// Take in how removing the caches ended: the storage measured after
-    /// it, or why nothing was removed.
     fn cleaned(&mut self, cleaned: Result<StorageScan, String>) -> EffectAnswer {
         self.cleaning = false;
         self.changed = true;
@@ -763,14 +667,11 @@ impl StorageModel {
         }
     }
 
-    /// Wait to tell `reply` how the effect `id` ends.
     fn wait(&mut self, id: &'static str, reply: EffectReply) {
         self.replies.wait(id, reply);
         self.changed = true;
     }
 
-    /// Answer this device's storage summary: from the next read of the
-    /// storage service, or, in a capture, its stand-in.
     fn summarize(&mut self, reply: EffectReply) {
         self.wait(StorageEffect::STORAGE_SUMMARY.id, reply);
         if !self.devices {
@@ -800,7 +701,6 @@ impl StorageModel {
         }
     }
 
-    /// Free `workspace`'s cache; `reply` is told how much was freed.
     fn free_cache(&mut self, workspace: String, reply: EffectReply) {
         self.run_residency_job(StorageEffect::FREE_CACHE.id, reply, move |client| {
             client.free_cache(&workspace).map(|freed| {
@@ -815,7 +715,6 @@ impl StorageModel {
         });
     }
 
-    /// Keep `workspace` on this device, or stop keeping it.
     fn keep_here(&mut self, workspace: String, keep: bool, reply: EffectReply) {
         self.run_residency_job(StorageEffect::KEEP_HERE.id, reply, move |client| {
             client.keep_here(&workspace, keep).map(|()| {
@@ -828,9 +727,6 @@ impl StorageModel {
         });
     }
 
-    /// Run `job` against the storage service off the UI thread, one at a
-    /// time; the effect `id` is told how it ends, and the figures are read
-    /// again.
     fn run_residency_job(
         &mut self,
         id: &'static str,
@@ -855,8 +751,6 @@ impl StorageModel {
         self.residency_job = Some((id, receiver));
     }
 
-    /// Free the local copies of synced files the service says are safe;
-    /// `reply` is told how it ends.
     fn free_synced_files(&mut self, reply: EffectReply) {
         self.wait(StorageEffect::FREE_SYNCED_FILES.id, reply);
         if self.sync_result.is_none()
@@ -877,9 +771,6 @@ impl StorageModel {
         }
     }
 
-    /// Take in the background work that ended, marking the pane changed.
-    /// The window's sync takes it in whether or not the pane is open, so
-    /// this leaves moving the page to [`StorageArea::poll`].
     pub(crate) fn take_in(&mut self) {
         let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
         let measured = self.poll_scan();
@@ -969,7 +860,6 @@ impl StorageModel {
         self.changed |= finished || measured || policy_changed;
     }
 
-    /// Take in the scan if it landed; whether it did.
     fn poll_scan(&mut self) -> bool {
         let Some(receiver) = &self.scanning else {
             return false;
@@ -984,7 +874,6 @@ impl StorageModel {
         true
     }
 
-    /// The page as the model shows this device's storage now.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         let actions = cx.actions();
         let mut sections = vec![self.overview_card()];
@@ -1003,9 +892,6 @@ impl StorageModel {
         provider_settings_ui::widgets::page(sections)
     }
 
-    /// This device's disk first: how big it is and how full, as the
-    /// kernel counts it; then what Tilo's own categories take of it, each
-    /// only once it is measured.
     fn overview_card(&self) -> SettingsSection {
         let mut items = Vec::new();
         match self
@@ -1056,7 +942,6 @@ impl StorageModel {
                     .filter(|snapshot| !snapshot.unavailable.contains(&category))
                     .map(|_| ui::format::size(*totals.get(&category).unwrap_or(&0)))
             };
-            // A category that could not be measured has nothing to say.
             if let Some(value) = value {
                 items.push(value_row(&category_label(category), &value));
             }
@@ -1219,8 +1104,6 @@ impl StorageModel {
         }
     }
 
-    /// Prediction and the space fetched workspace files may use; nothing
-    /// until the storage service says its policy.
     fn cache_card(&self, cx: &ViewCx<Settings>) -> Option<SettingsSection> {
         let prefetch_label = t("settings-storage-prefetch");
         let size_label = t("settings-storage-cache-size");
@@ -1236,7 +1119,6 @@ impl StorageModel {
                     effect(StorageEffect::SET_CACHE_SIZE)
                         .map(|shown: String| cache_size_from_label(&shown)),
                 ),
-            // A size set some other way is shown, not rounded to a choice.
             None => value_row(
                 &size_label,
                 &ui::format::size(policy.budget_bytes.unwrap_or_default()),
@@ -1285,8 +1167,6 @@ impl StorageModel {
 }
 
 impl StorageModel {
-    /// Whether background work is still running, so the window keeps
-    /// polling.
     fn busy(&self) -> bool {
         self.sync_result.is_some()
             || self.snapshot_result.is_some()
@@ -1296,14 +1176,12 @@ impl StorageModel {
     }
 }
 
-/// The daemon's answer about its cache policy, for the effect that asked.
 struct PolicyAnswer {
     effect: Option<&'static str>,
     receiver: Landing,
 }
 
 impl StorageModel {
-    /// Take in the cache policy's answer, if it came; whether it did.
     fn poll_policy(&mut self) -> bool {
         let Some(answer) = &self.policy_result else {
             return false;
@@ -1338,8 +1216,6 @@ impl StorageModel {
         true
     }
 
-    /// Take in how the running residency effect ended, if it did; whether
-    /// it did. Its figures are read again.
     fn poll_residency_job(&mut self) -> bool {
         let Some((id, receiver)) = &self.residency_job else {
             return false;
@@ -1356,7 +1232,6 @@ impl StorageModel {
         true
     }
 
-    /// Take in a finished read of the storage service.
     fn take_read(&mut self, read: SyncRead) {
         match read.snapshot {
             Ok(snapshot) => {
@@ -1406,8 +1281,6 @@ fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelecti
 mod tests {
     use super::*;
 
-    /// A Settings window on the Storage page measuring `device`, its model
-    /// holding the person's devices of the storage fixture.
     fn window_over(device: DeviceStorage) -> ui::prelude::TestApp<crate::SettingsShell> {
         let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
         app.with_widget::<crate::window::Inspected, _>(move |settings| {
@@ -1425,14 +1298,10 @@ mod tests {
         app
     }
 
-    /// What the window says, line by line.
     fn said(app: &mut ui::prelude::TestApp<crate::SettingsShell>) -> Vec<String> {
         provider_settings_ui::widgets::announced_text(app.harness().root_widget())
     }
 
-    /// Each device's card names its workspaces and what of them no other
-    /// device holds; only this device's rows offer to free its cache and
-    /// keep a workspace here.
     #[test]
     fn the_pane_shows_what_only_one_device_holds() {
         let mut app = window_over(DeviceStorage {
@@ -1547,8 +1416,6 @@ mod tests {
         );
     }
 
-    /// The summary another device asks for carries counts per workspace and
-    /// no file name.
     #[test]
     fn the_storage_summary_names_no_file() {
         let summary = &crate::scenarios::storage_fixture()[0].summary;
@@ -1569,7 +1436,6 @@ mod tests {
             );
         }
     }
-    /// Only real roots are reported and only authority-approved files are reclaimed.
     #[test]
     fn storage_pane_reports_real_roots_and_reclaims_only_approved_files() {
         {
@@ -1590,7 +1456,6 @@ mod tests {
                     reaches_shell: false,
                 }),
             );
-            // The roots are measured off the calling thread.
             let deadline = tilo_test_env::hang_deadline();
             while pane.scan.is_none() {
                 assert!(std::time::Instant::now() < deadline, "the scan lands");
@@ -1630,8 +1495,6 @@ mod tests {
         }
     }
 
-    /// A device whose storage calls wait at a gate, as a slow disk walk or a
-    /// shell that does not answer does.
     struct StalledStorage(Gate);
 
     impl StalledStorage {
@@ -1644,7 +1507,6 @@ mod tests {
         }
     }
 
-    /// The app the stalled device reports.
     const STALLED_APP: &str = "so.tilo.stalled-sample";
 
     impl StorageDevice for StalledStorage {
@@ -1683,7 +1545,6 @@ mod tests {
 
     type Gate = std::sync::Arc<crate::stall::Stall>;
 
-    /// A Settings window whose storage waits at a gate it hands back.
     fn stalled_window() -> (ui::framework::testing::TestApp<crate::SettingsShell>, Gate) {
         ui::i18n::I18nManager::init("en-US");
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
@@ -1700,9 +1561,6 @@ mod tests {
         (app, gate)
     }
 
-    /// Opening Storage while the disk walk takes its time is answered and
-    /// drawn at once: the pane says storage is being measured, and shows
-    /// what was measured once the walk ends.
     #[test]
     fn a_stalled_disk_walk_never_holds_the_window() {
         let (mut app, gate) = stalled_window();
@@ -1725,8 +1583,6 @@ mod tests {
         );
     }
 
-    /// A click on Open Disks is answered and the window keeps drawing while
-    /// the shell takes its time; the job ends once the shell answers.
     #[test]
     fn a_stalled_shell_never_holds_the_window() {
         let (mut app, gate) = stalled_window();
@@ -1767,11 +1623,8 @@ mod tests {
         assert!(opened, "the job says Disks opened");
     }
 
-    /// A device that records every tool the shell is asked for, and for
-    /// which broker invocation.
     struct RecordingStorage(ToolsAsked);
 
-    /// Each tool asked for, with the invocation it names.
     type ToolsAsked = std::sync::Arc<std::sync::Mutex<Vec<(ToolIntent, Option<[u8; 16]>)>>>;
 
     impl StorageDevice for RecordingStorage {
@@ -1834,8 +1687,6 @@ mod tests {
         );
     }
 
-    /// Every cache size an agent may choose maps to a budget the daemon
-    /// accepts and back, shown or by id; anything else is refused.
     #[test]
     fn cache_sizes_round_trip_and_stay_above_the_daemons_minimum() {
         assert_eq!(cache_budget("Automatic"), Ok(None));

@@ -9,8 +9,6 @@ use zeroize::Zeroizing;
 
 use super::*;
 
-/// Plays the system browser: records every URL and, when `follow` is set,
-/// walks the redirects back to the loopback listener.
 struct FakeBrowser {
     opened: Mutex<Vec<String>>,
     follow: bool,
@@ -663,12 +661,10 @@ fn a_forged_redirect_saves_nothing() {
 #[test]
 fn a_provider_without_a_client_id_explains_instead_of_starting() {
     if OAuthCloud::Dropbox.client_id().resolve().is_some() {
-        // This build or environment provides one; the flow is live.
         return;
     }
     let (_dir, root) = scratch_root();
     let browser = FakeBrowser::new(false);
-    // A build whose registration table has no Dropbox app key.
     let custodian = root
         .custodian()
         .with_client_table(account_custody::ClientTable::default());
@@ -885,7 +881,6 @@ fn icloud_without_a_provider_is_not_available_rather_than_broken() {
         root.custodian().icloud().is_available(),
         "Settings signs in to iCloud through the iCloud provider"
     );
-    // A custodian that was given no iCloud sign-in.
     let custodian =
         account_custody::Custodian::for_root(root.explicit().map(std::path::Path::to_path_buf));
     let mut pane = pane(&root, custodian, FakeBrowser::new(false));
@@ -905,7 +900,6 @@ fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
             texts.extend(node.name);
             texts.extend(node.value);
         }
-        // A row's marks after its name, and its menu's entries.
         if let Some(row) = widget
             .as_any()
             .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())

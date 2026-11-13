@@ -4,7 +4,6 @@ use crate::document::MarkSpan;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A scalar block/style attribute value (heading level, list ordering, style id, font size, …). `Float` carries fractional values that don't fit an integer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttrVal {
     Int(i64),
@@ -41,59 +40,53 @@ pub struct DocSnapshot {
     pub schema: String,
     pub schema_version: u64,
     pub blocks: Vec<BlockView>,
-    /// CRDT-native named styles: `style_id → (property → value)`. Built-ins (body/heading1…/quote) plus any user- or import-defined styles.
+    /// Named styles: `style_id → (property → value)`. Built-ins (body/heading1…/quote) plus any
+    /// user- or import-defined styles.
     #[serde(default)]
     pub styles: BTreeMap<String, BTreeMap<String, AttrVal>>,
-    /// Document properties / metadata (`title`/`author`/`subject`/`keywords`/`created`/`modified`/`generator` → value). Round-trips through `.odt` `meta.xml` and `.docx` `docProps/*.xml`.
     #[serde(default)]
     pub properties: BTreeMap<String, String>,
-    /// Page-header block sequence (rendered at the top of every page). A `field` mark valued
-    /// `page-number` over a placeholder character marks a page-number field. Round-trips through the `.odt` master-page header and `.docx` `header1.xml`.
+    /// Page-header blocks, rendered at the top of every page; a `field` mark valued `page-number`
+    /// over a placeholder marks a page-number field. Round-trips through the `.odt` master-page
+    /// header and `.docx` `header1.xml`.
     #[serde(default)]
     pub header: Vec<BlockView>,
-    /// Page-footer block sequence (rendered at the bottom of every page); mirrors `header`.
     #[serde(default)]
     pub footer: Vec<BlockView>,
-    /// Footnotes / endnotes, each a small block sequence keyed by note id, referenced from body text
-    /// by a `note-ref` mark over a placeholder character carrying the note id. Round-trips through inline `text:note` in `.odt` and `word/footnotes.xml`/`endnotes.xml` in `.docx`.
+    /// Footnotes and endnotes, each a block sequence keyed by note id and referenced from body text
+    /// by a `note-ref` mark. Round-trips through `text:note` in `.odt` and `word/footnotes.xml`.
     #[serde(default)]
     pub notes: Vec<NoteView>,
-    /// Comments / annotations, each anchored to a body text range (recovered from the `comment` mark)
-    /// carrying the comment id, with author/date/content held in the `comments` container. Round-trips
-    /// through `office:annotation`(+`-end`) in `.odt` and `word/comments.xml` + `commentRangeStart`/`-End`/`commentReference` in `.docx`.
+    /// Comments, each anchored to a body range by a `comment` mark, with author, date and content
+    /// in the `comments` container. Round-trips through `office:annotation` and
+    /// `word/comments.xml`.
     #[serde(default)]
     pub comments: Vec<CommentView>,
-    /// Tracked changes / revision marks, each anchored to a body text range (recovered from the
-    /// `ins`/`del` mark) carrying the change id, with author/date/kind held in the `changes`
-    /// container. An insertion marks inserted text; a deletion marks retained-
-    /// but-struck text.
-    /// Round-trips through `text:tracked-changes` + inline change markers in `.odt` and `<w:ins>`/`<w:del>` run wrappers in `.docx`.
+    /// Tracked changes, each anchored by an `ins`/`del` mark: an insertion marks inserted text, a
+    /// deletion retained-but-struck text. Round-trips through `text:tracked-changes` and
+    /// `<w:ins>`/`<w:del>`.
     #[serde(default)]
     pub changes: Vec<ChangeView>,
-    /// Bookmarks (named anchors), each a `(name, range)` derived from the body `bookmark` marks — the
-    /// mark is the source of truth, this is a convenience registry. Round-trips through
-    /// `text:bookmark-start`/`-end` in `.odt` and `w:bookmarkStart`/`-End` in `.docx`. A cross-reference
-    /// is an internal `link` mark valued `#<name>`, surfaced as an ordinary `link` mark rather than in a separate list.
+    /// Bookmarks, each a `(name, range)` derived from the body `bookmark` marks, which are the
+    /// source of truth. A cross-reference is an ordinary internal `link` mark valued `#<name>`.
     #[serde(default)]
     pub bookmarks: Vec<BookmarkView>,
-    /// Document-wide multi-column section layout: the number of newspaper-style columns the body text
-    /// flows across. `1` (the default) for a single-column document. Round-trips through the `.odt` `style:columns` and `.docx` `w:sectPr`→`w:cols`.
+    /// The number of newspaper-style columns the body flows across; `1` for a single-column
+    /// document. Round-trips through the `.odt` `style:columns` and `.docx` `w:sectPr`→`w:cols`.
     #[serde(default = "default_columns")]
     pub columns: u32,
-    /// The gutter between columns, in px, or `None` when unspecified (only meaningful when `columns > 1`); maps onto `.odt` `style:column-gap` and `.docx` `w:cols w:space`.
     #[serde(default)]
     pub column_gap: Option<f32>,
-    /// The document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`), or `None` when the
-    /// document declares none. Per-run overrides ride as a `lang` mark. Round-trips through the `.odt`
-    /// `fo:language`/`fo:country` and `.docx` `docDefaults` `w:lang`; supports spell-check locale and screen-reader language.
+    /// The document default language as a BCP-47 tag, or `None` when it declares none; per-run
+    /// overrides ride as a `lang` mark.
     #[serde(default)]
     pub language: Option<String>,
 }
 
 impl DocSnapshot {
     /// Every content address an `image` block anywhere in the snapshot (body, header, footer,
-    /// notes, comments and their replies, nested children) names in its `blob` attr: the binary
-    /// content a renderer or exporter has to fetch to draw this version.
+    /// notes, comments and replies, nested children) names in its `blob` attr: the binary content a
+    /// renderer or exporter has to fetch.
     pub fn image_content(&self) -> std::collections::BTreeSet<String> {
         fn walk(blocks: &[BlockView], out: &mut std::collections::BTreeSet<String>) {
             for b in blocks {
@@ -120,15 +113,14 @@ impl DocSnapshot {
     }
 }
 
-/// The default column count for a [`DocSnapshot`] — a single column. Used both as the serde
-/// fallback for older snapshots and as the `Default` value.
 fn default_columns() -> u32 {
     crate::schema::DEFAULT_COLUMNS
 }
 
 impl Default for DocSnapshot {
     fn default() -> Self {
-        // Hand-rolled (rather than `#[derive(Default)]`) so `columns` defaults to a single column, not the integer default of zero.
+        // Hand-rolled rather than derived so `columns` defaults to a single column, not the integer
+        // default of zero.
         DocSnapshot {
             schema: String::default(),
             schema_version: u64::default(),
@@ -148,16 +140,14 @@ impl Default for DocSnapshot {
     }
 }
 
-/// One bookmark (named anchor): its `name` and the anchored body range `[start, end)` it covers
-/// (recovered from the `bookmark` mark). A cross-reference targets it by a `link` mark valued `#<name>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookmarkView {
     pub name: String,
-    /// `(block_id, start, end)` of the anchored range in the body.
     pub range: (String, usize, usize),
 }
 
-/// Whether a tracked change is an insertion (proposed-added text) or a deletion (retained-but-struck text); stored as the change's `kind` scalar.
+/// A tracked change is an insertion (proposed-added text) or a deletion (retained-but-struck text);
+/// stored as the change's `kind` scalar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeKind {
     Ins,
@@ -165,14 +155,12 @@ pub enum ChangeKind {
 }
 
 impl ChangeKind {
-    /// The canonical schema string (`"ins"`/`"del"`).
     pub fn as_str(self) -> &'static str {
         match self {
             ChangeKind::Ins => "ins",
             ChangeKind::Del => "del",
         }
     }
-    /// Parse a schema string back into a [`ChangeKind`] (`del` → `Del`, anything else → `Ins`, the default).
     #[allow(
         clippy::should_implement_trait,
         reason = "returns Self infallibly by design, not std::str::FromStr's fallible contract"
@@ -186,39 +174,34 @@ impl ChangeKind {
     }
 }
 
-/// One tracked change / revision mark: its id, kind, author, date string, and the anchored body
-/// range `[start, end)` (recovered from the `ins`/`del` mark; `None` if the mark is absent).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChangeView {
     pub id: String,
     pub kind: ChangeKind,
     pub author: String,
     pub date: String,
-    /// `(block_id, start, end)` of the anchored range in the body, or `None` if the anchoring mark is absent.
     #[serde(default)]
     pub range: Option<(String, usize, usize)>,
 }
 
-/// One comment / annotation: its id, author, date string, content blocks, and the anchored body
-/// range `[start, end)` (recovered from the `comment` mark; `None` if absent, e.g. the commented text was deleted).
+/// One comment: its id, author, date, content blocks, and the anchored body range `[start, end)`,
+/// `None` if absent because the commented text was deleted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommentView {
     pub id: String,
     pub author: String,
     pub date: String,
     pub blocks: Vec<BlockView>,
-    /// Ordered, durable thread replies. Older documents have no `replies`
-    /// map and materialize this as an empty list.
+    /// Ordered, durable thread replies; older documents have no replies map and materialize as an
+    /// empty list.
     #[serde(default)]
     pub replies: Vec<CommentReplyView>,
-    /// `(block_id, start, end)` of the anchored range in the body, or `None` if the anchoring mark is absent.
     #[serde(default)]
     pub range: Option<(String, usize, usize)>,
 }
 
-/// One reply in a durable comment thread. Reply ids are stable CRDT ids rather
-/// than list positions, so simultaneous replies merge without one replacing the
-/// other; consumers display them in canonical id order.
+/// One reply in a durable thread. Reply ids are stable CRDT ids rather than list positions, so
+/// simultaneous replies merge without one replacing the other; consumers display them in id order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommentReplyView {
     pub id: String,
@@ -227,7 +210,6 @@ pub struct CommentReplyView {
     pub blocks: Vec<BlockView>,
 }
 
-/// One footnote/endnote: its id, kind (`"footnote"`/`"endnote"`), and the block sequence forming its content.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoteView {
     pub id: String,
@@ -246,22 +228,18 @@ pub struct BlockView {
 }
 
 impl BlockView {
-    /// The string attribute `key`; `None` when unset or not a string.
     pub fn str_attr(&self, key: &str) -> Option<&str> {
         self.attrs.get(key).and_then(AttrVal::as_str)
     }
 
-    /// The integer attribute `key`; `None` when unset or not an integer.
     pub fn int_attr(&self, key: &str) -> Option<i64> {
         self.attrs.get(key).and_then(AttrVal::as_int)
     }
 
-    /// The boolean attribute `key`; `None` when unset or not a boolean.
     pub fn bool_attr(&self, key: &str) -> Option<bool> {
         self.attrs.get(key).and_then(AttrVal::as_bool)
     }
 
-    /// Whether the boolean attribute `key` is set and true.
     pub fn flag(&self, key: &str) -> bool {
         self.bool_attr(key) == Some(true)
     }
@@ -284,12 +262,12 @@ impl BlockView {
     }
 }
 
-/// The document as of position `version` of
-/// [`tilo_resource::history::versions`] (time travel).
+/// The document as of position `version` of [`tilo_resource::history::versions`] (time travel).
 ///
 /// # Errors
-/// Returns [`DocError`](crate::DocError) if Automerge rejects the replayed
-/// prefix, or if the rebuilt replica has no readable document root.
+///
+/// Returns [`DocError`](crate::DocError) if Automerge rejects the replayed prefix, or the rebuilt
+/// replica has no readable document root.
 pub fn at(doc: &mut automerge::AutoCommit, version: usize) -> Result<DocSnapshot, crate::DocError> {
     let rebuilt = tilo_resource::history::replay_prefix(doc, version)
         .map_err(|e| crate::DocError::Invalid(format!("apply_changes: {e}")))?;
@@ -297,15 +275,13 @@ pub fn at(doc: &mut automerge::AutoCommit, version: usize) -> Result<DocSnapshot
     Ok(crate::model::materialize(&rebuilt, &c))
 }
 
-/// The snapshot of `doc`, when it carries the tilo-doc schema.
 pub fn of(doc: &automerge::AutoCommit) -> Option<DocSnapshot> {
     let c = crate::model::open(doc, &automerge::ROOT).ok()?;
     Some(crate::model::materialize(doc, &c))
 }
 
-/// The document as of each of `versions` (ascending positions), from one
-/// replay of the change log. A version Automerge rejects, and every later
-/// one, is `None`.
+/// The document as of each of `versions`, from one replay of the change log. A version Automerge
+/// rejects, and every later one, is `None`.
 pub fn series(doc: &mut automerge::AutoCommit, versions: &[usize]) -> Vec<Option<DocSnapshot>> {
     tilo_resource::history::replay_series(doc, versions, of)
 }
@@ -340,7 +316,8 @@ mod version_tests {
         let v0 = d.materialize_at(0).unwrap();
         assert_eq!(v0.blocks.len(), 0, "version 0 is just the schema init");
 
-        // Some intermediate version has exactly one block (after the first insert, before the second).
+        // Some intermediate version has exactly one block (after the first insert, before the
+        // second).
         let saw_one = (0..vers.len()).any(|i| d.materialize_at(i).unwrap().blocks.len() == 1);
         assert!(
             saw_one,

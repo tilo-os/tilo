@@ -69,9 +69,6 @@ fn hex(text: &str) -> Rgb {
     parse_paint(text, &[]).expect("hex colour").colour
 }
 
-/// The oil techniques a landscape is built from: a graded sky laid in and
-/// softened with a blender, a feathered band of mist, a glaze over a dry
-/// passage and a scumble of light over it.
 fn techniques(preset: &Preset) -> Vec<Mark> {
     let w = 640.0;
     let mut sky = region(

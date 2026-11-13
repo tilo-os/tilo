@@ -395,6 +395,7 @@ fn broker_services(
         launchable_catalogue: Some(parts.root.join("state/launchable-actions.json")),
         launcher: Some(Arc::clone(parts.apps) as Arc<dyn LauncherServices>),
         app_action_access: Some(parts.apps.access_resolver()),
+        app_resource_kinds: Some(parts.apps.resource_kinds_resolver()),
         app_action_grants: Some(Arc::new(ProfileGrants {
             workspace: Arc::clone(parts.workspace),
             apps: Arc::clone(parts.apps),

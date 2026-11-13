@@ -37,7 +37,7 @@ fn written_elsewhere(want: &RecordCheckout, body: &str) -> Vec<u8> {
 /// What the page's replication does with a record the host sent and no
 /// window holds open: it keeps it in the page's storage and tells the store.
 fn arrives(memory: &MemoryStore, store: &RecordStore, want: &RecordCheckout, bytes: Vec<u8>) {
-    let key = durable_store::StorageKey::record(PACKAGE, WORKSPACE, want.id.storage_key());
+    let key = durable_store::StorageKey::document(PACKAGE, WORKSPACE, want.id.storage_key());
     memory.write(&key, WriteOp::Replace(bytes), None).unwrap();
     store.note_kept();
 }

@@ -487,6 +487,13 @@ impl WorkspacePolicy {
             == Answer::Allow
     }
 
+    /// The grants naming the work on the issue `issue`.
+    pub fn task_grants<'a>(&'a self, issue: &'a str) -> impl Iterator<Item = &'a Grant> + 'a {
+        self.grants
+            .iter()
+            .filter(move |grant| matches!(&grant.subject, Subject::Task(task) if task == issue))
+    }
+
     /// The grants naming `subject`.
     pub fn grants_of<'a>(&'a self, subject: &'a Subject) -> impl Iterator<Item = &'a Grant> + 'a {
         self.grants

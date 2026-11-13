@@ -1,16 +1,10 @@
-//! Hex — a hex editor for Tilo, built on the `ui` toolkit.
-//!
-//! The open file's bytes are the [`HexEditor`] record's: every edit — a
-//! keystroke, the palette, an agent, a script — is one of its actions, so
-//! it syncs with the record, shows in history and is undone per author.
-//! The UI is a classic hex view — offset gutter, hex byte columns, and an
-//! ASCII column with a cursor synced across both — plus a data inspector
-//! that interprets the bytes at the cursor as every common scalar type,
-//! find (a hex pattern or text), and go to offset.
+//! Hex: a hex editor whose bytes are the [`HexEditor`] record, so every edit,
+//! whoever makes it, syncs, shows in history and is undone per author. The view is
+//! the offset gutter, hex columns and ASCII column with one cursor across them,
+//! plus a data inspector, find and go to offset.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// Panic-producing lints stay denied; shared crates keep the full set.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -35,7 +29,6 @@ pub use model::HexModel;
 pub use resource::{HexEditor, HexEditorShell};
 pub use view::HexView;
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(HexEditorShell)
 }

@@ -1,19 +1,17 @@
-//! Installing a language pack: one locale's catalogues, verified like any
-//! package, put where the runtime reads the person's language packs.
+//! Installing a language pack: one locale's catalogues, verified like any package and switched in
+//! with one rename.
 
 use std::fs;
 
 use crate::{BlobDir, BlobFetcher, Candidate, Checked, Error, PackageStore};
 
-/// Where the installed versions of the packs are kept, under the packs'
-/// root; each locale's entry there is a link to its current version.
+/// Under the packs' root: one directory per installed version. Each locale's entry links to its
+/// current one.
 const VERSIONS: &str = ".versions";
 
-/// Install a verified language pack: it is recorded in the package store
-/// like any package (so `update` brings its newer versions, as for apps and
-/// runtimes), and its locale's entry under [`tilo_paths::language_packs_dir`]
-/// is switched to the new catalogues in one rename, so a reader sees the
-/// old catalogues or the new ones and never a mix.
+/// Record the pack in the package store, so `update` finds it like any app, then switch its
+/// locale's entry under [`tilo_paths::language_packs_dir`] to the new catalogues in one rename: a
+/// reader sees the old catalogues or the new, never a mix.
 pub(crate) fn install_language_pack(
     store: &PackageStore,
     candidate: &Candidate,
@@ -78,7 +76,6 @@ pub(crate) fn install_language_pack(
             }
         };
         let unpacked = tree.join(&directory);
-        // Recorded like every package, so updates find it.
         if !crate::record_package(store, candidate, checked, false, false, &sink)? {
             return Ok(());
         }
@@ -94,7 +91,6 @@ pub(crate) fn install_language_pack(
         let dest = root.join(&directory);
         let previous = fs::read_link(&dest).ok();
         if previous.is_none() && dest.is_dir() {
-            // A locale installed before the packs were versioned.
             fs::rename(&dest, staging.join("retired"))?;
         }
         let link = root.join(format!(".{}.next", directory.to_string_lossy()));

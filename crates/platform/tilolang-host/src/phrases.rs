@@ -28,27 +28,14 @@ const TOOLKIT_TRANSLATIONS: &[(&str, &str)] = &[(
     include_str!("../../../sdk/ui-core/locales/de-DE.ftl"),
 )];
 
-/// `locale` as a tag this catalogue compares (`de_DE.UTF-8` is `de-DE`).
-fn normalized(locale: &str) -> String {
-    let wanted = locale.replace('_', "-");
-    wanted.split('.').next().unwrap_or_default().to_owned()
-}
-
 /// `translations`' phrases of `wanted`, in its own language when there are any, else `source`.
 fn choose_in(
     translations: &'static [(&'static str, &'static str)],
     wanted: &str,
     source: &'static (&'static str, &'static str),
 ) -> &'static (&'static str, &'static str) {
-    let language = wanted.split('-').next().unwrap_or_default();
-    translations
-        .iter()
-        .find(|(candidate, _)| *candidate == wanted)
-        .or_else(|| {
-            translations
-                .iter()
-                .find(|(candidate, _)| candidate.split('-').next() == Some(language))
-        })
+    tilo_paths::matching(wanted, translations.iter().map(|(tag, _)| *tag))
+        .and_then(|position| translations.get(position))
         .unwrap_or(source)
 }
 
@@ -96,7 +83,7 @@ impl Phrases {
     /// translation lacks reads in the source language.
     #[must_use]
     pub fn new(locale: &str) -> Self {
-        let wanted = normalized(locale);
+        let wanted = tilo_paths::locale_tag(locale);
         Self {
             catalogue: RefCell::new(chrome(&wanted)),
             preference: RefCell::new(wanted.clone()),
@@ -137,7 +124,7 @@ impl Phrases {
         if language.is_empty() {
             return false;
         }
-        let preference = normalized(language);
+        let preference = tilo_paths::locale_tag(language);
         let locale = match &self.shipped {
             Some(shipped) => {
                 let shipped: Vec<&str> = shipped.iter().map(String::as_str).collect();
@@ -167,13 +154,12 @@ impl Phrases {
     /// in, whatever language the window's phrases are in.
     #[must_use]
     pub fn language(&self) -> String {
-        let preference = normalized(&self.preference.borrow());
-        preference
-            .split('-')
-            .next()
-            .filter(|language| !language.is_empty())
-            .unwrap_or("en")
-            .to_owned()
+        let language = tilo_paths::language_of(&self.preference.borrow());
+        if language.is_empty() {
+            "en".to_owned()
+        } else {
+            language
+        }
     }
 
     /// The phrases of the language the process's environment names.
@@ -213,16 +199,10 @@ impl Phrases {
 
     fn take_in(&self, catalogues: &[(String, String)]) {
         let locale = self.locale.borrow();
-        let language = locale.split('-').next().unwrap_or_default();
         let mut catalogue = self.catalogue.borrow_mut();
-        let translation = catalogues
-            .iter()
-            .find(|(candidate, _)| candidate.as_str() == locale.as_str())
-            .or_else(|| {
-                catalogues
-                    .iter()
-                    .find(|(candidate, _)| candidate.split('-').next() == Some(language))
-            });
+        let translation =
+            tilo_paths::matching(&locale, catalogues.iter().map(|(tag, _)| tag.as_str()))
+                .and_then(|position| catalogues.get(position));
         if let Some((_, text)) = translation {
             catalogue.add(text);
         }

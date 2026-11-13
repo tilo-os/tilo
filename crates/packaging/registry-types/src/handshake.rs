@@ -1,41 +1,25 @@
-//! The `/registry` endpoint response: the greeting the server
-//! returns to any client on first contact so the client knows
-//! which owner-pubkey to pin, what protocol version to speak,
-//! and how the operator wants the registry introduced.
+//! The `/registry` endpoint response: the greeting a server returns on first contact, carrying the
+//! owner key to pin, the protocol version and how the operator introduces the registry.
 
 use serde::{Deserialize, Serialize};
 
-/// The wire protocol version this crate defines. Increment on any
-/// change to the JSON shape or the canonical signing form.
+/// Increment on any change to the JSON shape or the canonical signing form.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Everything a client learns on the first `GET /registry` call.
-///
-/// The `owner_pubkey_hex` is the identity a client must pin to
-/// trust anything else this registry serves. Clients that already
-/// pin the same key will accept the entries; clients hitting a
-/// fresh registry are expected to prompt the user before
-/// pinning.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryHandshake {
-    /// Wire protocol version. Starts at 1; clients bail if they
-    /// see a version they don't understand.
+    /// Clients bail on a version they do not understand.
     pub protocol_version: u32,
-    /// The registry owner's Ed25519 public key (32 bytes, hex).
-    /// This is the key that federation signatures verify
-    /// against, and the anchor of trust for the whole registry.
+    /// The owner's Ed25519 public key, hex: federation signatures verify against it.
     pub owner_pubkey_hex: String,
-    /// Human-readable registry name (for UI listings).
     pub name: String,
-    /// Human-readable description shown alongside the name.
     pub description: String,
-    /// The URL the registry is reachable at. Used by clients when
-    /// composing entry-download URLs relative to the registry.
+    /// Entry and artifact URLs are relative to this.
     pub base_url: String,
 }
 
 impl RegistryHandshake {
-    /// Convenience constructor for the current protocol version.
     pub fn new(
         owner_pubkey_hex: impl Into<String>,
         name: impl Into<String>,

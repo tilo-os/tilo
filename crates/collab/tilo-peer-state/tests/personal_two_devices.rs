@@ -294,7 +294,7 @@ fn kept_before_the_store(
     id: &ui::record::RecordId,
     kind: &RecordKind,
 ) -> durable_store::StorageKey {
-    let key = durable_store::StorageKey::record(NOTES, retired, id.storage_key());
+    let key = durable_store::StorageKey::document(NOTES, retired, id.storage_key());
     let mut written = AutoCommit::new();
     written.put(ROOT, "chapter", "three").unwrap();
     written.commit_edit(NOTES, "chapter");
@@ -367,7 +367,7 @@ async fn carries_to_the_other_device(
         // of the same document, filed under the same workspace then. Opening it
         // takes it into their own scope here too, as the record it is.
         let phone = std::rc::Rc::new(durable_store::MemoryStore::new());
-        let filed_there = durable_store::StorageKey::record(NOTES, retired, id.storage_key());
+        let filed_there = durable_store::StorageKey::document(NOTES, retired, id.storage_key());
         phone
             .write(
                 &filed_there,
@@ -405,7 +405,7 @@ async fn carries_to_the_other_device(
         let fresh = std::rc::Rc::new(durable_store::MemoryStore::new());
         fresh
             .write(
-                &durable_store::StorageKey::record(
+                &durable_store::StorageKey::document(
                     NOTES,
                     ui::record::person::PERSONAL_SCOPE,
                     id.storage_key(),
@@ -486,7 +486,7 @@ async fn a_record_kept_before_the_store_reads_on_the_persons_other_device() {
     drop(records);
     drop(owners);
     let kept = store
-        .read(&durable_store::StorageKey::record(
+        .read(&durable_store::StorageKey::document(
             NOTES,
             ui::record::person::PERSONAL_SCOPE,
             id.storage_key(),

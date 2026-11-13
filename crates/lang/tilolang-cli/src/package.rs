@@ -442,7 +442,7 @@ pub fn deliver_compiled(
     let meta = &compiled.meta;
     let publisher = hex::encode(identity.public_key_bytes());
     let bundle = Bundle::new(compiled, imports.iter().copied());
-    let manifest = manifest_text(meta, options, &publisher);
+    let manifest = manifest_text(meta, &bundle.catalogues(), options, &publisher);
     let digest = digest(&manifest, &bundle)?;
     deliver(
         Assembled {

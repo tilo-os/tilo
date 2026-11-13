@@ -332,7 +332,7 @@ mod tests {
         ui::record::init(&mut note, &id, &kind, WORKSPACE);
         write(
             &store,
-            &StorageKey::record(NOTES, WORKSPACE, id.storage_key()),
+            &StorageKey::document(NOTES, WORKSPACE, id.storage_key()),
             &mut note,
         );
 

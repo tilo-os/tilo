@@ -269,7 +269,11 @@ pub(crate) fn role_refusal(
         return None;
     }
     let standing = standings?.get(&author_device)?;
-    if standing.policy.active_role(&standing.person) != Some(tilo_action_policy::Role::Viewer) {
+    if standing
+        .policy
+        .active_role(standing.person_id().unwrap_or_default())
+        != Some(tilo_action_policy::Role::Viewer)
+    {
         return None;
     }
     Some(

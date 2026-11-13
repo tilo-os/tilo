@@ -1,14 +1,12 @@
-//! A directory tree copied into a place of its own, file by file: each regular file shares its
-//! source's extents where the file system can (`FICLONE`, so a large tree on Btrfs or XFS takes
-//! moments and no space), and is copied where it cannot. What lands is the same either way.
-//!
-//! The copy is of what the tree holds and nothing it points at: a symbolic link is made again with
-//! the same target, never followed; a directory on another file system (a mount inside the tree)
-//! and a special file (a socket, a pipe, a device) are left out. Permissions and modification times
-//! come along. The destination must not exist yet, so a copy never mixes into anything.
-//!
-//! Each entry's place in the copy is the caller's to decide ([`clone_tree`]'s `place`): kept, moved
-//! to another relative path, or left out, which is how a copy renames what names its source.
+//! A directory tree copied into a place of its own, file by file: each regular file
+//! shares its source's extents where the file system can (`FICLONE`), and is copied
+//! where it cannot; what lands is the same either way. The copy is of what the tree
+//! holds and nothing it points at: a symbolic link is made again with the same target,
+//! never followed, and a directory on another file system and a special file are left
+//! out. Permissions and modification times come along, and the destination must not
+//! exist yet. Each entry's place in the copy is the caller's to decide
+//! ([`clone_tree`]'s `place`): kept, moved to another relative path, or left out, which
+//! is how a copy renames what names its source.
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -28,29 +26,18 @@ pub enum Strategy {
 /// What a copy made.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Copied {
-    /// Regular files made.
     pub files: u64,
-    /// Of those, the ones that share their source's extents.
     pub cloned: u64,
-    /// The bytes the files hold.
     pub bytes: u64,
-    /// Directories made, the destination's own included.
     pub dirs: u64,
-    /// Symbolic links made again.
     pub links: u64,
     /// Entries left out: special files, and directories on another file system.
     pub skipped: u64,
 }
 
-/// Copy the tree at `from` to `to`, which must not exist yet, with `strategy`.
-///
-/// `place` names each entry's relative path in the copy from its relative path in the source:
-/// `None` leaves the entry out, and a directory left out is left out whole. `progress` hears what
-/// the copy made so far after every file, so a caller can say how far it is.
-///
-/// # Errors
-/// `to` exists, `from` is not a directory, or an entry could not be read or written. A copy that
-/// fails leaves what it made so far.
+/// Copies the tree at `from` to `to`, which must not exist yet, with `strategy`. `place` names each
+/// entry's relative path in the copy: `None` leaves the entry out, and a directory left out is left out
+/// whole. `progress` hears what the copy made so far after every file.
 pub fn clone_tree(
     from: &Path,
     to: &Path,
@@ -101,8 +88,8 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    /// Make the directory `target` (relative to the copy) from `source` (relative to the tree),
-    /// then everything in it.
+    /// Makes `target` from `source`, then everything in it, so a directory's mode is set before its
+    /// contents arrive.
     fn directory(
         &self,
         source: &Path,
@@ -155,7 +142,6 @@ impl Walk<'_> {
         keep_times_and_mode(&made, metadata)
     }
 
-    /// Copy the regular file `source` to `target`; whether its extents are shared.
     fn file(&self, source: &Path, target: &Path, metadata: &fs::Metadata) -> io::Result<bool> {
         make_parent(target)?;
         let mut input = open_source(source)?;
@@ -244,11 +230,8 @@ fn keep_times_and_mode(directory: &Path, metadata: &fs::Metadata) -> io::Result<
     File::open(directory)?.set_modified(modified)
 }
 
-/// Whether the file system holding `directory` shares extents between files (`FICLONE`): what
-/// [`Strategy::Clone`] does there rather than copying.
-///
-/// # Errors
-/// The probe's files could not be made in `directory`.
+/// Whether the file system holding `directory` shares extents between files (`FICLONE`), which
+/// [`Strategy::Clone`] falls back from.
 pub fn shares_extents(directory: &Path) -> io::Result<bool> {
     let probe = directory.join(format!(".tilo-clone-probe-{}", std::process::id()));
     let target = probe.with_extension("clone");
@@ -352,8 +335,8 @@ mod tests {
         );
     }
 
-    /// Where the file system shares extents, every file of the copy does; where it does not, the
-    /// clone falls back to copying and the copy is the same. Both are the one answer a caller gets.
+    /// Where the file system shares extents, every file of the copy does; where it does not, the clone
+    /// falls back to copying and the copy is the same. Both are the one answer a caller gets.
     #[test]
     fn a_clone_shares_extents_where_it_can_and_copies_where_it_cannot() {
         let source = tree();

@@ -167,8 +167,9 @@ impl PasswordsWindow {
             )
             .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))
         };
-        // window-bar: fallback, the bar's search while it hosts the window
-        let search = ui::search::search_button(ui::search::SearchRequest::this_app());
+        let search = ui::window_toolbar::exempt!(Fallback, {
+            ui::search::search_button(ui::search::SearchRequest::this_app())
+        });
         vec![Box::new(search) as Element, Box::new(new_item)]
     }
 
@@ -186,11 +187,12 @@ impl PasswordsWindow {
             if hosted {
                 self.shell.set_overview_header("", Vec::new());
             } else {
-                // window-bar: fallback, the bar holds New item while it hosts the window
-                self.shell.set_overview_header(
-                    self.overview_title.clone(),
-                    Self::overview_actions(&self.requests),
-                );
+                ui::window_toolbar::exempt!(Fallback, {
+                    self.shell.set_overview_header(
+                        self.overview_title.clone(),
+                        Self::overview_actions(&self.requests),
+                    );
+                });
                 ui::window_toolbar::declare(None);
                 self.declared_bar = None;
             }

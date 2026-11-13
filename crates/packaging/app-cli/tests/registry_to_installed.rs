@@ -1,11 +1,4 @@
-//! End-to-end registry-to-install coverage: a signed `.tapp` published to an
-//! HTTP registry, listed as available, fetched, verified by
-//! `tilo-install`, and present in the registry the desktop enumerates
-//! installed apps from.
-//!
-//! The test uses a socket, signed package, and `tilo-install` child process;
-//! the final assertion is that `launcher::registry` (the compositor's own
-//! reader) returns the app.
+//! A signed `.tapp` published to a local registry, listed, installed and opened through the CLI.
 
 #![allow(
     clippy::unwrap_used,
@@ -32,17 +25,10 @@ use registry_types::{
 use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
-/// The .tapp-authoring the local test registry does, shared verbatim
-/// so tests use the same manifest contract as the served package.
 #[path = "../examples/support/authoring.rs"]
 mod authoring;
 
-/// Locate the `tilo-install` binary this workspace builds. A missing
-/// binary **fails** the test rather than skipping it; without the binary the
-/// installation path cannot be exercised.
 pub(crate) fn tilo_install_bin() -> PathBuf {
-    // Remote builds can remap CARGO_MANIFEST_DIR to the caller's checkout.
-    // The running test still lives in the actual Cargo profile's deps dir.
     let executable = std::env::current_exe().expect("running test executable");
     let profile = executable
         .parent()
@@ -93,8 +79,6 @@ pub(crate) fn author_tapp_version(
     author_tapp_with_files(package_id, version, identity, &[])
 }
 
-/// [`author_tapp_version`] with `files` (path under the payload, bytes)
-/// beside the entrypoint, for a package the size of a real app.
 pub(crate) fn author_tapp_with_files(
     package_id: &str,
     version: &str,
@@ -147,7 +131,6 @@ type = "gui"
     tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
 }
 
-/// Manifest key/value and registry wire label for the runner's architecture.
 pub(crate) fn native_target() -> (&'static str, &'static str, &'static str) {
     #[cfg(target_arch = "x86_64")]
     {
@@ -295,7 +278,6 @@ fn serve_one(mut stream: TcpStream, entries: &str, tapp: &[u8]) {
     if reader.read_line(&mut request_line).is_err() {
         return;
     }
-    // Drain headers so the client sees a clean response.
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
@@ -335,8 +317,6 @@ pub(crate) fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::Scope
     env
 }
 
-/// The registries entry naming the registry at `base_url` (owned by `owner`)
-/// as `name`.
 pub(crate) fn registry_config(name: &str, base_url: &str, owner: &SigningKey) -> RegistryConfig {
     RegistryConfig {
         name: name.into(),
@@ -347,8 +327,6 @@ pub(crate) fn registry_config(name: &str, base_url: &str, owner: &SigningKey) ->
     }
 }
 
-/// A scratch device the CLI reads: its own config, cache and app-data
-/// directories, and the environment that points the CLI at them.
 #[allow(
     dead_code,
     reason = "the cache and app-data directories only need to outlive the device"
@@ -361,8 +339,6 @@ pub(crate) struct Device {
 }
 
 impl Device {
-    /// A device whose registries file names `registry` when given, with
-    /// `extra` variables set on top of the scratch directories.
     pub(crate) fn new(registry: Option<RegistryConfig>, extra: &[(&'static str, &Path)]) -> Self {
         let config = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
@@ -395,7 +371,6 @@ impl Device {
         }
     }
 
-    /// Point the device's registries file at `registry`.
     pub(crate) fn point_at(&self, registry: RegistryConfig) {
         std::fs::write(
             self.config.path().join("registries.toml"),
@@ -416,7 +391,6 @@ const PACKAGE_ID: &str = "so.tilo.catalogue-e2e";
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn registry_entries_install_update_and_refuse_corrupted_downloads() {
-    // Phase `a_registry_entry_becomes_an_installed_app_the_desktop_can_see`.
     {
         let publisher = test_publisher();
         let owner = SigningKey::from_bytes(&[12; 32]);
@@ -428,7 +402,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
         let url = format!("http://127.0.0.1:{planned_port}/sheets.tapp");
         let entry = signed_entry(PACKAGE_ID, &url, &tapp);
         let entries_json = signed_snapshot_json(entry, &owner);
-        // Bind the server; if the planned port was taken, fall back to whatever we get and rewrite the URL.
         let registry = Registry::start(entries_json, tapp.clone());
         let registry = if registry.port == planned_port {
             registry
@@ -443,7 +416,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             &[],
         );
 
-        // 1. The registry's entry shows up as available.
         let listing = app_cli::available();
         assert!(
             listing.unreachable.is_empty(),
@@ -463,13 +435,11 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             "the row names the registry it came from"
         );
 
-        // 2. Nothing is installed yet — this is what makes step 3 mean something.
         assert!(
             package_store::list_installed().unwrap().is_empty(),
             "the scratch install root must start empty"
         );
 
-        // 3. Install it through the installer.
         let installed = app_cli::install::install(PACKAGE_ID)
             .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
         assert_eq!(installed.package_id, PACKAGE_ID);
@@ -490,7 +460,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             found.payload_root
         );
 
-        // 5. And it stops being offered as available, because it is here.
         let after = app_cli::available();
         assert!(
             !after.apps.iter().any(|a| a.package_id == PACKAGE_ID),
@@ -498,7 +467,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             after.apps
         );
     }
-    // Phase `an_installed_app_updates_from_a_newer_signed_registry_offer`.
     {
         const UPDATE_ID: &str = "so.tilo.app-update-e2e";
         let publisher = test_publisher();
@@ -551,7 +519,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             "the launcher's registry reader must observe the updated manifest"
         );
     }
-    // Phase `a_corrupted_download_never_becomes_an_installed_app`.
     // Bytes that don't match the package they claim must not become an
     // installed app — the case of a compromised or buggy registry
     // handing over something other than what its signed entry described.
@@ -571,7 +538,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             &[],
         );
 
-        // The entry has to actually be on offer, or the refusal below would prove nothing about the bytes.
         let listing = app_cli::available();
         assert!(
             listing
@@ -598,8 +564,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
         );
     }
 }
-
-// Installing an app and opening it is the ordinary path.
 
 /// A payload root shaped exactly like what `tilo-install` leaves
 /// behind: manifest.toml beside a bin/ — what every harness points a
@@ -646,7 +610,6 @@ type = "gui"
     root
 }
 
-/// Serve `tapp` under `package_id` and install it with the installer, returning what the desktop's own reader then sees.
 fn publish_and_install(
     package_id: &str,
     tapp: Vec<u8>,
@@ -683,10 +646,6 @@ fn publish_and_install(
 
 #[test]
 fn installed_apps_keep_exactly_the_services_they_declared() {
-    // Phase `a_payload_with_no_manifest_is_published_as_declaring_no_services`.
-    // A payload that is not part of a package still installs (the local
-    // registry accepts --payload /bin/true), but is published as
-    // declaring no services rather than silently passing for a package.
     {
         let bare = tempfile::tempdir().unwrap();
         let bin = bare.path().join("true");
@@ -696,16 +655,11 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
         let authored = authoring::author("so.tilo.bare", "Bare", &bin, None, &publisher).unwrap();
         assert_eq!(authored.source, authoring::ManifestSource::Synthesised);
     }
-    // Phase `an_app_installed_from_a_registry_keeps_the_services_it_declared`.
-    // Installing an app and then opening it must reach the launcher with
-    // the services its publisher declared: what a *newly installed* app
-    // gets must equal what the package declared, service for service.
     {
         const PKG: &str = "so.tilo.catalogue-collab";
         let scratch = tempfile::tempdir().unwrap();
         let root = packaged_payload_root(scratch.path(), PKG);
 
-        // What the publisher declared, read with the launcher's own reader, so "declared" means what the launcher would act on.
         let declared = tilo_app_package::view::read_manifest(&root.join("manifest.toml"))
             .expect("the fixture manifest parses");
         assert!(
@@ -747,9 +701,6 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
             reached.sandbox.services, declared.sandbox.services
         );
 
-        // Assert on the launcher's own resolution against a live socket, not
-        // the map — a manifest that parses but resolves to nothing is the
-        // same silent failure wearing a different hat.
         let _env = scoped_env(&[("XDG_RUNTIME_DIR", runtime_dir.path())]);
         let services_root =
             launcher::services::ensure_services_root().expect("create the services dir");

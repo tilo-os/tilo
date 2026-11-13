@@ -1,13 +1,8 @@
 #![allow(clippy::doc_markdown, reason = "BlueZ is the upstream service name")]
+
 //! Bluetooth settings backed directly by `BlueZ` over D-Bus. Settings starts
-//! operations; the compositor-owned `BlueZ` Agent owns security prompts.
-//! Every change is a [`BluetoothEffect`], offered on the device it names.
-//! A device without a Bluetooth adapter offers none of them: the radio's
-//! effects are published unavailable with the reason, and the pane says so.
-//!
-//! The page is view code over what the area reads of the adapter
-//! ([`view`]): the area follows `BlueZ` while the page is shown and moves
-//! what the page is keyed by when what it shows changes.
+//! operations; the compositor-owned `BlueZ` Agent owns security prompts. Every
+//! change is a [`BluetoothEffect`], offered on the device it names.
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
@@ -47,13 +42,10 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`BluetoothArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&BluetoothArea> {
     app.areas().find()
 }
 
-/// Whether Bluetooth is on, as the page last read it: a switch once the
-/// area has read the adapter.
 pub(crate) fn enabled(
     app: &crate::settings_app::SettingsApp,
     _: &crate::setting::Follows,
@@ -71,8 +63,6 @@ pub(crate) fn enabled(
         .map_or(Read::Value(None), Read::Switch)
 }
 
-/// The radio's switch: on, off, or unavailable while it cannot be read
-/// or there is no adapter.
 fn radio_row(cx: &ViewCx<Settings>, on: bool, enabled: bool, detail: Option<&str>) -> Item {
     let mut radio = ListRow::new("settings.bluetooth.radio", t("settings-bluetooth-card"))
         .trailing(Box::new(
@@ -89,7 +79,6 @@ fn radio_row(cx: &ViewCx<Settings>, on: bool, enabled: bool, detail: Option<&str
     row(Box::new(radio))
 }
 
-/// Bluetooth's switch where search finds it.
 pub(crate) fn enabled_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
     radio_row(cx, on, true, None)
 }
@@ -98,8 +87,6 @@ fn token(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace('.', "_")
 }
 
-/// Bluetooth on this device: the radio, discovery, and the devices it
-/// knows, each by its `BlueZ` object path.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum BluetoothEffect {
@@ -160,17 +147,12 @@ pub enum BluetoothEffect {
     },
 }
 
-/// Answer `effect` on a worker: `BlueZ` may take seconds. What it reports
-/// becomes the pane's notice, and the devices are read again off the UI
-/// thread: the answer comes when the change ran, and the new reading lands
-/// at a later sync.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: BluetoothEffect,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if effect == BluetoothEffect::RefreshBluetooth {
-        // A dongle plugged in a moment ago is seen without waiting.
         app.radios().look_again();
     }
     let model = crate::panes::bluetooth::area(app)
@@ -228,8 +210,7 @@ fn effect_device(effect: &BluetoothEffect) -> Option<&str> {
     }
 }
 
-/// Carry out `effect` on `control`, for the device called `name`, and say
-/// what happened. Never called on the UI thread.
+/// Carry out `effect` on `control` and say what happened. Never called on the UI thread.
 fn carry_out(
     control: &dyn BluetoothControl,
     effect: &BluetoothEffect,
@@ -323,74 +304,19 @@ fn carry_out(
 }
 
 pub trait BluetoothControl: Send + Sync {
-    /// # Errors
-    ///
-    /// Returns the backend's error message if `BlueZ` cannot be reached over
-    /// D-Bus or the known device list cannot be enumerated.
     fn devices(&self) -> Result<Vec<DeviceInfo>, String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if the adapter's powered state
-    /// cannot be read over D-Bus.
     fn powered(&self) -> Result<bool, String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if the adapter's discovery state
-    /// cannot be read over D-Bus.
     fn scanning(&self) -> Result<bool, String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if `BlueZ` refuses or fails to
-    /// change the adapter's powered state.
     fn set_powered(&self, on: bool) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if `BlueZ` fails to start device
-    /// discovery.
     fn start_scan(&self) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if `BlueZ` fails to stop device
-    /// discovery.
     fn stop_scan(&self) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if the D-Bus pairing call fails
-    /// outright (a pairing that starts but does not connect is still `Ok`).
     fn pair(&self, path: &str) -> Result<PairOutcome, String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if `BlueZ` fails to cancel an
-    /// in-progress pairing.
     fn cancel_pairing(&self, path: &str) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if the device cannot be connected
-    /// to (e.g. it is out of range or rejects the connection).
     fn connect(&self, path: &str) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if the device cannot be
-    /// disconnected.
     fn disconnect(&self, path: &str) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if `BlueZ` fails to update the
-    /// device's trusted flag.
     fn set_trusted(&self, path: &str, trusted: bool) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if `BlueZ` fails to rename the
-    /// device.
     fn set_alias(&self, path: &str, alias: &str) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns the backend's error message if `BlueZ` fails to remove the
-    /// device's pairing and keys.
     fn forget(&self, path: &str) -> Result<(), String>;
-    /// Follow the adapter: `changed` is called, on another thread, each time
-    /// `BlueZ` reports a change the page shows, for as long as the answer
-    /// is held. `None` when nothing can be followed.
     fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
         None
     }
@@ -461,22 +387,13 @@ impl BluetoothControl for RealBluetooth {
     }
 }
 
-/// What the Bluetooth area keeps for the window: the model, read when
-/// first needed.
 pub struct BluetoothArea {
-    /// Whether it reads this device's adapter.
     devices: bool,
-    /// The radios this device has.
     radios: crate::radios::Radios,
     model: OnceCell<Rc<RefCell<BluetoothModel>>>,
-    /// The adapter, read off the UI thread after the window's first frame
-    /// ([`Self::start_read`]).
     pub(crate) read: crate::device_read::DeviceRead<AdapterRead>,
-    /// What the adapter is read through, where it is not the device's or
-    /// the sample's: a test's stand-in.
     #[cfg(test)]
     over: Option<Arc<dyn BluetoothControl>>,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
@@ -493,7 +410,6 @@ impl BluetoothArea {
         }
     }
 
-    /// The area over `control` in place of the device's adapter.
     #[cfg(test)]
     fn over(cx: &AreaContext, control: Arc<dyn BluetoothControl>) -> Self {
         Self {
@@ -502,7 +418,6 @@ impl BluetoothArea {
         }
     }
 
-    /// `BlueZ`, or sample devices for a screenshot.
     fn control(&self) -> Arc<dyn BluetoothControl> {
         #[cfg(test)]
         if let Some(control) = &self.over {
@@ -515,7 +430,6 @@ impl BluetoothArea {
         }
     }
 
-    /// The model, over `BlueZ`, or over sample devices for a screenshot.
     pub fn model(&self) -> &Rc<RefCell<BluetoothModel>> {
         self.model.get_or_init(|| {
             let control = self.control();
@@ -531,8 +445,6 @@ impl BluetoothArea {
         })
     }
 
-    /// Read the adapter off the UI thread; `false` when it has been read or
-    /// is being read.
     pub(crate) fn start_read(&self) -> bool {
         if self.is_open() {
             return false;
@@ -541,14 +453,10 @@ impl BluetoothArea {
         self.read.start(move || read_adapter_of(control.as_ref()))
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
 
-    /// Whether this device has no Bluetooth adapter, as last read.
     fn adapter_absent(&self) -> bool {
         adapter_absent(&self.radios)
     }
@@ -586,7 +494,6 @@ impl BluetoothArea {
             .get()
             .and_then(|model| model.try_borrow().ok()?.read_error.clone());
         match unread {
-            // Reading again is how a restarted `BlueZ` is found.
             Some(error) => unavailable(
                 &[
                     BluetoothEffect::SET_BLUETOOTH.id,
@@ -599,10 +506,6 @@ impl BluetoothArea {
         }
     }
 
-    /// Follow the adapter: one plugged in is read, so the rows published
-    /// name its devices. While a page shows the model, take in what `BlueZ`
-    /// reported and what discovery found, and move what the page is keyed
-    /// by when what it shows changed.
     pub(crate) fn poll(&self) {
         let Some(model) = self.model.get() else {
             return;
@@ -619,21 +522,17 @@ impl BluetoothArea {
         }
     }
 
-    /// When discovery next reads the adapter, while a page shows it.
     fn next_wake(&self) -> Option<ui::time::Instant> {
         let model = self.model.get()?.try_borrow().ok()?;
         model.shown().then(|| model.next_wake()).flatten()
     }
 
-    /// One row per device, offering what can be done to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         if self.adapter_absent() {
-            // No adapter, no devices: the last read says nothing now.
             return Vec::new();
         }
         let model = self.model().borrow();
         if model.read_error.is_some() {
-            // The last devices read say nothing about the adapter now.
             return Vec::new();
         }
         model
@@ -644,8 +543,6 @@ impl BluetoothArea {
     }
 }
 
-/// One device as a row of the published surface, offering what can be
-/// done to it now; the pane's controls for that device bind to it.
 fn device_live_row(device: &DeviceInfo, pairing: Option<&str>) -> LiveRow {
     let path = device.path.clone();
     let offer = |effect: BluetoothEffect| SettingsEffect::from(effect).bound();
@@ -680,8 +577,6 @@ fn device_live_row(device: &DeviceInfo, pairing: Option<&str>) -> LiveRow {
     .operation(offer(BluetoothEffect::ForgetDevice { device: path }))
 }
 
-/// Whether `cx`'s device has no Bluetooth adapter, as its radios were last
-/// read; `false` until they have been.
 fn adapter_absent(radios: &crate::radios::Radios) -> bool {
     radios.now().is_some_and(|radios| !radios.bluetooth)
 }
@@ -691,13 +586,9 @@ fn adapter_absent(radios: &crate::radios::Radios) -> bool {
     reason = "each flag is an independent state of the adapter or its reads, never a parameter"
 )]
 pub struct BluetoothModel {
-    /// The radios this device has: whether it has an adapter.
     radios: crate::radios::Radios,
     control: Arc<dyn BluetoothControl>,
-    /// Whether the device had an adapter when the model last looked.
     adapter: Option<bool>,
-    /// The adapter, read again off the UI thread once one is plugged in
-    /// or a change ran.
     reread: crate::device_read::DeviceRead<AdapterRead>,
     /// A change ran while [`Self::reread`] was on its way, so that read may
     /// not show it: the adapter is read once more when it lands.
@@ -705,35 +596,20 @@ pub struct BluetoothModel {
     devices: Vec<DeviceInfo>,
     powered: bool,
     scanning: bool,
-    /// Why the adapter could not be read. While set, the power switch, the
-    /// scan state and the device list say nothing about the machine.
     read_error: Option<String>,
     notice: Option<String>,
-    /// The device being paired, by object path.
     pairing: Option<String>,
-    /// Which device's details are open, by address: kept by the model so a
-    /// read of the devices never closes them.
     details: DisclosureGroup,
-    /// When the adapter was last read, so discovery's finds are read in
-    /// as they come.
     last_read: ui::time::Instant,
-    /// What follows `BlueZ` while a pane shows the model.
     following: std::rc::Weak<crate::watch::Counted>,
-    /// `BlueZ`'s change count when the model last read the adapter for it.
     changes_seen: u64,
     changed: bool,
 }
 
-/// How often the adapter is read again while it looks for devices: what
-/// discovery finds appears without a refresh.
 const DISCOVERY_READ_INTERVAL: ui::time::Duration = ui::time::Duration::from_secs(2);
 
-/// The adapter's devices, power and discovery state as one read found
-/// them, or why it could not.
 type AdapterRead = Result<(Vec<DeviceInfo>, bool, bool), String>;
 
-/// Read `control`'s adapter: a few D-Bus round trips on a device, so the
-/// window's warm-up makes this read off the UI thread.
 fn read_adapter_of(control: &dyn BluetoothControl) -> AdapterRead {
     control
         .devices()
@@ -741,7 +617,6 @@ fn read_adapter_of(control: &dyn BluetoothControl) -> AdapterRead {
 }
 
 impl BluetoothModel {
-    /// The model over `control`'s adapter as `read` found it.
     fn with_read(
         radios: crate::radios::Radios,
         control: Arc<dyn BluetoothControl>,
@@ -766,7 +641,6 @@ impl BluetoothModel {
             changes_seen: 0,
             changed: false,
         };
-        // A failure is kept on the model and shown in place of the adapter.
         let _ = model.adopt(read);
         model.changed = true;
         model
@@ -779,8 +653,6 @@ impl BluetoothModel {
             .map(|device| device.name.clone())
     }
 
-    /// Follow the device's adapter: show it gone when it is pulled out, and
-    /// read it, off the UI thread, when one is plugged in.
     fn follow_adapter(&mut self) {
         let adapter = self.radios.now().map(|radios| radios.bluetooth);
         if adapter != self.adapter {
@@ -801,11 +673,6 @@ impl BluetoothModel {
         }
     }
 
-    /// Read the adapter again once `BlueZ` reported a change the page
-    /// shows: headphones that connect by themselves, a device paired or
-    /// forgotten from quick settings, the radio switched elsewhere. Reads
-    /// coalesce: one runs at a time, and one more follows it if changes
-    /// came meanwhile.
     fn read_reported_changes(&mut self) {
         let Some(changes) = self.reported_changes() else {
             return;
@@ -816,65 +683,45 @@ impl BluetoothModel {
         }
     }
 
-    /// Whether discovery reads the adapter on a timer: only while `BlueZ`
-    /// is not followed, since a followed `BlueZ` reports each device that
-    /// appears or goes.
     fn discovery_timed(&self) -> bool {
         self.scanning && self.reported_changes().is_none()
     }
 
-    /// `BlueZ`'s change count, while it is followed.
     fn reported_changes(&self) -> Option<u64> {
         self.following.upgrade()?.changes()
     }
 
-    /// Take in the read [`Self::reread`] made, once it has landed.
     fn adopt_reread(&mut self) {
         if self.reread.is_finished()
             && let Some(read) = self.reread.take()
         {
-            // A failure is kept on the model and shown in place of the adapter.
             let _ = self.adopt(read);
             self.changed = true;
         }
     }
 
-    /// Read the adapter again off the UI thread, as a change it took left
-    /// it; the reading lands at a later sync, which its landing wakes. A
-    /// read already on its way may predate the change, so the adapter is
-    /// read once more after it.
     fn read_again(&mut self) {
         if !self.reread.is_finished() {
             self.reread_again = true;
             return;
         }
-        // Finished stays finished until the next start: a read that landed
-        // is taken in here, so the start below is not refused for it.
         self.adopt_reread();
         let control = Arc::clone(&self.control);
         if !self.reread.start(move || read_adapter_of(control.as_ref())) {
-            // A host that runs no background work reads here.
             self.refresh();
         }
     }
 
-    /// Read the devices, the radio and discovery again.
     fn refresh(&mut self) {
-        // A failure is kept on the model and shown in place of the adapter.
         let _ = self.read_adapter();
         self.changed = true;
     }
 
-    /// Read the adapter's power, scan state and devices. A read that fails
-    /// keeps the last values and records why, so they are not shown as the
-    /// adapter's state.
     fn read_adapter(&mut self) -> Result<(), String> {
         let read = read_adapter_of(self.control.as_ref());
         self.adopt(read)
     }
 
-    /// Take in what a read of the adapter found; a failed read keeps the
-    /// last values and records why.
     fn adopt(&mut self, read: AdapterRead) -> Result<(), String> {
         match read {
             Ok((devices, powered, scanning)) => {
@@ -913,7 +760,6 @@ impl BluetoothModel {
         }
     }
 
-    /// The device's main button: its label and the action it takes.
     fn primary_action(
         &self,
         d: &DeviceInfo,
@@ -941,8 +787,6 @@ impl BluetoothModel {
         }
     }
 
-    /// `control` acting on `d`'s row of the published surface through
-    /// `effect`, or shown unavailable where the row does not offer it.
     fn on_row<I: 'static, C: ui::framework::ActionControl<I>>(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
@@ -954,9 +798,6 @@ impl BluetoothModel {
         crate::on_row::bind(dispatcher, &resource, control, effect)
     }
 
-    /// What opens under a paired device: its name, which can be changed in
-    /// place, whether it may reconnect on its own, its address and signal,
-    /// and forgetting it.
     fn device_details(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
@@ -1047,8 +888,6 @@ impl BluetoothModel {
         )
     }
 
-    /// The device's main button (pair, connect, disconnect), acting on its
-    /// row of the published surface.
     fn primary_button(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
@@ -1068,9 +907,6 @@ impl BluetoothModel {
         )
     }
 
-    /// A paired device: its name and state, its main button, and its
-    /// details opening in place. The row is keyed by the device's address,
-    /// so it stays open while discovery reads the devices again.
     fn paired_row(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
@@ -1089,7 +925,6 @@ impl BluetoothModel {
         )
     }
 
-    /// A device nearby, not paired: its name and Pair.
     fn nearby_row(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
@@ -1106,8 +941,6 @@ impl BluetoothModel {
         )
     }
 
-    /// The pane of a device without an adapter: the switch off and
-    /// disabled, and why.
     fn without_adapter(cx: &ViewCx<Settings>) -> Element {
         provider_settings_ui::widgets::page(vec![untitled(rows(vec![radio_row(
             cx,
@@ -1117,8 +950,6 @@ impl BluetoothModel {
         )]))])
     }
 
-    /// The page as the model shows the adapter now: the radio, the person's
-    /// devices and, while the radio is on, what is nearby.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         if adapter_absent(&self.radios) {
             return Self::without_adapter(cx);
@@ -1171,7 +1002,6 @@ impl BluetoothModel {
                 "settings-bluetooth-empty"
             })));
         }
-        // What discovery finds is read in as it comes: no refresh.
         let scan = t(if self.scanning {
             "settings-bluetooth-stop"
         } else {
@@ -1190,13 +1020,10 @@ impl BluetoothModel {
 }
 
 impl BluetoothModel {
-    /// Whether a page shows the model: it follows `BlueZ` while it does.
     fn shown(&self) -> bool {
         self.following.strong_count() > 0
     }
 
-    /// Take in what `BlueZ` reported and what discovery found, reading the
-    /// adapter again when due; whether what the page shows changed.
     fn poll(&mut self) -> bool {
         self.follow_adapter();
         self.read_reported_changes();
@@ -1207,20 +1034,15 @@ impl BluetoothModel {
         std::mem::take(&mut self.changed)
     }
 
-    /// When discovery next reads the adapter, while it reads on a timer.
     fn next_wake(&self) -> Option<ui::time::Instant> {
         self.discovery_timed()
             .then(|| self.last_read + DISCOVERY_READ_INTERVAL)
     }
 
-    /// Follow `BlueZ` for a page that shows the model, for as long as the
-    /// answer is held; pages share one follow.
     fn follow(&mut self) -> Rc<crate::watch::Counted> {
         if let Some(held) = self.following.upgrade() {
             return held;
         }
-        // Nothing was followed while no pane showed the model: the adapter
-        // is read again once.
         self.changes_seen = u64::MAX;
         let control = Arc::clone(&self.control);
         crate::watch::shared(&mut self.following, move || {
@@ -1229,25 +1051,17 @@ impl BluetoothModel {
     }
 }
 
-/// The Bluetooth page as view code over what the area reads of the
-/// adapter: built again whenever what it shows changes
-/// ([`BluetoothArea::poll`]). `BlueZ` is followed while the page is shown.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
     let following = model.borrow_mut().follow();
-    // What changed while no page showed the model is taken in before the
-    // page is built.
     model.borrow_mut().poll();
     Some(cx.switch(&held.shown, move |cx, _| {
-        // The part keeps `BlueZ` followed while it is shown.
         let _followed = &following;
         model.borrow().page(cx)
     }))
 }
 
-/// The icon for a device from the kind BlueZ names (freedesktop icon
-/// names: `audio-headset`, `input-keyboard`, `phone`…).
 fn device_icon(kind: &str) -> ui::icons::Icon {
     use ui::icons::Icon;
     match kind {
@@ -1261,8 +1075,6 @@ fn device_icon(kind: &str) -> ui::icons::Icon {
     }
 }
 
-/// The devices a screenshot and the crate's tests show: headphones paired
-/// and a keyboard nearby. Every change succeeds and changes nothing.
 struct SampleBluetooth;
 
 impl BluetoothControl for SampleBluetooth {
@@ -1396,8 +1208,6 @@ mod tests {
             Ok(())
         }
     }
-    /// An adapter that cannot be asked anything, as from a sandbox without
-    /// the system bus.
     struct Unreachable;
     impl BluetoothControl for Unreachable {
         fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
@@ -1441,8 +1251,6 @@ mod tests {
         }
     }
 
-    /// A Settings window whose Bluetooth area reads `devices` through a
-    /// [`Mock`] adapter, on the Bluetooth page.
     fn window_over(
         devices: Vec<DeviceInfo>,
     ) -> ui::prelude::TestApp<crate::resource::SettingsShell> {
@@ -1460,7 +1268,6 @@ mod tests {
         app
     }
 
-    /// The window's Bluetooth model, changed by `change`.
     fn change_model<T: 'static>(
         app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
         change: impl FnOnce(&mut BluetoothModel) -> T + 'static,
@@ -1471,8 +1278,6 @@ mod tests {
         .expect("the Settings window is mounted")
     }
 
-    /// An adapter that cannot be read is reported as such: no "no devices"
-    /// list and no power switch at a guessed position.
     #[test]
     fn an_unreadable_adapter_is_shown_as_an_error() {
         let mut app = window_over(vec![dev()]);
@@ -1492,7 +1297,6 @@ mod tests {
         assert!(!frame.contains("Headphones"), "{frame}");
     }
 
-    /// The open disclosure rows in `widget`'s tree, by title.
     fn open_rows(widget: &dyn Widget, out: &mut Vec<String>) {
         if let Some(row) = widget
             .as_any()
@@ -1506,9 +1310,6 @@ mod tests {
         }
     }
 
-    /// A paired device's details open in place, and stay open while
-    /// discovery reads the devices again every two seconds and the page is
-    /// rebuilt from the new reading.
     #[test]
     fn a_devices_details_stay_open_while_discovery_reads_the_devices_again() {
         let _settled = ui::motion::testing::settled();
@@ -1545,8 +1346,6 @@ mod tests {
         }
     }
 
-    /// Each change reaches `BlueZ` for the device's object path, and a zero
-    /// battery reads as zero.
     #[test]
     fn changes_reach_the_device_by_its_path() {
         let mock = Mock {
@@ -1580,8 +1379,6 @@ mod tests {
         assert_eq!(mock.devices().unwrap()[0].battery, Some(0));
     }
 
-    /// Devices are rows; forgetting one asks first, and a device the
-    /// adapter does not know is refused.
     #[test]
     fn devices_are_rows_and_forgetting_asks_first() {
         use crate::resource::SettingsShell;
@@ -1612,8 +1409,6 @@ mod tests {
         );
     }
 
-    /// The availability Settings publishes for each of `ids`, as agents,
-    /// the palette and assistive technology read it.
     fn published(
         app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
         ids: &[&str],
@@ -1630,13 +1425,8 @@ mod tests {
             .collect()
     }
 
-    /// The radio's own effects.
     const RADIO: [&str; 3] = ["set-bluetooth", "set-discovering", "refresh-bluetooth"];
 
-    /// A device without an adapter publishes the radio's effects
-    /// unavailable with why, offers no devices and says so in the pane; an
-    /// adapter plugged in later makes them available again, and with one
-    /// nothing changes.
     #[test]
     fn without_an_adapter_the_radio_is_unavailable_until_one_is_plugged_in() {
         use crate::radios::Present;
@@ -1714,9 +1504,6 @@ mod tests {
         assert!(text.contains("Headphones"), "{text}");
     }
 
-    /// An adapter whose reads do not answer until they are let go, as a
-    /// wedged `BlueZ`; changes it takes at once. Once let go it knows a
-    /// radio on the porch.
     struct StalledAdapter(Arc<crate::stall::Stall>);
 
     impl StalledAdapter {
@@ -1787,9 +1574,6 @@ mod tests {
         }
     }
 
-    /// A change is answered and the window keeps drawing while `BlueZ`
-    /// takes its time to be read again: the adapter is re-read off the UI
-    /// thread, and the reading lands once it returns.
     #[test]
     fn a_stalled_adapter_never_holds_the_window() {
         use crate::resource::SettingsShell;
@@ -1834,8 +1618,6 @@ mod tests {
         );
     }
 
-    /// The radio's availability is read without opening the area: its
-    /// adapter is read only when its pane, a row or an effect needs it.
     #[test]
     fn availability_never_reads_the_adapter() {
         use crate::radios::Present;
@@ -1852,9 +1634,6 @@ mod tests {
         assert!(!area.is_open(), "the adapter was not read");
     }
 
-    /// An adapter whose devices the test changes, as `BlueZ` would report
-    /// them, counting its reads, and telling the model of each change while
-    /// it is followed.
     #[derive(Default)]
     struct WatchedAdapter {
         devices: Mutex<Vec<DeviceInfo>>,
@@ -1910,11 +1689,6 @@ mod tests {
         }
     }
 
-    /// Headphones that connect or disconnect by themselves while the page
-    /// is open show without a refresh or discovery: the change `BlueZ`
-    /// reports reads the adapter again. Showing the page reads what changed
-    /// while nothing followed; once no pane shows the model, nothing is
-    /// read.
     #[test]
     fn a_device_connecting_by_itself_shows_while_the_page_is_open() {
         let control = Arc::new(WatchedAdapter::default());
@@ -1927,8 +1701,6 @@ mod tests {
         );
         assert!(!model.devices[0].connected);
         let adapter_reads = || control.reads.load(std::sync::atomic::Ordering::Relaxed);
-        // Poll as the window does until the page shows the headphones
-        // `connected`; whether a poll asked the page to show something new.
         let poll_until = |model: &mut BluetoothModel, connected: bool| {
             let deadline = tilo_test_env::hang_deadline();
             let mut recomposed = false;
@@ -1943,7 +1715,6 @@ mod tests {
             recomposed
         };
 
-        // Connected while no pane showed the model.
         control.devices.lock().unwrap()[0].connected = true;
         let following = model.follow();
         let changed = control
@@ -1959,7 +1730,6 @@ mod tests {
             "showing the page reads the adapter once"
         );
 
-        // Disconnected by itself while the page is open.
         control.devices.lock().unwrap()[0].connected = false;
         changed();
         assert!(poll_until(&mut model, false), "the page shows the change");
@@ -1972,8 +1742,6 @@ mod tests {
         assert_eq!(adapter_reads(), 3);
     }
 
-    /// Discovery reads the adapter on a timer only while `BlueZ` is not
-    /// followed: a followed `BlueZ` reports each device that appears.
     #[test]
     fn discovery_wakes_the_window_only_while_bluez_is_not_followed() {
         let control = Arc::new(WatchedAdapter::default());
@@ -1998,8 +1766,6 @@ mod tests {
         assert!(model.next_wake().is_some());
     }
 
-    /// The radio's switch is named by its row, so a reader hears that it
-    /// turns Bluetooth on rather than landing on a switch of no name.
     #[test]
     fn the_radio_switch_is_named_by_its_row() {
         use ui::accesskit::Toggled;

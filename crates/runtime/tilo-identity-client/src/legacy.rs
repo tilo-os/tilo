@@ -14,13 +14,9 @@ pub const BROKER_CHILD_FD: RawFd = 15;
 pub const OP_METADATA: u8 = 1;
 pub const OP_SIGN: u8 = 2;
 
-/// The inherited broker descriptor, taken at most once per process.
 enum Claim {
     Unclaimed,
-    /// The connection, kept for the process: every reader of the person's
-    /// public record shares it, as every caller of the service shares one.
     Held(Arc<BrokerSigningIdentity>),
-    /// Taken, and its metadata exchange failed; the descriptor is closed.
     Spent,
 }
 
@@ -69,8 +65,8 @@ pub fn connect_from_env() -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
             "invalid identity broker fd",
         )));
     }
-    // The environment is process-global and read concurrently, so it is
-    // left untouched; the claim makes this process the descriptor's one owner.
+    // The environment is process-global and read concurrently, so it stays
+    // untouched; the claim makes this process the descriptor's one owner.
     let mut claim = BROKER.lock().map_err(|_| {
         NotAvailable::ConnectionFailed(io::Error::other("identity broker claim poisoned"))
     })?;

@@ -1,8 +1,7 @@
 //! The owned [`Workbook`] handle over an automerge `AutoCommit` holding the
-//! canonical spreadsheet model, plus the borrowed read/write helpers the codecs
-//! drive it through. Mirrors the rich-text [`crate::model`]/[`crate::document`]
-//! split, but the spreadsheet shape is simpler: a workbook is an ordered set of
-//! sheets, each a sparse map of A1-keyed cells.
+//! canonical spreadsheet model, plus the borrowed helpers the codecs drive it
+//! through: a workbook is an ordered set of sheets, each a sparse map of A1-keyed
+//! cells.
 
 use crate::document::DocError;
 use crate::model::required_map;
@@ -19,8 +18,6 @@ use tilo_automerge::read::{map_at, str_at, str_entries};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
-/// The data written into a cell: its value + type, an optional preserved formula
-/// (source without the leading `=`), and an optional opaque style ref.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CellInput {
     pub value: String,
@@ -46,7 +43,7 @@ impl CellInput {
             style: None,
         }
     }
-    /// A formula cell: the formula source (no leading `=`) plus its cached result value and type.
+    /// A formula cell: the formula source (without the leading `=`) plus its cached value and type.
     pub fn formula(src: impl Into<String>, cached: impl Into<String>, ty: CellType) -> Self {
         Self {
             value: cached.into(),
@@ -70,12 +67,12 @@ pub struct SheetContainers {
     pub preserved: ObjId,
 }
 
-/// Write the schema scalars + create the container maps under `root`.
+/// Write the schema scalars and create the container maps under `root`.
 ///
 /// # Panics
-/// Panics if `root` names an object that doesn't exist in `doc`. Every caller resolves `root`
-/// (`automerge::ROOT`, or a namespace node it just created) immediately before calling this,
-/// so the object is always live.
+///
+/// Panics if `root` names an object that does not exist in `doc`; every caller resolves `root`
+/// immediately before calling this.
 #[allow(
     clippy::unwrap_used,
     reason = "root is always a live object at every call site (see the panics note above)"
@@ -115,8 +112,8 @@ fn sheet_order(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<Vec<u8
     doc.bytes_at(&obj, SHEET_ORDER)
 }
 
-/// Sheet ids in tab order (by fractional order key, then id as a tiebreak so two
-/// replicas that merged in different orders converge byte-identically).
+/// Sheet ids in tab order, with the id as a tiebreak so two replicas that merged in different
+/// orders converge byte-identically.
 pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> {
     let mut v: Vec<(Vec<u8>, String)> = doc
         .keys(&c.sheets)
@@ -126,7 +123,6 @@ pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> 
     v.into_iter().map(|(_, id)| id).collect()
 }
 
-/// A sheet's tab name (empty if unset / unknown id).
 pub fn sheet_name(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<String> {
     let obj = sheet_obj(doc, c, id)?;
     str_at(doc, &obj, SHEET_NAME)
@@ -137,7 +133,6 @@ fn cells_obj(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<ObjId> {
     map_at(doc, &obj, SHEET_CELLS)
 }
 
-/// Materializes a single cell (by A1 ref) into a [`CellView`], or `None` if the ref is unknown or malformed.
 pub fn cell(
     doc: &AutoCommit,
     c: &SheetContainers,
@@ -169,7 +164,6 @@ fn materialize_cell(doc: &AutoCommit, cell_obj: &ObjId, reference: &str) -> Opti
     })
 }
 
-/// Materialize one sheet into a [`SheetView`] (cells sorted row-major).
 pub fn materialize_sheet(doc: &AutoCommit, c: &SheetContainers, id: &str) -> SheetView {
     let name = sheet_name(doc, c, id).unwrap_or_default();
     let mut cells: Vec<CellView> = Vec::new();
@@ -196,7 +190,6 @@ fn props_obj(doc: &AutoCommit, c: &SheetContainers) -> Option<ObjId> {
     map_at(doc, &c.meta, KEY_SHEET_PROPS)
 }
 
-/// All document properties (`name → value`) as a sorted map.
 pub fn doc_props(doc: &AutoCommit, c: &SheetContainers) -> BTreeMap<String, String> {
     props_obj(doc, c).map_or_else(BTreeMap::new, |props| str_entries(doc, &props))
 }
@@ -236,8 +229,6 @@ pub fn materialize(doc: &AutoCommit, c: &SheetContainers) -> WorkbookSnapshot {
     }
 }
 
-/// Compute a fractional tab-order key placing a sheet after `after` (or at the
-/// front when `after` is `None`). Sheets are few, so a full scan is fine.
 fn sheet_order_after(doc: &AutoCommit, c: &SheetContainers, after: Option<&str>) -> Vec<u8> {
     let ordered = sheet_ids_in_order(doc, c);
     let pos = match after {
@@ -258,7 +249,6 @@ fn sheet_order_after(doc: &AutoCommit, c: &SheetContainers, after: Option<&str>)
     tilo_resource::order::bytes::between(lo.as_deref(), hi.as_deref())
 }
 
-/// The owned spreadsheet handle: wraps an automerge document that syncs, versions, and merges like any CRDT.
 pub struct Workbook {
     pub(crate) doc: AutoCommit,
     pub(crate) c: SheetContainers,
@@ -289,16 +279,16 @@ impl Workbook {
         self.doc.get_actor().to_hex_string()
     }
 
-    /// Add a sheet named `name` at the end of the tab order; returns its id.
     pub fn add_sheet(&mut self, name: &str) -> String {
         let after = self.sheet_ids_in_order().last().cloned();
         self.add_sheet_after(name, after.as_deref())
     }
 
-    /// Add a sheet after the sheet with id `after` (or at the front if `None`).
+    /// Add a sheet after the sheet with id `after`, or at the front if `None`.
     ///
     /// # Panics
-    /// Panics if `self.c.sheets` no longer resolves in `self.doc` — see the note on
+    ///
+    /// Panics if the sheets container no longer resolves in `self.doc` — see the note on
     /// [`Self::set_cell`].
     #[allow(
         clippy::unwrap_used,
@@ -330,14 +320,10 @@ impl Workbook {
         }
     }
 
-    /// Set (or overwrite) the cell at A1 `reference` on `sheet_id`. Only fields
-    /// whose value actually changed are written, so re-setting an identical cell
-    /// adds no CRDT churn. `None` for the formula/style clears that field. Returns
-    /// `false` if the sheet id is unknown or the reference is malformed.
-    ///
-    /// # Panics
-    /// Panics if `cells` (just resolved-or-created above) stops resolving mid-call, which
-    /// cannot happen on this single-threaded, synchronous API.
+    /// Set (or overwrite) the cell at A1 `reference` on `sheet_id`: only fields whose value
+    /// actually changed are written, so re-setting an identical cell adds no CRDT churn, and `None`
+    /// clears the formula or style. `false` when the sheet id is unknown or the reference is
+    /// malformed.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "pub API used outside tilo-doc (fs::docstore); signature change out of scope for this crate-only pass"
@@ -373,7 +359,6 @@ impl Workbook {
         true
     }
 
-    /// Remove a cell entirely (no-op if absent).
     pub fn clear_cell(&mut self, sheet_id: &str, reference: &str) {
         if let Some(cells) = cells_obj(&self.doc, &self.c, sheet_id) {
             let _ = self.doc.delete(&cells, reference);
@@ -382,10 +367,6 @@ impl Workbook {
     }
 
     /// Stash a verbatim (unmodeled) package part so export can re-emit it losslessly.
-    ///
-    /// # Panics
-    /// Panics if `self.c.preserved` no longer resolves in `self.doc` — see the note on
-    /// [`Self::set_cell`].
     #[allow(
         clippy::unwrap_used,
         reason = "self.c.preserved was resolved by open()/init() at construction and this API never invalidates it"
@@ -435,12 +416,10 @@ impl Workbook {
         materialize(&self.doc, &self.c)
     }
 
-    /// Timeline of authored changes (oldest first).
     pub fn versions(&mut self) -> Vec<tilo_resource::history::Version> {
         tilo_resource::history::versions(&mut self.doc)
     }
 
-    /// Reconstruct the workbook as of `version` (time-travel).
     pub fn materialize_at(&mut self, version: usize) -> Result<WorkbookSnapshot, DocError> {
         let rebuilt = tilo_resource::history::replay_prefix(&mut self.doc, version)
             .map_err(|e| DocError::Invalid(format!("apply_changes: {e}")))?;
@@ -448,9 +427,6 @@ impl Workbook {
         Ok(materialize(&rebuilt, &c))
     }
 
-    /// # Errors
-    /// Returns [`DocError`] under the same conditions as [`Self::materialize_at`], for either
-    /// `from` or `to`.
     pub fn diff_versions(
         &mut self,
         from: usize,
@@ -461,9 +437,10 @@ impl Workbook {
         Ok(crate::diff::diff_workbooks(&a, &b))
     }
 
-    /// Independent replica with a fresh actor id (distinct edit lineage).
+    /// Independent replica with a fresh actor id.
     ///
     /// # Panics
+    ///
     /// Panics if reloading this workbook's own just-saved bytes fails, which cannot happen:
     /// `save()`'s output is always a valid document carrying this workbook's schema.
     #[must_use]
@@ -480,14 +457,8 @@ impl Workbook {
         Workbook { doc, c, ids }
     }
 
-    /// Merge another replica's changes into this one (low-level merge to sidestep
-    /// the automerge-0.8 `AutoCommit::merge` patch-log panic, as the rich-text
-    /// [`crate::Document::merge`] does).
-    ///
-    /// # Panics
-    /// Panics if `self`'s or `other`'s own just-saved bytes fail to reload, or the reloaded
-    /// document loses the workbook schema — neither can happen: both are this type's own
-    /// `save()` output, and merging never removes the schema's container keys.
+    /// Merge another replica's changes (low-level merge, sidestepping the automerge-0.8
+    /// `AutoCommit::merge` patch-log panic).
     #[allow(
         clippy::expect_used,
         reason = "reloading/re-merging this workbook's own schema-valid bytes cannot fail"
@@ -515,8 +486,8 @@ impl Default for Workbook {
     }
 }
 
-/// An [`crate::model::IdGen`] for `doc`'s actor, seeded past existing sheet ids so
-/// a generator over a reloaded workbook won't re-mint (and overwrite) a sheet.
+/// An [`crate::model::IdGen`] for `doc`'s actor, seeded past existing sheet ids so a generator over
+/// a reloaded workbook does not re-mint a sheet.
 fn seeded_sheet_id_gen(
     doc: &AutoCommit,
     c: &SheetContainers,

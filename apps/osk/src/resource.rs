@@ -19,26 +19,19 @@ use ui::widget::Element;
 
 use crate::actions::LETTER_LAYOUTS;
 
-/// A keyboard height, independent of the desktop's density.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KeyboardSize {
-    /// Compact keys for a phone held in one hand.
     Compact,
-    /// The standard key height, the same as before this preference.
     #[default]
     Standard,
-    /// Larger keys for a tablet or a person who wants more room.
     Large,
 }
 
 impl KeyboardSize {
-    /// Every size, compact first.
     pub const ALL: [Self; 3] = [Self::Compact, Self::Standard, Self::Large];
-    /// The names a preference and an effect may take.
     pub const NAMES: [&'static str; 3] = ["compact", "standard", "large"];
 
-    /// The size `name` names, if any.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -49,7 +42,6 @@ impl KeyboardSize {
         }
     }
 
-    /// The size's name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -59,7 +51,6 @@ impl KeyboardSize {
         }
     }
 
-    /// What it multiplies the theme's key-row height by.
     #[must_use]
     pub const fn scale(self) -> f32 {
         match self {
@@ -70,7 +61,6 @@ impl KeyboardSize {
     }
 }
 
-/// This person's keyboard preferences.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OskPreferences {
@@ -116,20 +106,10 @@ impl ui::storage::SettingsSchema for OskPreferences {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
 
-/// The on-screen keyboard resource: the door its effects and rows are
-/// published on. It holds nothing; preferences are settings and what was
-/// learned is the person's own record.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Osk {}
 
 impl Osk {
-    /// What the record holds: nothing — the keyboard's preferences are settings and what it
-    /// learned is a record of its own.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -144,19 +124,13 @@ impl Osk {
 )]
 impl Osk {}
 
-/// The value of `--purpose`: the field kind the keyboard starts for.
 pub const PURPOSE_OPTION: &str = "--purpose";
-/// Require the compositor's input method: fail rather than fall back to an
-/// always-visible keyboard.
 pub const INPUT_METHOD_FLAG: &str = "--input-method";
 /// Never use the input method: an always-visible keyboard that types through
 /// the virtual keyboard.
 pub const NO_INPUT_METHOD_FLAG: &str = "--no-input-method";
-/// Paint the effective tap targets over the keys, to see how the typing
-/// context grows and shrinks them.
 pub const HIT_OVERLAY_FLAG: &str = "--debug-hit-areas";
 
-/// The on-screen keyboard app: the keyboard window over [`Osk`].
 pub struct OskShell;
 
 impl ResourceApp for OskShell {
@@ -185,13 +159,9 @@ impl ResourceApp for OskShell {
         crate::surface::SCENARIOS
     }
 
-    /// Phone-portrait width with room for the toolbar, the suggestion bar
-    /// and four key rows (48 + 40 + 4 × 56 = 312, rounded up).
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
             Some("emoji") => (720, 420),
-            // A parked keyboard is a strip: its capture is the size the panel
-            // shrinks to.
             Some("parked") => (720, 96),
             _ => (720, 360),
         }
@@ -206,7 +176,6 @@ mod tests {
     use ui::framework::testing::TestApp;
     use ui::tilo_resource::Effect;
 
-    /// The person's keyboard preferences in the test profile's settings.
     fn prefs(app: &TestApp<OskShell>) -> OskPreferences {
         app.settings::<OskPreferences>().get()
     }

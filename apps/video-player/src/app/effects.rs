@@ -1,10 +1,8 @@
-//! The effects the host asks Video Player for, and what each answers with.
-
 use super::{EffectStatus, Id, LibraryTab, PLAYBACK_RATES, PlayerState, VideoEffect};
 
 impl PlayerState {
-    /// What differs from the effects' declarations right now: playback
-    /// controls need an open video, and clearing needs a recent one.
+    /// What differs from the effects' declarations now: playback needs an open video, and
+    /// clearing needs a recent one.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         if !self.formats_visible() {
@@ -46,8 +44,7 @@ impl PlayerState {
         statuses
     }
 
-    /// Do `effect` now; refused when its target changed since it was
-    /// offered.
+    /// Do `effect` now; refused when its target changed since it was offered.
     #[allow(
         clippy::too_many_lines,
         reason = "all effects stay together so their local semantics cannot drift"
@@ -115,8 +112,8 @@ impl PlayerState {
                 if let Some(selected) = selected {
                     self.player.set_choice_selection("playback-rate", selected);
                 }
-                // The speed this device plays at is remembered like its
-                // volume: 1.5× opened the same lecture quickly next time.
+                // The speed is remembered like the volume: 1.5× opened the same lecture
+                // quickly next time.
                 self.preferences.rate = self
                     .player
                     .engine()

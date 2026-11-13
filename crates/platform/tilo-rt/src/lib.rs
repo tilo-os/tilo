@@ -1,43 +1,14 @@
 //! The one async runtime model for Tilo processes.
 //!
-//! Tokio is the only async runtime in Tilo. This crate decides how a process
-//! runs it, so that no app, daemon or CLI builds runtimes of its own:
+//! Tokio is the only async runtime in Tilo, and this crate decides how a process runs it,
+//! so no app, daemon or CLI builds runtimes of its own: [`app()`] for an app's one
+//! current-thread runtime, [`daemon()`] for a bounded multi-thread one, [`block_on`] for a
+//! synchronous entry point, [`cpu()`] and [`io`] for bulk work off the async workers,
+//! [`background`] for the host's executor and timers, [`spawn_thread`] for a thread of its
+//! own and [`sleep`] for a pause. Every thread this crate starts is named.
 //!
-//! - **Apps** share one current-thread runtime, [`app()`], on a dedicated
-//!   background thread named `tilo-rt`. It is never the UI or render thread.
-//!   The UI spawns onto it and gets results back through the event loop's
-//!   existing wake mechanism (`tilo_ui`'s `LatestRequest::spawn` and
-//!   `LatestTask::spawn` wrap that handoff); nothing on the UI thread waits
-//!   on a future.
-//! - **Daemons and services** build one multi-thread runtime with
-//!   [`daemon()`]: a bounded worker count, a bounded blocking pool, named
-//!   threads.
-//! - **Synchronous entry points** — a CLI's `main`, a test — use
-//!   [`block_on`]. It refuses to run inside a runtime, this crate's or
-//!   another's, or on the UI thread, where it would deadlock or freeze a
-//!   frame.
-//! - **CPU-bound bulk work** — hashing, chunking, decoding, indexing — goes to
-//!   [`cpu()`], a dedicated pool, never onto an async worker.
-//! - **Bulk file I/O** goes through [`io`], std I/O on dedicated threads
-//!   behind an interface narrow enough to swap for `io_uring`.
-//! - **Toolkit background work and timers** go through [`background`], the
-//!   executor a host installs, and wake the UI through [`wake`].
-//! - **A long-lived thread of its own** — an event loop, a device poller —
-//!   comes from [`spawn_thread`], never `std::thread::spawn`.
-//! - **A pause inside async work** — a retry backoff, a poll interval — is
-//!   [`sleep`], never `std::thread::sleep`.
-//! - **A helper a process can lose and restart** runs inside
-//!   [`panic_boundary::isolate`], so a process whose panic hook aborts for
-//!   every other thread lets that one unwind (see [`panic_boundary`]).
-//!
-//! Every thread this crate starts is named, so a stack dump or `top -H`
-//! attributes it.
-//!
-//! In a browser (`target_family = "wasm"`) no thread is started: [`app()`]
-//! tasks run on the page thread from its microtask queue, [`cpu()`] work runs
-//! there as an app task, [`io`] refuses, [`spawn_thread`] fails, and nothing
-//! may block. [`availability`] answers which [`Feature`]s the running target
-//! has, and each feature's `targets` for every target.
+//! In a browser no thread is started: [`app()`] tasks run on the page's microtask queue,
+//! and nothing may block. [`availability`] answers which [`Feature`]s the target has.
 
 #[cfg(not(target_family = "wasm"))]
 mod app;
@@ -83,7 +54,6 @@ pub use tokio::task::JoinHandle;
 pub trait MaybeSend: Send {}
 #[cfg(not(target_family = "wasm"))]
 impl<T: Send + ?Sized> MaybeSend for T {}
-/// `Send` where the platform has threads; nothing on the web.
 #[cfg(target_family = "wasm")]
 pub trait MaybeSend {}
 #[cfg(target_family = "wasm")]
@@ -92,7 +62,6 @@ impl<T: ?Sized> MaybeSend for T {}
 /// Why a runtime operation was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The operating system refused a thread or the runtime's drivers.
     #[error("could not start the async runtime: {0}")]
     Start(#[from] std::io::Error),
     /// A synchronous wait was requested from a thread that is already driving
@@ -106,7 +75,6 @@ pub enum Error {
         "cannot block on a future on the UI thread; spawn it and deliver the result to the event loop"
     )]
     UiThread,
-    /// The task was cancelled or panicked before producing a value.
     #[error("the task was cancelled or panicked")]
     TaskFailed,
 }
@@ -131,8 +99,6 @@ impl Driving {
     }
 }
 
-/// Mark the calling thread as driving async tasks for as long as it lives:
-/// a runtime worker.
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn mark_driving() {
     DRIVING.with(|driving| driving.set(true));
@@ -145,15 +111,10 @@ impl Drop for Driving {
     }
 }
 
-/// Mark the calling thread as a UI (event-loop or render) thread.
-///
-/// From then on, [`block_on`] and [`AppRuntime::block_on`] refuse to run on
-/// it. The toolkit marks its event-loop and render threads; apps need not.
 pub fn mark_ui_thread() {
     UI_THREAD.with(|ui| ui.set(true));
 }
 
-/// Whether [`mark_ui_thread`] was called on this thread.
 pub fn is_ui_thread() -> bool {
     UI_THREAD.with(Cell::get)
 }
@@ -365,8 +326,6 @@ pub fn lower_current_thread_priority() {
     }
 }
 
-/// CPU time the calling thread has used, where the platform keeps it: what
-/// a frame cost its thread, apart from time spent preempted or waiting.
 #[must_use]
 pub fn thread_cpu_time() -> Option<std::time::Duration> {
     // macOS has kept the clock since 10.12.
@@ -416,8 +375,6 @@ mod tests {
         }
     }
 
-    /// A thread's CPU clock counts its own work and not time it spends
-    /// asleep, where the platform keeps one.
     #[test]
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     fn a_threads_cpu_clock_counts_its_work_and_not_its_sleep() {
@@ -436,7 +393,6 @@ mod tests {
     #[test]
     fn wait_on_runs_on_the_runtime_and_refuses_its_drivers() {
         let runtime = daemon("wait-on-test").workers(1).build().unwrap();
-        // phase: a_plain_thread_waits_for_a_task_that_needs_the_timer
         {
             let value = wait_on(runtime.handle(), async {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -445,7 +401,6 @@ mod tests {
             .unwrap();
             assert_eq!(value, 3);
         }
-        // phase: a_worker_of_the_same_one_worker_runtime_is_refused_not_deadlocked
         {
             let handle = runtime.handle().clone();
             let nested = wait_on(
@@ -455,7 +410,6 @@ mod tests {
             .unwrap();
             assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
-        // phase: a_worker_of_another_runtime_is_refused
         {
             let other = daemon("wait-on-other").workers(1).build().unwrap();
             let handle = runtime.handle().clone();
@@ -463,7 +417,6 @@ mod tests {
                 wait_on(other.handle(), async move { wait_on(&handle, async { 5 }) }).unwrap();
             assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
-        // phase: a_blocking_pool_thread_is_inside_a_runtime_and_waits_there
         {
             // A blocking-pool thread is a thread of its runtime, not a thread
             // that owns none: it asks that runtime instead of building a
@@ -477,7 +430,6 @@ mod tests {
             .unwrap();
             assert!(matches!(inner, Err(Error::InsideRuntime)));
         }
-        // phase: a_ui_thread_is_refused
         {
             let handle = runtime.handle().clone();
             let result = spawn_thread("ui-wait-on-test", move || {
@@ -489,7 +441,6 @@ mod tests {
             .unwrap();
             assert!(matches!(result, Err(Error::UiThread)));
         }
-        // phase: a_shut_down_runtime_answers_task_failed
         {
             let handle = runtime.handle().clone();
             runtime.shutdown_background();
@@ -502,7 +453,6 @@ mod tests {
 
     #[test]
     fn block_on_drives_timers_but_refuses_runtime_and_ui_threads() {
-        // phase: block_on_runs_a_future_that_needs_the_timer_driver
         {
             let value = block_on(async {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -511,12 +461,10 @@ mod tests {
             .unwrap();
             assert_eq!(value, 7);
         }
-        // phase: block_on_refuses_inside_a_runtime
         {
             let nested = block_on(async { block_on(async {}) }).unwrap();
             assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
-        // phase: block_on_refuses_inside_another_crates_runtime
         {
             let foreign = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -525,7 +473,6 @@ mod tests {
             let nested = foreign.block_on(async { block_on(async {}) });
             assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
-        // phase: a_blocking_pool_thread_waits_with_the_app_runtime
         {
             let inner = block_on(async {
                 tokio::task::spawn_blocking(|| app().block_on(async { 9 }))
@@ -535,7 +482,6 @@ mod tests {
             .unwrap();
             assert_eq!(inner.unwrap(), 9);
         }
-        // phase: block_on_refuses_on_a_ui_thread
         {
             let result = spawn_thread("ui-test", || {
                 mark_ui_thread();

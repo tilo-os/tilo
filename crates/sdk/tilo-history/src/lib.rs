@@ -121,11 +121,7 @@ impl Messages for Catalogue {
 }
 
 fn langid(locale: &str) -> LanguageIdentifier {
-    locale
-        .replace('_', "-")
-        .split('.')
-        .next()
-        .unwrap_or(SOURCE_LOCALE)
+    tilo_paths::locale_tag(locale)
         .parse()
         .or_else(|_| SOURCE_LOCALE.parse())
         .unwrap_or_default()
@@ -142,21 +138,15 @@ pub fn window_language(preference: Option<&str>, shipped: &[&str]) -> String {
     if shipped.is_empty() {
         return preference.map_or_else(|| SOURCE_LOCALE.to_owned(), |p| langid(p).to_string());
     }
-    if let Some(preference) = preference {
-        let wanted = langid(preference);
-        if let Some(tag) = shipped.iter().find(|tag| langid(tag) == wanted) {
-            return (*tag).to_owned();
-        }
-        if let Some(tag) = shipped
-            .iter()
-            .find(|tag| langid(tag).language == wanted.language)
-        {
-            return (*tag).to_owned();
-        }
+    if let Some(preference) = preference
+        && let Some(position) = tilo_paths::matching(preference, shipped.iter().copied())
+        && let Some(tag) = shipped.get(position)
+    {
+        return (*tag).to_owned();
     }
     shipped
         .iter()
-        .find(|tag| langid(tag).language == langid(SOURCE_LOCALE).language)
+        .find(|tag| tilo_paths::language_of(tag) == tilo_paths::language_of(SOURCE_LOCALE))
         .or_else(|| shipped.first())
         .map_or_else(|| SOURCE_LOCALE.to_owned(), |tag| (*tag).to_owned())
 }
@@ -168,15 +158,8 @@ thread_local! {
 /// The framework's messages in `locale`, or in the closest locale it has:
 /// the same language, else the source locale.
 fn framework(locale: &str) -> Rc<Catalogue> {
-    let wanted = langid(locale);
-    let chosen = FRAMEWORK
-        .iter()
-        .find(|(candidate, _)| langid(candidate) == wanted)
-        .or_else(|| {
-            FRAMEWORK
-                .iter()
-                .find(|(candidate, _)| langid(candidate).language == wanted.language)
-        })
+    let chosen = tilo_paths::matching(locale, FRAMEWORK.iter().map(|(tag, _)| *tag))
+        .and_then(|position| FRAMEWORK.get(position))
         .unwrap_or(&SOURCE);
     FRAMEWORK_CATALOGUES.with(|cache| {
         let mut cache = cache.borrow_mut();

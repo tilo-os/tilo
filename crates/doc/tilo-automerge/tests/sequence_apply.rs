@@ -111,8 +111,6 @@ fn obj(doc: &AutoCommit, key: &str) -> ObjId {
     doc.get(ROOT, key).unwrap().unwrap().1
 }
 
-/// One local edit; edits the document cannot take (incrementing what is
-/// not a counter, a range past the end) are simply not made.
 fn edit(doc: &mut AutoCommit, rng: &mut Rng, step: usize) {
     // Marks go into "t" only: the fork keeps each text's mark changes in a
     // patch of its own where crates.io automerge 0.12.0 folds them into one
@@ -174,8 +172,6 @@ fn legacy_id(id: &ObjId) -> Option<OpId> {
     }
 }
 
-/// Every item the list `seq` ever held, deleted ones too: the ids of the
-/// insert ops in its history.
 fn elements(doc: &mut AutoCommit, seq: &ObjId) -> Vec<OpId> {
     let Some(seq) = legacy_id(seq) else {
         return Vec::new();

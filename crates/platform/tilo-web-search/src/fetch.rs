@@ -11,15 +11,12 @@ use crate::guard::{Refusal, check_address, check_url};
 use crate::readable;
 use crate::search::read_bytes_capped;
 
-/// Bounds on one fetch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FetchLimits {
     /// The most bytes downloaded; a longer page is cut there and marked
     /// truncated.
     pub max_bytes: usize,
-    /// The longest the whole fetch may take, redirects included.
     pub timeout: Duration,
-    /// The most redirects followed.
     pub max_redirects: u8,
 }
 
@@ -35,7 +32,6 @@ impl Default for FetchLimits {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FetchedPage {
-    /// Where the page ended up, after redirects.
     pub url: String,
     pub status: u16,
     pub content_type: String,
@@ -47,12 +43,9 @@ pub struct FetchedPage {
     pub body: FetchedBody,
 }
 
-/// What a fetched address held.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum FetchedBody {
-    /// A page as Markdown-flavoured text: HTML reduced to its main content,
-    /// JSON pretty-printed, other text as sent.
     Text {
         #[serde(skip_serializing_if = "Option::is_none")]
         title: Option<String>,
@@ -69,7 +62,6 @@ pub enum FetchedBody {
 }
 
 impl FetchedPage {
-    /// The page's text, when it is text.
     #[must_use]
     pub fn text(&self) -> Option<&str> {
         match &self.body {
@@ -78,7 +70,6 @@ impl FetchedPage {
         }
     }
 
-    /// The page's title, when it is text that has one.
     #[must_use]
     pub fn title(&self) -> Option<&str> {
         match &self.body {
@@ -91,26 +82,19 @@ impl FetchedPage {
 /// Why a page could not be fetched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FetchError {
-    /// The address is not one to fetch.
     InvalidUrl(String),
-    /// The address, or one a redirect led to, is local or not on the web.
     Refused(Refusal),
-    /// The server answered with an error status.
     Status(u16),
     /// The body is not text and larger than [`FetchLimits::max_bytes`], so
     /// it cannot be kept whole.
     TooLarge(usize),
-    /// More redirects than [`FetchLimits::max_redirects`], or one without a
-    /// usable address.
     Redirects,
     /// The fetch took longer than [`FetchLimits::timeout`].
     Timeout,
-    /// The server could not be reached or the download broke off.
     Network(String),
 }
 
 impl FetchError {
-    /// Whether trying again later may work.
     #[must_use]
     pub const fn retryable(&self) -> bool {
         match self {
@@ -149,7 +133,6 @@ impl fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
-/// `bytes` as a person reads a size.
 fn size(bytes: usize) -> String {
     const MIB: usize = 1024 * 1024;
     if bytes >= MIB && bytes.is_multiple_of(MIB) {
@@ -189,12 +172,10 @@ pub async fn fetch_fixture(
     fetch_reaching(client, url, limits, Reach::Fixture).await
 }
 
-/// Which addresses a fetch may reach.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reach {
     /// Public web addresses only.
     Web,
-    /// Any address: a test's fixture server.
     #[cfg_attr(
         not(feature = "fixture-servers"),
         allow(dead_code, reason = "only fixture-server builds construct it")
@@ -342,9 +323,7 @@ enum Kind {
     Html,
     Json,
     Text,
-    /// Not text: kept whole.
     Binary,
-    /// No content type: decided by looking at the body.
     Unlabelled,
 }
 
@@ -398,7 +377,6 @@ impl Kind {
     }
 }
 
-/// The media type of a `Content-Type` value, without its parameters.
 fn media_type(content_type: &str) -> &str {
     content_type.split(';').next().unwrap_or("").trim()
 }

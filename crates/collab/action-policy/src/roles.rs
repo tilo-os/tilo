@@ -777,7 +777,7 @@ pub mod agent_policy {
 /// hands it the person whose message caused the turn, and the bound it holds
 /// for the agent's record ([`crate::turn::authority`]).
 #[must_use]
-pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> crate::Bound {
+pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
     let subject = Subject::Agent(agent.to_owned());
     let granted_by = Subject::Person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
@@ -796,11 +796,7 @@ pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) ->
         lifetime: Lifetime::UntilRevoked,
         granted_by: granted_by.clone(),
     }));
-    crate::Bound {
-        subject,
-        grants,
-        also: Vec::new(),
-    }
+    grants
 }
 
 /// The grant making application `app` an author of its own records in
@@ -940,33 +936,36 @@ pub const SESSION_KIND: &str = "session";
 /// What a person may do from a device that is not theirs, in any workspace: read
 /// and change content, ask first before reaching outside it, never govern.
 #[must_use]
-pub fn foreign_device_bound() -> Vec<Grant> {
-    let issuer = Subject::ForeignDevice;
-    let mut grants = vec![
-        Grant::new(
-            "foreign-device:content",
+pub fn foreign_device_bound() -> &'static [Grant] {
+    static BOUND: std::sync::LazyLock<Vec<Grant>> = std::sync::LazyLock::new(|| {
+        let issuer = Subject::ForeignDevice;
+        let mut grants = vec![
+            Grant::new(
+                "foreign-device:content",
+                Subject::ForeignDevice,
+                TreePath::root(),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                issuer.clone(),
+            ),
+            Grant::new(
+                "foreign-device:outside",
+                Subject::ForeignDevice,
+                TreePath::root(),
+                KindSet::OUTSIDE,
+                Answer::Ask,
+                issuer.clone(),
+            ),
+        ];
+        grants.push(Grant::new(
+            "foreign-device:governance",
             Subject::ForeignDevice,
-            TreePath::root(),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            issuer.clone(),
-        ),
-        Grant::new(
-            "foreign-device:outside",
-            Subject::ForeignDevice,
-            TreePath::root(),
-            KindSet::OUTSIDE,
-            Answer::Ask,
-            issuer.clone(),
-        ),
-    ];
-    grants.push(Grant::new(
-        "foreign-device:governance",
-        Subject::ForeignDevice,
-        TreePath::root().any(Level::Workspace).kind(ROOM_KIND),
-        KindSet::UNDOABLE.union(KindSet::OUTSIDE),
-        Answer::Deny,
-        issuer,
-    ));
-    grants
+            TreePath::root().any(Level::Workspace).kind(ROOM_KIND),
+            KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+            Answer::Deny,
+            issuer,
+        ));
+        grants
+    });
+    &BOUND
 }

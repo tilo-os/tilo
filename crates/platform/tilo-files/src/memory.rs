@@ -1,6 +1,5 @@
-//! Trees kept in this process: `VirtualRoot::Memory` locations (one tree for
-//! the process, or the page) and [`Dir::memory`](crate::Dir::memory) (one tree
-//! per call).
+//! Trees kept in this process: `VirtualRoot::Memory` locations, one tree for the
+//! process or the page, and private ones from [`Dir::memory`](crate::Dir::memory).
 
 use std::collections::HashMap;
 use std::collections::btree_map::{self, BTreeMap};
@@ -16,8 +15,8 @@ use crate::watch::{ChangeKind, Watchers};
 use crate::{Entry, FsError, Kind, LockMode, Meta, VPath};
 use tilo_lock::MutexRecover as _;
 
-/// A tree: every entry keyed by its full `/`-joined path, the root being the
-/// empty key, plus the locks held on its paths.
+/// Every entry keyed by its full `/`-joined path, the root being the empty key, plus the locks held on
+/// its paths.
 pub(crate) struct Tree {
     state: Mutex<State>,
     released: Condvar,
@@ -96,7 +95,6 @@ pub(crate) struct Scope {
 }
 
 impl Scope {
-    /// A private tree whose root already exists.
     pub(crate) fn fresh() -> Self {
         let tree = Tree::new();
         tree.state().nodes.insert(
@@ -111,7 +109,6 @@ impl Scope {
         }
     }
 
-    /// `prefix` in the tree every memory location of this process shares.
     pub(crate) fn global(prefix: VPath) -> Self {
         static GLOBAL: OnceLock<Arc<Tree>> = OnceLock::new();
         Self {
@@ -304,15 +301,13 @@ impl Scope {
         })
     }
 
-    /// Queue every change at or below `path` for the returned inbox.
     pub(crate) fn watch(&self, path: &VPath) -> Arc<crate::watch::Inbox> {
         self.tree
             .watchers
             .register(&self.prefix.join(path), &self.prefix)
     }
 
-    /// Put a file loaded from elsewhere into the tree, with its own
-    /// modification time, telling no watcher.
+    /// With its own modification time, telling no watcher.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) fn load_file(&self, path: &VPath, bytes: Vec<u8>, modified: SystemTime) {
         let key = self.key(path);
@@ -362,8 +357,7 @@ impl Scope {
     }
 }
 
-/// Creates the lock file like the native backend, then admits `mode` on
-/// the path if no conflicting holder has it.
+/// Creates the lock file like the native backend, then admits `mode` if no conflicting holder has it.
 fn admit(state: &mut State, key: &str, mode: LockMode) -> Result<bool, FsError> {
     ensure_parents(&mut state.nodes, key, tilo_clock::wall())?;
     match state.nodes.get(key) {
@@ -382,8 +376,7 @@ fn admit(state: &mut State, key: &str, mode: LockMode) -> Result<bool, FsError> 
     Ok(state.locks.entry(key.to_owned()).or_default().admit(mode))
 }
 
-/// Resolves once [`Scope::lock`]'s path admits the mode, waking when any lock
-/// of the tree is released.
+/// Resolves once [`Scope::lock`]'s path admits the mode, waking when any lock of the tree is released.
 pub(crate) struct LockFuture {
     scope: Scope,
     key: String,
@@ -410,7 +403,6 @@ impl Future for LockFuture {
     }
 }
 
-/// A lock admitted in a tree, released on drop.
 pub(crate) struct Held {
     tree: Arc<Tree>,
     key: String,
@@ -452,8 +444,7 @@ fn ancestors(key: &str) -> impl Iterator<Item = &str> {
     )
 }
 
-/// Makes every ancestor of `key` a directory, failing where a file is in the
-/// way.
+/// Makes every ancestor of `key` a directory, failing where a file is in the way.
 fn ensure_parents(
     nodes: &mut BTreeMap<String, Node>,
     key: &str,
@@ -474,7 +465,6 @@ fn ensure_parents(
     Ok(())
 }
 
-/// Why `key` is absent: a file where a directory should be, or nothing.
 fn missing(nodes: &BTreeMap<String, Node>, key: &str) -> FsError {
     if ancestors(key).any(|ancestor| matches!(nodes.get(ancestor), Some(Node::File { .. }))) {
         FsError::NotADirectory
@@ -483,8 +473,7 @@ fn missing(nodes: &BTreeMap<String, Node>, key: &str) -> FsError {
     }
 }
 
-/// Every entry below `key`, in key order. Keys below `a` sort between
-/// `a/` and `a0`, because `0` follows `/`.
+/// Keys below `a` sort between `a/` and `a0`, because `0` follows `/`.
 fn descendant_range<'a>(
     nodes: &'a BTreeMap<String, Node>,
     key: &str,
@@ -507,10 +496,9 @@ mod tests {
     use super::*;
     use crate::watch::{Change, Watch};
 
-    /// Two threads writing and removing one file: whichever change happened
-    /// last, the watch's last change for the file says what the tree holds.
-    /// Checked after each of many short races, since a reordering shows
-    /// only when it falls at the end of one.
+    /// Two threads writing and removing one file: whichever change happened last, the watch's last
+    /// change for the file says what the tree holds. Checked after each of many short races, since a
+    /// reordering shows only when it falls at the end of one.
     #[test]
     fn racing_writes_and_removals_are_reported_in_the_order_they_happened() {
         let scope = Scope::fresh();

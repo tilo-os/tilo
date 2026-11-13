@@ -228,7 +228,7 @@ pub fn receipt_from_record(
     let status = store
         .save_status(record)
         .map_err(|error| refused(error.to_string()))?;
-    let (package, workspace) = store.package_and_home();
+    let (package, workspace) = store.app_and_home();
     if package != <crate::resource::ChatShell as ui::framework::ResourceApp>::ID
         || workspace != actual_destination.room
     {

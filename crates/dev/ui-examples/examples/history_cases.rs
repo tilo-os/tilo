@@ -4,27 +4,6 @@
 )]
 
 //! Renders the history surfaces over real documents, one PNG per case.
-//!
-//! ```bash
-//! cargo run -p ui-examples --example ui-shots -- history_cases target/shots-history
-//! TILO_SHOTS_THEME=light cargo run -p ui-examples --example ui-shots -- history_cases target/shots-history
-//! ```
-//!
-//! `TILO_SHOTS_THEME` picks the palette (`dark` by default, `light`, or any
-//! other [`Theme::named`] preset); the PNGs land in `<dir>/<theme>/`.
-//!
-//! Every case here builds an **automerge document**, edits it through `tilo-doc` (or
-//! through plain automerge, for the room-shaped documents that carry no editor
-//! schema), names runs of it through the real
-//! [`tilo_ui::history_groups`] API, and then derives the rows and bands with
-//! [`tilo_ui::HistorySource`] + [`tilo_ui::group_entries`] exactly as the word processor
-//! and the compositor do. Nothing is a hand-written `HistoryEntry` — except the
-//! one case that says so in its own name, where the point is layout under a
-//! thousand bands rather than where the bands came from.
-//!
-//! The cases are the ones a history pane has to survive: a long name, a band of
-//! one change, a thousand bands, no history at all, a name somebody else wrote, a
-//! narrow viewport, and a band still being appended to while you look at it.
 
 use std::path::{Path, PathBuf};
 use tilo_automerge::ApplyIncoming;
@@ -54,9 +33,7 @@ fn now_i64() -> i64 {
     i64::try_from(NOW_SECS).unwrap_or(i64::MAX)
 }
 
-// =====================================================================
 // Documents
-// =====================================================================
 
 /// A `tilo-doc` document with three working sessions: two by the local author either
 /// side of a long break, one by a peer in between. Returns the document and the
@@ -236,9 +213,7 @@ fn short(hex: &str) -> String {
     hex.chars().take(8).collect()
 }
 
-// =====================================================================
 // Rendering
-// =====================================================================
 
 struct Shot {
     dir: PathBuf,
@@ -309,9 +284,7 @@ pub fn run(args: &[String]) {
     };
     println!("history cases ({theme_name}) -> {}", dir.display());
 
-    // ---------------------------------------------------------------
     // The main surface, over a real three-session document.
-    // ---------------------------------------------------------------
     let mut doc = three_session_doc();
     let (entries, named) = shoot_main_bands(&mut shot, &mut doc);
     shoot_long_and_nested(&mut shot, &doc, &entries);
@@ -324,10 +297,6 @@ pub fn run(args: &[String]) {
     let _: &Path = shot.dir.as_path();
 }
 
-/// A peer names its own session, the local author names their own afternoon,
-/// then the default/collapsed/expanded/naming/selection shots. Split out of
-/// `run` to keep that under the line cap. Returns the entries and named
-/// ranges later sections reuse.
 fn shoot_main_bands(
     shot: &mut Shot,
     doc: &mut AutoCommit,
@@ -397,9 +366,6 @@ fn shoot_main_bands(
     (entries, named)
 }
 
-/// A band still open: named with no end anchor. Split out of `run` to keep
-/// that under the line cap. Returns the entries and named ranges the
-/// version-strip section reuses for its own "still open" case.
 fn shoot_open_band(
     shot: &mut Shot,
     doc: &AutoCommit,
@@ -419,7 +385,6 @@ fn shoot_open_band(
 }
 
 /// A very long name, on a wide and then a narrow pane, and a name nested
-/// inside a name. Split out of `run` to keep that under the line cap.
 fn shoot_long_and_nested(shot: &mut Shot, doc: &AutoCommit, entries: &[HistoryEntry]) {
     // A very long name, in the document.
     let long = "Rewrote the introduction, then the second section, then reconsidered \
@@ -462,9 +427,6 @@ fn shoot_long_and_nested(shot: &mut Shot, doc: &AutoCommit, entries: &[HistoryEn
     shot.paint("nested", 520, 700, &mut t);
 }
 
-/// Bands of one, exactly one change, and no history at all. Split out of
-/// `run` to keep that under the line cap. Returns the bands-of-one entries,
-/// which the version-strip section reuses for its own "one band" case.
 fn shoot_singleton_and_empty(shot: &mut Shot) -> Vec<HistoryEntry> {
     // Bands of one: rendered as plain rows, so a history with no structure reads
     // exactly as a flat list.
@@ -535,7 +497,6 @@ fn synthetic_entry(i: i32) -> HistoryEntry {
 }
 
 /// Narrow panes over real bands, and a thousand synthesised bands. Split out
-/// of `run` to keep that under the line cap.
 fn shoot_narrow_and_thousand(
     shot: &mut Shot,
     entries: &[HistoryEntry],

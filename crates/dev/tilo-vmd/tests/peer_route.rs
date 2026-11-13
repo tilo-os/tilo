@@ -101,7 +101,6 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
         app.run(cli.command)
     };
 
-    // Phase: status names the route, and slots work through it.
     let status = run(&["vm", "status", "board"])
         .map_err(|e| e.render())
         .unwrap();
@@ -124,7 +123,6 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
         "{dials}"
     );
 
-    // Phase: a refusal is the device's reason, with the way to fix it.
     std::fs::write(&deny, "").unwrap();
     let refused = run(&["vm", "status", "board"]).unwrap();
     assert!(

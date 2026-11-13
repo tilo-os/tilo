@@ -1,5 +1,3 @@
-//! Real H.264/AAC playback through the app's semantic controls and media engine.
-
 #![cfg(feature = "decode")]
 #![allow(
     clippy::unwrap_used,
@@ -28,13 +26,11 @@ fn frame_pts(app: &PlayerApp) -> Option<u64> {
         .map(|frame| frame.pts_ms)
 }
 
-/// Read the player the app's window shows.
 fn player<T>(app: &mut TestApp<VideoPlayerShell>, read: impl FnOnce(&mut PlayerApp) -> T) -> T {
     app.with_surface::<PlayerApp, T>(read)
         .expect("the window shows the player")
 }
 
-/// Invoke `effect` through the app's door, as its controls and agents do.
 fn invoke(app: &mut TestApp<VideoPlayerShell>, effect: &VideoEffect) {
     app.effect(effect).expect("production playback effect");
 }
@@ -52,8 +48,8 @@ fn wait_for(
 
 #[test]
 fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
-    // Settings/recent-history writes and environment overrides belong only to
-    // the child. Parallel tests and the user's saved player state stay isolated.
+    // Settings writes and environment overrides belong only to the child, so parallel
+    // tests and the person's saved player state stay isolated.
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
         exercise_app(Path::new(&root));
         return;
@@ -110,9 +106,8 @@ fn exercise_app(root: &Path) {
         engine.audio_sink().expect("production audio output")
     });
 
-    // Observe actual decoded PCM entering the production audio sink. Track
-    // metadata alone would still pass if AAC were unsupported and dropped.
-    // The fixture encodes silence, so this never plays an audible test tone.
+    // Observe decoded PCM entering the production audio sink: track metadata alone would
+    // pass if AAC were unsupported and dropped. The fixture is silence.
     let pad = sink.static_pad("sink").expect("audio sink input");
     let audio_buffers = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&audio_buffers);

@@ -39,6 +39,9 @@ pub struct AppLists {
     /// What each installed app declared it may do on the action door under its own identity, by
     /// package id: the ceiling the broker admits an app's query and invoke against, never a grant.
     pub declared: BTreeMap<String, tilo_broker_core::access::AppActionAccess>,
+    /// The resource kinds each installed app declares its records hold, by package id: what it
+    /// may reach in its own node.
+    pub resource_kinds: BTreeMap<String, Vec<String>>,
     /// The apps a service can ask this session to open, as the action door lists them: each app's
     /// name, the actions its signed manifest offers while it is not running, and the capabilities a
     /// grant is decided on. What decides the reach the device's settings app has of the settings
@@ -54,6 +57,10 @@ impl AppLists {
     /// Read this device's lists: the installed Tilo apps, the machine's desktop entries, and the
     /// catalogue (the registries' listing as last accepted and Flathub's cached metadata) less what
     /// is here or blocked. Reads the disk only, never the network.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one read of every list the search and the action door share"
+    )]
     #[must_use]
     pub fn read() -> Self {
         let installed = app_catalogue::apps::read_from_env().unwrap_or_else(|error| {
@@ -82,6 +89,7 @@ impl AppLists {
             .collect();
         let named = named(&installed);
         let declared = declared(&installed);
+        let resource_kinds = resource_kinds(&installed);
         // The machine's entries through the memoised scan, which this read starts on the lists'
         // worker: a later ask for an entry's icon or name (`crate::app_icons::entry_icon`) finds it
         // read, or meets the read already under way rather than starting one.
@@ -166,9 +174,17 @@ impl AppLists {
             icons,
             candidates,
             declared,
+            resource_kinds,
             launchable,
             tools,
         }
+    }
+
+    /// Whether the Tilo app `app` is installed here: what the desk offers a card for, and what
+    /// search lists under the app's own name.
+    #[must_use]
+    pub fn has_app(&self, app: &str) -> bool {
+        self.applications.iter().any(|listed| listed.id == app)
     }
 
     /// The directories [`Self::read`] reads, whose entries change with what it would find.
@@ -396,6 +412,16 @@ fn named(installed: &[app_catalogue::apps::InstalledApp]) -> Vec<collab_types::h
 
 /// Each app's declared reach of the action door, from its signed manifest: the ceiling the broker
 /// admits its calls against.
+/// The resource kinds each installed app declares, by package id.
+fn resource_kinds(
+    installed: &[app_catalogue::apps::InstalledApp],
+) -> BTreeMap<String, Vec<String>> {
+    installed
+        .iter()
+        .map(|app| (app.package_id.clone(), app.declared_resource_kinds()))
+        .collect()
+}
+
 fn declared(
     installed: &[app_catalogue::apps::InstalledApp],
 ) -> BTreeMap<String, tilo_broker_core::access::AppActionAccess> {

@@ -7,6 +7,7 @@ use ui::window_toolbar::SearchOpening;
 
 use super::CodeApp;
 use crate::find::{byte_ranges, matches_in};
+use crate::resource::CATALOG;
 use crate::search::Query;
 
 impl Findable for CodeApp {
@@ -65,8 +66,11 @@ impl Findable for CodeApp {
         }
         Self::note(
             match count {
-                1 => "Replaced 1 match".to_string(),
-                n => format!("Replaced {n} matches"),
+                1 => CATALOG.t("code-editor-replaced-one"),
+                n => CATALOG.t_args(
+                    "code-editor-replaced",
+                    &[("count", ui::i18n::ArgValue::Text(n.to_string()))],
+                ),
             },
             ToastKind::Success,
         );

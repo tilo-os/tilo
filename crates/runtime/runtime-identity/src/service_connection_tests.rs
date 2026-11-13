@@ -5,7 +5,6 @@ use std::os::fd::IntoRawFd;
 fn metadata_lookup_does_not_consume_inherited_service() {
     let (client, mut server) = UnixStream::pair().unwrap();
     let fd = client.into_raw_fd();
-    // Match the launcher: this descriptor was deliberately inherited at exec.
     assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
     let worker = std::thread::spawn(move || {
         for _ in 0..2 {

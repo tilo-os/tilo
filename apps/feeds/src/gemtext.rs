@@ -10,7 +10,6 @@
 
 use crate::model::{BlockKind, ContentBlock};
 
-/// Parse a gemtext document into renderable blocks.
 pub fn to_blocks(text: &str) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     let mut in_pre = false;
@@ -59,7 +58,7 @@ pub fn to_blocks(text: &str) -> Vec<ContentBlock> {
             blocks.push(ContentBlock::new(BlockKind::Paragraph, line.trim()));
         }
     }
-    // Unterminated preformat block — emit what we have.
+    // Unterminated preformat block: emit what is left.
     if in_pre && !pre_buf.is_empty() {
         blocks.push(ContentBlock::new(BlockKind::Code, pre_buf.join("\n")));
     }
@@ -72,7 +71,6 @@ mod tests {
 
     #[test]
     fn gemtext_renders_headings_links_lists_and_preformatted() {
-        // --- phase: headings_links_and_lists ---
         {
             let doc = "# Title\n## Sub\nA paragraph.\n* item one\n* item two\n=> gemini://example.org Capsule\n=> gemini://bare.org";
             let blocks = to_blocks(doc);
@@ -87,7 +85,6 @@ mod tests {
             assert_eq!(bare.text, "gemini://bare.org");
         }
 
-        // --- phase: preformatted_blocks ---
         {
             let doc = "```rust\nfn main() {}\nlet x = 1;\n```\nafter";
             let blocks = to_blocks(doc);

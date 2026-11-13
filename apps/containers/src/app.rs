@@ -1,18 +1,7 @@
-//! The container manager's window.
-//!
-//! [`ContainersState`] holds the engine snapshot (containers, images,
-//! volumes and distroboxes mirrored from rootless podman), where the window
-//! is and what its dialogs ask; the view shares it with its effect handler.
-//! [`ContainersApp`] presents it in a [`NavShell`](ui::widget::NavShell):
-//! the sections are the sidebar, the container list is the overview and the
-//! chosen container is the content (see `crate::view`). Dialogs (confirming
-//! a removal, asking for a name, the new-container form, pull progress) are
-//! [`ModalDialog`]s mounted beside the shell.
-//!
-//! The new-container draft is the resource's record (see [`crate::draft`]),
-//! edited a splice at a time through the framework's dispatcher; where the
-//! user is (section, selection, detail tab) is this window's own, and the
-//! engine projection is host data that stays in memory.
+//! The container manager's window: [`ContainersState`] holds the engine snapshot, where
+//! the window is and what its dialogs ask, and [`ContainersApp`] presents it in a
+//! [`NavShell`](ui::widget::NavShell) with the dialogs mounted beside it. The draft is
+//! the record; the engine stays in memory.
 
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
@@ -50,7 +39,6 @@ use crate::podman::{self, Action, StreamMsg};
 use crate::resource::Containers;
 use crate::view::{self, Intent, Intents};
 
-/// What a destructive confirm targets — a container, an image, or a volume.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ConfirmTarget {
     Container { id: String, action: Action },
@@ -58,10 +46,8 @@ pub(crate) enum ConfirmTarget {
     Volume { name: String },
 }
 
-/// A pending destructive step, asked about before it runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Confirm {
-    /// What is removed, as the person knows it.
     pub(crate) name: String,
     pub(crate) target: ConfirmTarget,
 }
@@ -89,16 +75,13 @@ impl Confirm {
     }
 }
 
-/// Kind of text the prompt dialog collects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PromptKind {
     NewVolume,
-    /// Tag an existing image (the source is in `Prompt::context`).
     TagImage,
     PullImage,
 }
 
-/// A single-line text prompt (new volume name, image tag, image to pull).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Prompt {
     pub(crate) kind: PromptKind,
@@ -141,28 +124,25 @@ impl Prompt {
     }
 }
 
-/// Live progress of a streaming `podman pull`.
 pub(crate) struct PullProgress {
     pub(crate) reference: String,
-    /// The engine's output so far, oldest first, as the sheet scrolls it.
     pub(crate) lines: Vec<String>,
     pub(crate) done: bool,
     pub(crate) failed: Option<String>,
     /// The person stopped it and the engine was told to end it.
     pub(crate) stopped: bool,
-    /// Bytes the engine has fetched, when its output says: "412 MB of 1.2 GB".
     pub(crate) fetched: Option<(u64, Option<u64>)>,
-    /// What ends the download: pressing Stop sets it, and the worker kills
-    /// the engine's process rather than only hiding the sheet.
+    /// Pressing Stop sets it, and the worker kills the engine's process rather than
+    /// only hiding the sheet.
     pub(crate) stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// How long a lifecycle verb may take to show in the engine before the app
-/// stops claiming it is in flight.
+/// How long a verb may take to show in the engine before the app stops claiming it is
+/// in flight.
 const VERB_IN_FLIGHT_FOR: Duration = Duration::from_secs(30);
 
-/// A verb asked of the engine on a container, and the state it was in when
-/// asked: the verb has landed once the engine reports another state.
+/// A verb asked on a container, and the state it was in when asked: it has landed once
+/// the engine reports another state.
 #[derive(Clone, Debug)]
 struct InFlight {
     id: String,
@@ -170,14 +150,13 @@ struct InFlight {
     asked: Instant,
 }
 
-/// How many output lines a pull keeps: enough to read why it stalled (an auth
-/// prompt, a retrying layer) without holding a whole pull log in memory.
+/// How many output lines a pull keeps: enough to read why it stalled without holding a
+/// whole pull log.
 const PULL_LINES_KEPT: usize = 500;
 
-/// What an engine output line says about bytes fetched: `Copying blob … 2.1 MiB
-/// / 3.4 MiB`, or the fetched size alone where the engine names no total.
+/// What an engine output line says about bytes fetched: `Copying blob … 2.1 MiB / 3.4
+/// MiB`, or the size alone where the engine names no total.
 fn pulled_bytes(line: &str) -> Option<(u64, Option<u64>)> {
-    /// The scale of a byte unit, as Podman writes it.
     fn scale(unit: &str) -> Option<f64> {
         Some(match unit.to_ascii_lowercase().as_str() {
             "b" => 1.0,
@@ -187,14 +166,12 @@ fn pulled_bytes(line: &str) -> Option<(u64, Option<u64>)> {
             _ => return None,
         })
     }
-    /// The last size in `segment`, written `2.1 MiB` or as one token `2.1MiB`.
     fn size(segment: &str) -> Option<u64> {
         let tokens: Vec<&str> = segment.split_whitespace().collect();
         tokens.iter().enumerate().rev().find_map(|(index, token)| {
             let (number, unit) = match token.find(|c: char| c.is_ascii_alphabetic()) {
                 Some(at) => token.split_at(at),
-                // A bare number is a size only when the word after it is
-                // the unit: `… 9fa9226be034 2.1 MiB`.
+                // A bare number is a size only when the word after it is the unit.
                 None => (*token, *tokens.get(index + 1)?),
             };
             let value: f64 = number.parse().ok()?;
@@ -211,14 +188,13 @@ fn pulled_bytes(line: &str) -> Option<(u64, Option<u64>)> {
     Some((size(done)?, size(total)))
 }
 
-/// Background-thread message: a fresh engine probe arrived, a streaming op
-/// (pull) emitted a line or finished, or the chosen container's detail was
-/// read.
+/// A background message: a fresh probe, a pull line or its end, or the chosen
+/// container's detail.
 pub(crate) enum Bg {
     Snapshot(Engine),
     Pull(StreamMsg),
-    /// The chosen container with its logs and inspect data, read beside the
-    /// probe so the Logs tab follows a container that keeps logging.
+    /// The chosen container with its logs and inspect data, read beside the probe so the
+    /// Logs tab follows a container that keeps logging.
     Detail(Box<Container>),
 }
 
@@ -287,8 +263,6 @@ pub struct ControlledCreateRequest {
 
 #[cfg(test)]
 impl ControlledCreateRequest {
-    /// Deliver the existing post-run refresh event. The current create worker
-    /// exposes no classified create success/failure result.
     pub fn post_run_snapshot(&self, engine: Engine) -> Result<(), String> {
         self.events
             .send(Bg::Snapshot(engine))
@@ -296,8 +270,8 @@ impl ControlledCreateRequest {
     }
 }
 
-/// Where the user is: the section, the selected container and its detail
-/// tab. This window's own: never in the document, never shared, never undone.
+/// Where the person is: the section, the selected container and its tab. This window's
+/// own, never shared and never undone.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ViewState {
     pub section: Section,
@@ -315,47 +289,35 @@ impl Default for ViewState {
     }
 }
 
-/// What the window shows and the view's effect handler answers with: the
-/// engine, where the user is, what the dialogs ask and the background work.
+/// What the window shows and the view's effect handler answers with.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent flags: live engine vs. sample data, a past version, \
               an open form and what the window has yet to follow"
 )]
 pub(crate) struct ContainersState {
-    /// The live (or sample) engine projection.
     pub(crate) engine: Engine,
     /// Bumped whenever `engine` changes.
     engine_rev: u64,
-    /// What the window's parts are built from: the model, the narrow
-    /// window's front screen, the intent queue and the scroll positions.
     parts: view::Parts,
     /// The engine revision and view last published to the model.
     published: Option<(u64, ViewState)>,
     intents: Intents,
-    /// What the form's image field suggests: the engine's images.
     installed_images: crate::create_form::InstalledImages,
     pub(crate) create_open: bool,
-    /// The form opened or closed since the window last looked.
     create_toggled: bool,
     pub(crate) confirm: Option<Confirm>,
-    /// The confirmation changed since the window last looked.
     confirm_changed: bool,
     pub(crate) prompt: Option<Prompt>,
-    /// The prompt changed since the window last looked.
     prompt_changed: bool,
-    /// Live pull progress, if a pull is running or just finished.
     pub(crate) pull: Option<PullProgress>,
     pull_dirty: bool,
-    /// The engine effects the window's controls asked the host for, for
-    /// tests of a bare widget.
+    /// The engine effects the window's controls asked for, for tests of a bare widget.
     #[cfg(test)]
     pub(crate) requested: Vec<(String, ContainersEffect)>,
-    /// What a search hit or an agent's `open` named, shown with the next
-    /// frame.
+    /// What a search hit or an agent's `open` named, shown with the next frame.
     opened: Rc<RefCell<Vec<String>>>,
     pub(crate) toast: Notice,
-    /// Background refresh plumbing. `None` in headless/shots mode.
     bg_rx: Option<Receiver<Bg>>,
     bg_tx: Option<Sender<Bg>>,
     #[cfg(test)]
@@ -363,44 +325,37 @@ pub(crate) struct ContainersState {
     #[cfg(test)]
     controlled_immediate_results: Option<Receiver<Result<(), String>>>,
     pub(crate) last_refresh: Instant,
-    /// A lifecycle verb asked of the engine and not yet visible in it: the
-    /// container, the state it was in, and when it was asked. Until the
-    /// engine answers, that container's controls wait — after clicking Stop on
-    /// a slow container nothing changed for seconds, so people clicked again.
+    /// A verb asked of the engine and not yet visible in it: until the engine answers,
+    /// that container's controls wait, as clicking again after nothing changed was
+    /// what people did.
     in_flight: Option<InFlight>,
     pub(crate) live: bool,
-    /// Showing a past version in History: nothing here is live.
     past: bool,
-    /// Where the user is: the section, the selected container, its tab.
     pub(crate) view: ViewState,
-    /// Where edits of the draft go, once the view attached the window.
     dispatcher: Option<Dispatcher<Containers>>,
 }
 
-/// The window: the shared [`ContainersState`] in the shell its parts are
-/// built into, with the dialogs it asks for mounted beside it.
+/// The window: the shared [`ContainersState`] in its shell, with the dialogs mounted
+/// beside it.
 pub struct ContainersApp {
     state: Rc<RefCell<ContainersState>>,
-    /// The draft as the document holds it, shown as it changes; `None` for
-    /// a window outside the framework.
+    /// The draft as the record holds it, shown as it changes; `None` outside the
+    /// framework.
     document: Option<Live<Containers>>,
     presented: Option<(u64, u64)>,
     rect: Rect,
     /// The window, rebuilt part by part from the published model.
     window: ModelView<(Section, bool, bool)>,
     intents: Intents,
-    /// The new-container form. It is retained while closed so its fields
-    /// keep their caret and binding.
+    /// The new-container form, retained while closed so its fields keep their caret and
+    /// binding.
     create: ModalDialog<Column>,
     confirm_dialog: Option<ModalDialog<Text>>,
     prompt_dialog: Option<ModalDialog<PromptBody>>,
     pull_dialog: Option<ModalDialog<Column>>,
-    /// The structure changed (a dialog opened or closed, the shell was
-    /// rebuilt): the host lays the tree out again.
+    /// The structure changed (a dialog opened or closed, the shell was rebuilt).
     structure_dirty: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -410,7 +365,6 @@ impl Default for ContainersApp {
     }
 }
 
-/// A press of Escape, whatever modifiers are held.
 fn is_escape(event: &WindowEvent) -> bool {
     matches!(
         event,
@@ -428,15 +382,12 @@ fn controlled_input() -> TextInput {
 }
 
 impl ContainersApp {
-    /// The manager with no engine yet: the view connects it to podman in a
-    /// live window, shows a capture's engine, or leaves it empty for a past
-    /// version.
     pub fn new() -> Self {
         Self::with_engine(Engine::default(), TextInput::local)
     }
 
-    /// The manager over the bundled sample engine, offline: lifecycle
-    /// controls change the sample instead of reaching podman.
+    /// The manager over the sample engine, offline: lifecycle controls change the sample
+    /// instead of reaching podman.
     pub fn sample() -> Self {
         Self::with_engine(crate::model::sample_engine(), TextInput::local)
     }
@@ -505,7 +456,6 @@ impl ContainersApp {
         }
     }
 
-    /// What the window shows, shared with the view's effect handler.
     pub(crate) fn state(&self) -> RefMut<'_, ContainersState> {
         self.state.borrow_mut()
     }
@@ -529,7 +479,6 @@ impl ContainersApp {
         .on_dismiss(move || dismiss.push(Intent::CloseCreate))
     }
 
-    /// Show the draft the document holds now, when it changed since.
     fn follow_document(&mut self) {
         let Some(document) = &self.document else {
             return;
@@ -597,8 +546,7 @@ impl ContainersApp {
                 } else {
                     format!("Pulling {}", pull.reference)
                 };
-                // Closing while the pull runs stops it: hiding a download that
-                // keeps consuming bandwidth and disk was the whole problem.
+                // Closing while the pull runs stops it.
                 ModalDialog::new(title, view::pull_body(pull, &intents))
                     .with_test_id("containers-pull-dialog")
                     .on_dismiss(move || dismiss.push(Intent::ClosePull))
@@ -707,19 +655,14 @@ impl ContainersApp {
         out
     }
 
-    /// Stage a screenshot scenario (`None` for a plain `--shots`); see
-    /// [`ContainersState::stage_scene`].
     pub fn stage_scene(&mut self, scenario: Option<&str>) {
         self.state().stage_scene(scenario);
     }
 
-    /// Show the authored screenshot engine; see
-    /// [`ContainersState::stage_sample_engine`].
     pub fn stage_sample_engine(&mut self) {
         self.state().stage_sample_engine();
     }
 
-    /// Do what `effect` asks, as the view's effect handler does.
     pub fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
         self.state().perform_effect(effect)
     }
@@ -728,12 +671,10 @@ impl ContainersApp {
         self.create_open()
     }
 
-    /// The section shown.
     pub fn section(&self) -> Section {
         self.state.borrow().view.section
     }
 
-    /// The selected container's id.
     pub fn selected(&self) -> Option<String> {
         self.state.borrow().view.selected.clone()
     }
@@ -743,7 +684,6 @@ impl ContainersApp {
     }
 }
 
-/// Give keyboard focus to one field of the new-container form (or none).
 fn focus_draft(create: &mut ModalDialog<Column>, field: Option<CreateField>) {
     crate::create_form::for_each_input(create.content_mut(), &mut |input| {
         let on = field == Some(input.field());
@@ -751,14 +691,12 @@ fn focus_draft(create: &mut ModalDialog<Column>, field: Option<CreateField>) {
     });
 }
 
-/// The view over `window`: it shares the window's state with the effect
-/// handler, attaches it to the engine this run shows and publishes the
-/// engine's rows and search entries.
+/// The view over `window`: it shares the window's state with the effect handler, attaches
+/// it to the engine this run shows and publishes the engine's rows and search entries.
 pub(crate) fn window(cx: &ViewCx<Containers>, mut window: ContainersApp) -> Element {
     window.document = Some(cx.live().clone());
-    // The pages' rows run the app's published actions; the window is built
-    // before it joins the view, so give it its actions now and lay it out
-    // again.
+    // The pages' rows run the app's published actions, and the window is built before it
+    // joins the view: give it its actions now and lay it out again.
     {
         let mut state = window.state.borrow_mut();
         state.parts.actions = Some(cx.actions());
@@ -807,16 +745,14 @@ pub(crate) fn window(cx: &ViewCx<Containers>, mut window: ContainersApp) -> Elem
         Publishes::new()
             .live_rows(move || rows.borrow().engine_rows())
             .live_row(move |id| row.borrow().engine_row(id))
-            // Containers with their recent logs, images, volumes and
-            // distroboxes: what the engine holds, not the document.
+            // Containers with their recent logs, images, volumes and distroboxes: what the
+            // engine holds, not the document.
             .search_entries(move || crate::search::engine_entries(&entries.borrow().engine)),
         Box::new(window),
     )
 }
 
 impl ContainersState {
-    /// Talk to rootless podman: probe it now, then keep the snapshot fresh
-    /// in the background and run lifecycle actions against it.
     pub(crate) fn connect(&mut self) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.bg_tx = Some(tx);
@@ -825,14 +761,13 @@ impl ContainersState {
         self.show_engine(podman::probe().engine);
     }
 
-    /// Show `engine` in place of the current snapshot.
     pub(crate) fn show_engine(&mut self, engine: Engine) {
         self.engine = engine;
         self.engine_changed();
     }
 
-    /// Show a past version: its draft, and no engine, which is this device's
-    /// live state and has no history.
+    /// Show a past version: its draft, and no engine, which this device's live state has
+    /// no history for.
     pub(crate) fn show_past(&mut self) {
         self.past = true;
         self.show_engine(Engine {
@@ -844,15 +779,13 @@ impl ContainersState {
         });
     }
 
-    /// The draft as the document holds it now. A past version with a draft
-    /// shows the form, which is all it holds.
+    /// The draft as the record holds it now; a past version with a draft shows the form.
     pub(crate) fn present_draft(&mut self, draft: &crate::draft::CreateDraft) {
         if self.past {
             self.set_create_open(!draft.is_empty());
         }
     }
 
-    /// Show `section`, with nothing selected in it.
     pub(crate) fn show_section(&mut self, section: Section) {
         self.view.section = section;
         self.view.selected = None;
@@ -861,8 +794,8 @@ impl ContainersState {
         self.publish_model();
     }
 
-    /// Select the container `id` (`None` clears the selection), bringing
-    /// its detail to the front of a narrow window.
+    /// Select `id` (`None` clears it), bringing its detail to the front of a narrow
+    /// window.
     pub(crate) fn select_container(&mut self, id: Option<String>) {
         if id.is_some() {
             self.view.section = Section::Containers;
@@ -885,7 +818,6 @@ impl ContainersState {
         self.publish_model();
     }
 
-    /// Open the new-container form on its image field.
     pub(crate) fn open_create(&mut self) {
         self.set_create_open(true);
     }
@@ -900,9 +832,9 @@ impl ContainersState {
         }
     }
 
-    /// Ask the host for `effect` as the live row `row` offers it: it
-    /// checks permission, availability and confirmation, records the effect
-    /// in activity history, and only then does the view run it.
+    /// Ask the host for `effect` as the live row `row` offers it: it checks permission,
+    /// availability and confirmation, records the effect in history, then the view runs
+    /// it.
     #[cfg_attr(
         not(test),
         allow(
@@ -919,8 +851,7 @@ impl ContainersState {
         self.requested.push((row, effect));
     }
 
-    /// What a search hit or an agent's `open` runs: show the row its
-    /// anchor names, as choosing it does.
+    /// What a search hit or an agent's `open` runs: show the row its anchor names.
     pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
         let opened = Rc::clone(&self.opened);
         move |anchor| {
@@ -935,7 +866,6 @@ impl ContainersState {
         }
     }
 
-    /// Show what the openers named since the last frame.
     fn show_opened(&mut self) {
         let opened = std::mem::take(&mut *self.opened.borrow_mut());
         for anchor in opened {
@@ -1050,21 +980,19 @@ impl ContainersState {
         self.toast.show(message, kind);
     }
 
-    /// Whether lifecycle affordances are live. The deterministic sample
-    /// stays interactive for demos and tests; a disconnected engine does not
-    /// advertise controls that can only fail.
+    /// Whether lifecycle controls are live: the sample stays interactive, and a
+    /// disconnected engine does not advertise controls that can only fail.
     pub(crate) fn engine_controls_available(&self) -> bool {
         !self.past && (self.engine.live || !self.live)
     }
 
-    /// Whether the sidebar reports the engine as reachable. The sample shown
-    /// by demos and screenshots stands in for a connected engine.
+    /// Whether the sidebar reports the engine as reachable; the sample stands in for a
+    /// connected engine.
     fn connected(&self) -> bool {
         !self.past && (self.engine.live || !self.live)
     }
 
-    /// Kick a background podman re-probe so stats stay fresh without blocking
-    /// the UI thread. No-op offline.
+    /// Kick a background re-probe so the stats stay fresh without blocking the UI.
     pub(crate) fn spawn_refresh(&mut self) {
         if !self.live {
             return;
@@ -1081,10 +1009,8 @@ impl ContainersState {
         let selected = self.view.selected.clone();
         std::thread::spawn(move || {
             let engine = podman::probe().engine;
-            // The chosen container's logs and inspect data are read beside the
-            // probe, on this thread: a container that logs an error after it
-            // was opened says so on the next pass, and the UI thread never
-            // waits on Podman for it.
+            // The chosen container's logs and inspect data are read beside the probe, so a
+            // container that logs an error after it was opened says so on the next pass.
             let detail = selected
                 .and_then(|id| {
                     let mut container = engine.containers.iter().find(|c| c.id == id)?.clone();
@@ -1135,8 +1061,8 @@ impl ContainersState {
         )
     }
 
-    /// Drain any background snapshot, preserving per-container detail
-    /// (logs/env/mounts) for the selected container that `ps` doesn't carry.
+    /// Drain any background snapshot, keeping the selected container's detail that `ps`
+    /// does not carry.
     pub(crate) fn drain_bg(&mut self) {
         let Some(rx) = &self.bg_rx else { return };
         let mut latest = None;
@@ -1153,16 +1079,14 @@ impl ContainersState {
             self.apply_pull_msg(msg);
         }
         if let Some(mut fresh) = latest {
-            // Carry over the selected container's hydrated detail so the
-            // detail tabs don't flicker empty between probes.
+            // Carry the selected container's detail over so the tabs do not flicker
+            // empty between probes.
             if let Some(sel) = self.view.selected.clone()
                 && let Some(old) = self.engine.find(&sel).cloned()
                 && let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel)
             {
-                // Logs are not carried over: the detail read beside this probe
-                // replaces them below, so the tab shows what the container has
-                // written now rather than what it had written when it was
-                // opened.
+                // Logs are not carried over: the detail read beside this probe replaces
+                // them with what the container has written now.
                 if newc.env.is_empty() {
                     newc.env = old.env;
                 }
@@ -1187,11 +1111,8 @@ impl ContainersState {
         }
     }
 
-    /// Read the chosen container's detail (logs + inspect). The read happens
-    /// on the background probe thread, never here: opening a container used to
-    /// wait on Podman in the frame, and its logs were read once and then
-    /// carried over unchanged, so the tab showed a container's first 200 lines
-    /// for as long as it stayed open.
+    /// Read the chosen container's detail (logs and inspect) on the probe thread, never
+    /// in the frame.
     pub(crate) fn hydrate_selection(&mut self) {
         let Some(sel) = self.view.selected.clone() else {
             return;
@@ -1221,8 +1142,8 @@ impl ContainersState {
             .map_or_else(|| id.to_string(), |c| c.name.clone())
     }
 
-    /// Apply a lifecycle action. Destructive ones come through the confirm
-    /// dialog, so this only runs once the person has agreed.
+    /// Apply a lifecycle action; a destructive one arrives only after the person
+    /// agreed.
     pub(crate) fn apply_action(&mut self, action: Action, id: &str) {
         if self.engine.live {
             let container = id.to_owned();
@@ -1245,8 +1166,8 @@ impl ContainersState {
         }
     }
 
-    /// Mirror a lifecycle verb in the in-memory snapshot when no engine is
-    /// present. Keeps the demo interactive.
+    /// Mirror a verb in the in-memory snapshot when no engine is present, so the demo
+    /// stays interactive.
     fn apply_action_offline(&mut self, action: Action, id: &str) {
         use crate::model::ContainerStatus as S;
         match action {
@@ -1274,9 +1195,8 @@ impl ContainersState {
         self.engine_changed();
     }
 
-    /// Start a streaming `podman pull` of `reference` on a worker thread and
-    /// show its progress. Offline it simulates a quick success so the demo
-    /// responds.
+    /// Start a streaming `podman pull` on a worker thread and show its progress; offline
+    /// it simulates a quick success.
     pub(crate) fn start_pull(&mut self, reference: &str) {
         let reference = reference.trim().to_string();
         if reference.is_empty() {
@@ -1332,8 +1252,7 @@ impl ContainersState {
         }
     }
 
-    /// Ask the engine to end the download. The worker kills the process, so
-    /// stopping means stopped rather than hidden.
+    /// Ask the engine to end the download; the worker kills the process.
     pub(crate) fn stop_pull(&mut self) {
         let Some(pull) = &mut self.pull else { return };
         if pull.done || pull.stopped {
@@ -1343,7 +1262,6 @@ impl ContainersState {
         self.pull_dirty = true;
     }
 
-    /// Fold one streamed pull message into the progress.
     fn apply_pull_msg(&mut self, msg: StreamMsg) {
         let Some(p) = &mut self.pull else { return };
         self.pull_dirty = true;
@@ -1376,8 +1294,8 @@ impl ContainersState {
         }
     }
 
-    /// Remove an image (post-confirmation). Force-removes so an unused tag
-    /// goes even if a stopped container references it.
+    /// Remove an image after confirmation, forcing it so an unused tag goes even when a
+    /// stopped container references it.
     pub(crate) fn remove_image(&mut self, reference: &str) {
         if self.engine.live {
             self.request(
@@ -1424,7 +1342,6 @@ impl ContainersState {
         }
     }
 
-    /// Create a named volume.
     pub(crate) fn create_volume(&mut self, name: &str) {
         let name = name.trim();
         if name.is_empty() {
@@ -1467,7 +1384,6 @@ impl ContainersState {
         }
     }
 
-    /// Remove a named volume (post-confirmation).
     pub(crate) fn remove_volume(&mut self, name: &str) {
         if self.engine.live {
             self.request(
@@ -1484,8 +1400,8 @@ impl ContainersState {
         }
     }
 
-    /// Open a real interactive shell in a running container: the Tilo
-    /// terminal running `podman exec -it <id> /bin/sh`.
+    /// Open a real shell in a running container: the Tilo terminal running `podman exec
+    /// -it <id> /bin/sh`.
     pub(crate) fn attach_shell(&mut self, id: &str) {
         if self.engine.live {
             self.request(
@@ -1555,7 +1471,6 @@ impl ContainersState {
         self.prompt_changed = true;
     }
 
-    /// Apply the pending destructive confirm.
     fn accept_confirm(&mut self) {
         if let Some(confirm) = self.confirm.take() {
             match confirm.target {
@@ -1574,7 +1489,6 @@ impl ContainersState {
         self.confirm_changed = true;
     }
 
-    /// Commit `value`, typed into the prompt.
     fn submit_prompt(&mut self, value: &str) {
         let Some(prompt) = self.prompt.take() else {
             return;
@@ -1587,9 +1501,9 @@ impl ContainersState {
         }
     }
 
-    /// Present the authored screenshot engine on an existing host, with no
-    /// device polling. The framework's live action executor stays installed;
-    /// the offline engine refuses actual Podman lifecycle effects.
+    /// Show the sample engine on an existing host, with no device polling. The live
+    /// action executor stays installed; the offline engine refuses real lifecycle
+    /// effects.
     pub(crate) fn stage_sample_engine(&mut self) {
         self.live = false;
         self.bg_rx = None;
@@ -1597,9 +1511,8 @@ impl ContainersState {
         self.show_engine(crate::model::sample_engine());
     }
 
-    /// Stage a screenshot scenario (`None` for a plain `--shots`): the
-    /// section, selection and tab it shows, and the dialog it has open. The
-    /// engine and the draft are the scenario's already.
+    /// Stage a capture's section, selection, tab and open dialog; the engine and the
+    /// draft are the scenario's already.
     pub(crate) fn stage_scene(&mut self, scenario: Option<&str>) {
         let scene = scenario.unwrap_or_default();
         match scene {
@@ -1665,8 +1578,7 @@ impl ContainersState {
         }
     }
 
-    /// Apply what the window's controls asked for; `typed` is what the
-    /// prompt holds.
+    /// Apply what the window's controls asked for; `typed` is what the prompt holds.
     fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>, typed: &str) {
         self.show_opened();
         let intents = self.intents.take();
@@ -1736,7 +1648,6 @@ impl ContainersState {
         }
     }
 
-    /// Hand the window what it shows, when that changed.
     fn publish_model(&mut self) {
         // A container that left the engine is no longer shown as chosen.
         let mut view = self.view.clone();
@@ -1770,8 +1681,7 @@ impl ContainersState {
         );
     }
 
-    /// What differs from the effects' declarations: creating needs a
-    /// connected engine.
+    /// What differs from the effects' declarations: creating needs a connected engine.
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         if self.engine.live {
             Vec::new()
@@ -1784,12 +1694,10 @@ impl ContainersState {
         }
     }
 
-    /// Take in what the background work brought, keep the snapshot fresh
-    /// and hand the window what it shows.
     fn tick(&mut self) {
         self.drain_bg();
-        // Periodically re-probe the engine. Controlled fixtures own that
-        // cadence through their request channel.
+        // Periodically re-probe the engine; a controlled fixture owns that cadence
+        // through its request channel.
         if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL && {
             #[cfg(test)]
             {
@@ -1804,13 +1712,12 @@ impl ContainersState {
         }
         self.hydrate_selection();
         self.toast.expire();
-        // The result says so in the window's bar while it lasts.
         self.toast.publish();
         self.publish_model();
     }
 
-    /// Whether the window keeps syncing while idle: a live engine, or a pull
-    /// still running.
+    /// Whether the window keeps syncing while idle: a live engine, or a pull still
+    /// running.
     fn needs_idle_sync(&self) -> bool {
         self.live
             || self
@@ -1820,7 +1727,7 @@ impl ContainersState {
     }
 }
 
-/// How a finished lifecycle verb reads in the window bar's notice.
+/// How a finished verb reads in the wall's notice.
 pub(crate) fn past_tense(action: Action) -> &'static str {
     match action {
         Action::Start => "Started",
@@ -1831,10 +1738,6 @@ pub(crate) fn past_tense(action: Action) -> &'static str {
         Action::Remove => "Removed",
     }
 }
-
-// =====================================================================
-// Widget impl
-// =====================================================================
 
 impl Widget for ContainersApp {
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
@@ -1979,9 +1882,9 @@ impl Widget for ContainersApp {
                 self.window
                     .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             }
-            // Escape closes the detail the same way at every width: in a
-            // narrow window the shell takes it as Back, and the selection
-            // goes with the screen it was shown on.
+            // Escape closes the detail the same way at every width: in a narrow window the
+            // shell takes it as Back, and the selection goes with the screen it was shown
+            // on.
             let went_back = before == NavPane::Content && pane.get() == NavPane::Overview;
             let selected = self.state.borrow().view.selected.is_some();
             if is_escape(event) && selected && (went_back || !*ctx.handled) {
@@ -2073,10 +1976,6 @@ impl Widget for ContainersApp {
     }
 }
 
-// =====================================================================
-// Test roots
-// =====================================================================
-
 impl ContainersApp {
     /// A manager whose podman calls are requests a test answers.
     #[cfg(test)]
@@ -2105,8 +2004,6 @@ impl ContainersApp {
         (app, requests_rx, results_tx)
     }
 
-    /// A live engine with one running container, its detail fetched when
-    /// `hydrated`.
     #[cfg(test)]
     pub(crate) fn controlled_engine(connection: &str, hydrated: bool) -> Engine {
         Engine {
@@ -2144,11 +2041,10 @@ impl ContainersApp {
 
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
-/// The catalogue message saying why a container's engine action cannot run.
 const ENGINE_OFFLINE: &str = "containers-engine-offline-message";
 
-/// `effect`, as a row offers it: an engine effect only while the engine
-/// answers; otherwise it says why it cannot run, in `message`'s words.
+/// `effect` as a row offers it: an engine effect only while the engine answers, and
+/// otherwise what it says instead.
 fn offered(effect: &ContainersEffect, engine_live: bool, message: &str) -> ActionSpec {
     let spec = effect.bound();
     if engine_live || effect.engine_operation().is_none() {
@@ -2258,8 +2154,7 @@ fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> Live
 }
 
 impl ContainersState {
-    /// Note that `verb` was asked on `target` and has not shown in the engine
-    /// yet, so the container's controls wait for it.
+    /// Note that `verb` was asked on `target` and has not shown in the engine yet.
     fn begin_in_flight(&mut self, kind: &str, target: &str) {
         if kind != "containers.container" {
             return;
@@ -2273,8 +2168,8 @@ impl ContainersState {
         self.engine_changed();
     }
 
-    /// The container a verb is in flight on, dropping a record the engine has
-    /// already answered or one that waited too long to keep claiming.
+    /// The container a verb is in flight on, dropping a record the engine answered or one
+    /// that waited too long.
     fn saw_in_flight(&mut self) -> Option<String> {
         let asked = self.in_flight.as_ref()?;
         let answered = self
@@ -2301,7 +2196,6 @@ impl ContainersState {
         }
     }
 
-    /// Ask the engine to `verb` the `kind` of thing named `target`.
     pub(crate) fn run_engine_operation(
         &mut self,
         kind: &str,

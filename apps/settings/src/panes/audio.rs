@@ -1,25 +1,9 @@
 //! Audio pane — output volume + mute, microphone input level, device
-//! capabilities, diagnostics, and per-application routing.
-//!
-//! Everything the pane shows and changes is the session's `sound` resource
-//! ([`tilo_audio_service::sound`]): its readings say which outputs and
-//! inputs are there, which one plays, how loud, the applications' streams
-//! and the sound cards' profiles, and every control takes one of its
-//! actions. The pane watches the resource while it is open, so a headset
-//! plugged in or an application that starts playing appears in a reading,
-//! and it holds no reading of the audio graph of its own.
-//!
-//! Every control drives that state through an [`AudioEffect`]:
-//! - **Volume / Mute** take the resource's `set-volume` and `set-muted`.
-//! - **Input level** takes `set-input-volume`.
-//! - **Device selection** takes `route-output` and `select-input`, and
-//!   remembers the choice in the person's `audio` settings.
-//! - **Per-application routing** takes each stream's `route-stream`,
-//!   `set-stream-volume` and `set-stream-muted`.
-//!
-//! Balance, mono output, echo cancellation and system sounds are the
-//! person's `audio` settings; the compositor session applies them. The page
-//! is view code over that section ([`page::view`]).
+//! capabilities, diagnostics, and per-application routing. Everything the pane
+//! shows and changes is the session's `sound` resource
+//! ([`tilo_audio_service::sound`]): its readings say which outputs and inputs
+//! are there, which one plays, how loud, the applications' streams and the
+//! sound cards' profiles, and every control takes one of its actions.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -67,14 +51,12 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`AudioArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AudioArea> {
     app.areas().find()
 }
 
 pub(crate) mod values;
 
-/// The switch that mutes the output: the device's, as search shows it.
 pub(crate) fn mute(cx: &ViewCx<Settings>, on: bool) -> Item {
     cx.setting(t("sound-mute")).id("audio.mute").toggle_effect(
         &LocalState::new(on),
@@ -83,7 +65,6 @@ pub(crate) fn mute(cx: &ViewCx<Settings>, on: bool) -> Item {
     )
 }
 
-/// The switch that plays both channels in each ear.
 pub(crate) fn mono(cx: &ViewCx<AudioPrefs>) -> Item {
     cx.setting(t("sound-mono")).id("audio.mono").toggle_verb(
         |prefs: &AudioPrefs| prefs.mono_output,
@@ -91,7 +72,6 @@ pub(crate) fn mono(cx: &ViewCx<AudioPrefs>) -> Item {
     )
 }
 
-/// The switch that gives calls an echo-cancelled microphone.
 pub(crate) fn echo_cancellation(cx: &ViewCx<AudioPrefs>) -> Item {
     cx.setting(t("sound-echo"))
         .id("audio.echo_cancellation")
@@ -101,18 +81,14 @@ pub(crate) fn echo_cancellation(cx: &ViewCx<AudioPrefs>) -> Item {
         )
 }
 
-/// The switch that lets system events make sounds.
 pub(crate) fn system_sounds(cx: &ViewCx<AudioPrefs>) -> Item {
     cx.setting(t("sound-system"))
         .id("audio.system_sounds")
         .toggle(AudioPrefs::paths().system_sounds.enabled)
 }
 
-/// The picker entry meaning "no explicit device — follow the default".
-/// Choosing it clears the stream's `target.object` metadata.
 pub(crate) const FOLLOW_DEFAULT: &str = "Default";
 
-/// Whether `event` makes a sound, as the sound section holds it.
 fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, bool> {
     let events = AudioPrefs::paths().system_sounds.events;
     match event {
@@ -127,9 +103,6 @@ fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, b
     }
 }
 
-/// What Sound changes of this device: its outputs, inputs and app streams,
-/// and its bounded tests. The person's audio preferences are the `audio`
-/// section's field edits and verbs.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AudioEffect {
@@ -188,7 +161,6 @@ pub enum AudioEffect {
     /// Mute or unmute one app.
     #[effect(row, job, idempotent)]
     SetStreamMuted { stream: u32, muted: bool },
-    /// Play a test tone on the left or right speaker.
     TestSpeaker {
         #[param("left or right", choices = ["left", "right"])]
         channel: String,
@@ -198,7 +170,6 @@ pub enum AudioEffect {
     ToggleMicrophoneTest,
 }
 
-/// Answer `effect` on the area's model.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "every area answers through the effect vocabulary's one signature"
@@ -229,8 +200,6 @@ pub(crate) fn answer(
         cx,
         work,
         move |app: &SettingsApp, ran: Option<Result<(), String>>, _| {
-            // Replaced by a newer change of the same kind before it ran:
-            // that one settles the model.
             let Some(result) = ran else {
                 return Ok(Effected::done());
             };
@@ -244,23 +213,15 @@ pub(crate) fn answer(
     ))
 }
 
-/// A change run off the UI thread: one action of the session's sound
-/// resource, or one call of the shell's speaker lane.
 type ChangeWork = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
-/// An effect as decided on the UI thread ([`AudioModel::plan`]).
 enum Plan {
-    /// A diagnostic, started on the UI thread ([`AudioModel::apply_local`]).
     Local,
-    /// An action of the sound resource, invoked off the UI thread, and what
-    /// the model takes in once it ran.
     Sound {
         key: ChangeKey,
         action: SoundAction,
         settle: Settle,
     },
-    /// Work off the UI thread that is not one action of the resource: the
-    /// shell's speaker lane, and an output choice that leaves a set.
     Change {
         key: ChangeKey,
         work: ChangeWork,
@@ -268,8 +229,6 @@ enum Plan {
     },
 }
 
-/// What a device change changes: a newer change of the same key replaces
-/// one still waiting ([`DeviceChanges`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ChangeKey {
     OutputVolume,
@@ -283,7 +242,6 @@ enum ChangeKey {
     StreamMuted(u32),
 }
 
-/// What a device change that ran sets on the model ([`AudioModel::settle`]).
 enum Settle {
     OutputVolume(f32),
     OutputMuted(bool),
@@ -304,13 +262,10 @@ enum Settle {
 #[derive(Clone, Default)]
 struct DeviceChanges {
     latest: Arc<std::sync::Mutex<(u64, std::collections::HashMap<ChangeKey, u64>)>>,
-    /// Held while a change runs, so two never race on the mixer.
     turn: Arc<std::sync::Mutex<()>>,
 }
 
 impl DeviceChanges {
-    /// `work` as a job for the background executor: `None` when a newer
-    /// change of `key` replaced it before its turn.
     fn submit(
         &self,
         key: ChangeKey,
@@ -365,8 +320,6 @@ fn event_shown(event: SystemSoundEvent) -> String {
     })
 }
 
-/// Whether an output's name says it is worn: headphones, a headset or
-/// earbuds.
 fn device_is_headphones(name: &str) -> bool {
     let name = name.to_lowercase();
     ["headphone", "headset", "earbud", "airpods", "buds"]
@@ -374,10 +327,8 @@ fn device_is_headphones(name: &str) -> bool {
         .any(|word| name.contains(word))
 }
 
-/// How wide an app's volume slider is, and the narrowest it gets.
 const STREAM_SLIDER_WIDTH: f32 = ui::tokens::Metrics::BASE.row_slider_width;
 const STREAM_SLIDER_MIN_WIDTH: f32 = ui::tokens::Metrics::BASE.row_slider_min_width;
-/// How wide the output volume slider is, with its value beside it.
 const OUTPUT_SLIDER_WIDTH: f32 = ui::tokens::Metrics::BASE.row_slider_valued_width;
 
 struct NoopAudioRuntime;
@@ -403,17 +354,9 @@ impl AudioRuntimeControl for NoopAudioRuntime {
     }
 }
 
-/// The session's `sound` resource as the pane reaches it: the reading it
-/// stands at, each later one, and the actions that change it. The
-/// production impl is the session's, over the collaboration service; a
-/// screenshot and a test give it a reading of their own.
 pub trait SoundResource: Send + Sync {
-    /// The newest reading since the last call; `None` when nothing changed.
     fn latest(&self) -> Option<Result<String, String>>;
-    /// Wake `wake`'s owner when a reading arrives, so a page showing the
-    /// resource draws the new one.
     fn attach(&self, wake: ui::WakeHandle);
-    /// Take one of its actions.
     fn invoke(
         &self,
         action: &str,
@@ -421,11 +364,9 @@ pub trait SoundResource: Send + Sync {
     ) -> Result<(), String>;
 }
 
-/// The sound resource the running session publishes ([`SOUND`]).
 struct SessionSound(ui::collaboration::SessionResource);
 
 impl SessionSound {
-    /// Watch the session's sound, waiting for the reading it begins at.
     fn open() -> Result<Self, String> {
         ui::collaboration::SessionResource::open(SOUND).map(Self)
     }
@@ -449,7 +390,6 @@ impl SoundResource for SessionSound {
     }
 }
 
-/// A reading given once, for the sample reading a screenshot shows.
 struct SampleSound(std::sync::Mutex<Option<Result<String, String>>>);
 
 impl SoundResource for SampleSound {
@@ -471,27 +411,15 @@ impl SoundResource for SampleSound {
     }
 }
 
-/// The Sound area's model, shared by the area and the page showing it.
 pub type SharedModel = Rc<std::cell::RefCell<AudioModel>>;
 
-/// What the Sound area keeps for the window: the model, read when first
-/// needed.
 pub struct AudioArea {
-    /// Whether it reads and drives this device's audio.
     devices: bool,
-    /// The settings document the remembered devices are read from.
     storage: ui::storage::AppStorage,
-    /// The sound sections' actions.
     sections: crate::sections::Sections,
     model: std::cell::OnceCell<SharedModel>,
-    /// The session's sound resource, opened off the UI thread after the
-    /// window's first frame ([`Self::start_read`]); `None` stands for the
-    /// sample reading a screenshot shows.
     pub(crate) read: crate::device_read::DeviceRead<Option<AudioRead>>,
-    /// Moves whenever what the page shows of the device does: a new
-    /// reading, a change it took, a notice, a test starting or ending.
     shown: LocalState<u64>,
-    /// The mono output the page last showed, to say what changing it did.
     mono_seen: std::cell::Cell<Option<bool>>,
 }
 
@@ -508,9 +436,6 @@ impl AudioArea {
         }
     }
 
-    /// Take in what moved since the last frame: tests and changes that
-    /// ended, the resource's newest reading. The page is built again when
-    /// anything it shows did.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get()
             && model.borrow_mut().poll()
@@ -519,8 +444,6 @@ impl AudioArea {
         }
     }
 
-    /// The page shows mono output as `on`: once it changed from what the
-    /// page showed before, the output card says what that did.
     fn saw_mono(&self, on: bool) {
         if self
             .mono_seen
@@ -535,8 +458,6 @@ impl AudioArea {
         }
     }
 
-    /// The model, over the session's sound resource, or over a sample
-    /// reading for a screenshot.
     pub fn model(&self) -> &SharedModel {
         self.model.get_or_init(|| {
             let read = self.read.take().unwrap_or_else(|| self.read_now());
@@ -548,19 +469,14 @@ impl AudioArea {
         })
     }
 
-    /// What a read would find, read on this thread: the session's sound
-    /// resource, or `None` for the sample reading.
     fn read_now(&self) -> Option<AudioRead> {
         self.route().then(|| AudioRead::of_session(&self.storage))
     }
 
-    /// Whether the area reaches this device's audio.
     fn route(&self) -> bool {
         self.devices
     }
 
-    /// Watch the session's sound off the UI thread; `false` when it has been
-    /// read or is being read.
     pub(crate) fn start_read(&self) -> bool {
         if self.is_open() {
             return false;
@@ -571,15 +487,10 @@ impl AudioArea {
             .start(move || device.then(|| AudioRead::of_session(&storage)))
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
 
-    /// One row per app stream, output and input, offering what can be done
-    /// to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let offer = |effect: AudioEffect| SettingsEffect::from(effect).bound();
@@ -611,7 +522,6 @@ impl AudioArea {
                 );
             }
         }
-        // The person's speaker sets are outputs like the others.
         for set in &model.sets.shown {
             rows.push(
                 LiveRow::new(
@@ -628,7 +538,6 @@ impl AudioArea {
     }
 }
 
-/// `control` acting through `binding`, or shown unavailable without one.
 fn bound<I, C: ui::framework::ActionControl<I>>(
     control: C,
     binding: Option<ui::tilo_actions::ActionBinding<I>>,
@@ -639,9 +548,6 @@ fn bound<I, C: ui::framework::ActionControl<I>>(
     }
 }
 
-/// One app's stream as a row of the published surface: its volume, mute
-/// and route are operations on it, which the pane's controls for that
-/// stream bind to.
 fn stream_live_row(stream: &Stream) -> LiveRow {
     let offer = |effect: AudioEffect| SettingsEffect::from(effect).bound();
     let kind = if stream.playback {
@@ -677,42 +583,28 @@ fn stream_live_row(stream: &Stream) -> LiveRow {
     reason = "independent facts: whether it drives the device, what the runtime offers, what changed"
 )]
 pub struct AudioModel {
-    /// Whether it drives this device's audio: a capture's and a test's
-    /// show what they were given.
     reaches_devices: bool,
-    /// The sound sections' actions, which remember the devices chosen.
     sections: crate::sections::Sections,
-    /// The session's sound resource, while it reaches one: its readings
-    /// feed what the page shows and its actions change the device.
     sounds: Option<Arc<dyn SoundResource>>,
-    /// What the resource last read: the outputs and inputs, their levels,
-    /// the applications' streams and the sound cards.
     sound: Sound,
     runtime: Arc<dyn AudioRuntimeControl>,
     runtime_caps: RuntimeCapabilities,
-    /// Installed freedesktop sound themes, for the theme picker.
     sound_themes: Vec<SoundTheme>,
-    /// Whether this machine can play event sounds at all.
     event_sounds_available: bool,
     /// Why the resource could not be reached; the controls then are not
     /// offered at made-up levels.
     volume_error: Option<String>,
-    /// Why the input level could not be read.
     input_error: Option<String>,
-    /// Why the device list could not be read.
     devices_error: Option<String>,
     runtime_notice: Option<String>,
     channel_test: Option<Box<dyn BoundedSession>>,
     mic_session: Option<Box<dyn MicrophoneMeterSession>>,
-    /// The microphone's level while it is tested, for the meter.
     mic_meter: level_meter::Level,
     volume: f32,
     input_volume: f32,
     muted: bool,
     changed: bool,
-    /// Device changes on their way off the UI thread.
     changes: DeviceChanges,
-    /// What the output in use plays, for its meter.
     output_meter: level_meter::Level,
     /// While a pane shows the area: the capture behind the output's meter.
     /// Held by the pane, so it ends when the page is left.
@@ -720,9 +612,7 @@ pub struct AudioModel {
     /// What a page showing the model holds: the readings are taken in, and
     /// the speaker sets read, only while one does.
     page: std::rc::Weak<()>,
-    /// The person's speaker sets, each an output like any other.
     sets: SpeakerSets,
-    /// Where speaker sets are read and chosen: the shell, or a sample.
     speakers: Arc<dyn crate::speaker_setup::SpeakerService>,
 }
 
@@ -731,10 +621,7 @@ pub struct AudioModel {
 /// nothing while the page is not shown.
 #[derive(Default)]
 struct OutputMetering {
-    /// The output being metered and its capture.
     session: std::cell::RefCell<Option<(String, Box<dyn BoundedSession>)>>,
-    /// An output whose capture could not start or ended: not tried again
-    /// until the output in use changes.
     refused: std::cell::RefCell<Option<String>>,
 }
 
@@ -743,10 +630,7 @@ struct OutputMetering {
 /// waits for that reading, so the window's warm-up makes the read off the UI
 /// thread.
 pub(crate) struct AudioRead {
-    /// The resource, watched for as long as the pane is open; `None` when
-    /// the session could not be reached.
     sounds: Option<Arc<dyn SoundResource>>,
-    /// The reading [`open`](SoundResource) handed back.
     sound: Sound,
     /// Why the session could not be reached: no reading is shown, and
     /// nothing is made up in its place.
@@ -757,9 +641,6 @@ pub(crate) struct AudioRead {
 }
 
 impl AudioRead {
-    /// Watch the session's sound resource, through the store the remembered
-    /// devices are read from. The devices the person chose last are put in
-    /// use again when the reading lists them.
     fn of_session(storage: &ui::storage::AppStorage) -> Self {
         crate::device_read::off_ui_thread();
         let remembered = storage.settings::<AudioDevicePrefs>().get();
@@ -803,7 +684,6 @@ impl AudioRead {
     }
 }
 
-/// Put the devices `remembered` in use again, when the reading lists them.
 fn restore_choice(resource: &impl SoundResource, sound: &Sound, remembered: &AudioDevicePrefs) {
     let output = remembered.output_device.as_deref().and_then(|name| {
         sound
@@ -833,8 +713,6 @@ fn restore_choice(resource: &impl SoundResource, sound: &Sound, remembered: &Aud
     }
 }
 
-/// An output or input of the sample reading: a stereo device whose node
-/// name is its label.
 fn device(node: u32, label: &str, chosen: bool) -> Device {
     Device {
         node,
@@ -848,7 +726,6 @@ fn device(node: u32, label: &str, chosen: bool) -> Device {
     }
 }
 
-/// An application's stream of the sample reading.
 fn stream(
     node: u32,
     app: &str,
@@ -868,15 +745,12 @@ fn stream(
     }
 }
 
-/// The [`Sound`] a reading's JSON stands for.
 fn reading_of(reading: &str) -> Result<Sound, String> {
     serde_json::from_str(reading)
         .map_err(|error| format!("The session's sound reading is not a sound: {error}"))
 }
 
 impl AudioModel {
-    /// Whether the output can play both channels in each ear: a stereo
-    /// output, on a sound server that mixes it down.
     fn offers_mono(&self) -> bool {
         self.runtime_caps.mono_output
             && self
@@ -884,12 +758,10 @@ impl AudioModel {
                 .is_some_and(|device| device.channels == 2)
     }
 
-    /// Whether calls can have an echo-cancelled microphone.
     fn offers_echo_cancellation(&self) -> bool {
         self.runtime_caps.echo_cancellation && !self.sound.inputs.is_empty()
     }
 
-    /// The model over what `read` found on the session's sound resource.
     fn from_read(sections: crate::sections::Sections, read: AudioRead) -> Self {
         let AudioRead {
             sounds,
@@ -934,9 +806,6 @@ impl AudioModel {
         model
     }
 
-    /// A model with no resource and controls that do nothing, remembering
-    /// the devices chosen through `sections`; tests give it what they
-    /// drive.
     fn detached(sections: crate::sections::Sections) -> Self {
         Self {
             reaches_devices: false,
@@ -967,8 +836,6 @@ impl AudioModel {
         }
     }
 
-    /// What a screenshot and the crate's tests show: speakers and
-    /// headphones, a microphone, and three apps playing or recording.
     fn sample(sections: crate::sections::Sections) -> Self {
         let sound = Sound {
             output: Some(51),
@@ -983,16 +850,13 @@ impl AudioModel {
             ],
             inputs: vec![device(52, "Built-in Microphone", true)],
             streams: vec![
-                // Routed away from the default onto the Headphones.
                 stream(84, "Music", "Nightcall", Some(91), true, 0.85),
-                // Following the default (Speakers).
                 stream(90, "Browser", "Conference call", Some(51), true, 0.60),
                 stream(95, "Meeting", "Microphone", Some(52), false, 0.75),
             ],
             hardware: Vec::new(),
             ..Sound::default()
         };
-        // A sound is plain data: it always serialises.
         let reading = serde_json::to_string(&sound).unwrap_or_default();
         let mut model = Self::detached(sections);
         model.reaches_devices = true;
@@ -1001,14 +865,11 @@ impl AudioModel {
         ))))));
         model.speakers = Arc::new(SampleSpeakerSets);
         model.take_sound(sound);
-        // Music plays on the speakers: their meter shows it.
         model.output_meter.set(0.46);
         model.output_meter.set_live(true);
         model
     }
 
-    /// The model over the reading `sound`, changed through `sounds`; the
-    /// device pickers list its devices.
     #[cfg(test)]
     #[must_use]
     fn with_sound(mut self, sound: Sound, sounds: Arc<dyn SoundResource>) -> Self {
@@ -1018,17 +879,14 @@ impl AudioModel {
         self
     }
 
-    /// The outputs the reading lists, the one in use first.
     pub fn outputs(&self) -> &[Device] {
         &self.sound.outputs
     }
 
-    /// The inputs the reading lists.
     pub fn inputs(&self) -> &[Device] {
         &self.sound.inputs
     }
 
-    /// The applications' streams: the playing ones when `playback`.
     pub fn streams(&self, playback: bool) -> Vec<&Stream> {
         self.sound
             .streams
@@ -1037,7 +895,6 @@ impl AudioModel {
             .collect()
     }
 
-    /// The output in use, as the reading lists it.
     fn output_device(&self) -> Option<&Device> {
         self.sound
             .outputs
@@ -1045,7 +902,6 @@ impl AudioModel {
             .find(|device| Some(device.node) == self.sound.output)
     }
 
-    /// The input in use, as the reading lists it.
     fn input_device(&self) -> Option<&Device> {
         self.sound
             .inputs
@@ -1053,9 +909,6 @@ impl AudioModel {
             .find(|device| Some(device.node) == self.sound.input)
     }
 
-    /// Carry out `effect` on this thread; what it reported. The window
-    /// answers effects through [`answer`], which takes the change on the
-    /// resource off the UI thread instead.
     #[cfg(test)]
     fn apply(&mut self, effect: &AudioEffect) -> Result<String, String> {
         match self.plan(effect)? {
@@ -1071,8 +924,6 @@ impl AudioModel {
         }
     }
 
-    /// `action` of the sound resource as work for the background executor:
-    /// a pane that reaches no resource has nothing to invoke.
     fn invoking(&self, action: SoundAction) -> ChangeWork {
         let sounds = self.sounds.clone();
         Box::new(move || match sounds {
@@ -1086,9 +937,6 @@ impl AudioModel {
         })
     }
 
-    /// Decide what `effect` does: a preference or diagnostic change made
-    /// here, or an action of the sound resource for [`answer`] to take off
-    /// the UI thread.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per device effect, each naming its action and what it settles"
@@ -1302,8 +1150,6 @@ impl AudioModel {
         }
     }
 
-    /// What a change that ran makes of the model: the level or device it
-    /// set, or the notice of why it failed.
     fn settle(&mut self, settle: Settle, result: Result<(), String>) -> Result<String, String> {
         self.changed = true;
         let percent = |value: f32| i64::from((value.clamp(0.0, 1.0) * 100.0).round() as u32);
@@ -1335,7 +1181,6 @@ impl AudioModel {
             }
             Settle::Output { id, name } => {
                 result.map_err(|error| self.failed("sound-notice-device-err", error))?;
-                // The choice shows at once; the next reading confirms it.
                 for device in &mut self.sound.outputs {
                     device.chosen = device.node == id;
                 }
@@ -1348,7 +1193,6 @@ impl AudioModel {
             }
             Settle::SpeakerSet(group) => {
                 result.map_err(|error| self.failed("sound-notice-device-err", error))?;
-                // The set's sink is the output now: no device of this one is.
                 for device in &mut self.sound.outputs {
                     device.chosen = false;
                 }
@@ -1391,7 +1235,6 @@ impl AudioModel {
         }
     }
 
-    /// Carry out an effect that changes no device: a bounded diagnostic.
     fn apply_local(&mut self, effect: &AudioEffect) -> Result<String, String> {
         match effect {
             AudioEffect::TestSpeaker { channel } => {
@@ -1467,7 +1310,6 @@ impl AudioModel {
         }
     }
 
-    /// The stream `node`, if the resource still lists it.
     fn stream(&self, node: u32) -> Result<&Stream, String> {
         self.sound
             .streams
@@ -1476,8 +1318,6 @@ impl AudioModel {
             .ok_or_else(|| t("sound-notice-stream-gone"))
     }
 
-    /// `key`'s message for a change that failed with `error`, shown on the
-    /// pane too.
     fn failed(&mut self, key: &str, error: String) -> String {
         warn!(target: "tilo::settings", op = key, error = %error, "audio change failed");
         let notice = t_args(key, &[("error", error.into())]);
@@ -1485,8 +1325,6 @@ impl AudioModel {
         notice
     }
 
-    /// Remember the device chosen, through the `audio-device` section's
-    /// verb.
     fn remember(&self, invoke: ui::tilo_resource::Invoke<AudioDevicePrefs>) -> Result<(), String> {
         self.sections
             .invoke(invoke)
@@ -1512,8 +1350,6 @@ impl AudioModel {
         }
     }
 
-    /// Take in the newest reading the resource published since the last
-    /// call, if one came. Whether it changes what the page shows.
     fn take_reading(&mut self) -> bool {
         let Some(sounds) = self.sounds.as_deref() else {
             return false;
@@ -1530,7 +1366,6 @@ impl AudioModel {
                 self.take_sound(sound);
             }
             Err(error) => {
-                // The controls are not offered at made-up levels.
                 warn!(target: "tilo::settings", %error, "the sound reading was not understood");
                 self.volume_error = Some(error.clone());
                 self.input_error = Some(error.clone());
@@ -1540,8 +1375,6 @@ impl AudioModel {
         true
     }
 
-    /// Show `sound`: its levels feed the controls, and a device or an app
-    /// that went away takes the diagnostics bound to it along.
     fn take_sound(&mut self, sound: Sound) {
         let moved = self.sound.output != sound.output
             || self.sound.input != sound.input
@@ -1569,11 +1402,9 @@ impl AudioModel {
         let problem = sound.problem.clone();
         self.sound = sound;
         if moved {
-            // The diagnostics are bound to the node that was in use.
             self.channel_test = None;
             self.mic_session = None;
             self.mic_meter.set_live(false);
-            // A set taking or leaving the output adds or removes its sink.
             self.sets.due = true;
         }
         if let Some(problem) = problem {
@@ -1582,22 +1413,16 @@ impl AudioModel {
         self.take_levels();
     }
 
-    /// The controls start at the levels the reading gives.
     fn take_levels(&mut self) {
         self.volume = self.sound.volume.unwrap_or(0.0);
         self.input_volume = self.sound.input_volume.unwrap_or(0.0);
         self.muted = self.sound.muted;
     }
 
-    /// Read the speaker sets again when they are due, and take in a read
-    /// that ended. Whether what the page shows changed.
     fn poll_speaker_sets(&mut self) -> bool {
         self.sets.poll(&self.speakers)
     }
 
-    /// Advance the bounded speaker/mic diagnostics, take in the resource's
-    /// newest reading, and read the speaker sets again while a page shows
-    /// the model.
     fn tick(&mut self) {
         if self
             .channel_test
@@ -1619,8 +1444,6 @@ impl AudioModel {
                 self.changed = true;
             }
         }
-        // A device plugged in or an app that starts playing reaches the
-        // resource as a new reading while the pane watches it.
         self.take_reading();
         if self.page.upgrade().is_some() && self.poll_speaker_sets() {
             self.changed = true;
@@ -1628,12 +1451,8 @@ impl AudioModel {
         self.follow_output_meter();
     }
 
-    /// Keep the output meter on the output in use while a pane shows it:
-    /// start its capture, move it when the default output changes, and let
-    /// it go when it ends. Without a pane nothing is captured.
     fn follow_output_meter(&self) {
         if !self.reaches_devices {
-            // A capture or a test shows the level it was given.
             return;
         }
         let Some(metering) = self.metering.upgrade() else {
@@ -1651,7 +1470,6 @@ impl AudioModel {
                 return;
             }
             if running.running() {
-                // The output in use changed: meter the new one.
                 *session = None;
             } else {
                 *metering.refused.borrow_mut() = Some(name.clone());
@@ -1680,15 +1498,11 @@ impl AudioModel {
 }
 
 impl AudioModel {
-    /// Take in what moved: tests that ended, the resource's readings and,
-    /// while a page shows the model, the speaker sets. Whether what the page
-    /// shows changed since the last call, by this or by an effect.
     fn poll(&mut self) -> bool {
         self.tick();
         std::mem::take(&mut self.changed)
     }
 
-    /// Whether a test is running that the window keeps drawing for.
     fn busy(&self) -> bool {
         self.mic_session.is_some() || self.channel_test.is_some()
     }
@@ -1720,8 +1534,6 @@ mod tests {
 
     type App = ui::framework::testing::TestApp<crate::SettingsShell>;
 
-    /// Change the window's Sound model as `change` does, for the page to
-    /// show.
     fn change_model(app: &mut App, change: impl FnOnce(&mut AudioModel) + 'static) {
         app.with_widget::<crate::window::Inspected, _>(move |settings| {
             let mut model = area(settings).unwrap().model().borrow_mut();
@@ -1731,7 +1543,6 @@ mod tests {
         .expect("the Settings window is mounted");
     }
 
-    /// What the window shows once it took in what changed.
     fn frame(app: &mut App) -> String {
         for _ in 0..4 {
             app.settle();
@@ -1740,7 +1551,6 @@ mod tests {
         app.harness().inspection_json().unwrap()
     }
 
-    /// The window, on the Sound page.
     fn on_sound() -> App {
         ui::i18n::I18nManager::init("en-US");
         let mut app = App::new().unwrap();
@@ -1749,18 +1559,14 @@ mod tests {
         app
     }
 
-    /// The `sound` resource as a test drives it: a reading to publish, and
-    /// every action taken, with its arguments.
     #[derive(Default)]
     struct RecordingSound {
         published: Mutex<Option<Result<String, String>>>,
         taken: Mutex<Vec<(String, serde_json::Value)>>,
-        /// What a reading wakes, once a page attached it.
         wake: Mutex<Option<ui::WakeHandle>>,
     }
 
     impl RecordingSound {
-        /// Publish `sound` as the resource's newest reading.
         fn publish(&self, sound: &Sound) {
             let reading = serde_json::to_string(sound).expect("a reading is JSON");
             *self.published.lock().unwrap() = Some(Ok(reading));
@@ -1769,17 +1575,14 @@ mod tests {
             }
         }
 
-        /// Publish a reading that is not a sound.
         fn publish_unreadable(&self) {
             *self.published.lock().unwrap() = Some(Ok("{ not a reading".into()));
         }
 
-        /// The actions taken, as their id and arguments.
         fn taken(&self) -> Vec<(String, serde_json::Value)> {
             self.taken.lock().unwrap().clone()
         }
 
-        /// The arguments of `action`, which the pane must have taken.
         fn arguments(&self, action: &str) -> serde_json::Value {
             let taken = self.taken();
             taken.iter().find(|(id, _)| id == action).map_or_else(
@@ -1811,12 +1614,10 @@ mod tests {
         }
     }
 
-    /// A model over a published reading, changed through `sounds`.
     fn published(sounds: Arc<dyn SoundResource>) -> AudioModel {
         let sample = AudioModel::sample(crate::sections::Sections::default());
         let reading = sample.sound.clone();
         let mut model = sample.with_sound(reading, sounds);
-        // The sample's speaker sets would need the shell.
         model.speakers = Arc::new(SampleSpeakerSets);
         model
     }
@@ -1861,8 +1662,6 @@ mod tests {
         );
     }
 
-    /// What the pane shows is the reading the resource published, and a
-    /// newer reading is what it shows next.
     #[test]
     fn the_page_shows_the_published_reading() {
         let sounds = Arc::new(RecordingSound::default());
@@ -1880,7 +1679,6 @@ mod tests {
             "a recording stream is too: {text}"
         );
 
-        // Another output in use, an app that stopped, one that started.
         let mut reading = AudioModel::sample(crate::sections::Sections::default()).sound;
         reading.output = Some(91);
         reading.outputs = vec![
@@ -1907,8 +1705,6 @@ mod tests {
         assert_eq!(output.as_deref(), Some("Headphones"));
     }
 
-    /// Every control takes one of the resource's actions, with the node or
-    /// level it changes.
     #[test]
     fn a_change_takes_the_resources_action() {
         let sounds = Arc::new(RecordingSound::default());
@@ -1988,12 +1784,10 @@ mod tests {
         let volume = sounds.arguments("set-stream-volume");
         assert_eq!(volume["stream"], 90);
         assert_eq!(sounds.arguments("set-stream-muted")["muted"], true);
-        // The model shows what it set.
         assert!((model.volume - 0.30).abs() < 0.001);
         assert!(model.muted);
         assert!((model.input_volume - 0.40).abs() < 0.001);
 
-        // A device or stream the reading no longer lists is refused.
         assert!(
             model
                 .apply(&AudioEffect::SelectOutput {
@@ -2011,8 +1805,6 @@ mod tests {
         );
     }
 
-    /// Choosing an output or an input routes it on the resource, and the
-    /// choice is remembered for the next time Settings opens.
     #[test]
     fn choosing_a_device_routes_it_and_remembers_it() {
         let sounds = Arc::new(RecordingSound::default());
@@ -2049,8 +1841,6 @@ mod tests {
         );
     }
 
-    /// A stream on the output in use follows it; one linked elsewhere names
-    /// that device.
     #[test]
     fn a_stream_names_the_device_it_plays_on() {
         let model = published(Arc::new(RecordingSound::default()));
@@ -2067,8 +1857,6 @@ mod tests {
         );
     }
 
-    /// The devices chosen last are put in use again when the resource's
-    /// first reading lists them.
     #[test]
     fn a_remembered_device_is_put_in_use_again() {
         let mut model = published(Arc::new(RecordingSound::default()));
@@ -2085,7 +1873,6 @@ mod tests {
         assert_eq!(taken[1].0, "select-input");
         assert_eq!(taken[1].1["node"], 54);
 
-        // The device already in use is not routed again.
         let chosen = AudioDevicePrefs {
             output_device: Some("Speakers".into()),
             ..AudioDevicePrefs::default()
@@ -2182,8 +1969,6 @@ mod tests {
         }
     }
 
-    /// A channel test and a microphone meter capture on the node the
-    /// reading names, not on a name of the pane's own.
     #[test]
     fn a_test_captures_the_output_the_reading_names() {
         let runtime = Arc::new(RecordingRuntime {
@@ -2204,9 +1989,6 @@ mod tests {
         );
     }
 
-    /// Levels that could not be read are reported, not drawn as sliders at
-    /// a made-up position; when nothing can be read, the failure is said
-    /// once rather than once per row.
     #[test]
     fn unreadable_levels_are_shown_as_errors() {
         let mut app = on_sound();
@@ -2232,8 +2014,6 @@ mod tests {
         );
     }
 
-    /// A reading the pane cannot read is what the controls are missing, and
-    /// the next reading that reads clears it.
     #[test]
     fn a_reading_that_is_not_a_sound_is_an_error_until_the_next() {
         let sounds = Arc::new(RecordingSound::default());
@@ -2251,8 +2031,6 @@ mod tests {
         assert!(model.input_error.is_none());
     }
 
-    /// The shell's speaker lane, recording what Settings asks; the set is
-    /// the output once it was chosen, until it is left.
     #[derive(Default)]
     struct RecordingSpeakers {
         commands: Mutex<Vec<ui::collaboration::SpeakerCommand>>,
@@ -2299,9 +2077,6 @@ mod tests {
         }
     }
 
-    /// A speaker set is listed among the outputs (the sink it plays from
-    /// is not), choosing it plays through it, and choosing another output
-    /// leaves it and routes the output on the resource.
     #[test]
     fn a_speaker_set_is_an_output_chosen_like_any_other() {
         use ui::collaboration::SpeakerCommand;
@@ -2387,9 +2162,6 @@ mod tests {
         );
     }
 
-    /// Mono output, echo cancellation and the system sounds are the
-    /// person's `audio` section, changed by its verbs and field edits as the
-    /// page's controls change them.
     #[test]
     fn echo_cancellation_and_system_sounds_are_the_persons_settings() {
         use crate::testing::{edit_path, invoke_section};
@@ -2438,7 +2210,6 @@ mod tests {
             "mono output changes only through its verb"
         );
 
-        // The page's switches and choosers are bound to those edits.
         change_model(&mut app, |model| {
             model.event_sounds_available = true;
             model.sound_themes = vec![
@@ -2477,7 +2248,6 @@ mod tests {
             );
         }
 
-        // Turning mono output off while the page is open says what it did.
         invoke_section(
             &mut app,
             AUDIO,
@@ -2496,7 +2266,6 @@ mod tests {
         );
     }
 
-    /// A session that does not answer a change until it is let go.
     struct StalledSound {
         gate: Arc<crate::stall::Stall>,
         published: Mutex<Option<Result<String, String>>>,
@@ -2522,9 +2291,6 @@ mod tests {
         }
     }
 
-    /// A click on the volume control is answered and the window keeps
-    /// drawing while the session takes its time: the action runs off the UI
-    /// thread, and its result lands once it returns.
     #[test]
     fn a_stalled_session_never_holds_the_window() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
@@ -2571,8 +2337,6 @@ mod tests {
         }
     }
 
-    /// Changes of one kind that the background executor starts out of
-    /// order leave the device at the last one asked for.
     #[test]
     fn a_replaced_change_is_dropped() {
         let changes = DeviceChanges::default();

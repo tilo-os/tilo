@@ -14,7 +14,7 @@ fn directory(
     workspace: &str,
     want: &RecordCheckout,
 ) -> std::path::PathBuf {
-    app_state::DocStore::workspace_record_dir_at(
+    app_state::DocStore::workspace_document_dir_at(
         state_root,
         "so.tilo.test",
         workspace,

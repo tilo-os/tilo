@@ -1,14 +1,11 @@
-//! The sheets that collect what a durable action needs: a name to create,
-//! save or rename with, a variable to add or remove. Deleting a request or
-//! an environment needs no sheet: the host asks the person to confirm.
+//! The sheets that collect what a durable action needs: a name to create, save or rename
+//! with, a variable to add or remove. Deleting asks the host to confirm instead.
 
 use ui::LocalState;
 use ui::widget::{Column, Element, Field, ModalDialog, TextInput, TextInputKind, Widget};
 
 use crate::commands::{Cmd, FormMode, Sink};
 
-/// The values a sheet collects, shared with the app that reads them on
-/// submit.
 #[derive(Clone)]
 pub(crate) struct Fields {
     pub(crate) name: LocalState<String>,
@@ -45,7 +42,6 @@ fn field(
     Box::new(Field::new(label, input))
 }
 
-/// The sheet for `mode`.
 pub(crate) fn build(mode: FormMode, fields: &Fields, sink: &Sink) -> Element {
     // As tall as its fields: a sheet for one name is a short one.
     let mut body = Column::new().with_no_padding().with_intrinsic_height();

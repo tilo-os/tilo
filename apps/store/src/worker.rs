@@ -32,22 +32,15 @@ const CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(128) {
     None => NonZeroUsize::MIN,
 };
 
-/// What the worker is asked to do. A request someone is waiting on (an
-/// effect's job) carries a [`Done`] it is answered on.
 #[derive(Clone, Debug)]
 pub enum Request {
-    /// Refresh every source; `force` refetches Flathub's catalogue even
-    /// when the kept one is recent (the person asked for it).
     Refresh,
     BrowseRemote(String),
     Detail(String),
-    /// Review a precise runtime through the trusted host.
     RuntimeDetails {
         runtime: String,
         registry: Option<String>,
     },
-    /// Show the app a `.flatpakref` describes, ready to install: the file at
-    /// `path`, or the reference's `contents` handed over without one.
     OpenReference {
         path: Option<PathBuf>,
         contents: Option<String>,
@@ -72,7 +65,6 @@ pub enum Request {
     /// `Request` (and the channel that carries them) sized to the common
     /// case instead of the rare, heavy one.
     Act(Box<StoreItem>, ActionKind),
-    /// Update each app in turn, reporting progress, then refresh once.
     UpdateAll(Vec<StoreItem>),
     ExternalModeration(ui::registry::ExternalModerationOperation),
     RefreshModeration {
@@ -81,14 +73,10 @@ pub enum Request {
     },
 }
 
-/// How a request someone waits on ended: its status line and, for a
-/// moderation request, the case the registry confirmed; or why it failed.
 pub type Outcome = Result<Finished, String>;
 
-/// Where the worker answers a request someone waits on.
 pub type Done = mpsc::Sender<Outcome>;
 
-/// A request that succeeded.
 #[derive(Clone, Debug, Default)]
 pub struct Finished {
     pub status: String,
@@ -109,8 +97,10 @@ impl Finished {
 #[derive(Clone, Debug)]
 pub enum DetailUpdate {
     /// Enrich the app the person already selected; this is not navigation.
-    Requested { id: String, item: Option<StoreItem> },
-    /// Opening a reference resolves its identity and intentionally opens it.
+    Requested {
+        id: String,
+        item: Option<StoreItem>,
+    },
     OpenedReference(StoreItem),
     ImportedPackage {
         item: StoreItem,
@@ -123,7 +113,6 @@ pub enum DetailUpdate {
 pub struct Snapshot {
     pub items: Vec<StoreItem>,
     pub status_line: String,
-    /// Search responses name their query so stale results can be discarded.
     pub query: Option<String>,
     pub detail: Option<DetailUpdate>,
     pub remotes: Vec<Remote>,
@@ -136,9 +125,7 @@ pub struct Snapshot {
     /// Enabled native repositories whose catalogue is authentic but expired,
     /// so the Store says so instead of calling them unreachable.
     pub expired_repositories: Vec<String>,
-    /// Who blocked which app, as the worker last read the block list.
     pub blocks: ui::registry::BlockList,
-    /// The app Update all is updating now, so its row shows the progress.
     pub updating: Option<String>,
 }
 
@@ -241,13 +228,10 @@ impl StoreWorker {
         })
     }
 
-    /// Queue `request`; whether the worker is still there to take it.
     pub fn request(&self, request: Request) -> bool {
         self.queue(request, None)
     }
 
-    /// Queue `request` and answer it on `done`; whether the worker is still
-    /// there to take it.
     pub fn request_job(&self, request: Request, done: Done) -> bool {
         self.queue(request, Some(done))
     }
@@ -285,13 +269,10 @@ impl StoreWorker {
     }
 }
 
-/// The UI's end of the worker's snapshots, woken for each one.
 #[derive(Clone)]
 struct Snapshots {
     sender: mpsc::Sender<Snapshot>,
     wake: WakeHandle,
-    /// The UI's count of snapshots still to come: a request sends one, and
-    /// a progress report adds its own.
     pending: Arc<AtomicUsize>,
 }
 
@@ -302,7 +283,6 @@ impl Snapshots {
         sent
     }
 
-    /// A snapshot beside the one that answers the request.
     fn progress(&self, snapshot: Snapshot) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
         self.send(snapshot)
@@ -323,17 +303,10 @@ struct State {
     flatpak_available: bool,
     flatpak_error: Option<String>,
     catalogue_error: Option<String>,
-    /// See [`Snapshot::unanswered_repositories`].
     unanswered_repositories: Vec<String>,
-    /// See [`Snapshot::expired_repositories`].
     expired_repositories: Vec<String>,
     details: LruCache<String, StoreItem>,
-    /// The current palette/action directory. Rebuilding it is linear in a
-    /// catalogue snapshot, so it belongs on this serialized worker rather
-    /// than in the UI's snapshot-drain loop.
     directory: StoreDirectory,
-    /// Apps blocked by the person, a workspace or the device's administrator:
-    /// the same list desktop search hides them by (`ui::registry::BlockList`).
     blocks: ui::registry::BlockList,
     /// The person's repositories as the last refresh read them. Kept here so
     /// publishing the directory never asks the host again: each ask runs
@@ -342,8 +315,6 @@ struct State {
     /// Flathub's catalogue as the last refresh read it, so the next refresh
     /// lists Flathub's apps from its first snapshot while it reads again.
     flathub: Option<crate::catalogue::flathub::FlathubFeed>,
-    /// The person asked for this refresh: Flathub's catalogue is read again
-    /// even when the kept one is recent.
     force_refresh: bool,
 }
 
@@ -550,9 +521,6 @@ fn poll_refresh(
             None,
         );
         if let Some(done) = done {
-            // A refresh reports each source's error in the snapshot; it
-            // completes once every source has been attempted, independently
-            // of whether a particular source is offline.
             let outcome = Ok(Finished::status(label));
             let _ = done.send(outcome);
         }
@@ -722,8 +690,6 @@ fn runtime_item(
     }
 }
 
-/// Carry out `request`: whether the UI is still there, and how it ended
-/// for whoever waits on it.
 #[allow(
     clippy::too_many_lines,
     reason = "the serialized worker owns one exhaustive request dispatch; splitting it would obscure that every blocking Store effect crosses this queue"
@@ -1037,7 +1003,6 @@ fn open_reference(
         .iter()
         .find_map(|(id, version)| (id == &reference.app_id).then(|| version.clone()));
     let item = reference.clone().into_store_item(version);
-    // A prior detail lookup may describe another repository or branch.
     state.details.pop(&item.id);
     state.base_items.retain(|known| known.id != item.id);
     state.base_items.insert(0, item.clone());
@@ -1114,8 +1079,6 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
     }
     match result {
         Ok((items, title)) => {
-            // Browsing may discover more apps than the first catalogue page.
-            // Retain them on the same authoritative action/search surface.
             for item in &items {
                 if let Some(existing) = state
                     .base_items
@@ -1222,8 +1185,6 @@ fn send(
     send_tracked(snapshots, state, items, status_line, query, detail, None)
 }
 
-/// Update every item in turn without opening any, report each step, and
-/// answer with what happened.
 fn update_all(
     items: &[StoreItem],
     state: &mut State,
@@ -1470,7 +1431,6 @@ mod tests {
         }
     }
 
-    /// Follow a worker detail response through the item used for installation.
     pub(super) fn detail_installation_item(state: &mut State, id: &str) -> StoreItem {
         let (sender, received) = mpsc::channel();
         let snapshots = Snapshots {
@@ -1562,7 +1522,6 @@ mod tests {
         expected: app_host::install::InstallExpectation,
         installs: Arc<AtomicUsize>,
         offer: Option<app_cli::CatalogueApp>,
-        /// The package root of the installed engine `list` reports.
         installed_root: Option<[u8; 32]>,
     }
 
@@ -1921,12 +1880,8 @@ mod tests {
         assert!(!snapshot.flatpak_available);
     }
 
-    /// LRU eviction, non-blocking requests and the authoritative action directory.
     #[test]
     fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
-        // Case `request_and_drain_are_non_blocking`.
-        // The worker is held inside its host connection until released, so
-        // both calls returning at all proves neither waits on the worker.
         {
             let (release, held) = mpsc::channel::<()>();
             let worker = StoreWorker::spawn_with_host(

@@ -15,9 +15,6 @@ use std::time::Duration;
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
-/// The outcome of a fully-executed [`execute`] call: whether the last
-/// meaningful step succeeded and the human-readable status the status
-/// bar should show.
 #[derive(Clone, Debug)]
 pub struct ActionOutcome {
     pub ok: bool,
@@ -25,8 +22,6 @@ pub struct ActionOutcome {
     pub launch: Option<ApplicationLaunch>,
 }
 
-/// A prepared installed application, launched through the Store's original
-/// authenticated workspace channel rather than the package custodian.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplicationLaunch {
     pub app_id: String,
@@ -121,15 +116,6 @@ pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
     Ok(bytes.len() as u64)
 }
 
-/// Execute a card action end-to-end. `staging_dir` is where a
-/// downloaded `.tapp` is written before install; pass
-/// [`tapp_staging_dir`] in production.
-///
-/// For `Open`/`Update` on an uncached Tilo app this is: download →
-/// app-host verified install → exact prepared launch target. The Store
-/// submits that target on its original authenticated collaboration channel
-/// and waits for actual startup. Already-cached apps preserve their selected
-/// signed package root through the same route.
 pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> ActionOutcome {
     execute_with_host(None, item, action, staging_dir)
 }
@@ -224,7 +210,6 @@ pub fn execute_with_host(
     }
 }
 
-/// The Tilo `Open` / `Update` flow: fetch-if-needed, then launch.
 fn open_tilo(
     host: Option<&app_host::client::BlockingClient>,
     item: &StoreItem,
@@ -459,7 +444,6 @@ mod tests {
         }
     }
 
-    /// Without a Flatpak host, needs-host and open both fail without spawning anything.
     #[test]
     fn actions_without_a_flatpak_host_fail_without_spawning() {
         {

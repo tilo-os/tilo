@@ -1,9 +1,7 @@
-//! Everything the job's init needs, prepared by the worker.
-//!
-//! This module turns a [`JobSpec`] into C strings, mount operations, Landlock
-//! rules and BPF programs: the worker reads the host's files and makes the
-//! idmapped mounts, and the init (a new program in the job's namespaces, which
-//! reads this plan from the worker) only makes system calls.
+//! Everything the job's init needs, prepared by the worker. This module turns a [`JobSpec`] into C
+//! strings, mount operations, Landlock rules and BPF programs: the worker reads the host's files
+//! and makes the idmapped mounts, and the init (a new program in the job's namespaces, which reads
+//! this plan from the worker) only makes system calls.
 
 use std::ffi::{CString, OsStr};
 use std::os::fd::{AsFd, OwnedFd};
@@ -44,14 +42,13 @@ pub enum Op {
         set: u64,
         recursive: bool,
     },
-    /// Attach a tree the worker opened, idmapped where it could be
-    /// ([`Plan::trees`], by index).
+    /// Attach a tree the worker opened, idmapped where it could be ([`Plan::trees`], by index).
     Attach {
         tree: usize,
         dst: CString,
     },
-    /// Create a file in the staging root with `contents`, root's where the
-    /// job's namespace maps root, mode 0644.
+    /// Create a file in the staging root with `contents`, root's where the job's namespace maps
+    /// root, mode 0644.
     Write {
         path: CString,
         contents: Vec<u8>,
@@ -102,12 +99,10 @@ pub struct Rule {
     pub access: u64,
 }
 
-/// What the init does, all of it prepared. The worker's descriptors and its
-/// own notes stay with the worker: the init finds the descriptors at the
-/// numbers its `Control` names.
+/// What the init does, all of it prepared. The worker's descriptors and its own notes stay with the
+/// worker: the init finds the descriptors at the numbers its `Control` names.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Plan {
-    /// The directory the staging tmpfs is mounted on (an existing one).
     pub stage: CString,
     pub stage_old: CString,
     pub stage_new: CString,
@@ -115,13 +110,13 @@ pub struct Plan {
     /// Detached idmapped mounts for [`Op::Attach`], made by the worker.
     #[serde(skip)]
     pub trees: Vec<OwnedFd>,
-    /// Writable host paths bound without an idmap (their filesystem can't take one): the job,
-    /// as a user of its own, may not be able to write their owner's files.
+    /// Writable host paths bound without an idmap (their filesystem can't take one): the job, as a
+    /// user of its own, may not be able to write their owner's files.
     #[serde(skip)]
     pub unmapped: Vec<PathBuf>,
-    /// The job's ids in its own namespace, which the init takes on before
-    /// it builds the root: with a block of host ids, the init starts as
-    /// the worker's uid, which the job's namespace doesn't map.
+    /// The job's ids in its own namespace, which the init takes on before it builds the root: with
+    /// a block of host ids, the init starts as the worker's uid, which the job's namespace doesn't
+    /// map.
     pub become_ids: Option<(u32, u32)>,
     pub new_root: CString,
     pub hostname: CString,
@@ -134,18 +129,15 @@ pub struct Plan {
     #[serde(skip)]
     pub landlock: Option<OwnedFd>,
     pub rules: Vec<Rule>,
-    /// BPF programs (`struct sock_filter` arrays, as bytes), installed in
-    /// order.
+    /// BPF programs (`struct sock_filter` arrays, as bytes), installed in order.
     pub seccomp: Vec<Vec<u8>>,
     pub cap_last: u32,
-    /// The job has a network namespace of its own, whose `lo` the init
-    /// brings up; false where it joins one its owner configures.
+    /// The job has a network namespace of its own, whose `lo` the init brings up; false where it
+    /// joins one its owner configures.
     pub own_net: bool,
-    /// A helper of the caller's (see [`crate::job::helper`]): a mount
-    /// namespace of its own and nothing else, keeping the caller's ids and
-    /// capabilities.
+    /// A helper of the caller's (see [`crate::job::helper`]): a mount namespace of its own and
+    /// nothing else, keeping the caller's ids and capabilities.
     pub helper: bool,
-    /// Raise the open file limit to its hard limit before the command runs.
     pub nofile_max: bool,
 }
 
@@ -157,7 +149,6 @@ fn path_c(p: &Path) -> Result<CString, SpawnError> {
     cstr(p.as_os_str().as_bytes(), &p.display().to_string())
 }
 
-/// `prefix` joined with an absolute `inside` path.
 fn under(prefix: &str, inside: &Path) -> Result<CString, SpawnError> {
     let mut bytes = prefix.as_bytes().to_vec();
     let rel = inside.as_os_str().as_bytes();
@@ -167,8 +158,7 @@ fn under(prefix: &str, inside: &Path) -> Result<CString, SpawnError> {
     cstr(&bytes, &inside.display().to_string())
 }
 
-/// An absolute path without `..`, `.` or repeated separators, or an error
-/// naming `what`.
+/// An absolute path without `..`, `.` or repeated separators, or an error naming `what`.
 fn normal(p: &Path, what: &str) -> Result<PathBuf, SpawnError> {
     if !p.is_absolute() {
         return Err(SpawnError::Invalid(format!(
@@ -192,7 +182,6 @@ fn normal(p: &Path, what: &str) -> Result<PathBuf, SpawnError> {
     Ok(out)
 }
 
-/// The host path a source names, resolved (symlinks followed).
 fn source(p: &Path) -> Result<(PathBuf, std::fs::Metadata), SpawnError> {
     let real = std::fs::canonicalize(p)
         .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))?;
@@ -201,23 +190,22 @@ fn source(p: &Path) -> Result<(PathBuf, std::fs::Metadata), SpawnError> {
     Ok((real, meta))
 }
 
-/// Whether a bind must be idmapped for the job to use it: a writable one
-/// must (the job could not write the owner's files otherwise); a read-only
-/// one is bound as it is when its filesystem can't be.
+/// Whether a bind must be idmapped for the job to use it: a writable one must (the job could not
+/// write the owner's files otherwise); a read-only one is bound as it is when its filesystem can't
+/// be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Idmap {
     Required,
     IfPossible,
 }
 
-/// Whose files an idmapped bind shows as whose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Owners {
     /// The worker's files are the job's own: what it works on.
     Job,
-    /// Every id keeps its number: the job's system files (its image, the
-    /// host's `/usr`), whose root-owned files stay root's, as programs that
-    /// trust only root's files (a loader, a setuid helper) check.
+    /// Every id keeps its number: the job's system files (its image, the host's `/usr`), whose
+    /// root-owned files stay root's, as programs that trust only root's files (a loader, a setuid
+    /// helper) check.
     System,
 }
 
@@ -229,8 +217,8 @@ struct Builder {
     root_writable: bool,
     /// Landlock rules, in order; `/` (read) first.
     rules: Vec<Rule>,
-    /// With a block of host ids: the user namespace binds are idmapped
-    /// with, and the trees made so far.
+    /// With a block of host ids: the user namespace binds are idmapped with, and the trees made so
+    /// far.
     userns: Option<OwnedFd>,
     /// With a block: the user namespace of [`Owners::System`] binds.
     system_userns: Option<OwnedFd>,
@@ -255,9 +243,8 @@ impl Builder {
         Ok(())
     }
 
-    /// A mount point at `inside`: a directory, or an empty file for a file
-    /// source. In an image root they must exist already; trying costs a
-    /// failed `mkdir`.
+    /// A mount point at `inside`: a directory, or an empty file for a file source. In an image root
+    /// they must exist already; trying costs a failed `mkdir`.
     fn point(&mut self, inside: &Path, file: bool) -> Result<(), SpawnError> {
         if let Some(parent) = inside.parent() {
             self.mkdirs(parent)?;
@@ -283,8 +270,8 @@ impl Builder {
         self.bind_at(real, dst, libc::MS_BIND | libc::MS_REC, idmap, owners)
     }
 
-    /// Bind the host path `real` at `dst` (a path in the staging root):
-    /// idmapped where the job has host ids of its own, plainly otherwise.
+    /// Bind the host path `real` at `dst` (a path in the staging root): idmapped where the job has
+    /// host ids of its own, plainly otherwise.
     fn bind_at(
         &mut self,
         real: &Path,
@@ -303,9 +290,9 @@ impl Builder {
         };
         if let (Some(userns), Some((uid, gid))) = (userns, self.job_ids) {
             let tree = if socket {
-                // A socket the caller made for this job (a VM step's passt): it becomes the
-                // job's, which connecting to it takes, wherever it lives. Never idmapped: it
-                // often sits on a filesystem that can't be (a container's /tmp).
+                // A socket the caller made for this job (a VM step's passt): it becomes the job's,
+                // which connecting to it takes, wherever it lives. Never idmapped: it often sits on
+                // a filesystem that can't be (a container's /tmp).
                 if std::os::unix::fs::chown(real, Some(uid), Some(gid)).is_err()
                     && idmap == Idmap::Required
                 {
@@ -321,8 +308,8 @@ impl Builder {
                     super::idmap::tree(real, None)
                 })
             };
-            // Opened here, not by the job's init: the block's ids may not be able to reach
-            // it, as a directory only its owner may enter stops them.
+            // Opened here, not by the job's init: the block's ids may not be able to reach it, as a
+            // directory only its owner may enter stops them.
             if let Ok(tree) = tree {
                 self.ops.push(Op::Attach {
                     tree: self.trees.len(),
@@ -371,7 +358,6 @@ impl Builder {
         Ok(())
     }
 
-    /// Grant Landlock rights beneath a writable path.
     fn writable(&mut self, inside: &Path, dir: bool) -> Result<(), SpawnError> {
         self.rules.push(Rule {
             path: path_c(inside)?,
@@ -380,8 +366,7 @@ impl Builder {
         Ok(())
     }
 
-    /// The job's root: an image bound read-only, or the host's /usr and /etc
-    /// on a tmpfs.
+    /// The job's root: an image bound read-only, or the host's /usr and /etc on a tmpfs.
     fn root(&mut self, root: &Root) -> Result<(), SpawnError> {
         let new = Path::new("/");
         match root {
@@ -400,8 +385,8 @@ impl Builder {
                     Idmap::IfPossible,
                     Owners::System,
                 )?;
-                // Read-only before anything is mounted on it: the job never
-                // writes into a shared image, not even a mount point.
+                // Read-only before anything is mounted on it: the job never writes into a shared
+                // image, not even a mount point.
                 self.attr(new, RO, false)?;
             }
             Root::Layers {
@@ -409,8 +394,8 @@ impl Builder {
                 upper,
                 work,
             } => {
-                // Writable while the root is built, so mount points go into the
-                // job's own upper; read-only once built (see `filesystem`).
+                // Writable while the root is built, so mount points go into the job's own upper;
+                // read-only once built (see `filesystem`).
                 let opts = self.overlay_options(lowers, Some((upper, work)), Owners::System)?;
                 self.ops.push(Op::Mount {
                     src: Some(cstr(b"overlay", "overlay")?),
@@ -459,13 +444,11 @@ impl Builder {
         Ok(())
     }
 
-    /// A passwd entry (and a group entry) for the job's own ids where the
-    /// root it runs in has none, as for a nested job running as
-    /// [`crate::job::NESTING_ID`] in an image that only knows root: programs
-    /// that look themselves up (a login shell, `id -un`, ssh, ush) would
-    /// otherwise refuse. The image's files with the line added are written
-    /// to the staging root and bound read-only over its own; a root without
-    /// these files, or with links where they are, is left as it is.
+    /// A passwd entry (and a group entry) for the job's own ids where the root it runs in has none,
+    /// as for a nested job running as [`crate::job::NESTING_ID`] in an image that only knows root:
+    /// programs that look themselves up (a login shell, `id -un`, ssh, ush) would otherwise refuse.
+    /// The image's files with the line added are written to the staging root and bound read-only
+    /// over its own; a root without these files, or with links where they are, is left as it is.
     fn account(&mut self, root: &Path, uid: u32, gid: u32) -> Result<(), SpawnError> {
         let Some(passwd) = system_file(root, "etc/passwd") else {
             return Ok(());
@@ -494,8 +477,8 @@ impl Builder {
         Ok(())
     }
 
-    /// Mirror a top-level host entry (`/bin`, `/lib`, …): a symlink as a
-    /// symlink, a directory as a read-only bind.
+    /// Mirror a top-level host entry (`/bin`, `/lib`, …): a symlink as a symlink, a directory as a
+    /// read-only bind.
     fn host_link(&mut self, name: &str) -> Result<(), SpawnError> {
         let host = Path::new("/").join(name);
         match std::fs::symlink_metadata(&host) {
@@ -542,9 +525,9 @@ impl Builder {
                 continue;
             }
             self.point(&inside, true)?;
-            // Idmapped where the device's filesystem allows (a container's
-            // tmpfs /dev does, devtmpfs doesn't): its owner's access then
-            // stays the job's, as for a device of mode 0660.
+            // Idmapped where the device's filesystem allows (a container's tmpfs /dev does,
+            // devtmpfs doesn't): its owner's access then stays the job's, as for a device of mode
+            // 0660.
             let dst = under(NEW, &inside)?;
             self.bind_at(&d, dst, libc::MS_BIND, Idmap::IfPossible, Owners::Job)?;
         }
@@ -678,28 +661,20 @@ impl Builder {
     }
 }
 
-/// An overlay's upper and work directories, for one the job writes to.
 type Writes<'a> = Option<(&'a PathBuf, &'a PathBuf)>;
 
-/// An overlay's layers as its options name them: the lowers, and the upper
-/// and work directories.
+/// An overlay's layers as its options name them: the lowers, and the upper and work directories.
 type Named = (Vec<PathBuf>, Option<(PathBuf, PathBuf)>);
 
 impl Builder {
-    /// overlayfs `-o` options for `lowers` (the first on top) and, unless
-    /// read-only, the upper and work directories `writes` names.
-    ///
-    /// With a block of ids each layer is an idmapped mount in the staging
-    /// root, which the options name: overlayfs creates what the job writes
-    /// with the job's ids, which only an idmapped upper layer stores as the
-    /// owner's. Without a block the options name the layers through the old
-    /// root.
-    ///
-    /// `volatile`: what a job writes to an overlay is disposable, so
-    /// overlayfs never syncs the upper layer's filesystem, which it otherwise
-    /// does when the job's mount namespace goes and which waits for
-    /// everything dirty on that volume (gigabytes from the jobs' builds
-    /// beside it).
+    /// overlayfs `-o` options for `lowers` (the first on top) and, unless read-only, the upper and
+    /// work directories `writes` names. With a block of ids each layer is an idmapped mount in the
+    /// staging root, which the options name: overlayfs creates what the job writes with the job's
+    /// ids, which only an idmapped upper layer stores as the owner's. Without a block the options
+    /// name the layers through the old root. `volatile`: what a job writes to an overlay is
+    /// disposable, so overlayfs never syncs the upper layer's filesystem, which it otherwise does
+    /// when the job's mount namespace goes and which waits for everything dirty on that volume
+    /// (gigabytes from the jobs' builds beside it).
     fn overlay_options(
         &mut self,
         lowers: &[PathBuf],
@@ -760,9 +735,9 @@ impl Builder {
         Ok(opts)
     }
 
-    /// The layers bound idmapped under `/layers/<n>` in the staging root,
-    /// named as the overlay sees them there. The upper and work directories
-    /// must share a mount, so their common parent is the one idmapped.
+    /// The layers bound idmapped under `/layers/<n>` in the staging root, named as the overlay sees
+    /// them there. The upper and work directories must share a mount, so their common parent is the
+    /// one idmapped.
     fn idmapped_layers(
         &mut self,
         lowers: &[PathBuf],
@@ -818,12 +793,11 @@ impl Builder {
     }
 }
 
-/// The largest passwd or group file [`Builder::account`] copies: the
-/// staging tmpfs holds both.
+/// The largest passwd or group file [`Builder::account`] copies: the staging tmpfs holds both.
 const ACCOUNT_FILE_MAX: u64 = 512 * 1024;
 
-/// A regular file beneath `root`, read without following any link (an
-/// image's link would name a host path to the worker), or `None`.
+/// A regular file beneath `root`, read without following any link (an image's link would name a
+/// host path to the worker), or `None`.
 fn system_file(root: &Path, rel: &str) -> Option<Vec<u8>> {
     use rustix::fs::{Mode, OFlags, ResolveFlags};
     use std::io::Read as _;
@@ -847,10 +821,9 @@ fn system_file(root: &Path, rel: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// `passwd` with an entry for `uid` added, and `group` with one for `gid`
-/// where it has none; `None` when `passwd` has `uid` already. The entry is
-/// `job` (or `job<uid>` where the image has a `job`), at home in `/tmp`
-/// (the job's `HOME`) with root's shell.
+/// `passwd` with an entry for `uid` added, and `group` with one for `gid` where it has none; `None`
+/// when `passwd` has `uid` already. The entry is `job` (or `job<uid>` where the image has a `job`),
+/// at home in `/tmp` (the job's `HOME`) with root's shell.
 fn account_files(
     passwd: &[u8],
     group: Option<&[u8]>,
@@ -920,8 +893,8 @@ fn tmpfs_options(mode: &str, size: Option<u64>) -> String {
     }
 }
 
-/// An existing directory to mount the staging tmpfs on. It is covered only
-/// inside the job's mount namespace.
+/// An existing directory to mount the staging tmpfs on. It is covered only inside the job's mount
+/// namespace.
 fn stage_dir() -> &'static str {
     ["/tmp", "/var/tmp", "/mnt", "/run"]
         .into_iter()
@@ -929,8 +902,8 @@ fn stage_dir() -> &'static str {
         .unwrap_or("/tmp")
 }
 
-/// What [`filesystem`] makes: the operations, the Landlock rules and the
-/// idmapped trees the operations attach.
+/// What [`filesystem`] makes: the operations, the Landlock rules and the idmapped trees the
+/// operations attach.
 type Filesystem = (Vec<Op>, Vec<Rule>, Vec<OwnedFd>, Vec<PathBuf>);
 
 fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
@@ -1062,9 +1035,8 @@ fn landlock(
     Ok(Some((fd, rules)))
 }
 
-/// Landlock as the job runs it. A job that may start sandboxes of its own
-/// mounts in namespaces it creates, which Landlock refuses to every process
-/// it confines: it runs without.
+/// Landlock as the job runs it. A job that may start sandboxes of its own mounts in namespaces it
+/// creates, which Landlock refuses to every process it confines: it runs without.
 fn landlock_mode(spec: &JobSpec) -> Landlock {
     if spec.seccomp == Seccomp::Ci(crate::job::spec::CiProfile::Nested) {
         Landlock::Off

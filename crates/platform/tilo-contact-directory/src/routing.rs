@@ -1,6 +1,6 @@
-//! Explicit operation account choice. Defaults never choose a sending identity.
-//! The provider must revalidate its current identity revision and device grant
-//! before any I/O. These values carry provenance, never secrets or authority.
+//! Explicit operation account choice: defaults never choose a sending identity, and
+//! the provider revalidates its identity revision and device grant before any I/O.
+//! These values carry provenance, never secrets or authority.
 
 use tilo_resource::Id;
 
@@ -25,8 +25,8 @@ pub struct Route {
     pub revision: String,
 }
 
-/// A sender metadata record is not evidence that its credentials are present.
-/// Adapters supply only currently usable senders from the existing OS accounts.
+/// A sender metadata record is not evidence that its credentials are present;
+/// adapters supply only currently usable senders from the existing OS accounts.
 pub fn routes(
     directory: &ContactDirectory,
     person: &Id,

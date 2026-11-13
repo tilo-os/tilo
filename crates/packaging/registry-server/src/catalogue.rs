@@ -1,24 +1,15 @@
-//! The published catalogue as `/entries` serves it: the owner-signed
-//! snapshot and its compact form, read, verified and encoded once per
-//! published revision rather than once per request.
-//!
-//! Verifying a snapshot checks the owner's signature and every entry's
-//! publisher signature, and the catalogue is a megabyte of JSON; doing that,
-//! hashing it and encoding it again for each of thousands of clients
-//! revalidating the same bytes made every `/entries` request seconds of CPU
-//! on the threads every other request also waits for. The snapshot changes
-//! only when the offline signing command publishes one, which it does by
-//! renaming a new file over the old, so the stamps of the three files the
-//! answer depends on (snapshot, compact form, channel authorization) name a
-//! revision exactly. Each request compares stamps; only a new revision is
-//! read and verified again, once, on the blocking pool, while requests for
-//! it wait for that one load instead of repeating it.
-//!
-//! Signatures and shape are verified once. Freshness is the one part that
-//! depends on the clock, and it is the client's to judge: an authentic
-//! snapshot is served after it expires too, so a device can tell an expired
-//! catalogue from an unreachable one (and say so), and `/metrics` reports
-//! both expiries for the alerts that ask for a renewal in time.
+//! The published catalogue as `/entries` serves it: the owner-signed snapshot and its compact form,
+//! read, verified and encoded once per published revision instead of once per request. Verifying a
+//! snapshot checks the owner's signature and every entry's publisher signature over a megabyte of
+//! JSON, and doing that per request made every `/entries` call seconds of CPU on threads other
+//! requests wait for. The snapshot changes only when the offline signing command renames a new file
+//! over the old, so the stamps of the three files the answer depends on (snapshot, compact form,
+//! channel authorization) name a revision exactly: each request compares stamps, and only a new
+//! revision is read and verified again, once, on the blocking pool, while requests for it wait for
+//! that one load. Signatures and shape are verified once. Freshness depends on the clock and is the
+//! client's to judge: an authentic snapshot is served after it expires too, so a device can tell an
+//! expired catalogue from an unreachable one, and `/metrics` reports both expiries for the alerts
+//! that ask for a renewal in time.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +30,6 @@ pub(crate) struct Revision {
 }
 
 impl Revision {
-    /// The revision on disk now.
     pub(crate) fn of(storage: &Storage) -> Result<Self, StorageError> {
         Ok(Self {
             snapshot: FileStamp::at(&storage.snapshot_path())?,
@@ -49,7 +39,6 @@ impl Revision {
     }
 }
 
-/// One form of the snapshot, encoded for the wire.
 #[derive(Debug)]
 pub(crate) struct Encoded {
     /// The JSON body, shared by every response.
@@ -80,23 +69,18 @@ impl Encoded {
     }
 }
 
-/// The owner's authorization of the online signing channel, as far as
-/// knowing when it must be renewed goes.
+/// The owner's authorization of the online signing channel, as far as knowing when it must be
+/// renewed goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ChannelTerm {
     pub(crate) generation: u64,
     pub(crate) expires_at_unix: u64,
 }
 
-/// The full snapshot as this server may serve it.
 #[derive(Debug)]
 pub(crate) enum FullSnapshot {
-    /// Nothing has been published.
     Missing,
-    /// What was published does not verify against the owner's key or the
-    /// active channel.
     Refused,
-    /// A verified snapshot and the packages it lists.
     Verified {
         encoded: Encoded,
         packages: HashSet<String>,
@@ -107,19 +91,17 @@ pub(crate) enum FullSnapshot {
 pub(crate) struct Published {
     revision: Revision,
     pub(crate) full: FullSnapshot,
-    /// The compact form, present only while it verifies and is the form of
-    /// the full snapshot.
+    /// The compact form, present only while it verifies and is the form of the full snapshot.
     pub(crate) compact: Option<Encoded>,
-    /// The active channel authorization's term, whatever the snapshot's state:
-    /// it is what has to be renewed before anything can be signed again.
+    /// The active channel authorization's term, whatever the snapshot's state: it is what has to be
+    /// renewed before anything can be signed again.
     pub(crate) channel: Option<ChannelTerm>,
 }
 
 impl Published {
-    /// Read and verify the revision on disk.
     fn load(storage: &Storage, owner_pubkey_hex: &str) -> Result<Self, StorageError> {
-        // Stamped before reading: a file replaced in between is simply
-        // loaded again by the next request, which sees a newer stamp.
+        // Stamped before reading: a file replaced in between is loaded again by the next request,
+        // which sees a newer stamp.
         let revision = Revision::of(storage)?;
         // An unreadable authorization activates no channel, as a missing one.
         let channel = storage.load_channel_authorization().ok().flatten();
@@ -178,10 +160,9 @@ impl Published {
     }
 }
 
-/// The snapshot's hash when it verifies against the owner's key and the
-/// active channel, apart from freshness. Verifying at its own issue time
-/// passes every time-dependent check, so only signatures, shape and bounds
-/// decide; freshness is checked per request.
+/// The snapshot's hash when it verifies against the owner's key and the active channel, apart from
+/// freshness. Verifying at its own issue time passes every time-dependent check, so only
+/// signatures, shape and bounds decide; freshness is checked per request.
 fn verified_snapshot(
     snapshot: &SignedRegistrySnapshot,
     owner_pubkey_hex: &str,
@@ -205,8 +186,7 @@ fn verified_compact(
         && channel_is_active(compact.channel_authorization.as_ref(), channel)
 }
 
-/// A snapshot signed under a channel is served only while that channel is
-/// the active one.
+/// A snapshot signed under a channel is served only while that channel is the active one.
 fn channel_is_active(
     signed_under: Option<&ChannelAuthorization>,
     active: Option<&ChannelAuthorization>,
@@ -214,7 +194,6 @@ fn channel_is_active(
     signed_under.is_none_or(|signed_under| active == Some(signed_under))
 }
 
-/// The catalogue of the latest revision a request has seen.
 #[derive(Default)]
 pub(crate) struct Catalogue {
     current: Mutex<Option<Arc<Published>>>,
@@ -224,7 +203,6 @@ pub(crate) struct Catalogue {
 }
 
 impl Catalogue {
-    /// The catalogue of the revision on disk.
     pub(crate) async fn current(
         &self,
         storage: &Storage,

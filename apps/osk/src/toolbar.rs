@@ -18,32 +18,27 @@ use crate::inject::{Modifiers, Symbol};
 /// host text field / clipboard / OSK chrome, not on character output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OskToolbarAction {
-    /// Paste literal text from the shared host clipboard into the focused field.
     Paste,
-    /// Press a real key (Esc, Tab, an arrow) with the latched modifiers.
     Key(Symbol),
     /// Latch a modifier for the next key; a second tap locks it.
     Modifier(ModifierKey),
-    /// Opaque focused-field slot; the authenticated session resolves its action.
-    Contextual { generation: u32, slot: u32 },
+    Contextual {
+        generation: u32,
+        slot: u32,
+    },
     /// Move the caret one unit left; a custom host may extend its selection.
     SelectionLeft,
     /// Move the caret one unit right; a custom host may extend its selection.
     SelectionRight,
-    /// Dismiss / hide the keyboard.
     Dismiss,
     /// Put the keys away and keep the strip that brings them back: the panel
     /// the keyboard lives in shrinks to it, so the app behind gets the screen
     /// the keys were covering.
     Park,
-    /// Bring the keys back on a parked keyboard.
     Unpark,
-    /// Escape hatch for app-specific toolbar items kept purely as data
-    /// (emoji picker, voice toggle, settings, clipboard history, …).
     Custom(String),
 }
 
-/// A modifier the terminal row latches for the next key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ModifierKey {
     Ctrl,
@@ -51,7 +46,6 @@ pub enum ModifierKey {
 }
 
 impl ModifierKey {
-    /// The chord this modifier alone holds.
     #[must_use]
     pub fn modifiers(self) -> Modifiers {
         Modifiers {
@@ -67,9 +61,7 @@ impl ModifierKey {
 pub enum Latch {
     #[default]
     Off,
-    /// Held for the next key only.
     Once,
-    /// Held for every key until tapped again.
     Locked,
 }
 
@@ -89,7 +81,6 @@ impl Latch {
     }
 }
 
-/// The terminal row's Ctrl and Alt.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModifierLatches {
     pub ctrl: Latch,
@@ -113,7 +104,6 @@ impl ModifierLatches {
         *latch = latch.tapped();
     }
 
-    /// The modifiers the next key is pressed with.
     #[must_use]
     pub fn held(self) -> Modifiers {
         Modifiers {
@@ -122,7 +112,6 @@ impl ModifierLatches {
         }
     }
 
-    /// A key was pressed: release what was held for it alone.
     pub fn spend(&mut self) {
         for latch in [&mut self.ctrl, &mut self.alt] {
             if *latch == Latch::Once {
@@ -132,16 +121,11 @@ impl ModifierLatches {
     }
 }
 
-/// One toolbar button descriptor.
 #[derive(Clone, Debug)]
 pub struct OskToolbarItem {
-    /// Stable id (for reordering / test addressing).
     pub id: String,
-    /// Optional leading vector glyph. `None` falls back to the label.
     pub icon: Option<Icon>,
-    /// Human-readable label (also the fallback when `icon` is `None`).
     pub label: String,
-    /// What tapping the item does.
     pub action: OskToolbarAction,
 }
 
@@ -164,8 +148,6 @@ impl OskToolbarItem {
         }
     }
 
-    /// The keys a terminal needs that the letters lack: Esc, Tab, Ctrl and
-    /// Alt (which latch for the next key) and the arrows, then dismissal.
     pub fn terminal_set() -> Vec<Self> {
         let key = |id: &str, icon: Option<Icon>, label: &str, symbol: Symbol| {
             Self::new(
@@ -210,8 +192,6 @@ impl OskToolbarItem {
         ]
     }
 
-    /// Whether the item is a key of the terminal row, painted as a key cell
-    /// rather than a toolbar button.
     #[must_use]
     pub fn is_key(&self) -> bool {
         matches!(
@@ -252,9 +232,6 @@ impl OskToolbarItem {
         )
     }
 
-    /// The default toolbar: paste, selection-left, selection-right, dismiss.
-    /// Data-driven — callers can replace this wholesale via
-    /// [`crate::widget::OskWidget::with_toolbar`].
     pub fn default_set() -> Vec<OskToolbarItem> {
         vec![
             OskToolbarItem::new(

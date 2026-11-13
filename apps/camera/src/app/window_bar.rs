@@ -51,7 +51,6 @@ const PAGE_ACTIONS: [(&str, &str, CameraEffect); 8] = [
 #[derive(Clone, PartialEq)]
 enum Command {
     OpenPhotos,
-    /// Run the page's effect.
     Page(CameraEffect),
 }
 
@@ -62,7 +61,6 @@ pub(super) struct Bar {
 }
 
 impl Bar {
-    /// Entries submitted through `dispatcher`, once there is one.
     pub(super) fn new(dispatcher: Option<&Dispatcher<Record>>) -> Self {
         Self {
             actions: dispatcher.cloned().map(BarActions::new),
@@ -70,14 +68,12 @@ impl Bar {
         }
     }
 
-    /// Submit through `dispatcher` from now on.
     pub(super) fn attach(&mut self, dispatcher: Dispatcher<Record>) {
         self.actions = Some(BarActions::new(dispatcher));
     }
 }
 
 impl CameraApp {
-    /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = WindowToolbar::default();
         if self.base_screen() == Screen::Document && !self.document_scan.pages.is_empty() {
@@ -221,7 +217,6 @@ impl CameraApp {
         asked
     }
 
-    /// Run `effect` on Camera itself, as the palette and agents do.
     fn invoke(&mut self, effect: &CameraEffect) {
         match &self.dispatcher {
             Some(dispatcher) => dispatcher.effect(effect),
@@ -270,14 +265,12 @@ mod tests {
             .collect()
     }
 
-    /// Choose the view `id`.
     fn choose(app: &mut TestApp<SampleCamera>, id: &str) {
         app.harness()
             .press_window_slot(ToolbarEvent::Action { id: id.into() });
         app.settle();
     }
 
-    /// Press the entry named `name`.
     fn press(app: &mut TestApp<SampleCamera>, name: &str) {
         app.harness().press_window_action(name).unwrap();
         app.settle();
@@ -288,7 +281,6 @@ mod tests {
             .expect("the camera surface")
     }
 
-    /// Every name and action target the canvas draws.
     fn drawn(app: &mut TestApp<SampleCamera>) -> Vec<String> {
         let tree = camera(app, |camera| {
             ui::Widget::accessibility(camera).expect("the camera's semantics")
@@ -299,9 +291,6 @@ mod tests {
             .collect()
     }
 
-    /// The modes are the bar's views and Photos and the settings its
-    /// actions, each running Camera's published action; the canvas draws
-    /// none of them.
     #[test]
     fn the_modes_photos_and_the_settings_are_the_window_bars() {
         let mut app = opened();
@@ -347,9 +336,6 @@ mod tests {
         );
     }
 
-    /// On the documents the selected page is the bar's location and what
-    /// can be done with it its actions, each running the page's published
-    /// effect; the canvas draws neither.
     #[test]
     fn the_selected_page_is_the_window_bars_location_and_actions() {
         let mut app = opened();
@@ -431,8 +417,6 @@ mod tests {
         assert_eq!(bar().location, None);
     }
 
-    /// Press the notice's action `index` in a bar `width` wide, by pointer
-    /// or through its semantic action.
     fn press_notice(app: &mut TestApp<SampleCamera>, width: f64, semantic: bool) {
         let harness = app.harness();
         let pressed = if semantic {
@@ -444,7 +428,6 @@ mod tests {
         app.settle();
     }
 
-    /// The labels of the notice's buttons in a bar `width` wide.
     fn notice_buttons(app: &mut TestApp<SampleCamera>, width: f64) -> Vec<String> {
         app.harness()
             .window_bar_notice(width)
@@ -462,9 +445,6 @@ mod tests {
         (420.0, true),
     ];
 
-    /// A scan that failed asks to try again, and carries Try again: pressed
-    /// by pointer or through its semantic action, wide or compact, it scans
-    /// the page again.
     #[test]
     fn a_failed_scans_try_again_scans_the_page_again() {
         for (width, semantic) in WAYS {
@@ -488,8 +468,6 @@ mod tests {
         }
     }
 
-    /// Text recognition that could not start carries Try again, which
-    /// starts it again.
     #[test]
     fn recognitions_try_again_starts_it_again() {
         for (width, semantic) in WAYS {
@@ -512,8 +490,6 @@ mod tests {
         }
     }
 
-    /// Finding no camera asks to refresh, and carries Refresh, which looks
-    /// for cameras again.
     #[test]
     fn no_cameras_refresh_looks_again() {
         for (width, semantic) in WAYS {

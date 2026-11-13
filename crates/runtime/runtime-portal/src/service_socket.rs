@@ -153,10 +153,8 @@ impl Link<'_> {
 pub enum ControlError {
     #[error(transparent)]
     Socket(#[from] ServiceSocketError),
-    /// The service answered with descriptors nobody asked for.
     #[error("the service answered with descriptors nobody asked for")]
     UnexpectedDescriptors,
-    /// Writing a line or reading its answer failed.
     #[error("the control exchange failed: {0}")]
     Answer(io::Error),
 }

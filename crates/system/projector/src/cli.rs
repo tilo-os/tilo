@@ -87,7 +87,6 @@ fn serve(args: &[String]) -> Result<(), ProjectorError> {
     Service::new(paths, Helpers::from_env()).run(&listener)
 }
 
-/// A connection to the running broker.
 fn client(args: &[String]) -> Result<UnixStream, ProjectorError> {
     let socket = value_after(args, "--socket")
         .map(PathBuf::from)

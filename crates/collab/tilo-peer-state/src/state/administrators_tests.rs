@@ -11,7 +11,7 @@ use tilo_action_policy::roles::{self, governance};
 fn governs(peer: &StatePeer, device: [u8; 32], now: SystemTime) -> usize {
     let member = peer.permissions(device, now).unwrap();
     let bound = roles::foreign_device_bound();
-    let authority = member.authority(&bound);
+    let authority = member.authority(bound);
     let cx = tilo_action_policy::Context::at_time(now);
     governance::ALL
         .into_iter()

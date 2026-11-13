@@ -1,34 +1,15 @@
 //! Word tokenization with byte-offset spans.
 
-/// A single word span within a source string.
-///
-/// `text` is a borrowed slice of the original input, and `start`/`end` are the
-/// byte offsets such that `&source[start..end] == text`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Token<'a> {
-    /// The word as it appears in the source (original case, original characters).
     pub text: &'a str,
-    /// Byte offset of the first byte of `text` in the source string.
     pub start: usize,
-    /// Byte offset one past the last byte of `text` in the source string.
     pub end: usize,
 }
 
-/// Split `text` into word tokens, preserving byte offsets.
-///
-/// Tokenization rules:
-/// - A token is a maximal run of "word characters".
-/// - A word character is any Unicode alphanumeric, plus the connector
-///   characters `'`, `.`, `@`, `:`, `/`, and `_` *when they sit between two
-///   other word characters*. Keeping these connectors internal lets
-///   contractions ("don't"), decimals ("3.14"), URLs and emails survive as one
-///   token, so downstream filtering in [`crate::check`] can recognise and skip
-///   them as a unit.
-/// - Leading/trailing connectors are trimmed off the span (so `"world!"` yields
-///   `world` and `'tis` keeps its leading apostrophe stripped to `tis`).
-///
-/// Offsets are always on char boundaries, so `&text[tok.start..tok.end]` is
-/// always valid and equals `tok.text`.
+/// Split `text` into word tokens, preserving byte offsets: a token is a maximal run of
+/// word characters (Unicode alphanumerics plus the connector set), and connectors stay
+/// inside a token only between word characters.
 pub fn tokenize(text: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     let bytes_len = text.len();
@@ -40,16 +21,13 @@ pub fn tokenize(text: &str) -> Vec<Token<'_>> {
             let mut end = idx.saturating_add(ch.len_utf8());
             iter.next();
 
-            // Extend over word chars and *internal* connectors.
             while let Some(&(j, c)) = iter.peek() {
                 if is_word_char(c) {
                     end = j.saturating_add(c.len_utf8());
                     iter.next();
                 } else if is_connector(c) {
-                    // Keep the connector only if a word char eventually follows
-                    // it across an unbroken run of connectors. This lets `://`
-                    // and `.co.` chains inside a URL stay attached, while a
-                    // trailing `'` or `.` at the end of a word is dropped.
+                    // Keep the connector only if a word character follows across an unbroken run of
+                    // connectors, so `://` and `.co.` stay in a URL while a trailing `'` or `.` does not.
                     if word_char_follows_connectors(text, j.saturating_add(c.len_utf8())) {
                         end = j.saturating_add(c.len_utf8());
                         iter.next();
@@ -91,8 +69,6 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric()
 }
 
-/// Characters that join two word characters into one token but are not words on
-/// their own.
 fn is_connector(c: char) -> bool {
     matches!(
         c,
@@ -100,13 +76,10 @@ fn is_connector(c: char) -> bool {
     )
 }
 
-/// Starting at byte offset `idx`, skip any run of connector characters and
-/// report whether the first non-connector reached is a word character. Used so a
-/// connector run like `://` attaches to the following word characters.
+/// Starting at byte offset `idx`, skip any run of connectors and report whether the first
+/// non-connector is a word character.
 fn word_char_follows_connectors(text: &str, idx: usize) -> bool {
-    // `idx` is always a char boundary (see the callers), so this can only ever
-    // hit the `Some` arm; `.get()` keeps that a guarantee rather than an
-    // assumption a future caller could silently break.
+    // `idx` is always a char boundary (see the callers), so this can only hit `Some`.
     for c in text.get(idx..).unwrap_or("").chars() {
         if is_word_char(c) {
             return true;
@@ -164,7 +137,6 @@ mod tests {
         ] {
             assert_eq!(words(text), want, "case {case}: {text:?}");
         }
-        // offsets_round_trip
         let text = "  café, déjà-vu? oui!";
         for tok in tokenize(text) {
             assert_eq!(&text[tok.start..tok.end], tok.text);

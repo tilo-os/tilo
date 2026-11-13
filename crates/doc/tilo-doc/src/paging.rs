@@ -1,21 +1,10 @@
-//! Page breaking shared by every paged layout: the word processor's sheets,
-//! its PDF export and the e-book reader's pages.
-//!
-//! A [`PageFlow`] stacks blocks down a run of equal pages and decides where
-//! each one goes; shaping and painting stay with the caller, which hands in
-//! heights and line boxes and gets back pages and offsets. The rules:
-//!
-//! - A block that fits goes whole. A manual break before a block starts a
-//!   fresh page, and the space before a block is dropped at the top of one.
-//! - A block that does not fit splits between its lines (or table rows),
-//!   keeping at least [`Fragmentation::orphans`] lines before the break and
-//!   [`Fragmentation::widows`] after it, or moves whole to the next page when
-//!   it cannot.
-//! - The first thing on a page never moves: a block that cannot split and is
-//!   taller than a page overflows it, and lines that cannot honour the
-//!   orphan/widow counts on an empty page fill it anyway.
-//! - A block that keeps with the next (a heading) moves to the next page with
-//!   it rather than end a page, unless it began that page.
+//! Page breaking shared by the word processor's sheets, its PDF export and the
+//! e-book reader: a [`PageFlow`] stacks blocks down equal pages and decides where
+//! each goes. A block that fits goes whole, and a block that does not splits
+//! between its lines keeping [`Fragmentation::orphans`] lines before the break and
+//! `widows` after, or moves whole. The first thing on a page never moves — a block
+//! taller than a page overflows it — and a block that keeps with the next moves
+//! with it, unless it began that page.
 
 use std::ops::Range;
 
@@ -23,12 +12,9 @@ use std::ops::Range;
 /// so sub-pixel layout noise never breaks a page.
 const SLACK: f64 = 0.5;
 
-/// Lines a split text block keeps on either side of a page break.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Fragmentation {
-    /// Lines that must stay before a break.
     pub orphans: u8,
-    /// Lines that must follow a break.
     pub widows: u8,
 }
 
@@ -48,10 +34,9 @@ impl Fragmentation {
         widows: 1,
     };
 
-    /// How many lines of a block of `total`, continuing at `first`, go on a
-    /// page with room for `available` more: all that remain when they fit,
-    /// otherwise as many as fit while leaving `widows` for the next page, or
-    /// none when fewer than `orphans` would stay.
+    /// How many lines of a block of `total`, continuing at `first`, go on a page with room for
+    /// `available` more: all that remain when they fit, otherwise as many as leave `widows` for the
+    /// next page, or none when fewer than `orphans` would stay.
     #[must_use]
     pub fn lines_on_page(self, total: usize, first: usize, available: usize) -> usize {
         let remaining = total.saturating_sub(first);
@@ -67,23 +52,19 @@ impl Fragmentation {
     }
 }
 
-/// One block to place: its height and how it may break.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Block {
     /// Space above the block, dropped at the top of a page.
     pub lead: f64,
-    /// The block's height from its top to its last line's bottom.
     pub height: f64,
     /// Starts a fresh page unless it would be the first thing on one.
     pub break_before: bool,
     /// Moves to the next page with the block after it rather than end a page.
     pub keep_with_next: bool,
-    /// The lines kept on either side of a break inside the block.
     pub fragmentation: Fragmentation,
 }
 
 impl Block {
-    /// A block `height` tall with no space above it and no break rules.
     #[must_use]
     pub fn new(height: f64) -> Self {
         Self {
@@ -120,46 +101,33 @@ impl Block {
     }
 }
 
-/// The piece of a split block on one page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fragment {
     pub page: usize,
-    /// The top of the piece's first line below the page's top.
     pub top: f64,
-    /// The block's lines on this page.
     pub lines: Range<usize>,
 }
 
-/// Blocks that kept with the block being placed and moved with it from the
-/// bottom of a page to the top of the next one.
+/// Blocks that kept with the block being placed and moved with it from the bottom of a page to the
+/// top of the next.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Carry {
-    /// The first block moved, counted in placement order from 0. It and every
-    /// block placed after it on `from_page` moved.
     pub block: usize,
     pub from_page: usize,
-    /// Where the moved run started on `from_page`. It starts at the top of
-    /// the next page, so everything moved rises by this much.
     pub from_top: f64,
 }
 
-/// Where a block went.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placed {
-    /// The page the block starts on.
     pub page: usize,
-    /// The block's top below that page's top: the top of its first line when
-    /// it split.
     pub top: f64,
     /// The pieces of a block that split; empty when it went whole.
     pub fragments: Vec<Fragment>,
-    /// Blocks moved to the next page along with this one.
     pub carry: Option<Carry>,
 }
 
 impl Placed {
-    /// The page and top of line `line` of the block whose line boxes are
-    /// `lines`, as returned to [`PageFlow::place_lines`].
+    /// The page and top of line `line` of the block whose line boxes are `lines`.
     #[must_use]
     pub fn locate(&self, lines: &[(f64, f64)], line: usize) -> (usize, f64) {
         let top = |index: usize| lines.get(index).map_or(0.0, |&(top, _)| top);
@@ -180,8 +148,6 @@ struct Kept {
     began_page: bool,
 }
 
-/// A cursor stacking blocks down equal pages; see the module docs for the
-/// rules it applies.
 #[derive(Clone, Debug)]
 pub struct PageFlow {
     height: f64,
@@ -195,14 +161,13 @@ pub struct PageFlow {
 }
 
 impl PageFlow {
-    /// An empty flow at the top of the first page; every page holds `height`.
     #[must_use]
     pub fn new(height: f64) -> Self {
         Self::resume(height, 0, 0.0, false)
     }
 
-    /// A flow continuing `y` below the top of `page`; `placed` says whether
-    /// anything is on that page already.
+    /// A flow continuing `y` below the top of `page`; `placed` says whether anything is on that
+    /// page already.
     #[must_use]
     pub fn resume(height: f64, page: usize, y: f64, placed: bool) -> Self {
         Self {
@@ -216,7 +181,6 @@ impl PageFlow {
         }
     }
 
-    /// The current page.
     #[must_use]
     pub fn page(&self) -> usize {
         self.page
@@ -228,7 +192,6 @@ impl PageFlow {
         self.y
     }
 
-    /// Leave `amount` of space after the last block.
     pub fn skip(&mut self, amount: f64) {
         self.y += amount;
     }
@@ -239,14 +202,12 @@ impl PageFlow {
         self.y = y;
     }
 
-    /// Place a block that cannot split.
     pub fn place(&mut self, block: &Block) -> Placed {
         self.flow(block, None::<fn() -> Vec<(f64, f64)>>)
     }
 
-    /// Place a block that may split between its lines. `lines` gives each
-    /// line's top and height below the block's top; it is only called when
-    /// the block does not fit whole.
+    /// Place a block that may split between its lines. `lines` gives each line's top and height
+    /// below the block's top, and is only asked for when the block does not fit whole.
     pub fn place_lines(
         &mut self,
         block: &Block,
@@ -267,8 +228,8 @@ impl PageFlow {
         self.kept = None;
     }
 
-    /// Break the page before a block that does not fit, taking along the
-    /// keep-with-next run that would otherwise end the page.
+    /// Break the page before a block that does not fit, taking along the keep-with-next run that
+    /// would otherwise end the page.
     fn overflow_break(&mut self) -> Option<Carry> {
         let carry = self
             .kept
@@ -340,8 +301,6 @@ impl PageFlow {
         }
     }
 
-    /// How many lines from `first` fit when the block's top is `origin`
-    /// below the page's top.
     fn available(&self, lines: &[(f64, f64)], origin: f64, first: usize) -> usize {
         lines
             .iter()
@@ -350,9 +309,8 @@ impl PageFlow {
             .count()
     }
 
-    /// Split a block that does not fit whole, starting with its top at `top`
-    /// on the current page; the first piece may hold no lines only when the
-    /// page is empty.
+    /// Split a block that does not fit whole, starting with its top at `top` on the current page;
+    /// the first piece may hold no lines only when the page is empty.
     fn split(&mut self, block: &Block, lines: &[(f64, f64)], top: f64) -> Vec<Fragment> {
         let total = lines.len();
         let line_top = |index: usize| lines.get(index).map_or(0.0, |&(t, _)| t);
@@ -384,9 +342,8 @@ impl PageFlow {
         fragments
     }
 
-    /// Record a block that went at `top` (whole, or split into `fragments`);
-    /// `began_page` says whether its last piece is the first thing on its
-    /// page.
+    /// Record a block that went at `top`; `began_page` says whether its last piece is the first
+    /// thing on its page.
     fn land(
         &mut self,
         block: &Block,

@@ -451,8 +451,9 @@ start_mail() {
 }
 
 # owner [KEY] [--no-link]: declare the person whose user public key (hex) is
-# KEY an owner of the Lounge: the door lets them in without an invitation, and
-# the workspace makes them an administrator once they are a member. On a fresh
+# KEY an owner of the Lounge: its governance holds them as an administrator by
+# their root from now on, so the door lets them in without an invitation and a
+# key of theirs reaches the Lounge before any device of theirs joined. On a fresh
 # stack nobody is a member yet, so this is how the first person gets in to
 # invite the others. The workspace answers at once, or says why it did not.
 #
@@ -491,15 +492,14 @@ declare_owner() {
 }
 
 # The running Lounge declares KEY an owner, as production's operator does: its
-# door lets them in, and its governance makes them an administrator once they
-# are a member.
+# governance holds them as an administrator, and its door lets them in.
 declare_owner_at_lounge() {
   local key=$1
   local socket=$state/relay/lounge/operator.sock
   [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
   python3 -I "$repo/os/containers/tilo-lounge/declare-owner" "$socket" "$key" \
     || die "the Lounge did not make $key an owner"
-  say "$key is an owner of the Lounge: its door lets them in, and it makes them an administrator once they join"
+  say "$key is an owner of the Lounge: an administrator from now on, whom its door lets in"
 }
 
 # How long `owner` waits for its link to be opened.

@@ -1,12 +1,6 @@
-//! The SIM's codes, asked with the window's password prompt
-//! (`crate::secrets`): its PIN to unlock it or to switch the PIN lock, its
-//! PUK and a new PIN once it is blocked, and the current and a new PIN to
-//! change it. The section draws no code field of its own.
-//!
-//! The answer starts the same change the effect starts with the codes
-//! given. While it runs the prompt says so; it closes when the change
-//! lands, or says the code was wrong and asks again. A SIM that a wrong PIN
-//! blocks is asked for its PUK next.
+//! The SIM's codes, asked with the window's password prompt.
+//! (`crate::secrets`): its PIN to unlock it or to switch the PIN lock, its.
+//! PUK and a new PIN once it is blocked, and the current and a new PIN to.
 
 use ui::icons::Icon;
 use ui::widget::{FieldSpec, PromptOutcome, SecretAnswer, SecretKind, SecretPrompt};
@@ -15,23 +9,16 @@ use super::{Begun, MobileChange, MobileModel, SimLock};
 use crate::i18n::t;
 use os_actions::{ModemChange, ModemInfo};
 
-/// What the section asks its prompts under.
 const KEY: &str = "mobile";
 
-/// What the open prompt asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum CodeAsk {
-    /// The PIN of the locked SIM `sim`.
     Unlock(Option<String>),
-    /// The PUK of the blocked SIM `sim`, and a new PIN.
     Unblock(Option<String>),
-    /// The PIN, to start (`on`) or stop asking for it at power-on.
     PinLock { sim: Option<String>, on: bool },
-    /// The current PIN and a new one.
     ChangePin(Option<String>),
 }
 
-/// The open prompt, and whether a change it started is running.
 pub(super) struct Asking {
     pub(super) what: CodeAsk,
     busy: bool,
@@ -49,12 +36,10 @@ impl MobileModel {
         self.changed = true;
     }
 
-    /// What the open prompt asks for.
     pub(super) fn asked(&self) -> Option<&CodeAsk> {
         self.asking.as_ref().map(|asking| &asking.what)
     }
 
-    /// Ask for the PIN of the locked SIM `sim`.
     pub(super) fn ask_unlock(&mut self, sim: Option<String>, modem: Option<&ModemInfo>) {
         let prompt = SecretPrompt::new(SecretKind::SimPin {
             attempts_left: modem.and_then(|modem| modem.retries.pin),
@@ -65,7 +50,6 @@ impl MobileModel {
         self.ask(CodeAsk::Unlock(sim), prompt);
     }
 
-    /// Ask for the PUK of the blocked SIM `sim` and a new PIN.
     pub(super) fn ask_unblock(&mut self, sim: Option<String>, modem: Option<&ModemInfo>) {
         let prompt = SecretPrompt::new(SecretKind::SimPuk {
             attempts_left: modem.and_then(|modem| modem.retries.puk),
@@ -76,7 +60,6 @@ impl MobileModel {
         self.ask(CodeAsk::Unblock(sim), prompt);
     }
 
-    /// Ask for the PIN to start or stop asking for it at power-on.
     pub(super) fn ask_pin_lock(
         &mut self,
         sim: Option<String>,
@@ -100,7 +83,6 @@ impl MobileModel {
         self.ask(CodeAsk::PinLock { sim, on }, prompt);
     }
 
-    /// Ask for the current PIN and a new one.
     pub(super) fn ask_change_pin(&mut self, sim: Option<String>) {
         let prompt = SecretPrompt::with_fields(vec![
             FieldSpec::secret(t("net-mobile-current-pin")),
@@ -112,7 +94,6 @@ impl MobileModel {
         self.ask(CodeAsk::ChangePin(sim), prompt);
     }
 
-    /// Close the prompt.
     pub(super) fn close_codes(&mut self) {
         if self.asking.take().is_some() {
             self.reach.secrets.close(KEY);
@@ -155,7 +136,6 @@ impl MobileModel {
         }
     }
 
-    /// Take in what the person answered, and start what it asks for.
     pub(super) fn poll_codes(&mut self) {
         let Some(outcome) = self.reach.secrets.take_answer(KEY) else {
             return;
@@ -180,7 +160,6 @@ impl MobileModel {
         }
     }
 
-    /// The change `answer` asks for.
     fn answered(&mut self, answer: SecretAnswer) -> Result<Begun, String> {
         let Some(what) = self.asked().cloned() else {
             return Ok(Begun::Done);

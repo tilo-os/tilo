@@ -9,36 +9,28 @@ use serde::Deserialize;
 
 use crate::Error;
 
-/// One page: the fields of its front matter, and its Markdown body.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub id: String,
     pub slug: String,
-    /// The page's address on its site, from the site's root (`/docs/files/`).
     pub url: String,
     pub title: String,
-    /// Its name in the navigation, shorter than its title.
     pub nav: String,
     pub description: String,
     pub section: String,
     pub order: u32,
-    /// The repository file it is published from, or for a generated page the
-    /// code it documents.
     pub source: String,
     pub source_url: String,
-    /// The program that wrote it from `source`, for a generated page.
     #[serde(default)]
     pub generator: Option<String>,
     #[serde(skip)]
     pub markdown: String,
-    /// The page as exported, front matter and all: what its `.md` serves.
     #[serde(skip)]
     pub document: String,
 }
 
 impl Page {
-    /// The address of the page's Markdown, beside its HTML (`/docs/files.md`).
     #[must_use]
     pub fn markdown_url(&self, base: &str) -> String {
         let name = if self.slug.is_empty() {
@@ -55,8 +47,6 @@ pub struct Section {
     pub title: String,
 }
 
-/// A reference another program builds and the site serves under the book
-/// (the Rust API reference), which links may lead into.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Api {
     pub title: String,
@@ -95,28 +85,21 @@ struct PageIndex {
     id: String,
 }
 
-/// A whole book: its pages in navigation order, grouped into sections.
 #[derive(Debug, Clone)]
 pub struct Book {
     pub title: String,
     /// The site it is published on (`https://tilo.sh`), empty when unknown.
     pub origin: String,
-    /// Where the book lives on its site (`/docs/`).
     pub base: String,
     pub repository: String,
     pub commit: Option<String>,
     pub examples: Examples,
     pub api: Option<Api>,
     pub sections: Vec<Section>,
-    /// Every page in order; `section` indexes `sections`.
     pub pages: Vec<(usize, Page)>,
 }
 
 impl Book {
-    /// Reads an exported book from `dir`.
-    ///
-    /// # Errors
-    /// When the manifest or a page it lists is missing or malformed.
     pub fn load(dir: &Path) -> Result<Self, Error> {
         let manifest = dir.join("manifest.json");
         let index: Index = serde_json::from_str(&read(&manifest)?)
@@ -165,8 +148,6 @@ impl Book {
         })
     }
 
-    /// The page's address with the site's origin, for links that leave the
-    /// site (canonical links, llms.txt).
     #[must_use]
     pub fn absolute(&self, path: &str) -> String {
         format!("{}{path}", self.origin)
@@ -177,12 +158,13 @@ fn read(path: &Path) -> Result<String, Error> {
     fs::read_to_string(path).map_err(|error| Error::Io(PathBuf::from(path), error))
 }
 
-/// Splits a page into its front matter (one `key: <JSON value>` per line, as
-/// the export writes it) and its Markdown body.
+/// Split a page into its front matter (one `key: <JSON value>` per line, as the
+/// export writes it) and its Markdown body.
 ///
 /// # Errors
-/// When the front matter is missing, a line is not `key: value`, or a field
-/// is missing or of the wrong type.
+///
+/// When the front matter is missing, a line is not `key: value`, or a field is
+/// missing or of the wrong type.
 pub fn parse_page(path: &Path, text: &str) -> Result<Page, Error> {
     let malformed = |why: &str| Error::Malformed(path.to_path_buf(), why.to_string());
     let rest = text

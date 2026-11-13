@@ -1,47 +1,8 @@
 //! Where per-user data, configuration, state, cache and runtime files live.
 //!
-//! # Portable app locations
-//!
-//! [`AppPaths::for_app`] gives an app its data, config, cache, state and
-//! runtime locations, the user's folders, the workspace and the font catalog
-//! through one API on Linux, macOS and the web. A [`Location`] is either a
-//! native path or a path inside a [`VirtualRoot`] (the browser's
-//! origin-private file system, or memory); [`Location::native_path`] is the
-//! explicit, fallible way back to a `Path`. What a target cannot provide is
-//! an [`Unsupported`] error at run time and an entry of its [`Feature`]'s
-//! targets, never a
-//! missing item: this crate is where the target-specific code lives, so apps
-//! need none.
-//!
-//! The native directory functions below are the Linux and macOS backends,
-//! and stay public for code whose paths are a contract with other programs.
-//!
-//! # Why one crate
-//!
-//! Tilo apps and services each used to re-derive these directories, and the
-//! hand-rolled resolvers disagreed with the XDG Base Directory specification
-//! and with each other: several joined a **relative** `XDG_DATA_HOME` against
-//! the working directory, or took an empty variable as a path. The spec says a
-//! relative value is invalid and must be ignored, and an empty one is unset.
-//! Two readers of the same store that disagree on that rule silently read and
-//! write different files. Every resolver here applies the rule once.
-//!
-//! # Two families
-//!
-//! - [`xdg`] applies the XDG rules on every platform: `$XDG_*_HOME` when set,
-//!   non-empty and absolute, else the spec's `$HOME` default. Use it where a
-//!   path is part of a contract with other XDG readers (the shared settings
-//!   file, desktop entries, identity files).
-//! - The top-level [`data_dir`], [`config_dir`], [`state_dir`], [`cache_dir`]
-//!   and [`runtime_dir`] are the platform's per-user directories: the XDG
-//!   rules on Linux and other Unix systems, and the native locations on macOS
-//!   (`~/Library/…`, `$TMPDIR`) and Windows (`%APPDATA%`, `%LOCALAPPDATA%`).
-//!   Use them for an app's own storage.
-//!
-//! [`AppDirs`] joins an app's directory name onto either family.
-//!
-//! [`UserDir`] and its shorthands ([`document_dir`], [`download_dir`], …)
-//! resolve the user's content folders, localized through `user-dirs.dirs`.
+//! [`AppPaths::for_app`] gives an app its data, config, cache, state and runtime
+//! locations, the user's folders, the workspace and the font catalog, on every
+//! target; the functions here are the same base directories for code without an app.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -78,7 +39,6 @@ pub fn workspace_tree(files: &std::path::Path, id: &str) -> Option<PathBuf> {
     is_workspace_tree_id(id).then(|| files.join(WORKSPACE_TREES_DIR).join(id))
 }
 
-/// Whether `id` names a workspace tree ([`workspace_tree`]).
 #[must_use]
 pub fn is_workspace_tree_id(id: &str) -> bool {
     (1..=128).contains(&id.len())
@@ -87,9 +47,6 @@ pub fn is_workspace_tree_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// The collaborative workspace mounted for this process, as a native path
-/// ([`AppPaths::workspace_root`] for any app). `None` in a page and when no
-/// workspace is mounted.
 #[must_use]
 pub fn workspace_root() -> Option<PathBuf> {
     let location = AppPaths::for_app("workspace").workspace_root().ok()?;
@@ -99,26 +56,73 @@ pub fn workspace_root() -> Option<PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
-/// Where the language packs a person installed live
-/// (`$XDG_DATA_HOME/tilo/language-packs`, one directory per language): the
-/// installer service writes them there, on the path it installs runtimes
-/// on, and the runtime reads them before the packs the OS image carries.
-/// `None` without a home.
 #[must_use]
 pub fn language_packs_dir() -> Option<PathBuf> {
     xdg::data_home().map(|data| data.join("tilo").join("language-packs"))
 }
 
-/// The language a tag names, as a language pack is named: its language
-/// subtag, lower case (`de` of `de`, `de-DE` and `de_DE`). One pack holds a
-/// language's catalogues whatever region a tag adds, so a choice, the pack's
-/// directory and its package id meet at this one name.
+/// The language a locale names, as a language pack is named: its language
+/// subtag, lower case (`de` of `de`, `de-DE`, `de_DE.UTF-8@euro`). One pack
+/// holds a language's catalogues whatever region, encoding or modifier a
+/// locale adds, so a choice, the pack's directory and its package id meet at
+/// this one name. Empty when no language is named.
+///
+/// This is the one rule for "which language is this tag": every reader of a
+/// language tag — the packs, the toolkits, history, desktop entries — asks
+/// here, so a language picked anywhere matches everywhere.
 #[must_use]
 pub fn language_of(tag: &str) -> String {
-    tag.split(['-', '_'])
+    tag.trim()
+        .split(['-', '_', '.', '@'])
         .next()
-        .unwrap_or(tag)
+        .unwrap_or_default()
         .to_ascii_lowercase()
+}
+
+/// The BCP 47 tag a locale names: the POSIX `de_DE.UTF-8@euro`, the
+/// `LANGUAGE` list `de_AT:en_US` and the BCP 47 `de-DE` all name `de-DE`.
+/// The encoding and the modifier name no language, a list's first entry is
+/// the language, and a tag spells the `_` a POSIX locale uses as `-`.
+#[must_use]
+pub fn locale_tag(locale: &str) -> String {
+    locale
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .split(['.', '@'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .replace('_', "-")
+}
+
+/// Whether `tag` names a language: `C`, `POSIX`, `C.UTF-8` and an empty
+/// value name none, so their text is read untranslated.
+#[must_use]
+pub fn names_language(tag: &str) -> bool {
+    !matches!(language_of(tag).as_str(), "" | "c" | "posix")
+}
+
+/// The position in `candidates` (language tags, in the order the caller
+/// prefers them) of the one a reader of `locale` reads best: their own tag
+/// (`de-DE` for `de_DE.UTF-8`), else another region of their language
+/// (`de-DE` for `de-AT`). `None` when neither is there or `locale` names no
+/// language. This is the one rule for which tag a reader gets, so every
+/// catalogue, name and window picks the same one.
+#[must_use]
+pub fn matching<'a>(
+    locale: &str,
+    mut candidates: impl Iterator<Item = &'a str> + Clone,
+) -> Option<usize> {
+    if !names_language(locale) {
+        return None;
+    }
+    let tag = locale_tag(locale);
+    let language = language_of(locale);
+    let mut exact = candidates.clone();
+    exact
+        .position(|candidate| locale_tag(candidate).eq_ignore_ascii_case(&tag))
+        .or_else(|| candidates.position(|candidate| language_of(candidate) == language))
 }
 
 #[cfg(windows)]
@@ -202,9 +206,6 @@ pub fn scope_profile(root: impl Into<PathBuf>) -> ProfileScope {
     ProfileScope { earlier }
 }
 
-/// Run `work` with this thread's own [`scope_profile`] lifted, seeing the
-/// process's folders (a host reading its own settings for a scoped
-/// participant), then restore the scope.
 pub fn unscoped<R>(work: impl FnOnce() -> R) -> R {
     let _scope = ProfileScope {
         earlier: PROFILE_ROOT.with(|root| root.borrow_mut().take()),
@@ -212,14 +213,11 @@ pub fn unscoped<R>(work: impl FnOnce() -> R) -> R {
     work()
 }
 
-/// The root [`scope_profile`] set for this thread, if any.
 #[must_use]
 pub fn scoped_profile() -> Option<PathBuf> {
     PROFILE_ROOT.with(|root| root.borrow().clone())
 }
 
-/// `$name`, as this thread sees it: below its [`scope_profile`] root for
-/// the per-user variables, else from the process environment.
 fn var(name: &str) -> Option<OsString> {
     let Some(root) = scoped_profile() else {
         return std::env::var_os(name);
@@ -244,33 +242,27 @@ fn absolute(value: Option<OsString>) -> Option<PathBuf> {
     value.map(PathBuf::from).filter(|path| path.is_absolute())
 }
 
-/// The base directories as the XDG Base Directory specification defines them,
-/// on every platform.
 pub mod xdg {
     use std::ffi::{OsStr, OsString};
     use std::path::PathBuf;
 
     use super::{absolute, home};
 
-    /// `$XDG_DATA_HOME`, else `$HOME/.local/share`.
     #[must_use]
     pub fn data_home() -> Option<PathBuf> {
         Base::Data.resolve(&env, home)
     }
 
-    /// `$XDG_CONFIG_HOME`, else `$HOME/.config`.
     #[must_use]
     pub fn config_home() -> Option<PathBuf> {
         Base::Config.resolve(&env, home)
     }
 
-    /// `$XDG_STATE_HOME`, else `$HOME/.local/state`.
     #[must_use]
     pub fn state_home() -> Option<PathBuf> {
         Base::State.resolve(&env, home)
     }
 
-    /// `$XDG_CACHE_HOME`, else `$HOME/.cache`.
     #[must_use]
     pub fn cache_home() -> Option<PathBuf> {
         Base::Cache.resolve(&env, home)
@@ -309,7 +301,6 @@ pub mod xdg {
         runtime_dir_or_default().join("tilo/services")
     }
 
-    /// The socket the service `name` listens on, and the launcher dials.
     #[cfg(unix)]
     #[must_use]
     pub fn service_socket(name: &str) -> PathBuf {
@@ -338,23 +329,16 @@ pub mod xdg {
         super::var(name)
     }
 
-    /// One of the spec's per-user base directories.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Base {
-        /// `XDG_DATA_HOME`, default `$HOME/.local/share`.
         Data,
-        /// `XDG_CONFIG_HOME`, default `$HOME/.config`.
         Config,
-        /// `XDG_STATE_HOME`, default `$HOME/.local/state`.
         State,
-        /// `XDG_CACHE_HOME`, default `$HOME/.cache`.
         Cache,
-        /// `XDG_RUNTIME_DIR`, no default.
         Runtime,
     }
 
     impl Base {
-        /// The environment variable that names this directory.
         #[must_use]
         pub const fn env_var(self) -> &'static str {
             match self {
@@ -366,7 +350,6 @@ pub mod xdg {
             }
         }
 
-        /// The default below `$HOME` when the variable is unusable.
         const fn home_default(self) -> Option<&'static str> {
             match self {
                 Self::Data => Some(".local/share"),
@@ -632,8 +615,6 @@ mod platform {
 
     use super::UserDir;
 
-    /// The shell's current location for a known folder, which follows folder
-    /// redirection and cannot be spoofed through the environment.
     fn known_folder(id: &GUID) -> Option<PathBuf> {
         let mut raw: PWSTR = std::ptr::null_mut();
         // SAFETY: `id` is a valid GUID reference, a null token selects the
@@ -748,13 +729,10 @@ pub enum UserDir {
     Pictures,
     Videos,
     Templates,
-    /// `XDG_PUBLICSHARE_DIR`.
     PublicShare,
 }
 
 impl UserDir {
-    /// The environment variable, and `user-dirs.dirs` key, that names this
-    /// directory.
     #[must_use]
     pub const fn env_var(self) -> &'static str {
         match self {
@@ -789,15 +767,11 @@ impl UserDir {
         }
     }
 
-    /// Resolve this directory for the current user on this platform.
     #[must_use]
     pub fn resolve(self) -> Option<PathBuf> {
         platform::user_dir(self)
     }
 
-    /// Resolve against an explicit home directory with the XDG rules:
-    /// `$XDG_<NAME>_DIR` from the process environment, else the
-    /// `user-dirs.dirs` file below `$XDG_CONFIG_HOME` (default `home/.config`).
     #[must_use]
     pub fn resolve_for_home(self, home: &std::path::Path) -> Option<PathBuf> {
         let config_home = xdg::Base::Config
@@ -903,37 +877,31 @@ fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
     }
 }
 
-/// [`UserDir::Desktop`] for the current user.
 #[must_use]
 pub fn desktop_dir() -> Option<PathBuf> {
     UserDir::Desktop.resolve()
 }
 
-/// [`UserDir::Documents`] for the current user.
 #[must_use]
 pub fn document_dir() -> Option<PathBuf> {
     UserDir::Documents.resolve()
 }
 
-/// [`UserDir::Download`] for the current user.
 #[must_use]
 pub fn download_dir() -> Option<PathBuf> {
     UserDir::Download.resolve()
 }
 
-/// [`UserDir::Music`] for the current user.
 #[must_use]
 pub fn audio_dir() -> Option<PathBuf> {
     UserDir::Music.resolve()
 }
 
-/// [`UserDir::Pictures`] for the current user.
 #[must_use]
 pub fn picture_dir() -> Option<PathBuf> {
     UserDir::Pictures.resolve()
 }
 
-/// [`UserDir::Videos`] for the current user.
 #[must_use]
 pub fn video_dir() -> Option<PathBuf> {
     UserDir::Videos.resolve()
@@ -947,37 +915,31 @@ pub struct AppDirs<'a> {
 }
 
 impl<'a> AppDirs<'a> {
-    /// `name` is one path component (or a relative path) under each base.
     #[must_use]
     pub const fn new(name: &'a str) -> Self {
         Self { name }
     }
 
-    /// `name` under [`data_dir`].
     #[must_use]
     pub fn data(&self) -> Option<PathBuf> {
         Some(data_dir()?.join(self.name))
     }
 
-    /// `name` under [`config_dir`].
     #[must_use]
     pub fn config(&self) -> Option<PathBuf> {
         Some(config_dir()?.join(self.name))
     }
 
-    /// `name` under [`state_dir`].
     #[must_use]
     pub fn state(&self) -> Option<PathBuf> {
         Some(state_dir()?.join(self.name))
     }
 
-    /// `name` under [`cache_dir`].
     #[must_use]
     pub fn cache(&self) -> Option<PathBuf> {
         Some(cache_dir()?.join(self.name))
     }
 
-    /// `name` under [`runtime_dir`].
     #[must_use]
     pub fn runtime(&self) -> Option<PathBuf> {
         Some(runtime_dir()?.join(self.name))
@@ -1005,6 +967,53 @@ mod tests {
     #[cfg(unix)]
     fn home_is(path: &str) -> impl FnOnce() -> Option<PathBuf> + '_ {
         move || Some(PathBuf::from(path))
+    }
+
+    #[test]
+    fn a_locale_names_one_language_however_it_is_spelled() {
+        for (locale, language, tag, named) in [
+            ("de", "de", "de", true),
+            ("de-DE", "de", "de-DE", true),
+            ("de_DE", "de", "de-DE", true),
+            ("de_DE.UTF-8", "de", "de-DE", true),
+            ("de_DE.UTF-8@euro", "de", "de-DE", true),
+            ("de.UTF-8", "de", "de", true),
+            (" de-DE ", "de", "de-DE", true),
+            ("DE-de", "de", "DE-de", true),
+            ("de_AT:en_US", "de", "de-AT", true),
+            ("en-US", "en", "en-US", true),
+            ("es-419", "es", "es-419", true),
+            ("zh-Hant-TW", "zh", "zh-Hant-TW", true),
+            ("C", "c", "C", false),
+            ("C.UTF-8", "c", "C", false),
+            ("POSIX", "posix", "POSIX", false),
+            ("", "", "", false),
+        ] {
+            assert_eq!(language_of(locale), language, "{locale:?}");
+            assert_eq!(locale_tag(locale), tag, "{locale:?}");
+            assert_eq!(names_language(locale), named, "{locale:?}");
+        }
+    }
+
+    #[test]
+    fn a_reader_is_served_by_its_own_tag_or_another_region_of_its_language() {
+        for (locale, candidates, want) in [
+            ("de-DE", &["en-US", "de-DE"][..], Some(1)),
+            ("de_DE.UTF-8", &["en-US", "de-DE"], Some(1)),
+            ("de-AT", &["en-US", "de-DE"], Some(1)),
+            ("de", &["de-DE", "de"], Some(1)),
+            ("en-US", &["de-DE", "en-US"], Some(1)),
+            ("fr-FR", &["de-DE", "en-US"], None),
+            ("fr-FR", &[], None),
+            ("C", &["de-DE"], None),
+            ("", &["de-DE"], None),
+        ] {
+            assert_eq!(
+                matching(locale, candidates.iter().copied()),
+                want,
+                "{locale:?}"
+            );
+        }
     }
 
     #[test]
@@ -1058,8 +1067,6 @@ mod tests {
             }
         }
         {
-            // A relative value would resolve against whatever directory the
-            // process happened to start in; the spec says to ignore it.
             for value in ["relative/data", "", "./data", "~/data"] {
                 let vars = [("XDG_DATA_HOME", value), ("XDG_RUNTIME_DIR", value)];
                 let var = env(&vars);

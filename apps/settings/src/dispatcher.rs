@@ -1,11 +1,4 @@
 //! Shared dispatcher plumbing for the Settings panes.
-//!
-//! Every pane that drives a real hardware action (display, audio,
-//! network, bluetooth) holds an `Arc<dyn os_actions::Dispatcher + Send +
-//! Sync>` so tests can substitute a `testing::RecordingDispatcher`.
-//! [`dispatcher_or_real`] is the small ergonomic helper the pane
-//! constructors call: pass `Some(arc)` from a test to wire the recorder,
-//! pass `None` from production to get `os_actions::RealDispatcher`.
 
 use std::sync::Arc;
 

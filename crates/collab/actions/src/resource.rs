@@ -1064,6 +1064,11 @@ pub const NESTED_RESOURCE_FACET: &str = "part";
 pub struct ActionType {
     /// Stable id within the resource (e.g. `"like"`, `"reply"`).
     pub id: String,
+    /// The id a change this action makes says it by, where that is not `id`: an app that offers
+    /// its actions under a name (a tilolang app's `new_note`) records the declaration's id
+    /// (`qymo5lg2`) in its changes, and history reads this action's label for them. Empty where
+    /// the two are the same, as for a native verb.
+    pub declared: String,
     pub label: String,
     /// The other words people use for this action, in plain language
     /// ("mkdir" and "make directory" for New folder): search finds the
@@ -1564,6 +1569,7 @@ impl ActionSpec {
     ) -> Self {
         Self::of(ActionType {
             id: seed.id,
+            declared: String::new(),
             label: seed.label,
             keywords: Vec::new(),
             icon: None,

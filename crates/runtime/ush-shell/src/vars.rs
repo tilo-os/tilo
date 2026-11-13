@@ -3,18 +3,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-/// A variable's value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Scalar(String),
-    /// `a=(x y)`: sparse, by index.
     Indexed(BTreeMap<i64, String>),
-    /// `declare -A m`: by key.
     Assoc(BTreeMap<String, String>),
 }
 
 impl Value {
-    /// The value as a scalar: an array's element 0, as bash reads `$a`.
     pub fn scalar(&self) -> Option<String> {
         match self {
             Self::Scalar(s) => Some(s.clone()),
@@ -23,7 +19,6 @@ impl Value {
         }
     }
 
-    /// Every element, in order.
     pub fn elements(&self) -> Vec<String> {
         match self {
             Self::Scalar(s) => vec![s.clone()],
@@ -32,7 +27,6 @@ impl Value {
         }
     }
 
-    /// Every index or key, in order.
     pub fn keys(&self) -> Vec<String> {
         match self {
             Self::Scalar(_) => vec!["0".into()],
@@ -53,7 +47,6 @@ pub struct Var {
     pub integer: bool,
 }
 
-/// Why an assignment was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOnly(pub String);
 
@@ -63,12 +56,9 @@ impl std::fmt::Display for ReadOnly {
     }
 }
 
-/// Every variable, and the scopes `local` opened.
 #[derive(Debug, Clone, Default)]
 pub struct Vars {
     map: HashMap<String, Var>,
-    /// For each function call, what its `local`s shadowed, to put back when
-    /// it returns.
     frames: Vec<Vec<(String, Option<Var>)>>,
 }
 
@@ -81,7 +71,6 @@ impl Vars {
         self.map.get_mut(name)
     }
 
-    /// The scalar value of `name`, if it is set.
     pub fn scalar(&self, name: &str) -> Option<String> {
         self.map
             .get(name)
@@ -113,7 +102,6 @@ impl Vars {
         Ok(())
     }
 
-    /// Replace the whole value of `name`.
     pub fn set_value(&mut self, name: &str, value: Value) -> Result<(), ReadOnly> {
         let var = self.map.entry(name.to_string()).or_default();
         if var.readonly {
@@ -167,7 +155,6 @@ impl Vars {
         Ok(())
     }
 
-    /// Declare `name` without a value (`declare x`, `export x`), keeping one
     /// it has.
     pub fn declare(&mut self, name: &str) -> &mut Var {
         self.map.entry(name.to_string()).or_default()
@@ -203,12 +190,10 @@ impl Vars {
         Ok(())
     }
 
-    /// Open a function's scope.
     pub fn push_frame(&mut self) {
         self.frames.push(Vec::new());
     }
 
-    /// Close it: every `local` gets back what it shadowed.
     pub fn pop_frame(&mut self) {
         let Some(frame) = self.frames.pop() else {
             return;
@@ -251,7 +236,6 @@ impl Vars {
         );
     }
 
-    /// The environment a program gets: every exported variable with a value.
     pub fn exported(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = self
             .map
@@ -263,7 +247,6 @@ impl Vars {
         out
     }
 
-    /// Every variable, sorted by name.
     pub fn all(&self) -> Vec<(&String, &Var)> {
         let mut out: Vec<_> = self.map.iter().collect();
         out.sort_by(|a, b| a.0.cmp(b.0));
@@ -271,7 +254,6 @@ impl Vars {
     }
 }
 
-/// Whether `name` is a valid variable name.
 pub fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars

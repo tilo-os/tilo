@@ -170,7 +170,7 @@ impl HistoryRegistration {
         let resource = if let Some(saver) =
             autosave.filter(|saver| !saver.document_path().as_os_str().is_empty())
         {
-            if saver.package_id() != definition.app_id {
+            if saver.app_id().map(tilo_app_id::AppId::as_str) != Some(definition.app_id) {
                 return Err(HistoryRegistrationError::ForeignSource);
             }
             HistoryResource::new(

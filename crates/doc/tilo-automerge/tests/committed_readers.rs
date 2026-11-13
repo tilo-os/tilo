@@ -22,7 +22,6 @@ fn committed_readers_see_what_get_heads_and_diff_see_once_committed() {
         Some(1)
     );
 
-    // A transaction still open is not part of the committed document.
     doc.put(ROOT, "count", 3_i64).unwrap();
     assert_eq!(doc.committed_heads(), second);
     let third = doc.get_heads();

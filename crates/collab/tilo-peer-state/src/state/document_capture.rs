@@ -332,7 +332,7 @@ impl StatePeer {
             .map_err(PeerDocumentReadError::Membership)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         if !super::backend::access::document_read(
-            &member.authority(&bound),
+            &member.authority(bound),
             &self.core.workspace,
             app,
             record,

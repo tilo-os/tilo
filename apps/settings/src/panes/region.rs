@@ -1,15 +1,7 @@
-//! Region & Formats pane — the editor for the person's **locale**.
+//! Region & Formats: the editor for the person's locale.
 //!
-//! This panel edits [`tilo_locale::Locale`], the `locale` section of the
-//! person's settings, which every app's toolkit follows. The Sheets app reads
-//! `locale.currency` / `locale.date_format` / `locale.time_format` for its
-//! cell formatting, and the Weather app reads `locale.measurement` for its
-//! °C/°F + km/h vs mph toggle. Editing here is the single source of truth
-//! those apps follow.
-//!
-//! The page is view code over the section ([`view`]): each control is a
-//! `Dropdown` bound to its field, mapping the shown label to the stored
-//! value, and the page shows what the section holds, whoever changed it.
+//! This panel edits [`tilo_locale::Locale`], the `locale` section every app's
+//! toolkit follows for number, date and time formatting and for units.
 
 use std::rc::Rc;
 
@@ -61,13 +53,7 @@ fn weekday_label(day: FirstDayOfWeek) -> String {
     })
 }
 
-/// The Region & formats page as view code over the person's locale and the
-/// language their appearance section names, with the languages `app`
-/// knows of: the formats bound to their fields, the preview following them,
-/// the language chosen through [`language::LanguageEffect`] (its pack may
-/// need installing first).
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
-    // Ask the repositories what they offer as the page opens.
     if let Some(area) = language::area(app) {
         area.read();
     }
@@ -106,9 +92,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     Some(page_of(vec![language, formats, explainer.into_element()]))
 }
 
-/// The Language card: the language `chosen`, among the installed ones and
-/// those `languages` offers, and an install under way or the reason one
-/// stopped.
 fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::Model>(
     cx: &ViewCx<R>,
     actions: &Actions<Settings>,
@@ -156,7 +139,6 @@ fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::
     section(&t("settings-region-language-card"), rows(items))
 }
 
-/// The formats, each bound to its field of the locale.
 fn formats_card(cx: &ViewCx<Locale>) -> SettingsSection {
     section(
         &t("settings-region-formats-card"),
@@ -171,8 +153,6 @@ fn formats_card(cx: &ViewCx<Locale>) -> SettingsSection {
     )
 }
 
-/// What `loc` makes of an amount, a date, a time, a temperature and the
-/// week.
 fn preview_card(loc: Locale) -> SettingsSection {
     let amount = loc.number_style.amount(loc.currency.symbol());
     let temp = t(match loc.measurement {
@@ -198,7 +178,6 @@ fn preview_card(loc: Locale) -> SettingsSection {
     )
 }
 
-/// Currencies by their ISO code, the stored form.
 pub(crate) fn currency(cx: &ViewCx<Locale>) -> Item {
     cx.setting(t("settings-region-currency"))
         .id("region.currency")
@@ -269,9 +248,6 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
-    /// Each format is the person's `locale` section, written in the
-    /// cross-app shape Sheets and Weather read; a value outside the offered
-    /// ones is refused and changes nothing.
     #[test]
     fn region_effects_write_the_locale() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -299,10 +275,6 @@ mod tests {
         assert_eq!(app.settings::<Locale>().get(), locale);
     }
 
-    /// The interface language is chosen here, among the languages the
-    /// desktop has installed, and written where every app and the shell
-    /// read it (`appearance.language`); unset, the pane shows the device's
-    /// language as the choice.
     #[test]
     fn the_language_is_chosen_among_the_installed_ones() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -323,9 +295,6 @@ mod tests {
         );
     }
 
-    /// Choosing an installed language takes effect at once, named as its pack
-    /// is; a language the desktop neither has nor is offered is refused and
-    /// changes nothing.
     #[test]
     fn choosing_an_installed_language_writes_it_at_once() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -348,9 +317,6 @@ mod tests {
         assert_eq!(app.settings::<AppearancePrefs>().get().language, None);
     }
 
-    /// With no date format or clock chosen the pane shows "Follow language"
-    /// as each value and offers it first; ISO, 12-hour and 24-hour are
-    /// explicit choices among the rest.
     #[test]
     fn the_date_format_and_clock_default_to_following_the_language() {
         assert_eq!(Locale::default().date_format, DateStyle::Language);
@@ -376,8 +342,6 @@ mod tests {
         assert_eq!(TimeStyle::ALL[0], TimeStyle::Language);
     }
 
-    /// The page shows the stored locale and follows a change made
-    /// elsewhere.
     #[test]
     fn the_page_follows_the_locale() {
         let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();

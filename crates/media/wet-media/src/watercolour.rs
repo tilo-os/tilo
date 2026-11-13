@@ -20,7 +20,6 @@ use crate::grid::{Area, at, box_blur, cell, extract, float, smoothstep, store};
 use crate::ground::fbm;
 use crate::mask::{Coverage, brush_footprint, erase_coverage, fill, lift};
 
-/// The watercolour engine.
 pub struct Watercolour {
     params: Arc<[ParamSpec]>,
 }
@@ -125,15 +124,10 @@ struct WaterLayer {
     canvas: Canvas,
     settings: Settings,
     water: Vec<f32>,
-    /// Optical density of pigment still moving, per channel.
     suspended: [Vec<f32>; 3],
-    /// How granulating the suspended pigment is, `0..=1`.
     granulating: Vec<f32>,
-    /// Optical density of pigment fixed to the paper, per channel.
     deposit: [Vec<f32>; 3],
-    /// The cells holding water.
     wet_area: Area,
-    /// Drying settings of the wet wash, from the mark that last wetted it.
     edge: f32,
     granulation: f32,
 }
@@ -164,7 +158,6 @@ impl WaterLayer {
         }
     }
 
-    /// The deposit once everything wet has dried, without changing the state.
     fn dried(&self) -> [Vec<f32>; 3] {
         let mut deposit = self.deposit.clone();
         self.dry_into(&mut deposit);
@@ -187,8 +180,6 @@ impl WaterLayer {
         let settle: Vec<f32> = (0..wet.len())
             .map(|index| {
                 let (x, y) = area.position(index);
-                // Water evaporates fastest at the rim and draws pigment
-                // there, so the rim darkens and the middle pales a little.
                 let rim = ((wet.get(index).copied().unwrap_or(0.0)
                     - around.get(index).copied().unwrap_or(0.0))
                     * 2.0)
@@ -268,7 +259,6 @@ impl LayerSim for WaterLayer {
             .map(|(index, mask)| {
                 let (x, y) = area.position(index);
                 let (x, y) = self.canvas.absolute(float(x), float(y));
-                // Pigment pools unevenly: broad puddles and finer mottling.
                 let bloom = fbm(x / (grain * 2.0), y / (grain * 2.0), seed ^ 0xb100, 2);
                 let pool = fbm(x / (grain * 6.0), y / (grain * 6.0), seed ^ 0x9001, 2);
                 mask * load
@@ -289,8 +279,6 @@ impl LayerSim for WaterLayer {
             }
         }
 
-        // Flow: pigment and water move through whatever is wet, so a mark
-        // laid into a wet wash bleeds into it.
         let wet: Vec<f32> = local_water
             .iter()
             .map(|water| smoothstep(0.02, 0.3, *water))
@@ -349,8 +337,6 @@ impl LayerSim for WaterLayer {
                             .unwrap_or(0.0);
                         from_linear((-density.max(0.0)).exp())
                     });
-                    // Multiply by `encoded` is drawing `colour` at `alpha`
-                    // over the backdrop with a multiply blend.
                     let darkest = encoded.iter().copied().fold(1.0_f32, f32::min);
                     let alpha = 1.0 - darkest;
                     let colour = encoded.map(|value| {
@@ -377,10 +363,6 @@ impl LayerSim for WaterLayer {
 }
 
 impl WaterLayer {
-    /// Lift pigment off along an eraser, as a damp sponge does: what is
-    /// fixed to the paper, what still floats and the water it floats in all
-    /// thin under it, so a full-strength eraser leaves clean paper. A wet
-    /// wash is not dried first; what is left of it still bleeds.
     fn erase(&mut self, erase: &Erase) {
         let width = self.width();
         let coverage = erase_coverage(erase, (width, self.canvas.height));
@@ -398,8 +380,6 @@ impl WaterLayer {
     }
 }
 
-/// A wash's irregular, soft edge: the footprint blurred and cut at a
-/// threshold that wanders with noise.
 fn wash_edge(
     coverage: &Coverage,
     size: f32,

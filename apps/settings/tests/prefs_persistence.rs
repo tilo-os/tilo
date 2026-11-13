@@ -1,13 +1,9 @@
-//! End-to-end persistence proofs — the real "control → shared JSON store"
-//! path, driven through each pane's production `sync` and read back from
-//! disk.
-//!
-//! The panes resolve the shared settings from `XDG_CONFIG_HOME`, so the
-//! environment is the interface here: each test points it at a fresh tree
-//! through `tilo_test_env::TestHome`, which serialises the tests on one lock
-//! and restores the prior environment afterwards, also when an assertion
-//! fails. The accounts test needs no environment at all; it hands the pane an
-//! explicit config root.
+//! End-to-end persistence proofs — the real "control → shared JSON store" path,
+//! driven through each pane's production `sync` and read back from disk. The
+//! panes resolve the shared settings from `XDG_CONFIG_HOME`, so the environment
+//! is the interface here: each test points it at a fresh tree through
+//! `tilo_test_env::TestHome`, which serialises the tests on one lock and
+//! restores the prior environment afterwards, also when an assertion fails.
 
 use settings::accounts::{AccountDirectory, AccountKind, AccountRoot};
 
@@ -25,7 +21,6 @@ impl settings::account_probe::AccountTester for AcceptAccount {
 
 #[test]
 fn local_prefs_and_accounts_persist_to_disk() {
-    // Case `accounts_add_and_remove_round_trip_through_the_pane`.
     // The External Accounts pane's Add flow writes a real account into the shared
     // canonical accounts store (the same store Mail reads), and Remove deletes it
     // — the full load/edit/save path through the pane, not just the store unit
@@ -35,7 +30,6 @@ fn local_prefs_and_accounts_persist_to_disk() {
         let config_root = config.path().join("tilo");
         let account_root = AccountRoot::at(&config_root);
 
-        // Fresh install → empty stores.
         assert!(AccountDirectory::load_in(&account_root).is_empty());
 
         let mut pane = settings::panes::accounts::AccountsPane::in_root(account_root.clone())
@@ -89,15 +83,12 @@ fn local_prefs_and_accounts_persist_to_disk() {
 
         pane.remove(&id).unwrap();
 
-        // The directory now reports empty for the Email kind — the account is gone
-        // from the shared store on disk.
         assert!(
             AccountDirectory::load_in(&account_root)
                 .views_of(AccountKind::Mail)
                 .is_empty(),
             "Remove deleted the account from the shared store on disk"
         );
-        // …and its sealed credential was dropped from the vault too.
         assert!(
             account_root.vault().get(&account_id).is_none(),
             "Remove also purged the account's vault secret"

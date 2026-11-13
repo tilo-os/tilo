@@ -1,26 +1,19 @@
 //! A cgroup per job, and the providers that make them.
-//!
 //! ```text
 //! <the worker's cgroup>/     the pod's (kubelet sets memory.oom.group=1 here)
-//!   worker/                  the worker; memory.min = reserve
-//!   jobs/                    memory.max = budget; every controller enabled
-//!     <job>/                 one per running job
+//! worker/                  the worker; memory.min = reserve
+//! jobs/                    memory.max = budget; every controller enabled
+//! <job>/                 one per running job
 //! ```
-//!
-//! The budget bounds what jobs hold together, in two ways. A job is admitted
-//! when the reservations of the running jobs, its own included, fit in the
-//! budget ([`Limits::memory_reserved`]). Its `memory.max` may be higher than
-//! its reservation, so a job that briefly needs more gets it from what others
-//! leave unused; `jobs/memory.max` keeps them all below the pod's limit, and
-//! the caller's guard stops the job furthest past its reservation when memory
-//! runs short.
-//!
-//! A [`CgroupProvider`] makes the job cgroups. [`Direct`] does it itself, in
-//! a cgroup it may write (a privileged container, a systemd unit with
-//! `Delegate=yes`); a per-node broker (not yet built) would do it for a
-//! worker whose cgroupfs is read-only. Either way the job's cgroup arrives as
-//! a [`JobCgroup`]: a directory descriptor `clone3` starts the job in, the
-//! counters, and `cgroup.kill` when it is dropped.
+//! The budget bounds what jobs hold together, in two ways. A job is admitted when the reservations
+//! of the running jobs, its own included, fit in the budget ([`Limits::memory_reserved`]). Its
+//! `memory.max` may be higher than its reservation, so a job that briefly needs more gets it from
+//! what others leave unused; `jobs/memory.max` keeps them all below the pod's limit, and the
+//! caller's guard stops the job furthest past its reservation when memory runs short. A
+//! [`CgroupProvider`] makes the job cgroups. [`Direct`] does it itself, in a cgroup it may write (a
+//! privileged container, a systemd unit with `Delegate=yes`); a broker does it for a worker whose
+//! cgroupfs is read-only. Either way the job's cgroup arrives as a [`JobCgroup`]: a directory
+//! descriptor `clone3` starts the job in, the counters, and `cgroup.kill` when it is dropped.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -37,15 +30,13 @@ pub const CONTROLLERS: [&str; 4] = ["cpu", "memory", "io", "pids"];
 /// The `pids.max` a job gets unless it asks for another.
 pub const DEFAULT_PIDS_MAX: u64 = 4096;
 
-/// What a job's cgroup bounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
-    /// `memory.max`, bytes. `memory.high` is never set: with no swap, a
-    /// `high` below `max` throttles a job into a hang instead of failing it.
+    /// `memory.max`, bytes. `memory.high` is never set: with no swap, a `high` below `max`
+    /// throttles a job into a hang instead of failing it.
     pub memory_max: Option<u64>,
-    /// The memory the caller's scheduler reserved for the job, bytes: what
-    /// admission counts against the budget. `memory_max` may be above it.
-    /// Without one, the job's `memory_max` is counted.
+    /// The memory the caller's scheduler reserved for the job, bytes: what admission counts against
+    /// the budget. `memory_max` may be above it. Without one, the job's `memory_max` is counted.
     pub memory_reserved: Option<u64>,
     pub pids_max: Option<u64>,
     /// `cpu.weight`, 1–10000 (the kernel's default is 100): the job's share.
@@ -57,8 +48,6 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// What admission counts of this job against the budget: its
-    /// reservation, else its `memory.max`.
     pub fn counted(&self) -> Option<u64> {
         self.memory_reserved.or(self.memory_max)
     }
@@ -83,8 +72,8 @@ pub struct CpuMax {
     pub period_us: u64,
 }
 
-/// One disk's `io.max`. The kernel takes only a whole disk's numbers, not a
-/// partition's: [`IoMax::for_path`] finds the disk a path is on.
+/// One disk's `io.max`. The kernel takes only a whole disk's numbers, not a partition's:
+/// [`IoMax::for_path`] finds the disk a path is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IoMax {
     pub major: u32,
@@ -96,7 +85,6 @@ pub struct IoMax {
 }
 
 impl IoMax {
-    /// No limits yet on the whole disk holding `path`.
     pub fn for_path(path: &Path) -> io::Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let dev = std::fs::metadata(path)?.dev();
@@ -122,8 +110,8 @@ impl IoMax {
     }
 }
 
-/// The whole disk a block device belongs to: a partition's parent, the
-/// device itself otherwise (a disk, a zvol, a device-mapper volume).
+/// The whole disk a block device belongs to: a partition's parent, the device itself otherwise (a
+/// disk, a zvol, a device-mapper volume).
 pub fn whole_disk(major: u32, minor: u32) -> (u32, u32) {
     let sys = PathBuf::from(format!("/sys/dev/block/{major}:{minor}"));
     if !sys.join("partition").exists() {
@@ -139,7 +127,6 @@ pub fn whole_disk(major: u32, minor: u32) -> (u32, u32) {
         .unwrap_or((major, minor))
 }
 
-/// Why a cgroup could not be made.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("{0}")]
@@ -164,29 +151,22 @@ fn io_err(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> ProviderErr
     move |e| ProviderError::Io(format!("{what}: {e}"))
 }
 
-/// What an XFS project quota request came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuotaOutcome {
     Applied,
-    /// The filesystem doesn't enforce project quotas (mounted without
-    /// `prjquota`, or not XFS): the job runs without a disk bound.
+    /// The filesystem doesn't enforce project quotas (mounted without `prjquota`, or not XFS): the
+    /// job runs without a disk bound.
     Unsupported(String),
 }
 
-/// Makes job cgroups and sets disk quotas.
 pub trait CgroupProvider: Send + Sync {
-    /// A cgroup for job `name` (one path component), `limits` applied.
-    ///
-    /// # Errors
-    /// See [`ProviderError`].
+    /// A cgroup for job `name` (one path component), `limits` applied. # Errors See
+    /// [`ProviderError`].
     fn create(&self, name: &str, limits: &Limits) -> Result<JobCgroup, ProviderError>;
 
-    /// An XFS project quota of `bytes` on the directory `dir`, as project
-    /// `project`; files already in it are tagged too.
-    ///
-    /// # Errors
-    /// Fails only when quotas are enforced and the request still failed;
-    /// a filesystem without them answers [`QuotaOutcome::Unsupported`].
+    /// An XFS project quota of `bytes` on the directory `dir`, as project `project`; files already
+    /// in it are tagged too. # Errors Fails only when quotas are enforced and the request still
+    /// failed; a filesystem without them answers [`QuotaOutcome::Unsupported`].
     fn set_quota(
         &self,
         dir: BorrowedFd<'_>,
@@ -195,7 +175,6 @@ pub trait CgroupProvider: Send + Sync {
     ) -> Result<QuotaOutcome, ProviderError>;
 }
 
-/// Ends and removes a job cgroup; the provider's half of [`JobCgroup`].
 pub trait Release: Send + Sync {
     /// Called once the cgroup's processes were sent `cgroup.kill`.
     fn release(&self, name: &str);
@@ -216,7 +195,6 @@ impl std::fmt::Debug for JobCgroup {
     }
 }
 
-/// A job cgroup's counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
     pub cpu_usec: u64,
@@ -233,7 +211,6 @@ pub struct Usage {
 }
 
 impl JobCgroup {
-    /// A job cgroup from its directory descriptor.
     pub fn new(name: String, dir: OwnedFd, release: Arc<dyn Release>) -> Self {
         Self { name, dir, release }
     }
@@ -251,7 +228,6 @@ impl JobCgroup {
         read_at(self.dir.as_fd(), file).ok()
     }
 
-    /// The job's counters now.
     pub fn usage(&self) -> Usage {
         let field = |text: &Option<String>, key: &str| -> Option<u64> {
             text.as_deref()?.lines().find_map(|l| {
@@ -278,14 +254,13 @@ impl JobCgroup {
         }
     }
 
-    /// Whether the kernel killed the job for memory.
     pub fn oom_killed(&self) -> bool {
         let u = self.usage();
         u.oom_group_kills > 0 || u.oom_kills > 0
     }
 
-    /// Kill every process in the cgroup (`cgroup.kill`): `setsid` daemons
-    /// and double-forked servers included.
+    /// Kill every process in the cgroup (`cgroup.kill`): `setsid` daemons and double-forked servers
+    /// included.
     pub fn kill(&self) -> io::Result<()> {
         write_at(self.dir.as_fd(), "cgroup.kill", "1")
     }
@@ -306,7 +281,6 @@ impl Drop for JobCgroup {
     }
 }
 
-/// Read a file beneath a directory descriptor.
 pub fn read_at(dir: BorrowedFd<'_>, file: &str) -> io::Result<String> {
     let mut f = open_at(dir, file, libc::O_RDONLY)?;
     let mut s = String::new();
@@ -314,7 +288,6 @@ pub fn read_at(dir: BorrowedFd<'_>, file: &str) -> io::Result<String> {
     Ok(s)
 }
 
-/// Write a file beneath a directory descriptor.
 pub fn write_at(dir: BorrowedFd<'_>, file: &str, content: &str) -> io::Result<()> {
     open_at(dir, file, libc::O_WRONLY)?.write_all(content.as_bytes())
 }
@@ -353,8 +326,8 @@ pub fn apply_limits(
     controllers: &[String],
 ) -> Result<(), ProviderError> {
     let has = |c: &str| controllers.iter().any(|x| x == c);
-    // A limit the cgroup cannot hold refuses the job: it never runs
-    // believing itself bounded while it is not.
+    // A limit the cgroup cannot hold refuses the job: it never runs believing itself bounded while
+    // it is not.
     for (controller, asked) in [
         ("memory", limits.memory_max.is_some()),
         ("pids", limits.pids_max.is_some()),
@@ -374,8 +347,8 @@ pub fn apply_limits(
     if has("memory") {
         // An OOM ends the whole job, not one compiler in it.
         put("memory.oom.group", "1")?;
-        // Containment means the limit holds; not every kernel has swap
-        // accounting, so a missing file is fine.
+        // Containment means the limit holds; not every kernel has swap accounting, so a missing
+        // file is fine.
         let _ = std::fs::write(dir.join("memory.swap.max"), "0");
         if let Some(max) = limits.memory_max {
             put("memory.max", &max.to_string())?;
@@ -402,8 +375,8 @@ pub fn apply_limits(
     Ok(())
 }
 
-/// Kill everything in the cgroup at `path`, wait until it is empty, remove
-/// it. Best effort: a cgroup that won't empty within a few seconds stays.
+/// Kill everything in the cgroup at `path`, wait until it is empty, remove it. Best effort: a
+/// cgroup that won't empty within a few seconds stays.
 pub fn kill_and_remove(path: &Path) {
     let _ = std::fs::write(path.join("cgroup.kill"), "1");
     let deadline = Instant::now().checked_add(Duration::from_secs(5));
@@ -414,14 +387,13 @@ pub fn kill_and_remove(path: &Path) {
         if deadline.is_none_or(|d| Instant::now() >= d) {
             return;
         }
-        // Children (a job that made sub-cgroups through its delegated view
-        // can't: its view is read-only) or processes still exiting.
+        // Children (a job that made sub-cgroups through its delegated view can't: its view is
+        // read-only) or processes still exiting.
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 
-/// The cgroup v2 directory of process `pid` (`/proc/<pid>/cgroup`'s `0::`
-/// line), under `mount`.
+/// The cgroup v2 directory of process `pid` (`/proc/<pid>/cgroup`'s `0::` line), under `mount`.
 pub fn cgroup_of(pid: &str, mount: &Path) -> io::Result<PathBuf> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))?;
     let rel = text
@@ -431,7 +403,6 @@ pub fn cgroup_of(pid: &str, mount: &Path) -> io::Result<PathBuf> {
     Ok(mount.join(rel.trim().trim_start_matches('/')))
 }
 
-/// A validated job name.
 fn check_name(name: &str) -> Result<(), ProviderError> {
     if name.is_empty()
         || name == "."
@@ -444,7 +415,6 @@ fn check_name(name: &str) -> Result<(), ProviderError> {
     Ok(())
 }
 
-/// How [`Direct`] lays out the worker's cgroup.
 #[derive(Debug, Clone)]
 pub struct DirectOptions {
     /// The worker's cgroup; its own (`/proc/self/cgroup`) when `None`.
@@ -452,8 +422,8 @@ pub struct DirectOptions {
     /// The leaf the worker's processes move into.
     pub worker_leaf: String,
     pub jobs: String,
-    /// Memory kept for the worker: `worker/memory.min`, and subtracted from
-    /// the root's `memory.max` for the jobs' budget.
+    /// Memory kept for the worker: `worker/memory.min`, and subtracted from the root's `memory.max`
+    /// for the jobs' budget.
     pub reserve: u64,
 }
 
@@ -504,13 +474,10 @@ impl Release for Budget {
 }
 
 impl Direct {
-    /// Take over the worker's cgroup: its processes move into
-    /// `worker_leaf`, controllers are enabled for `jobs`, and job cgroups a
-    /// previous worker left behind are killed and removed.
-    ///
-    /// # Errors
-    /// Returns why the cgroup can't be managed here (not cgroup v2, not
-    /// writable, no controllers delegated).
+    /// Take over the worker's cgroup: its processes move into `worker_leaf`, controllers are
+    /// enabled for `jobs`, and job cgroups a previous worker left behind are killed and removed. #
+    /// Errors Returns why the cgroup can't be managed here (not cgroup v2, not writable, no
+    /// controllers delegated).
     pub fn init(options: &DirectOptions) -> Result<Self, ProviderError> {
         let root = match &options.root {
             Some(r) => r.clone(),
@@ -525,8 +492,8 @@ impl Direct {
                     .map_err(io_err(format_args!("creating {}", dir.display())))?;
             }
         }
-        // cgroup v2 keeps processes in leaves only: everything in the root
-        // (the worker, an init it runs under) moves to the worker's leaf.
+        // cgroup v2 keeps processes in leaves only: everything in the root (the worker, an init it
+        // runs under) moves to the worker's leaf.
         let procs = std::fs::read_to_string(root.join("cgroup.procs")).map_err(io_err(
             format_args!("reading {}/cgroup.procs", root.display()),
         ))?;
@@ -584,8 +551,6 @@ impl Direct {
         &self.controllers
     }
 
-    /// The memory the jobs may hold together, if the worker's cgroup has a
-    /// limit.
     pub fn budget(&self) -> Option<u64> {
         self.budget
     }

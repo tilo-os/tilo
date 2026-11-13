@@ -1,56 +1,7 @@
-//! DNS-allowlisted egress for a sandbox in its own network namespace.
-//!
-//! A sandbox that may reach `github.com` and nothing else cannot be given a
-//! proxy: command-line tools ignore proxies. So the decision is made where
-//! no tool can skip it — in the kernel — keyed by the one thing every tool
-//! does first, resolving the name:
-//!
-//! ```text
-//!  sandbox netns (own user namespace)              supervisor
-//!  ┌─────────────────────────────────┐
-//!  │ resolv.conf → 127.0.0.1:53 ─────┼──► DNS stub ── granted name? ──► host resolver
-//!  │                                 │       │  no: NXDOMAIN
-//!  │ nftables output chain           │       └─ every A/AAAA answered ──► allowed set
-//!  │   lo, established: accept       │                                   (record TTL,
-//!  │   dst in allowed set: accept ◄──┼───────────────────────────────────  60 s..4 h)
-//!  │   anything else: reject         │
-//!  │ tap ◄───────────────────────────┼──► pasta ──► the host's network
-//!  └─────────────────────────────────┘
-//! ```
-//!
-//! An address literal is not in the set, so it is refused; so is DNS to any
-//! server but the stub. A `*` grant ([`EgressPolicy::Any`]) installs no
-//! filter and forwards every name. No grants installs the filter with empty
-//! sets, and the stub refuses every name.
-//!
-//! **Fail closed.** When the policy needs the filter and the kernel will
-//! not take it, `spawn_egress` fails and the caller does not start the
-//! sandbox. `pasta` is only attached once the filter is in place; before
-//! that the namespace has no route out at all.
-//!
-//! The filter matches addresses, so a granted host shares its address with
-//! whatever else is served from it (a CDN). Names are what the user grants;
-//! addresses are the closest the kernel can enforce.
-//!
-//! Policy, repository discovery and host configuration are portable. Namespace
-//! creation and enforcement are available only on Linux. Callers on other
-//! platforms must reject gated execution; they must not substitute host networking.
-//!
-//! # Using it (Linux)
-//!
-//! ```no_run
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! # #[cfg(target_os = "linux")] {
-//! use tilo_egress::{EgressOptions, EgressPolicy, Netns, spawn_egress};
-//! let netns = Netns::create()?;
-//! let policy = EgressPolicy::from_grants(["github.com", ".crates.io"]);
-//! let egress = spawn_egress(&netns, policy, &EgressOptions::from_host(std::path::Path::new("/")))?;
-//! // Bind `egress.resolv_conf()` at the sandbox's /etc/resolv.conf, then:
-//! let mut cmd = std::process::Command::new("bwrap");
-//! netns.enter(&mut cmd);
-//! # }
-//! # Ok(()) }
-//! ```
+//! DNS-allowlisted egress for a sandbox in a network namespace of its own: the
+//! sandbox's only resolver is a stub that answers just the names the policy
+//! allows, and the packet filter admits only the addresses those answers
+//! carried, for as long as their TTL.
 
 #![cfg_attr(
     test,
@@ -96,7 +47,6 @@ use crate::pasta::Pasta;
 #[cfg(target_os = "linux")]
 use crate::stub::{Filter, Shared, Stub};
 
-/// The sandbox's `/etc/resolv.conf`: the stub, and nothing else.
 pub const RESOLV_CONF: &str = "# The sandbox's resolver answers only the hosts it was granted.\n\
                                nameserver 127.0.0.1\n\
                                options edns0\n";
@@ -108,7 +58,6 @@ pub enum EgressError {
     /// The namespace's sockets could not be opened.
     #[error("the sandbox's network namespace could not be prepared: {0}")]
     Namespace(#[source] std::io::Error),
-    /// The policy needs the packet filter and the kernel refused it.
     #[error(
         "the network filter could not be installed ({0}). Hosts are granted, and without \
          the filter they could not be enforced, so the sandbox does not start. The kernel \
@@ -123,25 +72,19 @@ pub enum EgressError {
     Stub(#[source] std::io::Error),
 }
 
-/// How egress is wired on this machine.
 #[derive(Debug, Clone)]
 pub struct EgressOptions {
-    /// The resolvers the stub forwards granted names to.
     pub upstream: Vec<SocketAddr>,
-    /// The `pasta` binary.
     pub pasta: PathBuf,
     /// Map this address in the sandbox to the host's loopback. `None` in
-    /// production — a sandbox must not reach services listening only on
-    /// the machine. Tests set it to reach a server they run.
+    /// production: a sandbox must not reach services listening only on the host.
     pub map_host_loopback: Option<IpAddr>,
-    /// Act as if the kernel refused the packet filter, to prove the
-    /// fail-closed path on a machine whose kernel would accept it.
+    /// Act as if the kernel refused the packet filter, to prove the fail-closed
+    /// path on a machine whose kernel would accept it.
     pub refuse_netfilter: bool,
 }
 
 impl EgressOptions {
-    /// The machine's resolvers (from `<host_root>/etc/resolv.conf`) and the
-    /// `pasta` on `PATH`.
     pub fn from_host(host_root: &Path) -> Self {
         let conf = std::fs::read_to_string(host_root.join("etc/resolv.conf")).unwrap_or_default();
         Self {
@@ -153,19 +96,14 @@ impl EgressOptions {
     }
 }
 
-/// What a running egress enforces, for `guard status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Enforcement {
-    /// No filter: every name resolves, every address is reachable.
     Unrestricted,
     /// The filter is installed: only answered addresses of these hosts.
     Filtered(Vec<String>),
-    /// No route out at all (no grants, and no filter to add one later).
     Offline,
 }
 
-/// Egress for one sandbox: the stub, the filter and `pasta`. Dropping it
-/// stops all three; the namespace itself belongs to the [`Netns`].
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct Egress {
@@ -174,12 +112,6 @@ pub struct Egress {
     _stub: Stub,
 }
 
-/// Start egress for `netns` under `policy`. The filter is installed (when
-/// the policy needs one) before `pasta` attaches, and the stub is serving
-/// before this returns, so the sandbox can start right after.
-///
-/// # Errors
-/// See [`EgressError`]; every error means the sandbox must not start.
 #[cfg(target_os = "linux")]
 pub fn spawn_egress(
     netns: &Netns,
@@ -245,12 +177,10 @@ pub fn spawn_egress(
 
 #[cfg(target_os = "linux")]
 impl Egress {
-    /// The sandbox's `/etc/resolv.conf`.
     pub fn resolv_conf(&self) -> &'static str {
         RESOLV_CONF
     }
 
-    /// The policy in force.
     pub fn policy(&self) -> EgressPolicy {
         self.shared
             .policy
@@ -258,12 +188,10 @@ impl Egress {
             .map_or_else(|_| EgressPolicy::none(), |p| p.clone())
     }
 
-    /// The process id of `pasta`, when the sandbox has a route out.
     pub fn pasta_pid(&self) -> Option<u32> {
         self.pasta.as_ref().and_then(Pasta::pid)
     }
 
-    /// What is enforced now.
     pub fn enforcement(&self) -> Enforcement {
         let filtered = self
             .shared
@@ -277,14 +205,8 @@ impl Egress {
         }
     }
 
-    /// Change the policy of a running sandbox. A narrower policy empties
-    /// the allowed sets, so nothing answered under the old one stays
-    /// reachable; connections already open are left alone.
-    ///
-    /// # Errors
-    /// Returns why the change needs a new sandbox (a route out that was
-    /// never attached, a filter the kernel refuses), in words for the user.
-    /// The old policy stays in force.
+    /// Change the policy of a running sandbox. A narrower one empties the allowed
+    /// sets, so nothing answered under the old policy stays reachable.
     pub fn update_policy(&self, policy: EgressPolicy) -> Result<(), String> {
         let old = self.policy();
         if old == policy {
@@ -315,8 +237,6 @@ impl Egress {
                 let fresh = !n.installed();
                 n.install()
                     .map_err(|e| format!("installing the filter: {e}"))?;
-                // Narrower: nothing answered under the old policy may stay
-                // reachable. Wider: what was admitted stays admitted.
                 if !fresh && !old.within(&policy) {
                     n.flush()
                         .map_err(|e| format!("emptying the allowed sets: {e}"))?;

@@ -1,7 +1,6 @@
-//! Authenticator as a resource: secret-free account metadata in the
-//! document ([`Totp`]), each account's seed in this device's secret store,
-//! and what only this device can do with a seed (show and copy codes, set
-//! one up) as effects.
+//! Authenticator as a resource: secret-free account metadata in the document,
+//! each seed in this device's secret store, and what only this device can do
+//! with a seed as effects.
 
 use std::rc::Rc;
 
@@ -18,14 +17,8 @@ pub use crate::model::Totp;
 use crate::model::{Account, StoredAccount, demo_accounts};
 
 impl Totp {
-    /// What the record holds: the accounts' metadata — issuer, account name, algorithm, digits,
-    /// period and colour, in list order. Their seeds are this device's secret store and never
-    /// reach the record.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the accounts' metadata in list order. Seeds stay in
+    /// this device's secret store and never reach the record.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -67,7 +60,6 @@ impl Totp {
     }
 
     /// Delete an account and forget its secret on every device.
-    // Undo brings the account back but not its secret, so people confirm it.
     #[action(destructive, irreversible)]
     pub fn delete(&mut self, account: &Id) -> Result<(), Refusal> {
         self.accounts
@@ -78,7 +70,6 @@ impl Totp {
 }
 
 impl Totp {
-    /// Each account, found by its issuer and name, opening it.
     fn search(&self) -> Vec<SearchEntry> {
         self.list()
             .iter()
@@ -94,7 +85,6 @@ impl Totp {
             .collect()
     }
 
-    /// The insert that adds `account` at the end of the list.
     pub fn add(&self, account: &Account) -> Option<Invoke<Self>> {
         Invoke::edit(&Self::paths().accounts.insert_as(
             &Self::item(account.id),
@@ -105,8 +95,6 @@ impl Totp {
     }
 }
 
-/// The resource an account is published as: its item of the vault, which
-/// this device's live row joins.
 pub fn account_resource_id(id: crate::model::AccountId) -> String {
     tilo_resource::items::item_resource_id::<Totp>("accounts", &Totp::item(id))
 }
@@ -123,7 +111,6 @@ pub(crate) fn account_label(a: &Account) -> String {
     }
 }
 
-/// `value`, unless it contains the secret: what a label may say.
 pub(crate) fn safe_identity_field<'a>(value: &'a str, secret: &str) -> &'a str {
     let value = value.trim();
     let secret = secret.trim();
@@ -138,15 +125,11 @@ pub(crate) fn safe_identity_field<'a>(value: &'a str, secret: &str) -> &'a str {
     }
 }
 
-/// What the Authenticator does with what only this device holds: the add
-/// form, an account's codes and its secret.
+/// What only this device can do: the add form, an account's codes, its secret.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "totp.effect")]
 pub enum TotpEffect {
     /// Add account.
-    ///
-    /// Opens the protected form on this device: a setup link carries the
-    /// secret, so it is never an action argument.
     #[effect(kind = "read", label = "totp-add-title-add")]
     AddAccount,
     /// Open account.
@@ -162,24 +145,18 @@ pub enum TotpEffect {
         account: String,
     },
     /// Set up on this device.
-    ///
-    /// Opens the protected form for the account's secret on this device.
     #[effect(kind = "read", label = "totp-add-title-provision")]
     SetUpLocal {
         #[param("Id of the account")]
         account: String,
     },
     /// Retry saving secrets.
-    ///
-    /// Writes the secrets this device's store refused, and reads the ones it
-    /// could not.
     RetrySave,
 }
 
-/// The secrets a screenshot shows, in place of this device's store.
+/// The secrets a screenshot shows instead of this device's store.
 pub struct ShotSecrets(pub SecretStore);
 
-/// The capture scenarios: the list, and each state the app has a screen for.
 pub const SCENARIOS: &[&str] = &[
     "list",
     "hover",
@@ -193,9 +170,8 @@ pub const SCENARIOS: &[&str] = &[
     "expiring",
 ];
 
-/// Framework app: the navigation shell around the authenticator window over
-/// [`Totp`]. In a window the desktop's bar hosts, its header is the bar's
-/// location and Add account; the bar's search is the vault's search.
+/// The navigation shell around the authenticator window: its header is the bar's
+/// location and Add account, its search the vault's search.
 pub struct TotpShell;
 
 impl ResourceApp for TotpShell {
@@ -204,8 +180,7 @@ impl ResourceApp for TotpShell {
     const TITLE: &'static str = "Authenticator";
     const TITLE_KEY: &'static str = "totp-app-title";
     const ICON: Option<&'static str> = Some("totp");
-    // The window shows secrets: captures, recordings and remote viewers get
-    // a placeholder in every launch.
+    // The window shows secrets: captures and remote viewers get a placeholder.
     const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
         capture_protected: true,
         ..ui::application::ComponentBehaviour::DEFAULT
@@ -216,14 +191,12 @@ impl ResourceApp for TotpShell {
     }
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
-        // The header's actions are for a vault with accounts in it: with none,
-        // the empty state asks for the first one and the header stays quiet.
+        // With no accounts the header stays quiet: the empty state asks for the first.
         let has_accounts = cx.local(true);
         let count = cx.local(0usize);
         let notice = cx.local(None);
-        // The seeds a capture shows come from its own store, never this
-        // device's; a view that is not live (a past version, a screenshot)
-        // never writes or forgets one.
+        // A capture shows seeds from its own store, never this device's; a past
+        // version never writes or forgets one.
         let secrets = match cx.fixture::<ShotSecrets>() {
             Some(shot) => shot.0.clone(),
             None => cx.storage().secrets(),
@@ -238,7 +211,6 @@ impl ResourceApp for TotpShell {
         let statuses = Rc::clone(&store);
         cx.effects(move |effect: TotpEffect, cx| {
             let answer = effects.borrow_mut().perform_effect(effect);
-            // What it asked of the sheet or the list happens on the next frame.
             cx.waker().wake();
             answer.map(|()| Effected::done())
         })
@@ -250,9 +222,6 @@ impl ResourceApp for TotpShell {
         let content = AuthenticatorApp::over(store)
             .with_account_signal(has_accounts.clone())
             .with_count_signal(count.clone());
-        // With no accounts the list is empty and the empty state over it
-        // asks for the first one; the window stays mounted under it, since
-        // it hosts the add sheet.
         let empty = EmptyState::new("No accounts yet")
             .with_icon(Icon::Shield)
             .with_message(crate::i18n::t("totp-empty-message"))
@@ -268,8 +237,7 @@ impl ResourceApp for TotpShell {
         let content = cx.publishing(publishes, content);
         let add = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
             if *has_accounts {
-                // The vault's own "Add account" effect, the one the palette
-                // and agents invoke, which the window answers by opening the
+                // The vault's Add account effect, which the window answers by opening the
                 // add sheet.
                 Box::new(
                     cx.effect_button("Add account", &TotpEffect::AddAccount)
@@ -294,8 +262,7 @@ impl ResourceApp for TotpShell {
         SCENARIOS
     }
 
-    /// Demo seeds in a store of the capture's own: a screenshot never reads
-    /// or writes this device's secrets.
+    /// Demo seeds in a store of the capture's own.
     fn fixture(fixture: &mut Fixture<Totp>) {
         let store = SecretStore::memory(Self::ID);
         let without_first = matches!(fixture.scenario(), Some("provision" | "missing-secret"));
@@ -328,8 +295,8 @@ impl ResourceApp for TotpShell {
     }
 }
 
-/// The navigation shell whose header says how many accounts the vault holds,
-/// and whose toast shows the window's notices.
+/// The shell whose header counts the accounts and whose toast shows the window's
+/// notices.
 struct CountedShell {
     shell: NavShell,
     count: ui::LocalState<usize>,
@@ -364,7 +331,6 @@ impl ui::widget::Decorator for CountedShell {
 }
 
 impl Store {
-    /// Whether retrying a save has anything to do.
     fn effect_statuses(&self) -> Vec<EffectStatus> {
         if self.persistence_pending() {
             Vec::new()
@@ -377,7 +343,6 @@ impl Store {
         }
     }
 
-    /// Each account the document holds, with what this device adds to it.
     fn live_rows(&mut self) -> Vec<LiveRow> {
         self.follow_document();
         self.accounts()
@@ -386,8 +351,8 @@ impl Store {
             .collect()
     }
 
-    /// What this device adds to a published account: opening it, and the
-    /// codes and setup only its own secret allows.
+    /// What this device adds to a published account: opening it, and the codes and
+    /// setup its own secret allows.
     fn account_row(&self, account: &Account) -> LiveRow {
         let id = account.id.to_string();
         let ready = self.has_local_secret(account.id);
@@ -448,12 +413,10 @@ mod tests {
 
     const SECRET: &str = "JBSWY3DPEHPK3PXP";
 
-    /// Add the GitHub account through the form.
     fn add_github(app: &mut TestApp<TotpShell>) {
         add_through_the_form(app, "GitHub", "ada@example.com", SECRET);
     }
 
-    /// Every app's secrets in one store the test can read.
     struct Store(Arc<dyn SecretBackend>);
 
     impl ui::host::SecretsProvider for Store {
@@ -462,7 +425,6 @@ mod tests {
         }
     }
 
-    /// The app on a fresh profile whose secrets live in `backend`.
     fn open(backend: Arc<dyn SecretBackend>) -> (TestApp<TotpShell>, ui::host::HostScope) {
         let (recording, _) = ui::host::HostServices::recording();
         let services = ui::host::HostServices {
@@ -474,7 +436,6 @@ mod tests {
         (TestApp::<TotpShell>::new().unwrap(), scope)
     }
 
-    /// Where the window shows the semantic target `target`.
     fn bounds(node: &ui::headless::InspectionNode, target: &str) -> Option<kurbo::Rect> {
         fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<kurbo::Rect> {
             if node.action_target.as_deref() == Some(target) {
@@ -488,7 +449,6 @@ mod tests {
             .or_else(|| node.children.iter().find_map(|child| bounds(child, target)))
     }
 
-    /// Click what the window shows as `target`, as a person does.
     fn click(app: &mut TestApp<TotpShell>, target: &str) {
         let root = app.harness().inspection().root;
         let rect = bounds(&root, target).unwrap_or_else(|| panic!("the window shows no {target}"));
@@ -497,7 +457,6 @@ mod tests {
         app.settle();
     }
 
-    /// Run frames until a sheet that just opened or closed has settled.
     fn settle(app: &mut TestApp<TotpShell>) {
         for _ in 0..3 {
             app.harness().relayout();
@@ -505,7 +464,6 @@ mod tests {
         app.settle();
     }
 
-    /// Type `text` into the sheet's field `name`, after what it holds.
     fn type_into(app: &mut TestApp<TotpShell>, name: &str, text: &str) {
         app.harness()
             .click_named(name)
@@ -513,13 +471,11 @@ mod tests {
         app.harness().type_text(text);
     }
 
-    /// Save the open sheet with Enter, as a person does.
     fn save(app: &mut TestApp<TotpShell>) {
         app.harness().key("Enter");
         settle(app);
     }
 
-    /// Add an account through the protected form, as a person does.
     fn add_through_the_form(app: &mut TestApp<TotpShell>, issuer: &str, label: &str, secret: &str) {
         app.effect(&TotpEffect::AddAccount).unwrap();
         settle(app);
@@ -551,8 +507,6 @@ mod tests {
             .any(|window| window == secret.as_bytes())
     }
 
-    /// A person meets the app by one name: the window it opens, its
-    /// manifest and its catalogue entry all say Authenticator.
     #[test]
     fn the_app_goes_by_one_name() {
         use ui::tilo_resource::Resource as _;
@@ -649,7 +603,6 @@ mod tests {
     fn a_shared_account_without_a_secret_here_offers_setup_and_attaches_it() {
         let backend = ui::secrets::memory_backend();
         let (mut app, _host) = open(Arc::clone(&backend));
-        // A collaborator's account arrives: metadata only.
         let mut remote = demo_accounts().remove(0);
         let secret = std::mem::take(&mut remote.secret);
         let add = app.state().add(&remote).unwrap();
@@ -725,8 +678,6 @@ mod tests {
             "the same verb invoked directly"
         );
 
-        // Undo brings the account back but not the secret every device
-        // forgot: deleting asks first, however it is reached.
         let delete = Totp::DELETE.with(Totp::item(first));
         assert!(
             matches!(
@@ -832,7 +783,6 @@ mod tests {
         );
     }
 
-    /// What the window's accessibility tree names, by role.
     fn names(app: &mut TestApp<TotpShell>) -> Vec<(String, String)> {
         app.harness()
             .a11y_nodes()
@@ -846,8 +796,6 @@ mod tests {
             .collect()
     }
 
-    /// The empty vault's drawn "Add account" is in the tree, where it is
-    /// drawn, and opens the add sheet as a click on it does.
     #[test]
     fn the_empty_vaults_add_account_is_described_and_opens_the_sheet() {
         fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
@@ -1049,9 +997,6 @@ mod tests {
         replica
     }
 
-    /// The shared accounts carry their metadata and never a secret; two
-    /// devices adding and editing at once converge, and a deletion wins
-    /// over a concurrent edit of the account.
     #[test]
     fn the_vault_merges_metadata_without_secrets_or_resurrection() {
         let mut ours = replica();
@@ -1092,8 +1037,6 @@ mod tests {
         assert!(merged.iter().any(|account| account.id == extra.id));
     }
 
-    /// An agent recolours an account in one call; codes the authenticator
-    /// cannot compute are refused; history names the account.
     #[test]
     fn edits_are_checked_and_history_names_the_account() {
         let (mut app, _host) = open(ui::secrets::memory_backend());

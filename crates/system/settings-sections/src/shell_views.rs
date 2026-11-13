@@ -1,17 +1,6 @@
 //! The view bound to each swappable part of the shell: the person's setting
 //! (`settings:shell-views`), kept wherever the session runs the shell, so an
 //! agent or a script binds a slot the way a person does.
-//!
-//! A binding names an app and one of the views it publishes. The session
-//! mounts that view in the slot in the place of the one it ships with, and
-//! falls back to its own when nothing is bound, when the app is not installed
-//! here, or when its view cannot run.
-//!
-//! A part of the shell that asks the person something on the machine's behalf
-//! — the lock screen, a workspace's consent, a portal's request, a sign-in, a
-//! display change being tried — is not on the list ([`FIXED`]): what draws
-//! those must be the system's, or a view someone wrote could ask for a
-//! password and look like the machine asking.
 
 use std::collections::BTreeMap;
 
@@ -77,7 +66,6 @@ pub struct ShellViews {
     #[model(readonly)]
     pub bindings: BTreeMap<String, Binding>,
     /// The views bound on one kind of device, over the ones bound everywhere:
-    /// a page in a browser has no room for the desk's menu.
     #[serde(default)]
     #[model(readonly)]
     pub on_device: BTreeMap<String, BTreeMap<String, Binding>>,

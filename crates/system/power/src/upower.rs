@@ -1,13 +1,7 @@
-//! `UPower` integration (`org.freedesktop.UPower`) over `zbus`.
-//!
-//! Reads the machine's composite battery (the *display device*) and lid
-//! state from the running `upowerd`. As with [`super::logind`], this is pure
-//! I/O — the threshold decisions live in [`super::battery`], which this
-//! module feeds with [`BatterySnapshot`]s.
-//!
-//! The lid and the battery are watched, not polled: `UPower` announces their
-//! changes with `PropertiesChanged`, which [`UPowerMonitor::receive_lid_changes`]
-//! and [`UPowerMonitor::receive_battery_changes`] turn into streams.
+//! `UPower` (`org.freedesktop.UPower`) over `zbus`: reads the machine's
+//! composite battery and lid state from the running `upowerd` and feeds
+//! [`super::battery`], which holds the decisions. The lid and the battery are
+//! watched, not polled.
 
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
@@ -19,8 +13,8 @@ use crate::history::PowerSourceKind;
 const DEST: &str = "org.freedesktop.UPower";
 const MGR_PATH: &str = "/org/freedesktop/UPower";
 const MGR_IFACE: &str = "org.freedesktop.UPower";
-/// The synthetic device that aggregates every battery into one — the right
-/// thing to warn on for a laptop with one or several cells.
+/// The synthetic device that aggregates every battery into one: the right thing
+/// to warn on for a laptop with one or several cells.
 const DISPLAY_DEVICE_PATH: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
 const DEVICE_IFACE: &str = "org.freedesktop.UPower.Device";
 
@@ -36,7 +30,6 @@ pub struct PowerHistorySample {
     pub on_ac: bool,
 }
 
-/// A connected handle to `UPower`.
 #[derive(Clone)]
 pub struct UPowerMonitor {
     connection: zbus::Connection,
@@ -45,23 +38,11 @@ pub struct UPowerMonitor {
 }
 
 impl UPowerMonitor {
-    /// Connect to the system bus and build the manager + display-device
-    /// proxies.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the system bus is unreachable or the `UPower` proxies cannot be
-    /// built.
     pub async fn connect() -> zbus::Result<Self> {
         let conn = Connection::system().await?;
         Self::with_connection(&conn).await
     }
 
-    /// Build proxies on an existing connection (shared with logind).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `UPower` manager or display-device proxy cannot be built.
     pub async fn with_connection(conn: &Connection) -> zbus::Result<Self> {
         let manager = zbus::Proxy::new(conn, DEST, MGR_PATH, MGR_IFACE).await?;
         let display = zbus::Proxy::new(conn, DEST, DISPLAY_DEVICE_PATH, DEVICE_IFACE).await?;
@@ -72,25 +53,21 @@ impl UPowerMonitor {
         })
     }
 
-    /// Whether the lid is currently closed. Machines without a lid report
-    /// `false`; pair with [`Self::lid_is_present`] to distinguish.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `LidIsClosed` property cannot be read.
+    /// Whether the lid is currently closed. Machines without a lid report `false`;
+    /// pair with [`Self::lid_is_present`] to tell them apart.
     pub async fn lid_is_closed(&self) -> zbus::Result<bool> {
         self.manager.get_property("LidIsClosed").await
     }
 
-    /// Every change of `LidIsClosed`, then [`Self::lid_is_closed`] reads the
-    /// new value from the proxy's cache. Yields once at once when the value
-    /// is already cached.
+    /// Every change of `LidIsClosed`, then [`Self::lid_is_closed`] reads the new
+    /// value from the proxy's cache. Yields once at once when the value is already
+    /// cached.
     pub async fn receive_lid_changes(&self) -> zbus::proxy::PropertyStream<'static, bool> {
         self.manager.receive_property_changed("LidIsClosed").await
     }
 
-    /// One item per change of the display device's charge, charging state
-    /// or presence — everything [`Self::battery_snapshot`] reads.
+    /// One item per change of the display device's charge, charging state or
+    /// presence: everything [`Self::battery_snapshot`] reads.
     pub async fn receive_battery_changes(&self) -> BoxStream<'static, ()> {
         let percentage = self
             .display
@@ -111,35 +88,19 @@ impl UPowerMonitor {
             .boxed()
     }
 
-    /// Whether the machine has a lid at all.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `LidIsPresent` property cannot be read.
     pub async fn lid_is_present(&self) -> zbus::Result<bool> {
         self.manager.get_property("LidIsPresent").await
     }
 
-    /// Whether the machine is currently running from battery.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `OnBattery` property cannot be read.
     pub async fn on_battery(&self) -> zbus::Result<bool> {
         self.manager.get_property("OnBattery").await
     }
 
-    /// Read the composite battery as a [`BatterySnapshot`].
-    ///
-    /// A machine with no battery reports the display device as
-    /// `Type != Battery` (or `IsPresent == false`); we surface that as
-    /// [`BatterySnapshot::absent`] so the threshold monitor stays quiet.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the charge or the charging state of a present
-    /// battery cannot be read: a reading made up of defaults (`0%`) would
-    /// look like an empty battery and take the critical action.
+    /// Read the composite battery. A machine with no battery reports the display
+    /// device as not a battery or not present, which is surfaced as
+    /// [`BatterySnapshot::absent`] so the threshold monitor stays quiet. A present
+    /// battery whose charge or state cannot be read is an error: a reading made of
+    /// defaults (`0%`) would look empty and take the critical action.
     pub async fn battery_snapshot(&self) -> zbus::Result<BatterySnapshot> {
         let dev_type: u32 = self.display.get_property("Type").await.unwrap_or(0);
         let present: bool = self
@@ -156,9 +117,8 @@ impl UPowerMonitor {
         )
     }
 
-    /// Read the aggregate power source using `UPower`'s display-device
-    /// contract. No model, serial, process, or application metadata crosses
-    /// into the durable history record.
+    /// Read the aggregate power source using `UPower`'s display-device contract; no
+    /// model, serial, process or application metadata reaches the durable history.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -179,7 +139,6 @@ impl UPowerMonitor {
         if !present {
             return Ok(None);
         }
-        // A charge that cannot be read is not recorded as an empty battery.
         let percentage: f64 = self.display.get_property("Percentage").await?;
         let health: f64 = self.display.get_property("Capacity").await.unwrap_or(0.0);
         Ok(Some(PowerHistorySample {
@@ -190,14 +149,6 @@ impl UPowerMonitor {
         }))
     }
 
-    /// Return one anonymous aggregate for each power-source class. `UPower`'s
-    /// display device is the canonical aggregate battery; UPS devices are
-    /// averaged without persisting their object paths or vendor metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if enumerating devices or building a per-device proxy fails; a
-    /// per-property read on a successfully-proxied device falls back to a default instead.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -253,8 +204,6 @@ impl UPowerMonitor {
     }
 }
 
-/// A present battery's reading from its charge and charging state, both of
-/// which must have been read.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -307,13 +256,11 @@ mod tests {
 
     #[tokio::test]
     async fn upower_snapshots_lid_and_history_are_coherent() {
-        // Phase `reads_a_coherent_battery_snapshot`.
         async fn reads_a_coherent_battery_snapshot() {
             let Some(m) = monitor_or_skip("snapshot").await else {
                 return;
             };
             let snap = m.battery_snapshot().await.expect("battery_snapshot");
-            // Percentage is always in range; a present battery has a real state.
             assert!(snap.percent <= 100, "percent in range: {snap:?}");
             if snap.present {
                 assert_ne!(
@@ -323,20 +270,17 @@ mod tests {
                 );
             }
         }
-        // Phase `lid_query_is_consistent`.
         async fn lid_query_is_consistent() {
             let Some(m) = monitor_or_skip("lid").await else {
                 return;
             };
             let present = m.lid_is_present().await.expect("LidIsPresent");
             let closed = m.lid_is_closed().await.expect("LidIsClosed");
-            // A machine with no lid can never report the lid closed.
             if !present {
                 assert!(!closed, "no lid ⇒ not closed");
             }
             let _ = m.on_battery().await.expect("OnBattery");
         }
-        // Phase `history_samples_are_anonymous_and_in_range`.
         async fn history_samples_are_anonymous_and_in_range() {
             let Some(monitor) = monitor_or_skip("history samples").await else {
                 return;
@@ -347,11 +291,8 @@ mod tests {
                 assert!(sample.health.is_none_or(|health| health <= 100));
             }
         }
-        // Phase `reads_a_coherent_battery_snapshot` (defined above).
         reads_a_coherent_battery_snapshot().await;
-        // Phase `lid_query_is_consistent` (defined above).
         lid_query_is_consistent().await;
-        // Phase `history_samples_are_anonymous_and_in_range` (defined above).
         history_samples_are_anonymous_and_in_range().await;
     }
 }

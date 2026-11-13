@@ -95,7 +95,7 @@ impl StatePeer {
         member
             .policy
             .check_action(
-                &member.authority(&bound),
+                &member.authority(bound),
                 governance::INSTALL_APP,
                 &tilo_action_policy::Context::at_time(now),
                 false,

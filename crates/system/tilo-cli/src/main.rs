@@ -9,28 +9,17 @@
 //! tilo update               update apps and the system
 //! ```
 //!
-//! `tilo --help` lists only what works where it runs (see [`Here`]): no
-//! desktop commands without a desktop session, no `system` off Tilo OS.
-//! A command typed anyway answers with one sentence saying what it needs.
-//! The same program answers as `system` and `action` (`argv[0]`), and as
+//! `tilo --help` lists only what works where it runs (see [`Here`]): no desktop commands without a
+//! desktop session, no `system` off Tilo OS. A command typed anyway answers with one sentence
+//! saying what it needs. The same program answers as `system` and `action` (`argv[0]`), and as
 //! `tilo-<noun>`.
 //!
-//! ## Why the system half is thin
-//!
-//! The work lives in `/usr/libexec/tilo-deployment`, a few renames on the ESP and one EFI
-//! variable write. This is the part that decides *how to become root to run it*, which has
-//! three answers and no good way to guess between them:
-//!
-//! * already root — run it directly
-//! * a desktop session — `systemctl start tilo-deployment-rollback.service`, which polkit
-//!   authorises for the local active user without a password
-//!   (`os/etc/polkit-1/rules.d/49-tilo-updates.rules`)
-//! * anything else — say to use sudo, rather than failing with a permission error from three
-//!   layers down
-//!
-//! Settings' rollback control takes the second of those, deliberately: one privileged
-//! implementation, reached the same way from the button and the command line, so the two
-//! cannot drift.
+//! The system half is thin because the work lives in `/usr/libexec/tilo-deployment`. What lives
+//! here is the decision how to become root: run it directly when already root, start
+//! `tilo-deployment-rollback.service` from a desktop session (polkit authorises the local active
+//! user, see `os/etc/polkit-1/rules.d/49-tilo-updates.rules`), else say to use sudo rather than
+//! fail with a permission error from three layers down. Settings' rollback control takes the
+//! second, so the button and the command line cannot drift.
 
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write};

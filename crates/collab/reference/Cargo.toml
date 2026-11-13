@@ -17,7 +17,7 @@ tilo-actions = { path = "../actions" }
 # A reference is a stored value of the records that keep one.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The app a link opens, named as every other crate names it.
-tilo-app-id = { path = "../../platform/tilo-app-id" }
+tilo-app-id.workspace = true
 automerge = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

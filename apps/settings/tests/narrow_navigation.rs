@@ -1,15 +1,9 @@
 //! A narrow Settings window, driven the way a screen reader drives it.
-//!
-//! Below the shell's breakpoint Settings shows one screen at a time: it opens
-//! on the selected pane with a Back arrow to the category list. Every step
-//! here goes through the exported accessibility tree and its actions, as an
-//! assistive technology does, never through a widget handle.
 
 use settings::SettingsShell;
 use ui::accesskit::{Action as AkAction, Role as AkRole};
 use ui::framework::testing::TestApp;
 
-/// A phone-width window: one column at a time.
 const NARROW: (u32, u32) = (360, 640);
 
 fn clickable(app: &mut TestApp<SettingsShell>, name: &str, role: AkRole) -> bool {
@@ -48,7 +42,6 @@ fn choosing_the_open_category_from_the_narrow_list_shows_it() {
         .expect("settings lays out narrow");
     app.settle();
 
-    // Network is the category Settings opens on; narrow, its pane is shown.
     assert!(
         clickable(&mut app, "Back", AkRole::Button),
         "a narrow window opens on the pane, with a Back arrow"
@@ -108,8 +101,6 @@ fn choosing_the_open_category_from_the_narrow_list_shows_it() {
     );
 }
 
-/// The `[accessibility.atspi_acceptance]` strings the installed-image gate
-/// reads from the manifest: `root`, then `required`.
 fn manifest_scenario_names() -> Vec<String> {
     let manifest = include_str!("../tilo-app.toml");
     let section = manifest
@@ -136,8 +127,6 @@ fn manifest_scenario_names() -> Vec<String> {
     names
 }
 
-/// The gate finds the window by the app's name and the list's entries,
-/// after going Back once from the pane a narrow window opens on.
 #[test]
 fn the_manifest_scenario_names_are_on_the_narrow_list() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");

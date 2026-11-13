@@ -8,7 +8,6 @@ pub mod control;
 const VIDEO_PACKET_MAGIC: [u8; 8] = *b"TLOPRJ01";
 const MAX_VIDEO_PACKET_BYTES: usize = 16 * 1024 * 1024;
 
-/// Wireless-display protocols understood by the projection broker.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectionProtocol {
@@ -31,7 +30,6 @@ impl ProjectionProtocol {
     }
 }
 
-/// Desktop layout requested for the remote display.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectionMode {
@@ -87,7 +85,6 @@ impl DisplayResolutionLimit {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DisplayStreamPolicy {
-    /// Continuously fit the stream to receiver, encoder and link feedback.
     pub adaptive: bool,
     pub resolution_limit: DisplayResolutionLimit,
     pub max_fps: u32,
@@ -166,7 +163,6 @@ impl ProjectionMode {
     }
 }
 
-/// One receiver found by Wi-Fi Direct or local-network discovery.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ProjectionDevice {
     pub id: String,

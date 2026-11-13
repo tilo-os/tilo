@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::{BrokerSigningIdentity, IDENTITY_SERVICE, IdentityMetadata, NotAvailable, legacy};
 
-/// Uses only launcher-supplied descriptors, never identity records or a secret store.
+/// Uses only launcher-supplied descriptors, never an identity record or a
+/// secret store.
 pub fn load() -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
     if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
         // SAFETY: the launcher retains this inherited service descriptor.
@@ -18,9 +19,8 @@ pub fn load() -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
 }
 
 /// Who the person is, for showing them: the public record the launcher's
-/// broker carries, which every app with an identity gets. Only an app with no
-/// broker asks the workspace identity service, whose answer needs this
-/// device's custody of the workspace profile; signing stays with the service.
+/// broker carries. Only an app with no broker asks the workspace identity
+/// service, whose answer needs this device's custody of the workspace profile.
 pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
     let identity = if std::env::var_os(legacy::BROKER_ENV_VAR).is_some() {
         legacy::connect_from_env()?
@@ -46,8 +46,8 @@ type ConnectionId = (std::os::fd::RawFd, libc::dev_t, libc::ino_t);
 type IdentityConnections =
     Mutex<std::collections::HashMap<ConnectionId, Weak<BrokerSigningIdentity>>>;
 
-/// Shares the framing lock across consumers of one inherited service.
-/// The launcher-owned descriptor remains open and is marked close-on-exec.
+/// Shares the framing lock across consumers of one inherited service, and
+/// marks the launcher's descriptor close-on-exec.
 pub fn connect_service(fd: BorrowedFd<'_>) -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
     static CONNECTIONS: OnceLock<IdentityConnections> = OnceLock::new();
     let mut connections = CONNECTIONS

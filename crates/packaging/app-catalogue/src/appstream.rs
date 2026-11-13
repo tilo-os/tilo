@@ -179,7 +179,7 @@ struct Component {
 /// Whether text in `lang` is for a desktop speaking `locale`: the same tag,
 /// or the same language.
 fn speaks(lang: &str, locale: &str) -> bool {
-    lang.replace('_', "-").eq_ignore_ascii_case(locale)
+    tilo_paths::locale_tag(lang).eq_ignore_ascii_case(&tilo_paths::locale_tag(locale))
         || tilo_paths::language_of(lang) == tilo_paths::language_of(locale)
 }
 

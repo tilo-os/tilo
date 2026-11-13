@@ -5,8 +5,8 @@ Usage: declare-owner SOCKET USER_PUBLIC_KEY
 
 SOCKET is the workspace's `--operator-socket` (a UNIX socket in its state
 directory), and USER_PUBLIC_KEY the person's user root, 64 hex characters. The
-workspace's door lets them in from then on, and its governance makes them an
-administrator once they are a member.
+workspace's governance holds them as an administrator from then on, by their
+root: its door lets them in, and a key of theirs reaches the workspace.
 
 Answers 0 once the workspace says so, 1 with the reason on stderr otherwise.
 """

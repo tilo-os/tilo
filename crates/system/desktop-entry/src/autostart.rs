@@ -1,59 +1,29 @@
-//! XDG autostart: the `.desktop` files a session starts at login.
+//! XDG autostart: the `.desktop` files a session starts at login, from
+//! `$XDG_CONFIG_HOME/autostart` and then each `$XDG_CONFIG_DIRS/autostart`.
+//! A file name is the identity: the first directory holding `foo.desktop`
+//! decides it, so a user file overrides (or, with `Hidden=true`, cancels) the
+//! system one.
 //!
-//! The Desktop Application Autostart Specification looks in
-//! `$XDG_CONFIG_HOME/autostart` and then each `$XDG_CONFIG_DIRS/autostart`. A file
-//! name is the identity: the first directory holding `foo.desktop` decides it, so a
-//! user file overrides (or, with `Hidden=true`, cancels) the system one.
-//!
-//! ## Which entries a Tilo session starts
-//!
-//! The specification's rules plus the GNOME extensions distributions write their
-//! autostart files against, applied the way `gnome-session` applies them:
-//!
-//! - `Type=Application`, not `Hidden`, with an `Exec`.
-//! - `OnlyShowIn`/`NotShowIn` are matched against [`AUTOSTART_DESKTOPS`]: Tilo's own
-//!   name only. `XDG_CURRENT_DESKTOP` also carries `GNOME` so GNOME-only
-//!   *applications* stay in the menu, but a GNOME-only *autostart* entry is a piece
-//!   of the GNOME session (screen reader, settings-daemon plugins, keyring,
-//!   accessibility bus, indexer) that GNOME's session manager starts with GNOME's
-//!   wiring around it. Tilo is not that session and does not start them. The
-//!   infrastructure among them that any desktop needs is activated on demand by
-//!   systemd or D-Bus (`gnome-keyring-daemon.socket`, `gcr-ssh-agent.socket`,
-//!   `org.a11y.Bus`, `org.freedesktop.secrets`), so nothing is lost.
-//! - `X-GNOME-Autostart-enabled=false` switches an entry off.
-//! - `TryExec` must name an installed program.
-//! - `AutostartCondition` must hold (see [`Condition`]). A condition Tilo cannot
-//!   evaluate counts as false, as in `gnome-session`.
-//! - `X-GNOME-HiddenUnderSystemd=true` means a systemd user unit provides the
-//!   program. A Tilo session always runs under a systemd user manager, so such an
-//!   entry is not started.
-//! - `X-GNOME-Autostart-Phase` names the part of the desktop an entry belongs to.
-//!   Tilo *is* the display server, window manager, panel and desktop, so entries in
-//!   those phases (and in `PreDisplayServer`, the keyring and agent infrastructure)
-//!   are not started: a second status-notifier watcher or desktop shell would fight
-//!   Tilo's own. `Initialization` and `Applications` entries start.
-//! - `X-GNOME-AutoRestart=true` is carried on [`Autostart::auto_restart`]; the
-//!   session restarts such a program when it dies.
-//!
-//! `X-systemd-skip` only steers `systemd-xdg-autostart-generator`, which turns
-//! entries into `app-*@autostart.service` units under `xdg-desktop-autostart.target`.
-//! A Tilo session never pulls that target in, so this module is the only thing
-//! starting autostart entries and nothing starts twice; the key is ignored.
+//! Tilo applies the specification's rules plus the GNOME extensions the way
+//! `gnome-session` does. [`AUTOSTART_DESKTOPS`] and [`DESKTOP_PHASES`] name
+//! the entries a Tilo session leaves out, because it provides that part of the
+//! desktop itself or systemd activates it on demand.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::entry::{DesktopEntry, EntryType, parse, unlocalised_groups};
 
-/// The desktop names an autostart entry's `OnlyShowIn`/`NotShowIn` are matched
-/// against. Deliberately not the whole `XDG_CURRENT_DESKTOP`; see the module docs.
+/// The desktop names an entry's `OnlyShowIn`/`NotShowIn` are matched
+/// against: Tilo's own name only. `XDG_CURRENT_DESKTOP` also carries `GNOME`
+/// so GNOME-only applications stay in the menu, but a GNOME-only autostart
+/// entry is a piece of the GNOME session and does not belong to Tilo's.
 pub const AUTOSTART_DESKTOPS: &[&str] = &["tilo"];
 
-/// The session name `GNOME3 if-session`/`unless-session` conditions compare with.
 pub const SESSION_NAME: &str = "tilo";
 
-/// `X-GNOME-Autostart-Phase` values naming a part of the desktop Tilo provides
-/// itself, or infrastructure systemd activates on demand.
+/// `X-GNOME-Autostart-Phase` values naming a part of the desktop Tilo
+/// provides itself, or infrastructure systemd activates on demand.
 const DESKTOP_PHASES: &[&str] = &[
     "PreDisplayServer",
     "DisplayServer",
@@ -62,7 +32,6 @@ const DESKTOP_PHASES: &[&str] = &[
     "Desktop",
 ];
 
-/// The autostart directories of the current environment, most important first.
 pub fn autostart_dirs() -> Vec<PathBuf> {
     autostart_dirs_from(
         tilo_paths::xdg::config_home().as_deref(),
@@ -70,7 +39,6 @@ pub fn autostart_dirs() -> Vec<PathBuf> {
     )
 }
 
-/// [`autostart_dirs`] from explicit base directories.
 pub fn autostart_dirs_from(config_home: Option<&Path>, config_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     for base in config_home
@@ -86,8 +54,8 @@ pub fn autostart_dirs_from(config_home: Option<&Path>, config_dirs: &[PathBuf]) 
     dirs
 }
 
-/// Why an autostart file is not started — reported so a session log can explain a
-/// program that "did not come up".
+/// Why an autostart file is not started, so a session log can explain a
+/// program that did not come up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Skipped {
     NotAnApplication,
@@ -100,31 +68,21 @@ pub enum Skipped {
     HiddenUnderSystemd,
     /// `X-GNOME-Autostart-Phase` is a part of the desktop Tilo provides itself.
     DesktopPhase(String),
-    /// `AutostartCondition` is false.
     ConditionFalse(String),
-    /// `AutostartCondition` is of a kind Tilo cannot evaluate.
     UnknownCondition(String),
 }
 
-/// An `AutostartCondition` value, as `gnome-session` reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Condition {
-    /// `if-exists FILE`: FILE, relative to `$XDG_CONFIG_HOME`, exists.
     IfExists(String),
-    /// `unless-exists FILE`: FILE, relative to `$XDG_CONFIG_HOME`, does not exist.
     UnlessExists(String),
-    /// `GSettings SCHEMA KEY`: the boolean key is true.
     GSettings { schema: String, key: String },
-    /// `GNOME3 if-session NAME`: the session is NAME.
     IfSession(String),
-    /// `GNOME3 unless-session NAME`: the session is not NAME.
     UnlessSession(String),
-    /// Anything else: `GNOME` (`GConf`) keys, other desktops' syntaxes.
     Unknown,
 }
 
 impl Condition {
-    /// Parse an `AutostartCondition` value.
     pub fn parse(value: &str) -> Self {
         let mut words = value.split_whitespace();
         let kind = words.next().unwrap_or_default();
@@ -142,7 +100,6 @@ impl Condition {
         }
     }
 
-    /// Whether the condition holds; `None` when it cannot be evaluated.
     pub fn holds(&self, probe: &impl AutostartProbe) -> Option<bool> {
         Some(match self {
             Self::IfExists(file) => probe.config_file_exists(file),
@@ -156,24 +113,19 @@ impl Condition {
     }
 }
 
-/// What deciding an autostart entry needs to know about the machine. Tests answer
-/// from fixtures; the session answers from the real system.
+/// What deciding an autostart entry needs to know about the machine; tests
+/// answer from fixtures, the session from the real system.
 pub trait AutostartProbe {
-    /// `TryExec`: is this program installed? See [`program_on_path`].
     fn program_exists(&self, program: &str) -> bool;
-    /// A boolean `GSettings` key's value; `None` when the schema or key is absent.
     fn gsettings_bool(&self, schema: &str, key: &str) -> Option<bool>;
-    /// Whether `relative` exists under `$XDG_CONFIG_HOME`. See [`config_file_exists`].
     fn config_file_exists(&self, relative: &str) -> bool;
 }
 
-/// `if-exists`/`unless-exists` against the real `$XDG_CONFIG_HOME`.
 pub fn config_file_exists(relative: &str) -> bool {
     tilo_paths::xdg::config_home()
         .is_some_and(|home| home.join(relative.trim_start_matches('/')).exists())
 }
 
-/// An entry to start.
 #[derive(Debug, Clone)]
 pub struct Autostart {
     pub entry: DesktopEntry,
@@ -181,15 +133,12 @@ pub struct Autostart {
     pub auto_restart: bool,
 }
 
-/// One scan's outcome: what to start, and what was deliberately left out.
 #[derive(Debug, Default, Clone)]
 pub struct AutostartScan {
     pub start: Vec<Autostart>,
     pub skipped: Vec<(PathBuf, Skipped)>,
 }
 
-/// Scan `dirs` for the entries a Tilo session starts, naming them in the
-/// language `locales` names ([`crate::locale::language_candidates`]).
 pub fn scan_autostart(
     dirs: &[PathBuf],
     probe: &impl AutostartProbe,
@@ -240,7 +189,7 @@ pub fn scan_autostart(
     out
 }
 
-/// The GNOME autostart keys. They only matter here, so they are not part of
+/// The GNOME autostart keys, which only matter here and so are not part of
 /// [`DesktopEntry`].
 #[derive(Debug, Default)]
 struct AutostartKeys {
@@ -316,8 +265,8 @@ fn why_skipped(
     None
 }
 
-/// `TryExec` per the specification: an absolute path must be an executable file; a bare
-/// name is looked up on `PATH`.
+/// `TryExec` per the specification: an absolute path must be an executable
+/// file; a bare name is looked up on `PATH`.
 pub fn program_on_path(program: &str) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     let executable = |path: &Path| {

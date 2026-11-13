@@ -1,20 +1,4 @@
 //! One module per settings category content pane.
-//!
-//! Every pane is view code over the settings sections it binds and the
-//! area it shows ([`view`]); [`PART`] brings the areas. The pane's
-//! title is the window's ([`crate::window`]), so the modules here focus on
-//! the category-specific content.
-//!
-//! Panes fall into two groups:
-//! - **Hardware panes** (network, bluetooth, sound, displays) own an
-//!   `os_actions::Dispatcher` and drive real `nmcli`/`wpctl`/`brightnessctl`/
-//!   `bluetoothctl` bindings — the same ones the compositor's quick-settings
-//!   panel uses.
-//! - **Information / editor panes** (accounts, region, users, printers,
-//!   time & date, mouse & keyboard, permissions, updates, about) render
-//!   real system state where it's cheaply available, and otherwise a
-//!   populated, realistic sample so the surface reads as designed. Each
-//!   pane's docstring states which parts are live vs. sample.
 
 #[cfg(feature = "tilo-os")]
 pub mod about;
@@ -74,12 +58,8 @@ pub mod users;
 mod part;
 pub use part::PART;
 
-/// Every part of Settings: its own and the panes'.
 pub const PARTS: &[&crate::area::Part] = &[&crate::effects::PART, &PART];
 
-/// `category`'s pane as view code over the settings sections it binds
-/// (`cx.record(&section, ..)`) and the area it shows; `None` where the
-/// window holds no such area.
 pub(crate) fn view(
     cx: &ui::framework::ViewCx<crate::resource::Settings>,
     app: &std::rc::Rc<crate::settings_app::SettingsApp>,
@@ -153,7 +133,6 @@ pub(crate) fn installed_programs_unreadable() -> Option<String> {
     programs_unreadable_on(std::env::var_os("PATH").as_deref())
 }
 
-/// A build without the device panes (`tilo-os`) looks no program up.
 #[cfg(not(feature = "tilo-os"))]
 pub(crate) fn installed_programs_unreadable() -> Option<String> {
     None
@@ -179,8 +158,6 @@ fn programs_unreadable_on(path: Option<&std::ffi::OsStr>) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A `PATH` none of whose directories is visible cannot say a program is
-    /// missing; one visible directory can.
     #[test]
     fn programs_are_unreadable_only_when_no_path_directory_is_visible() {
         let dir = tempfile::tempdir().unwrap();

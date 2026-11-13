@@ -694,7 +694,7 @@ impl Plane {
     /// Audio is carried on the datagram lane: `body` is one `tilo-voice/1`
     /// object and only its payload is sealed, so the relay still forwards a
     /// well-formed voice object and never sees the audio itself. Everything
-    /// else is one sealed object per group.
+    /// else is one sealed object in a group of its own ([`Self::publish_burst`]).
     ///
     /// # Errors
     ///
@@ -704,6 +704,58 @@ impl Plane {
     /// the audio lane carries, and [`PlaneError::Unavailable`] when the
     /// broadcast is gone.
     pub fn publish(&self, track: Track, sequence: u32, body: &[u8]) -> Result<(), PlaneError> {
+        if track != Track::Audio {
+            return self.publish_burst(track, &[(sequence, body)]);
+        }
+        let (sealer, mut producer) = self.outlet(track)?;
+        let object = VoiceObject::decode(body).map_err(|_| PlaneError::Invalid)?;
+        let at = object.timestamp;
+        let payload = sealer.seal(sequence, &object.payload)?;
+        let object = VoiceObject { payload, ..object }
+            .encode()
+            .map_err(|_| PlaneError::Invalid)?;
+        // The objects before this one again, as far as one datagram
+        // carries them: a subscriber that lost the previous packet plays
+        // it from this one.
+        let mut sent = self.sent.lock_recover();
+        let mut bundle = object.clone();
+        for earlier in sent.iter().rev() {
+            if bundle.len().saturating_add(earlier.len()) > voice::MAX_BUNDLE_BYTES {
+                break;
+            }
+            bundle.extend_from_slice(earlier);
+        }
+        sent.push_back(object);
+        while sent.len() >= voice::MAX_BUNDLE_OBJECTS {
+            sent.pop_front();
+        }
+        drop(sent);
+        let timestamp = moq_net::Timestamp::from_scale(at, u64::from(voice::SAMPLE_RATE))
+            .unwrap_or(moq_net::Timestamp::ZERO);
+        producer
+            .insert_datagram(u64::from(sequence), timestamp, bundle)
+            .map_err(|_| PlaneError::Unavailable)
+    }
+
+    /// Seal `objects` and publish them as one group of `track`, in order: a
+    /// burst a reader takes whole. A reader passes over a group that newer
+    /// ones overtook, so the parts of one burst sent as groups of their own
+    /// could each be lost to the next part; as one group, the newest burst
+    /// always carries all of it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::publish`], for a track other than audio.
+    pub fn publish_burst(&self, track: Track, objects: &[(u32, &[u8])]) -> Result<(), PlaneError> {
+        if track == Track::Audio {
+            return Err(PlaneError::Invalid);
+        }
+        let (sealer, producer) = self.outlet(track)?;
+        write_group(&producer, &sealer, objects)
+    }
+
+    /// What `track` is sealed with and published on, while the session lasts.
+    fn outlet(&self, track: Track) -> Result<(Sealer, moq_net::track::Producer), PlaneError> {
         if self.shared.ended() {
             return Err(PlaneError::Ended);
         }
@@ -717,53 +769,14 @@ impl Plane {
         )?;
         // One handle out of the map, so the map's lock is not held across the
         // sealing or the cache write.
-        let mut producer = self
+        let producer = self
             .shared
             .published
             .lock_recover()
             .get(name.as_str())
             .cloned()
             .ok_or(PlaneError::Unavailable)?;
-        if track == Track::Audio {
-            let object = VoiceObject::decode(body).map_err(|_| PlaneError::Invalid)?;
-            let at = object.timestamp;
-            let payload = sealer.seal(sequence, &object.payload)?;
-            let object = VoiceObject { payload, ..object }
-                .encode()
-                .map_err(|_| PlaneError::Invalid)?;
-            // The objects before this one again, as far as one datagram
-            // carries them: a subscriber that lost the previous packet plays
-            // it from this one.
-            let mut sent = self.sent.lock_recover();
-            let mut bundle = object.clone();
-            for earlier in sent.iter().rev() {
-                if bundle.len().saturating_add(earlier.len()) > voice::MAX_BUNDLE_BYTES {
-                    break;
-                }
-                bundle.extend_from_slice(earlier);
-            }
-            sent.push_back(object);
-            while sent.len() >= voice::MAX_BUNDLE_OBJECTS {
-                sent.pop_front();
-            }
-            drop(sent);
-            let timestamp = moq_net::Timestamp::from_scale(at, u64::from(voice::SAMPLE_RATE))
-                .unwrap_or(moq_net::Timestamp::ZERO);
-            return producer
-                .insert_datagram(u64::from(sequence), timestamp, bundle)
-                .map_err(|_| PlaneError::Unavailable);
-        }
-        let frame = sealer.seal(sequence, body)?;
-        let mut group = producer
-            .create_group(moq_net::group::Info::from(u64::from(sequence)))
-            .map_err(|_| PlaneError::Unavailable)?;
-        let timestamp = moq_net::Timestamp::from_scale(u64::from(sequence), 1)
-            .unwrap_or(moq_net::Timestamp::ZERO);
-        group
-            .write_frame(timestamp, frame)
-            .map_err(|_| PlaneError::Unavailable)?;
-        group.finish().map_err(|_| PlaneError::Unavailable)?;
-        Ok(())
+        Ok((sealer, producer))
     }
 
     /// The next object heard from a peer, or `None` when none is queued.
@@ -1504,6 +1517,31 @@ fn hear_voice(shared: &Shared, device: [u8; 32], object: &VoiceObject) -> bool {
         body,
     });
     true
+}
+
+/// Seal `objects` and write them as one group of `producer`'s track, numbered
+/// by the last of them: the group a burst is.
+fn write_group(
+    producer: &moq_net::track::Producer,
+    sealer: &Sealer,
+    objects: &[(u32, &[u8])],
+) -> Result<(), PlaneError> {
+    let Some(&(last, _)) = objects.last() else {
+        return Ok(());
+    };
+    let mut group = producer
+        .create_group(moq_net::group::Info::from(u64::from(last)))
+        .map_err(|_| PlaneError::Unavailable)?;
+    for &(sequence, body) in objects {
+        let frame = sealer.seal(sequence, body)?;
+        let timestamp = moq_net::Timestamp::from_scale(u64::from(sequence), 1)
+            .unwrap_or(moq_net::Timestamp::ZERO);
+        group
+            .write_frame(timestamp, frame)
+            .map_err(|_| PlaneError::Unavailable)?;
+    }
+    group.finish().map_err(|_| PlaneError::Unavailable)?;
+    Ok(())
 }
 
 /// What a plane's reader, or the relay's copy, sees next on a subscribed

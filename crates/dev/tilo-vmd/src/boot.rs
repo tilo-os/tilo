@@ -1,23 +1,12 @@
-//! Boot entries for kernels in the `vm` slot.
-//!
-//! A kernel layer carries `usr/lib/modules/<release>/` with `vmlinuz` and the
-//! signed modules. The modules merge into `/usr` with the rest of the VM-wide
-//! layers (systemd-sysext), but the boot loader starts the kernel before any
-//! extension merges, so `vmlinuz` and an initramfs also go to `/boot` with a
-//! boot loader entry of their own (`tilo-vm-<release>-<layer>.conf`):
-//!
-//! * the initramfs is built in the VM, by the image's own dracut, against the
-//!   merged modules, with the arguments os/Containerfile builds the image's
-//!   initramfs with ([`IMAGE_DRACUT_ARGS`]);
-//! * the entry takes the running kernel's command line, so it boots the same
-//!   deployment;
-//! * it is the next boot only (`bootctl set-oneshot`, `grub2-reboot`), and
-//!   becomes the default once the client confirms the VM came up on it
-//!   ([`Boot::confirm`]). A kernel that never comes up is left behind by a
-//!   reset: the previous default boots.
-//!
-//! Putting the image's kernel back restores the default entry tilo-vm found
-//! and removes every entry it wrote.
+//! Boot entries for kernels in the `vm` slot. A kernel layer carries
+//! `usr/lib/modules/<release>/` with `vmlinuz` and the signed modules. The modules
+//! merge into `/usr` with the VM-wide layers, but the boot loader starts the kernel
+//! before any extension merges, so `vmlinuz` and an initramfs also go to `/boot`
+//! with an entry of their own. The initramfs is built in the VM by the image's own
+//! dracut against the merged modules, the entry takes the running kernel's command
+//! line, and it is the next boot only until the client confirms the VM came up on
+//! it. Putting the image's kernel back restores the entry `tilo-vm` found and
+//! removes every entry it wrote.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,14 +19,11 @@ use tilo_vm_protocol::{BootChange, BootConfirmResult};
 use crate::error::DaemonError;
 use crate::fsutil::write_atomic;
 
-/// Entry files and kernel directories tilo-vm owns start with this.
 pub const ENTRY_PREFIX: &str = "tilo-vm-";
-/// Under `/boot`: one directory per installed kernel entry.
 pub const KERNEL_DIR: &str = "tilo-vm";
 
-/// The arguments os/Containerfile runs dracut with for the image's initramfs
-/// (besides `--force -v --kver <release> <output>`).
-/// `tools/policy/check_kernel_dev_build.py` fails when the two differ.
+/// The arguments `os/Containerfile` runs dracut with for the image's initramfs, besides `--force -v
+/// --kver <release> <output>`; `tools/policy/check_kernel_dev_build.py` fails when the two differ.
 pub const IMAGE_DRACUT_ARGS: &[&str] = &[
     "--reproducible",
     "--compress",
@@ -52,22 +38,18 @@ pub const IMAGE_DRACUT_ARGS: &[&str] = &[
     "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter",
 ];
 
-/// Loaded in the initramfs of every kernel tilo-vmd installs: systemd-sysext
-/// needs overlayfs to merge the layer that carries the kernel's modules, so
-/// with overlayfs modular (Tilo's config) it has to be loaded before that
-/// layer exists. The Tilo image's own initramfs loads it for composefs; an
-/// image that boots without composefs would not.
+/// Loaded in the initramfs of every kernel `tilo-vmd` installs: `systemd-sysext` needs overlayfs to
+/// merge the layer that carries the kernel's modules, so with overlayfs modular it has to be loaded
+/// before that layer exists.
 pub const KERNEL_LAYER_DRACUT_ARGS: &[&str] = &["--force-drivers", "overlay"];
 
-/// Written by that dracut step; its presence says the image is one whose
-/// initramfs [`IMAGE_DRACUT_ARGS`] describe. Other images (a stand-in
-/// distribution) get their distribution's dracut defaults.
+/// Written by that dracut step; its presence says the image is one whose initramfs
+/// [`IMAGE_DRACUT_ARGS`] describe. Other images get their distribution's dracut defaults.
 pub const IMAGE_INITRAMFS_MARKER: &str = "/usr/lib/tilo/initramfs-modules.txt";
 
-/// Makes udev and modules-load look again once the VM-wide layers (and so
-/// the swapped kernel's modules) have merged: until then, `/usr/lib/modules/
-/// <release>` does not exist, and a driver requested earlier in boot (the
-/// virtio NIC, vkms, uinput) would stay unloaded.
+/// Makes udev and modules-load look again once the VM-wide layers, and so the swapped kernel's
+/// modules, have merged: until then `/usr/lib/modules/<release>` does not exist, and a driver
+/// requested earlier in boot would stay unloaded.
 pub const SYSEXT_DROPIN: &str =
     "/etc/systemd/system/systemd-sysext.service.d/50-tilo-vm-kernel.conf";
 const SYSEXT_DROPIN_TEXT: &str = "# Written by tilo-vmd: the vm slot carries a kernel whose modules merge with\n\
@@ -79,12 +61,9 @@ ExecStartPost=-/usr/bin/systemctl restart --no-block systemd-modules-load.servic
 const LOADER_INFO_EFIVAR: &str =
     "/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
-/// The boot loaders tilo-vmd can point at an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Loader {
-    /// systemd-boot, the Tilo image's loader; entry ids end in `.conf`.
     SystemdBoot,
-    /// GRUB with BLS entries (`grub2-editenv`); entry ids are the file stem.
     Grub,
 }
 
@@ -96,7 +75,6 @@ impl Loader {
         }
     }
 
-    /// The id the loader's tools use for the entry file `<stem>.conf`.
     pub fn entry_id(self, stem: &str) -> String {
         match self {
             Self::SystemdBoot => format!("{stem}.conf"),
@@ -104,35 +82,31 @@ impl Loader {
         }
     }
 
-    /// The entry file stem of a loader id.
     pub fn stem(id: &str) -> &str {
         id.strip_suffix(".conf").unwrap_or(id)
     }
 }
 
-/// What the last swap or rollback asked the next boot to run.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
-    /// The entry it booted once (a new kernel) or made the default (the image's).
-    pub entry: Option<String>,
     /// `None`: the image's own kernel.
+    pub entry: Option<String>,
     pub kver: Option<String>,
 }
 
-/// `<root>/boot/state.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootState {
-    /// The default entry before tilo-vm first changed it.
     #[serde(default)]
     pub image_default: Option<String>,
     #[serde(default)]
     pub pending: Option<Pending>,
 }
 
-/// The kernel release and module directory a kernel layer carries: exactly
-/// one `usr/lib/modules/<release>/` with a `vmlinuz`.
+/// The kernel release and module directory a kernel layer carries: exactly one
+/// `usr/lib/modules/<release>/` with a `vmlinuz`.
 ///
 /// # Errors
+///
 /// [`DaemonError::KernelLayer`] for anything else.
 pub fn kernel_in_layer(layer: &Path) -> Result<(String, PathBuf), DaemonError> {
     let modules = layer.join("usr/lib/modules");
@@ -157,8 +131,8 @@ pub fn kernel_in_layer(layer: &Path) -> Result<(String, PathBuf), DaemonError> {
     }
 }
 
-/// `tilo-vm-<release>-<first 12 of the layer hash>`: rebuilds keep the
-/// release, so the layer tells two builds (and their entries) apart.
+/// `tilo-vm-<release>-<first 12 of the layer hash>`: rebuilds keep the release, so the layer tells
+/// two builds apart.
 pub fn entry_stem(kver: &str, layer_hash: &str) -> String {
     format!(
         "{ENTRY_PREFIX}{kver}-{}",
@@ -166,8 +140,8 @@ pub fn entry_stem(kver: &str, layer_hash: &str) -> String {
     )
 }
 
-/// The running kernel's command line as entry options: the loader adds
-/// `BOOT_IMAGE=` and `initrd=` itself.
+/// The running kernel's command line as entry options; the loader adds `BOOT_IMAGE=` and `initrd=`
+/// itself.
 pub fn boot_options(cmdline: &str) -> String {
     cmdline
         .split_whitespace()
@@ -176,7 +150,6 @@ pub fn boot_options(cmdline: &str) -> String {
         .join(" ")
 }
 
-/// One BLS type #1 entry.
 pub fn entry_text(kver: &str, linux: &str, initrd: &str, options: &str) -> String {
     format!(
         "# Written by tilo-vmd for a kernel in the vm slot (tilo-vm swap kernel). Do not edit.\n\
@@ -188,7 +161,6 @@ pub fn entry_text(kver: &str, linux: &str, initrd: &str, options: &str) -> Strin
     )
 }
 
-/// The value of `key` in a BLS entry.
 pub fn entry_field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     text.lines().find_map(|line| {
         let (k, v) = line.trim().split_once(char::is_whitespace)?;
@@ -196,10 +168,9 @@ pub fn entry_field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
-/// Whether entry paths are relative to `/boot` (a separate boot partition, or
-/// the ESP mounted there) or absolute on the root filesystem, judged from an
-/// existing entry whose kernel exists. Returns the prefix to put before
-/// `/tilo-vm/...`: `""` or `"/boot"`.
+/// Whether entry paths are relative to `/boot` (a separate boot partition, or the ESP mounted
+/// there) or absolute on the root filesystem, judged from an existing entry whose kernel exists.
+/// Returns the prefix for `/tilo-vm/...`: `""` or `"/boot"`.
 pub fn path_prefix(boot: &Path, entries: &[String]) -> &'static str {
     for text in entries {
         let Some(linux) = entry_field(text, "linux") else {
@@ -218,9 +189,8 @@ pub fn path_prefix(boot: &Path, entries: &[String]) -> &'static str {
     ""
 }
 
-/// The stem of the entry the running kernel was booted from, matched by the
-/// `BOOT_IMAGE=` path GRUB puts on the command line (`(hd0,gpt3)/boot/vmlinuz-…`)
-/// against each entry's `linux` path.
+/// The stem of the entry the running kernel was booted from, matched by the `BOOT_IMAGE=` path GRUB
+/// puts on the command line against each entry's `linux` path.
 pub fn running_entry(cmdline: &str, entries: &[(String, String)], boot: &Path) -> Option<String> {
     let image = cmdline
         .split_whitespace()
@@ -240,7 +210,6 @@ pub fn running_entry(cmdline: &str, entries: &[(String, String)], boot: &Path) -
         .map(|(stem, _)| stem.clone())
 }
 
-/// Parse `bootctl list --json=short` for the default entry's id.
 pub fn systemd_boot_default(json: &str) -> Option<String> {
     let entries: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
     entries
@@ -249,7 +218,6 @@ pub fn systemd_boot_default(json: &str) -> Option<String> {
         .and_then(|e| e.get("id")?.as_str().map(str::to_owned))
 }
 
-/// Parse `grub2-editenv - list` for `saved_entry`.
 pub fn grub_default(env: &str) -> Option<String> {
     env.lines()
         .find_map(|line| line.strip_prefix("saved_entry="))
@@ -258,8 +226,6 @@ pub fn grub_default(env: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Tilo-vm entries to delete when `keep` (entry stems) stay: every other
-/// `tilo-vm-*.conf` stem.
 pub fn stale_stems(existing: &[String], keep: &[&str]) -> Vec<String> {
     existing
         .iter()
@@ -268,11 +234,8 @@ pub fn stale_stems(existing: &[String], keep: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Boot entries on the running system.
 pub struct Boot {
-    /// `/boot`.
     pub boot_dir: PathBuf,
-    /// `<daemon root>/boot/state.json`.
     pub state_path: PathBuf,
 }
 
@@ -329,7 +292,6 @@ impl Boot {
     }
 
     pub fn loader(&self) -> Result<Loader, DaemonError> {
-        // GRUB sets LoaderInfo too (its `bli` module), so read who wrote it.
         let info = fs::read(LOADER_INFO_EFIVAR)
             .map(|bytes| efivar_string(&bytes))
             .unwrap_or_default();
@@ -389,7 +351,6 @@ impl Boot {
         .map(drop)
     }
 
-    /// `(stem, text)` of every entry file.
     fn entries(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = fs::read_dir(self.entries_dir())
             .into_iter()
@@ -420,10 +381,11 @@ impl Boot {
         Ok(())
     }
 
-    /// Install the kernel in `layer` (its modules already merged into `/usr`)
-    /// as the next boot entry; the current default stays the default.
+    /// Install the kernel in `layer`, whose modules are already merged into `/usr`, as the next
+    /// boot entry; the current default stays the default.
     ///
     /// # Errors
+    ///
     /// A layer without a kernel, no supported loader, dracut or I/O failures.
     pub fn install(&self, layer: &Path) -> Result<(BootChange, Vec<String>), DaemonError> {
         let (kver, moddir) = kernel_in_layer(layer)?;
@@ -521,10 +483,9 @@ impl Boot {
         ))
     }
 
-    /// The default entry, pinned first when there is none: GRUB then boots
-    /// the entry that sorts first, which a newer kernel release would take
-    /// over, so the running entry becomes the explicit default and the new
-    /// one is the next boot only.
+    /// The default entry, pinned first when there is none: GRUB then boots the entry that sorts
+    /// first, which a newer kernel release would take over, so the running entry becomes the
+    /// explicit default and the new one is the next boot only.
     fn pinned_default(&self, loader: Loader) -> Result<Option<String>, DaemonError> {
         if let Some(current) = Self::default_entry(loader) {
             return Ok(Some(current));
@@ -544,8 +505,7 @@ impl Boot {
         }
     }
 
-    /// Put the image's own kernel back: its default entry returns and every
-    /// tilo-vm entry goes.
+    /// Put the image's own kernel back: its default entry returns and every `tilo-vm` entry goes.
     pub fn restore_image(&self) -> Result<BootChange, DaemonError> {
         let loader = self.loader()?;
         let mut state = self.state();
@@ -598,8 +558,7 @@ impl Boot {
         })
     }
 
-    /// After the reboot: is the expected kernel running? Then its entry
-    /// becomes the default.
+    /// After the reboot: is the expected kernel running? Then its entry becomes the default.
     pub fn confirm(&self, expect_version: Option<&str>) -> Result<BootConfirmResult, DaemonError> {
         let running = read_trimmed("/proc/sys/kernel/osrelease");
         let version = read_trimmed("/proc/sys/kernel/version");
@@ -670,9 +629,8 @@ fn install_warnings(loader: Loader) -> Vec<String> {
     warnings
 }
 
-/// Whether GRUB's environment file sits on btrfs without an `env_block`
-/// in the filesystem's reserved area: GRUB then cannot write it at boot,
-/// so it cannot clear `next_entry`.
+/// Whether GRUB's environment file sits on btrfs without an `env_block` in the filesystem's
+/// reserved area: GRUB then cannot write it at boot, so it cannot clear `next_entry`.
 fn grubenv_on_btrfs() -> bool {
     let on_btrfs = Command::new("stat")
         .args(["-f", "-c", "%T", "/boot/grub2/grubenv"])

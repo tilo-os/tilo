@@ -1,20 +1,17 @@
-//! Stand-ins for the programs code under test starts: a `tilo-launcher` that
-//! records its launch and keeps running as an app would, a host app's
-//! program.
+//! Stand-ins for the programs code under test starts: a `tilo-launcher` that records its launch and
+//! keeps running as an app would, a host app's program.
 //!
-//! A stand-in that keeps running must end when its test does, however the
-//! test ends: passing, failing an assertion, or the whole test process being
-//! killed. A stand-in that instead waits for a file the test writes runs on
-//! forever when the test fails before writing it, or when the test's
+//! A stand-in that keeps running must end when its test does, however the test ends: passing,
+//! failing an assertion, or the whole test process being killed. A stand-in that instead waits for
+//! a file the test writes runs on forever when the test fails before writing it, or when the test's
 //! temporary tree, file and all, is deleted before the stand-in looks.
 //!
-//! [`stand_in`] gives every stand-in a lifeline instead: a FIFO beside the
-//! script whose only writer is the [`StandIn`] the test holds, opened
-//! close-on-exec so nothing the test starts inherits it. The script's `hold`
-//! reads from it, and a read of a FIFO with no writer left returns at once:
-//! when the test drops the [`StandIn`], and when the kernel closes the
-//! test's descriptors because the process is gone. Nothing polls and nothing
-//! waits for a time: the read returns the moment its test is gone.
+//! [`stand_in`] gives every stand-in a lifeline instead: a FIFO beside the script whose only writer
+//! is the [`StandIn`] the test holds, opened close-on-exec so nothing the test starts inherits it.
+//! The script's `hold` reads from it, and a read of a FIFO with no writer left returns at once:
+//! when the test drops the [`StandIn`], and when the kernel closes the test's descriptors because
+//! the process is gone. Nothing polls and nothing waits for a time: the read returns the moment its
+//! test is gone.
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -24,28 +21,25 @@ use crate::{Script, script};
 
 /// A stand-in script and the lifeline that holds it running.
 ///
-/// Dropping it lets every `hold` in a running copy of the script return, and
-/// a copy started after that holds nothing.
+/// Dropping it lets every `hold` in a running copy of the script return, and a copy started after
+/// that holds nothing.
 #[derive(Debug)]
 pub struct StandIn {
     script: Script,
-    // Field order is drop order: the FIFO's path goes before its writer
-    // closes, so a copy that starts after this can no longer open it.
+    // Field order is drop order: the FIFO's path goes before its writer closes, so a copy that
+    // starts after this can no longer open it.
     lifeline: Lifeline,
 }
 
 impl StandIn {
-    /// Where the script was written: the program to hand the code under test.
     pub fn path(&self) -> &Path {
         self.script.path()
     }
 
-    /// The script, to run through [`Script::command`].
     pub fn script(&self) -> &Script {
         &self.script
     }
 
-    /// The FIFO the script's `hold` reads.
     pub fn lifeline(&self) -> &Path {
         &self.lifeline.path
     }
@@ -60,20 +54,19 @@ struct Lifeline {
 
 impl Drop for Lifeline {
     fn drop(&mut self) {
-        // Unlinked first: a copy of the script that starts now finds no FIFO
-        // and does not hold, rather than opening one that has no writer left
-        // to close and waiting on it for ever.
+        // Unlinked first: a copy of the script that starts now finds no FIFO and does not hold,
+        // rather than opening one that has no writer left to close and waiting on it for ever.
         let _ = fs::remove_file(&self.path);
     }
 }
 
-/// Write `body` to `path` as a `/bin/sh` stand-in, with a `hold` it calls to
-/// keep running until the test that wrote it is gone.
+/// Write `body` to `path` as a `/bin/sh` stand-in, with a `hold` it calls to keep running until the
+/// test that wrote it is gone.
 ///
-/// `body` is the script after its interpreter line: it records what it was
-/// asked (`printf '%s\n' "$$" >> '…'`), then calls `hold` where the program
-/// it stands in for would keep running. A stand-in that only records and
-/// exits needs no `hold`, and still gets the atomic write of [`script`].
+/// `body` is the script after its interpreter line: it records what it was asked
+/// (`printf '%s\n' "$$" >> '…'`), then calls `hold` where the program it stands in for would keep
+/// running. A stand-in that only records and exits needs no `hold`, and still gets the atomic write
+/// of [`script`].
 pub fn stand_in(path: impl AsRef<Path>, body: &str) -> io::Result<StandIn> {
     let path = path.as_ref();
     let name = path
@@ -108,9 +101,9 @@ impl Lifeline {
         if unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        // Read and write: opening a FIFO for writing alone waits for a reader,
-        // and there is none yet. Rust opens it close-on-exec, so this process
-        // holds the only writer and nothing it starts inherits one.
+        // Read and write: opening a FIFO for writing alone waits for a reader, and there is none
+        // yet. Rust opens it close-on-exec, so this process holds the only writer and nothing it
+        // starts inherits one.
         let writer = OpenOptions::new().read(true).write(true).open(path)?;
         Ok(Self {
             path: path.to_owned(),
@@ -127,8 +120,6 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
-    /// Run `stand_in` as the code under test would, and hand back a receiver
-    /// of its exit once it has started.
     fn holding(stand_in: &StandIn, started: &Path) -> mpsc::Receiver<()> {
         let mut child = stand_in
             .script()

@@ -1,11 +1,4 @@
 //! Driven scrolling test for the settings content pane.
-//!
-//! A category whose section cards overflow a short window must scroll. This
-//! builds the *real* composed Settings window tree, lays it out at a short
-//! viewport, then drives the genuine winit wheel + keyboard path and asserts
-//! the content pane's `Scrollable` actually moved its child. Geometry is read
-//! only through the public `Widget` trait (`name`, `get_rect`, `children`) so
-//! the assertions ride the production layout.
 
 #![allow(
     clippy::unwrap_used,
@@ -40,12 +33,10 @@ impl Harness {
             .dispatch_to_root_with(event, &Modifiers::default())
     }
 
-    /// The content pane's scroll ([`content_scroll`]).
     fn content_scroll(&mut self) -> (f64, f64, f64) {
         content_scroll(self.app.harness().root_widget())
     }
 
-    /// Open `category`'s pane, as its sidebar row does.
     fn open(&mut self, category: Category) {
         self.app
             .effect(&settings::effects::open_pane(category))
@@ -58,9 +49,6 @@ impl Harness {
     }
 }
 
-/// The content pane's `Scrollable` is the one furthest to the right (the
-/// sidebar's own `Scrollable` hugs the left edge). Returns `(offset, viewport_h,
-/// content_h)` where `offset` is how far it has shifted its child up.
 fn content_scroll(root: &dyn Widget) -> (f64, f64, f64) {
     fn collect<'a>(w: &'a dyn Widget, out: &mut Vec<&'a dyn Widget>) {
         if w.name() == "Scrollable" {
@@ -104,7 +92,6 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
     );
     assert!(offset0.abs() < 0.5, "starts unscrolled, got {offset0}");
 
-    // Wheel down: the content pane's Scrollable shifts its child up.
     let content_point = Point::new(800.0, 170.0);
     let cursor = ui::synthetic_input::cursor_moved(content_point.x, content_point.y);
     h.dispatch(&cursor);
@@ -132,10 +119,6 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
     );
 }
 
-/// Settings rebuilds its content scroller whenever a pane's structure
-/// changes: a control applied, or the pane opened again from the sidebar.
-/// Each rebuild must keep the pane where the person scrolled it, not jump it
-/// back to the top.
 #[test]
 fn a_rebuilt_pane_keeps_its_scroll_position() {
     let mut h = Harness::new(Category::Power, 1100.0, 340.0);

@@ -1,19 +1,10 @@
-//! The settings sidebar: one [`NavList`] of the categories, grouped by
+//! The settings sidebar: one [`NavList`] of the categories, grouped by.
 //! [`Section`].
-//!
-//! The list is the toolkit's navigation list, so rows, selection lift,
-//! keyboard handling, section headers and the narrow push behaviour are the
-//! same as every other Tilo sidebar. Choosing a category runs its pane's
-//! published open action, the one an agent or the palette runs to open it.
-//! Navigation is presentation state:
-//! it must not become a replicated preference, an undo entry, or a document
-//! click flag.
 
 use ui::widget::{NavItem, NavList, NavSection};
 
 use crate::categories::{Category, Section};
 
-/// The id of the navigation list, for tests and inspection.
 pub const NAV_ID: &str = "settings.nav";
 pub const SIDEBAR_WIDTH: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64;
 pub fn width_for_text_scale(scale: f32) -> f64 {
@@ -44,8 +35,6 @@ pub fn build(
     list(selection, filter).selection_actions(bindings)
 }
 
-/// The sectioned category list, as [`build`] makes it, its rows opening
-/// nothing.
 pub fn list(
     selection: &ui::LocalState<Option<String>>,
     filter: &ui::LocalState<String>,
@@ -105,8 +94,6 @@ mod tests {
         assert_eq!(seen.len(), Category::ALL.len());
     }
 
-    /// Section headers are sentence case: the design language has no
-    /// all-caps labels.
     #[test]
     fn section_headers_are_sentence_case() {
         for section in Section::ALL {
@@ -126,8 +113,6 @@ mod tests {
         }
     }
 
-    /// Typing what a page holds finds the page, and the row says which
-    /// setting matched: "where is the keyboard layout".
     #[test]
     fn the_filter_finds_pages_by_the_settings_on_them() {
         for (query, page) in [

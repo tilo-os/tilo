@@ -3,16 +3,11 @@
 //! secret; the app that keeps an account's type
 //! ([`crate::person::secret_keeper`], Mail for email) is released that one
 //! account's secret. Nothing else is sealed or released.
-//!
-//! The session holds the person's vault under session custody and answers
-//! with these; a sandboxed app never opens the vault
-//! (docs/security/passwords-and-secrets.md).
 
 use zeroize::Zeroizing;
 
 use crate::{AccountCredentials, AccountId, AccountStore, Secret};
 
-/// Why custody did not seal or release a secret, as the app is told.
 pub const REFUSED: &str = "This account's secret is not available to this app";
 
 /// Seal `password` as account `account`'s secret, for `app`: only the

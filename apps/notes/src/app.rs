@@ -713,10 +713,11 @@ impl NotesApp {
         };
         vec![
             Box::new(note_menu),
-            // window-bar: fallback, the bar's search while it hosts the window
-            Box::new(ui::search::search_button(
-                ui::search::SearchRequest::this_app(),
-            )),
+            ui::window_toolbar::exempt!(Fallback, {
+                Box::new(ui::search::search_button(
+                    ui::search::SearchRequest::this_app(),
+                ))
+            }),
         ]
     }
 

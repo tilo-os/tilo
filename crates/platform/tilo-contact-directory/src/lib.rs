@@ -1,32 +1,30 @@
 //! One person-owned directory shared by Contacts and its application consumers.
-//! Names are labels. Only explicit, confirmed endpoint associations resolve
-//! identity; concurrent conflicting confirmations remain ambiguous and refuse
-//! routing rather than choosing a winner. No credentials or histories live here.
+//! Names are labels: only explicit, confirmed endpoint associations resolve
+//! identity, and conflicting confirmations refuse routing rather than choosing a
+//! winner. No credentials or histories live here.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
     Collection, Id, JsonSchema, Model, ModelError, Refusal, SharedRecord, resource,
 };
 
-/// How many people one projection may carry: a large imported book in one
-/// change, bounded so one payload stays a reasonable size.
+/// How many people one projection may carry, so a large imported book stays one
+/// reasonable payload.
 pub const MAX_PROJECTED: usize = 10_000;
 
-/// How much text one person's picture may take: Contacts keeps a small
-/// portrait, far below this.
+/// How much text one person's picture may take; Contacts keeps a small portrait,
+/// far below this.
 pub const MAX_PHOTO_BYTES: usize = 96 * 1024;
 
-/// One Contacts identity as Contacts projects it: its label and the phone
-/// and mailbox hints it holds.
+/// One Contacts identity as Contacts projects it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Projected {
-    /// The Contacts UUID.
     pub person: Id,
     pub label: String,
     pub phones: Vec<String>,
     pub emails: Vec<String>,
-    /// The person's picture as Contacts keeps it (a small JPEG, base64);
-    /// empty for none.
+    /// The person's picture as Contacts keeps it (a small JPEG, base64); empty for
+    /// none.
     #[serde(default)]
     pub photo: String,
 }
@@ -50,8 +48,8 @@ pub struct Person {
     pub phones: Vec<String>,
     /// Address-book mailboxes, never identity evidence or a sending grant.
     pub emails: Vec<String>,
-    /// The picture Contacts shows for the person (a small JPEG, base64), for
-    /// apps that show them; empty for none. Never fetched from anywhere.
+    /// The picture Contacts shows for the person, for apps that show them; empty for
+    /// none, and never fetched from anywhere.
     pub photo: String,
     pub endpoints: Collection<Endpoint>,
 }
@@ -68,11 +66,12 @@ pub struct Endpoint {
     pub removed: bool,
 }
 
-/// Bring the person `obj` of a directory of version 1 up to this one: their
-/// phone and mail hints were one JSON string each, and are lists now.
+/// Bring the person `obj` of a version 1 directory up to this one: their phone and
+/// mail hints were one JSON string each, and are lists now.
 ///
 /// # Errors
-/// Returns why a stored list of hints does not read as one.
+///
+/// Why a stored list of hints does not read as one.
 pub fn upgrade_person(
     doc: &mut tilo_resource::Doc,
     obj: &automerge::ObjId,
@@ -82,7 +81,7 @@ pub fn upgrade_person(
     Ok(())
 }
 
-/// Bring a directory of version 1 up to this one ([`upgrade_person`]).
+/// Bring a version 1 directory up to this one ([`upgrade_person`]).
 fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     if from != 1 {
         return Err(ModelError::invalid(format!(
@@ -96,13 +95,10 @@ fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
 }
 
 impl ContactDirectory {
-    /// What the record holds: the identities Contacts keeps for the workspace: each person's
-    /// label, contacts and whether it was removed.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the identities Contacts keeps for the workspace, each
+    /// person's label, contacts and whether it was removed. A caller with no window
+    /// open reads it through [`fields`](tilo_resource::read::fields) like any app's
+    /// record.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -118,8 +114,8 @@ impl ContactDirectory {
     read_content = ContactDirectory::read_document
 )]
 impl ContactDirectory {
-    /// Update the label of a Contacts identity, without merging similar names
-    /// or reviving an identity that was deleted.
+    /// Update the label of a Contacts identity, without merging similar names or
+    /// reviving a deleted identity.
     #[action(external)]
     pub fn project_contact(&mut self, person: Id, label: String) -> Result<(), Refusal> {
         validate_person(&person)?;
@@ -142,8 +138,7 @@ impl ContactDirectory {
         Ok(())
     }
 
-    /// Tombstone a removed Contacts identity. Delayed projections cannot
-    /// recreate it and its endpoints cannot be used for sending.
+    /// Tombstone a removed Contacts identity.
     #[action(external)]
     pub fn remove_contact(&mut self, person: Id) -> Result<(), Refusal> {
         validate_person(&person)?;
@@ -162,8 +157,6 @@ impl ContactDirectory {
     }
 
     /// Explicitly confirm that this service recipient belongs to this person.
-    /// An uncertain candidate never becomes an association merely by appearing
-    /// in a contact search or having a matching name/phone number.
     #[action(destructive)]
     pub fn confirm_endpoint(
         &mut self,
@@ -183,7 +176,6 @@ impl ContactDirectory {
     }
 
     /// Confirm the exact provider-scoped account and observed identity revision.
-    /// This is an address-book decision, not cryptographic proof or permission.
     #[action(destructive)]
     pub fn confirm_account(
         &mut self,
@@ -242,7 +234,7 @@ impl ContactDirectory {
         Ok(())
     }
 
-    /// Project phone hints from Contacts. These can suggest candidates only.
+    /// Project phone hints from Contacts; they can suggest candidates only.
     #[action(external)]
     pub fn project_phones(&mut self, person: Id, phones: Vec<String>) -> Result<(), Refusal> {
         hints_bounded(&phones)?;
@@ -268,11 +260,9 @@ impl ContactDirectory {
         Ok(())
     }
 
-    /// Project many Contacts identities as one change: each person's label,
-    /// phone and mailbox hints as [`Self::project_contact`],
-    /// [`Self::project_phones`] and [`Self::project_emails`] would, and each
-    /// of `removed` tombstoned as [`Self::remove_contact`] would. A large
-    /// import costs one change instead of three per person.
+    /// Project many Contacts identities as one change, each person's label and hints as
+    /// [`Self::project_contact`], [`Self::project_phones`] and [`Self::project_emails`]
+    /// would, so a large import costs one change instead of three per person.
     #[action(external)]
     pub fn project_contacts(
         &mut self,
@@ -339,8 +329,8 @@ impl ContactDirectory {
     }
 }
 
-/// One address-book mailbox of one person, as a picker offers it: a choice
-/// for the person to review, never proof of identity.
+/// One address-book mailbox of one person, as a picker offers it: a choice to
+/// review, never proof of identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmailHint {
     pub person: String,
@@ -349,8 +339,8 @@ pub struct EmailHint {
 }
 
 impl ContactDirectory {
-    /// Every live person's mailboxes, each canonical and once per person.
-    /// Different people with one address stay separate choices.
+    /// Every live person's mailboxes, each canonical and once per person; different
+    /// people with one address stay separate choices.
     pub fn email_hints(&self) -> Vec<EmailHint> {
         let mut hints = Vec::new();
         for (id, person) in self.people.iter().filter(|(_, person)| !person.removed) {
@@ -371,9 +361,8 @@ impl ContactDirectory {
         hints
     }
 
-    /// Whether `hint` still stands as it was reviewed: the person is in the
-    /// book under that name and still has that address. A changed or
-    /// removed contact makes an earlier choice stale.
+    /// Whether `hint` still stands as reviewed: the person is in the book under that
+    /// name with that address. A changed or removed contact makes a choice stale.
     pub fn holds(&self, hint: &EmailHint) -> bool {
         canonical_email_hint(&hint.email).as_deref() == Some(hint.email.as_str())
             && self
@@ -389,9 +378,8 @@ impl ContactDirectory {
                 })
     }
 
-    /// The picture of the one person in the book with mailbox `email`, if
-    /// they have one. Several people sharing the mailbox show none: a picture
-    /// never guesses between them.
+    /// The picture of the one person in the book with mailbox `email`, if they have
+    /// one; several people sharing it show none.
     pub fn photo_for_email(&self, email: &str) -> Option<&str> {
         let candidates = self.email_candidates(email);
         let [person] = candidates.as_slice() else {
@@ -401,8 +389,8 @@ impl ContactDirectory {
         (!person.removed && !person.photo.is_empty()).then_some(person.photo.as_str())
     }
 
-    /// Every matching person remains a candidate, including a unique match.
-    /// Local-part case and provider-specific aliases are never guessed.
+    /// Every matching person remains a candidate, including a unique match: local-part
+    /// case and provider aliases are never guessed.
     pub fn email_candidates(&self, email: &str) -> Vec<Id> {
         self.candidates(email, |person| &person.emails, canonical_email_hint)
     }
@@ -507,8 +495,8 @@ impl ContactDirectory {
         Ok(person)
     }
 
-    /// Revision-aware resolver for provider adapters. Never silently downgrades
-    /// a versioned association to the compatibility endpoint API.
+    /// Revision-aware resolver for provider adapters: a versioned association is never
+    /// silently downgraded to the compatibility endpoint API.
     pub fn resolve_account(
         &self,
         service: &str,
@@ -556,8 +544,8 @@ impl ContactDirectory {
         self.candidates(phone, |person| &person.phones, canonical_phone)
     }
 
-    /// Every live person with a value of `values` that canonicalizes like
-    /// `wanted`, in id order.
+    /// Every live person with a value of `values` that canonicalizes like `wanted`, in
+    /// id order.
     fn candidates(
         &self,
         wanted: &str,
@@ -596,10 +584,9 @@ fn validate_person(person: &Id) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Conservative ASCII dot-atom mailbox key for address-book suggestions.
-/// This is not deliverability validation. Quoted/EAI mailboxes stay available
-/// through consumers' manual entry; their equivalence is not guessed here.
-/// RFC 5321 §2.4 preserves local-part case and folds only the DNS domain.
+/// Conservative ASCII dot-atom mailbox key for address-book suggestions, not
+/// deliverability validation: quoted and EAI mailboxes stay for manual entry. RFC
+/// 5321 §2.4 preserves local-part case and folds only the DNS domain.
 pub fn canonical_email_hint(value: &str) -> Option<String> {
     if value.bytes().any(|byte| byte.is_ascii_control()) {
         return None;

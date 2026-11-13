@@ -1,10 +1,8 @@
-//! The Python behaviours the checks were defined with.
-//!
-//! The selector and the hardware-profile reader were Python, and signed
-//! release documents and image files are judged exactly as they judged them:
-//! what counts as whitespace and as a line break, how `int()` reads a number,
-//! how strictly `base64.b64decode(validate=True)` decodes, and what `==`
-//! means between a JSON value and a number.
+//! The Python behaviours the checks were defined with, so signed release documents
+//! and image files are judged exactly as the selector and the hardware-profile reader
+//! judged them: what counts as whitespace and as a line break, how `int()` reads a
+//! number, how strictly `base64.b64decode(validate=True)` decodes, and what `==` means
+//! between a JSON value and a number.
 
 use serde_json::Value;
 pub use tilo_pycompat::{as_int, b64decode, equals_number, int, sha256_hex, splitlines, strip};

@@ -1,23 +1,4 @@
 //! What one keystroke costs in a multiline [`TextInput`] as the text grows.
-//!
-//! Scratchpad's whole UI and Mail's plain compose body are this widget: a
-//! multiline input inside a vertical [`Scrollable`]. Two hosts type the same
-//! text into notes of about 1, 10 and 100 KB of prose paragraphs:
-//!
-//! - **harness**: the headless [`FrameHarness`], which rebuilds its layout
-//!   tree every frame (what `TestApp` and the SDK latency example measure);
-//! - **retained**: the live host's lifecycle, which keeps one layout tree
-//!   between keystrokes and re-solves it when a widget asks to be measured.
-//!
-//! Each row is the mean per keystroke of event handling, layout (build,
-//! solve and apply) and draw, plus the p50 and p95 of their sum.
-//!
-//! ```text
-//! cargo run -p ui-examples --release --example multiline-typing
-//! cargo run -p ui-examples --release --example multiline-typing -- --chars 120 --sizes 10,100
-//! ```
-//!
-//! Release only: a debug build makes every reading meaningless.
 
 use std::collections::HashMap;
 use tilo_ui::time::Instant;

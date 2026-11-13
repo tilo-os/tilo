@@ -1,31 +1,4 @@
-//! Devices and access: everything that acts as the person, in one place,
-//! the same on the desktop and the web.
-//!
-//! The person has one root identity. Each of their devices and each agent
-//! they let in holds a key the root certified, and taking one back is the
-//! root's signed revocation. The person's record on their host lists every
-//! such key ([`identity_admin::DEVICES`]), with the agent a key runs, when it
-//! was last connected and whether it is now. The page shows them as people
-//! know them:
-//!
-//! - **Requests**: a device of the person's asking to be them
-//!   ([`device_pairing::ASKING`]), approved or declined in place
-//!   ([`device_pairing::ANSWER`]); only while one waits, at the top.
-//! - **Agents**: every key an agent acts as the person with (Claude Code
-//!   signed in on a laptop, a grant the agent door let in, a script's key):
-//!   what it may do and until when, when it was last active, and Remove.
-//!   Where the person's agent door answers ([`agent_door::DOOR`], followed
-//!   live), it adds the runs open now, which can be stopped
-//!   ([`agent_door::STOP`]), and grants the record does not hold yet.
-//! - **Browsers and computers**: this browser or computer first, then the
-//!   others, each with when it was last active and Remove. A browser keeps
-//!   one key per tab, since a key has one writer; one browser's keys are one
-//!   entry, removed together.
-//!
-//! Every entry keeps its key's fingerprint and when it was added under its
-//! Details. Adding an agent or a computer is the desk's own setup
-//! ([`session_actions::SHOW_CONNECT`]), the one the person's card opens.
-//! Every list is the host's answer: nothing here holds a key or a secret.
+//! Devices and access: everything that acts as the person, in one place.
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
@@ -53,13 +26,10 @@ use ui::tilo_actions::remote::identity_admin::KeyKind;
 
 crate::effects::effect_family!(DevicesAccessEffect => answer);
 
-/// Why a device's access ends, as the root's revocation records it.
 const REVOKE_REASONS: [&str; 4] = ["retired", "lost", "stolen", "compromised"];
 
-/// The reason a person's Remove gives: they no longer use it.
 const REMOVED: &str = "retired";
 
-/// What the person does to the keys acting as them.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DevicesAccessEffect {
@@ -107,7 +77,6 @@ pub enum DevicesAccessEffect {
     ShowConnect,
 }
 
-/// Answer `effect` through the host, the caller hearing how it ended.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "every area answers through the effect vocabulary's one signature"
@@ -131,32 +100,24 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`DevicesAccessArea`].
 pub fn area(app: &SettingsApp) -> Option<&DevicesAccessArea> {
     app.areas().find()
 }
 
-/// Devices and access in a window: the model, made when the page is first
-/// shown, and what the page is keyed by.
 pub struct DevicesAccessArea {
     remote: ui::RemoteActions,
-    /// A screenshot's lists in place of the host's.
     scene: Option<AccessSample>,
     model: OnceCell<Rc<RefCell<AccessModel>>>,
     shown: LocalState<u64>,
-    /// What the person is removing, asked in place before it goes.
     removing: LocalState<Option<String>>,
-    /// Each entry's Details, one open at a time, kept across rebuilds.
     details: DisclosureGroup,
 }
 
-/// The lists a screenshot shows, and the moment it shows them at.
 #[derive(Clone, Debug, Default)]
 pub struct AccessSample {
     pub devices: Vec<DeviceView>,
     pub door: Door,
     pub asking: Vec<Asking>,
-    /// Now, ms since the epoch, so "last active" reads the same every time.
     pub now_ms: i64,
 }
 
@@ -172,7 +133,6 @@ impl DevicesAccessArea {
         }
     }
 
-    /// The model, asking the host for its lists from when it is made.
     pub fn model(&self) -> &Rc<RefCell<AccessModel>> {
         self.model.get_or_init(|| {
             Rc::new(RefCell::new(match &self.scene {
@@ -182,13 +142,10 @@ impl DevicesAccessArea {
         })
     }
 
-    /// Whether the page was shown, so its rows are read.
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
 
-    /// Take in the host's latest answers, if the model exists, and move what
-    /// the page is keyed by when they changed.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get()
             && let Ok(mut model) = model.try_borrow_mut()
@@ -198,8 +155,6 @@ impl DevicesAccessArea {
         }
     }
 
-    /// Each device, browser, agent and asking device as a row of the
-    /// published surface, offering what can be done to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let devices = model.entries().into_iter().filter_map(|entry| match entry {
@@ -213,7 +168,6 @@ impl DevicesAccessArea {
     }
 }
 
-/// A device of the person's, as the type its rows are items of.
 pub(crate) struct Device;
 
 impl tilo_resource::words::RowType for Device {
@@ -221,7 +175,6 @@ impl tilo_resource::words::RowType for Device {
     const LABEL: &'static str = "Device";
 }
 
-/// An agent acting as the person, as the type its rows are items of.
 pub(crate) struct AgentGrant;
 
 impl tilo_resource::words::RowType for AgentGrant {
@@ -229,7 +182,6 @@ impl tilo_resource::words::RowType for AgentGrant {
     const LABEL: &'static str = "Agent";
 }
 
-/// A device asking to be the person, as the type its rows are items of.
 pub(crate) struct AskingDevice;
 
 impl tilo_resource::words::RowType for AskingDevice {
@@ -237,15 +189,11 @@ impl tilo_resource::words::RowType for AskingDevice {
     const LABEL: &'static str = "Device asking to join";
 }
 
-/// A device asking to be the person, as [`device_pairing::ASKING`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Asking {
-    /// What its answer names it by.
     pub ask: String,
     pub label: String,
-    /// The code both screens show, so the person can tell it is theirs.
     pub code: String,
-    /// The device of theirs it asked through.
     pub via: String,
 }
 
@@ -254,7 +202,6 @@ struct AskingAnswer {
     asking: Vec<Asking>,
 }
 
-/// One entry of Browsers and computers: a device, or one browser's tabs.
 enum Entry<'a> {
     Device(&'a DeviceView),
     Browser(BrowserEntry<'a>),
@@ -268,7 +215,6 @@ impl Entry<'_> {
         }
     }
 
-    /// When it was last connected, for the order the list keeps.
     fn last_active(&self) -> Option<i64> {
         match self {
             Entry::Device(device) => device.last_active_ms,
@@ -277,32 +223,24 @@ impl Entry<'_> {
     }
 }
 
-/// One browser of the person's: the key of each of its tabs, under the
-/// browser's id.
 struct BrowserEntry<'a> {
     id: &'a str,
-    /// In the order the list names them, so the last is the newest.
     keys: Vec<&'a DeviceView>,
 }
 
 impl BrowserEntry<'_> {
-    /// It holds this device: the page is one of its tabs.
     fn current(&self) -> bool {
         self.keys.iter().any(|key| key.current)
     }
 
-    /// The keys whose access has not ended.
     fn live(&self) -> impl Iterator<Item = &DeviceView> {
         self.keys.iter().copied().filter(|key| !key.revoked)
     }
 
-    /// Every tab's access ended.
     fn revoked(&self) -> bool {
         self.live().next().is_none()
     }
 
-    /// Whether its keys can be revoked from here: a tab can't revoke its
-    /// own key, so this browser is removed from another device.
     fn revocable(&self) -> bool {
         !self.current() && !self.revoked()
     }
@@ -315,8 +253,6 @@ impl BrowserEntry<'_> {
         self.live().filter_map(|key| key.last_active_ms).max()
     }
 
-    /// The browser and system its newest key that still has access is
-    /// named for ("Chrome on Linux"), when a page of it said so.
     fn kind(&self) -> Option<&str> {
         self.live()
             .last()
@@ -325,8 +261,6 @@ impl BrowserEntry<'_> {
             .filter(|label| !label.is_empty() && *label != GENERIC_BROWSER)
     }
 
-    /// What the list calls it: this browser, else what its newest key is
-    /// named for.
     fn label(&self) -> String {
         if self.current() {
             return t("settings-access-this-browser");
@@ -336,19 +270,14 @@ impl BrowserEntry<'_> {
     }
 }
 
-/// The name a browser's tab key had before pages named their browser and
-/// system: it says nothing a person can use.
 const GENERIC_BROWSER: &str = "Browser";
 
-/// An agent acting as the person: its key in the person's record, the
-/// grant the agent door lists for it, or both.
 struct AgentEntry<'a> {
     key: Option<&'a DeviceView>,
     grant: Option<&'a Grant>,
 }
 
 impl AgentEntry<'_> {
-    /// Its key, in hex: what its grant and its row are named by.
     fn id(&self) -> String {
         match (self.key, self.grant) {
             (Some(key), _) => hex::encode(key.key),
@@ -357,8 +286,6 @@ impl AgentEntry<'_> {
         }
     }
 
-    /// What it is called: where it runs, as it signed in ("Claude Code on
-    /// laptop"), else the app it came in through.
     fn label(&self) -> String {
         if let Some(key) = self.key.filter(|key| !key.label.is_empty()) {
             return key.label.clone();
@@ -400,7 +327,6 @@ impl AgentEntry<'_> {
             .or_else(|| self.grant.and_then(|grant| grant.expires_ms))
     }
 
-    /// The one workspace it reaches, by name; `None` for all of them.
     fn workspace(&self) -> Option<String> {
         if let Some(key) = self.key {
             return key.workspace.clone();
@@ -411,8 +337,6 @@ impl AgentEntry<'_> {
         }
     }
 
-    /// How the person takes it back: its key's revocation where the record
-    /// holds the key, else its grant at the door.
     fn removal(&self) -> DevicesAccessEffect {
         match self.key {
             Some(key) => DevicesAccessEffect::RevokeDevice {
@@ -424,14 +348,11 @@ impl AgentEntry<'_> {
     }
 }
 
-/// An action the person took, until the host settles it: one call for a
-/// device, one per tab for a browser.
 struct Pending {
     calls: Vec<ui::InvocationCall>,
     reply: Option<EffectReply>,
 }
 
-/// One list's host call and what it answered.
 #[derive(Default)]
 struct Asked {
     call: Option<ui::InvocationCall>,
@@ -439,18 +360,15 @@ struct Asked {
     answered: bool,
 }
 
-/// What the page knows: the host's last answers.
 pub struct AccessModel {
     devices: Vec<DeviceView>,
     devices_asked: Asked,
     door: Door,
-    /// The door's live read, while it is followed.
     door_followed: Option<ui::Followed>,
     door_seen: u64,
     asking: Vec<Asking>,
     asking_asked: Asked,
     pending: Vec<Pending>,
-    /// Now, as a screenshot fixes it; the clock's otherwise.
     now_ms: Option<i64>,
 }
 
@@ -493,7 +411,6 @@ impl AccessModel {
             .unwrap_or_else(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX))
     }
 
-    /// Ask the host again for the devices and the devices asking in.
     fn ask_lists(&mut self, remote: &ui::RemoteActions) {
         self.devices_asked.call = Some(crate::device_fleet::list(remote));
         self.asking_asked.call = Some(remote.invoke(
@@ -503,8 +420,6 @@ impl AccessModel {
         ));
     }
 
-    /// Ask the host to do what `effect` says; `reply` hears how it ended,
-    /// and the lists are read again once it has.
     fn act(
         &mut self,
         remote: &ui::RemoteActions,
@@ -568,8 +483,6 @@ impl AccessModel {
                     Some(Confirmation::Confirmed),
                 )
             }
-            // The desk shows its own setup; the lists don't change until the
-            // agent or computer signs in, which the host's lists then say.
             DevicesAccessEffect::ShowConnect => remote.invoke(
                 session_actions::target(session_actions::SHOW_CONNECT),
                 InvokeArgument::Json(serde_json::Map::new()),
@@ -583,8 +496,6 @@ impl AccessModel {
         Ok(())
     }
 
-    /// The keys of the browser `browser` names whose access has not ended:
-    /// every one of its tabs'. This browser is removed from another device.
     fn browser_keys(&self, browser: &str) -> Result<Vec<[u8; 32]>, String> {
         let tabs: Vec<&DeviceView> = self
             .devices
@@ -607,7 +518,6 @@ impl AccessModel {
         Ok(keys)
     }
 
-    /// The key of the device `device` names, among those listed.
     fn device(&self, device: &str) -> Result<[u8; 32], String> {
         self.devices
             .iter()
@@ -616,7 +526,6 @@ impl AccessModel {
             .ok_or_else(|| t("settings-access-no-such-device"))
     }
 
-    /// The grant `grant` names, among those the door let in.
     fn grant(&self, grant: &str) -> Result<&Grant, String> {
         self.door
             .grants
@@ -625,9 +534,7 @@ impl AccessModel {
             .ok_or_else(|| t("settings-access-no-such-agent"))
     }
 
-    /// Take in what the host answered; whether what the page shows changed.
     fn poll(&mut self, remote: &ui::RemoteActions) -> bool {
-        // Calls asked of the host move only as the host is polled.
         if self.devices_asked.call.is_some()
             || self.asking_asked.call.is_some()
             || !self.pending.is_empty()
@@ -648,14 +555,12 @@ impl AccessModel {
                     .map_err(|_| t("settings-access-unreadable"))
             }) {
                 Ok(answered) => self.asking = answered.asking,
-                // A host without pairing has no devices asking: the list is empty, not broken.
                 Err(_) => self.asking.clear(),
             }
             changed = true;
         }
         let mut settled = false;
         for pending in std::mem::take(&mut self.pending) {
-            // Settled once every call is; the first refusal is the answer.
             let answers: Option<Vec<_>> = pending
                 .calls
                 .iter()
@@ -677,15 +582,12 @@ impl AccessModel {
             }
         }
         if settled {
-            // What the person did changed the lists: ask for them again.
             self.ask_lists(remote);
             changed = true;
         }
         changed
     }
 
-    /// Take in the door's latest read; whether it changed. A host without
-    /// a door for this person answers none: the record lists their agents.
     fn poll_door(&mut self) -> bool {
         use ui::tilo_actions::InvocationUpdate;
         let Some(followed) = &self.door_followed else {
@@ -724,8 +626,6 @@ impl AccessModel {
         }
     }
 
-    /// The person's devices and browsers, one entry per browser: this one
-    /// first, then the others, the latest active first. Removed ones are gone.
     fn entries(&self) -> Vec<Entry<'_>> {
         let mut entries: Vec<Entry<'_>> = Vec::new();
         let mut browsers: Vec<&str> = Vec::new();
@@ -756,7 +656,6 @@ impl AccessModel {
                 Some(_) => {}
             }
         }
-        // Stable: entries active at the same moment keep the list's order.
         entries.sort_by_key(|entry| {
             (
                 !entry.current(),
@@ -766,9 +665,6 @@ impl AccessModel {
         entries
     }
 
-    /// Every agent acting as the person: each key the record holds for one,
-    /// with the door's grant for it where the door lists one, then the
-    /// grants the record holds no key for. The latest active first.
     fn agents(&self) -> Vec<AgentEntry<'_>> {
         let grant_of = |key: &DeviceView| {
             self.door
@@ -808,7 +704,6 @@ impl AccessModel {
 
     fn page(&self, cx: &ViewCx<Settings>, ui_state: &PageState) -> Element {
         let mut sections = vec![Self::intro_section(cx)];
-        // What waits for the person comes first, and only while it waits.
         if !self.asking.is_empty() {
             sections.push(self.requests_section(cx));
         }
@@ -817,7 +712,6 @@ impl AccessModel {
         page(sections)
     }
 
-    /// What the page is, and adding to it.
     fn intro_section(cx: &ViewCx<Settings>) -> SettingsSection {
         let connect = cx.actions().bind_effect_invocation(
             Button::new("settings.access.connect", &t("settings-access-connect"))
@@ -835,7 +729,6 @@ impl AccessModel {
         ]))
     }
 
-    /// The agents acting as the person.
     fn agents_section(&self, cx: &ViewCx<Settings>, state: &PageState) -> SettingsSection {
         let title = t("settings-access-agents");
         if let Some(note_text) = self.list_note() {
@@ -853,7 +746,6 @@ impl AccessModel {
         section(&title, rows(items))
     }
 
-    /// The person's browsers and computers.
     fn devices_section(&self, cx: &ViewCx<Settings>, state: &PageState) -> SettingsSection {
         let title = t("settings-access-browsers-computers");
         if let Some(note_text) = self.list_note() {
@@ -876,18 +768,14 @@ impl AccessModel {
         section(&title, rows(items))
     }
 
-    /// What a list says while the host's answer is not here, or when it
-    /// could not be read; `None` once it is.
     fn list_note(&self) -> Option<String> {
         if let Some(error) = &self.devices_asked.error {
-            // The host's reason is for the log; the person reads what it means.
             tracing::warn!(target: "tilo::settings", %error, "the host did not list the person's devices");
             return Some(t("settings-access-unlisted"));
         }
         (!self.devices_asked.answered).then(|| t("settings-access-reading"))
     }
 
-    /// Devices asking to be the person, each approved or declined in place.
     fn requests_section(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let items = self
             .asking
@@ -898,7 +786,6 @@ impl AccessModel {
     }
 }
 
-/// What the page keeps of the person's own doing between rebuilds.
 #[derive(Clone)]
 struct PageState {
     shown: LocalState<u64>,
@@ -907,15 +794,12 @@ struct PageState {
 }
 
 impl PageState {
-    /// Ask, in place, whether to remove `id`; `None` stops asking.
     fn ask_removal(&self, id: Option<String>) {
         self.removing.set(id);
         self.shown.set(self.shown.get().wrapping_add(1));
     }
 }
 
-/// What a finished list call answered, taking it out of `asked`; `None`
-/// while it runs or when none was asked.
 fn settle(asked: &mut Asked) -> Option<Result<Option<serde_json::Value>, String>> {
     let answer = crate::device_fleet::settled(asked.call.as_ref()?)?;
     asked.call = None;
@@ -924,7 +808,6 @@ fn settle(asked: &mut Asked) -> Option<Result<Option<serde_json::Value>, String>
     Some(answer.map(|output| output.value))
 }
 
-/// The app an agent came in through.
 fn app_of(grant: &Grant) -> String {
     if grant.script_key {
         t("settings-access-script-key")
@@ -935,12 +818,10 @@ fn app_of(grant: &Grant) -> String {
     }
 }
 
-/// `ms` since the epoch as the person reads a date.
 fn day(ms: i64) -> String {
     ui::format::date_of(&ui::format::UnixSecs(ms / 1000))
 }
 
-/// When something was last connected, as of `now`: now, or how long ago.
 fn activity(online: bool, last_ms: Option<i64>, now: i64) -> Option<String> {
     if online {
         return Some(t("settings-access-active-now"));
@@ -955,8 +836,6 @@ fn activity(online: bool, last_ms: Option<i64>, now: i64) -> Option<String> {
     ))
 }
 
-/// Where an agent may act as the person, in a line; until when is in its
-/// Details.
 fn agent_may(agent: &AgentEntry<'_>) -> String {
     match agent.workspace() {
         None => t("settings-access-may-all"),
@@ -967,16 +846,12 @@ fn agent_may(agent: &AgentEntry<'_>) -> String {
     }
 }
 
-/// The lines under an agent's name: what it may do, and when it was last
-/// active.
 fn agent_lines(agent: &AgentEntry<'_>, now: i64) -> Vec<String> {
     let mut lines = vec![agent_may(agent)];
     lines.extend(activity(agent.active_now(), agent.last_active(), now));
     lines
 }
 
-/// The lines under a browser's name: what it is and how many tabs it holds,
-/// and when it was last active.
 fn browser_lines(browser: &BrowserEntry<'_>, now: i64) -> Vec<String> {
     let tabs = browser.live().count();
     let what = match browser.kind() {
@@ -995,8 +870,6 @@ fn browser_lines(browser: &BrowserEntry<'_>, now: i64) -> Vec<String> {
     lines
 }
 
-/// The lines under a computer's name: this one, or whether it hosts the
-/// person's workspaces, and when it was last active.
 fn device_lines(device: &DeviceView, now: i64) -> Vec<String> {
     let mut lines = Vec::new();
     if device.current && !device.label.is_empty() {
@@ -1012,12 +885,10 @@ fn device_lines(device: &DeviceView, now: i64) -> Vec<String> {
     lines
 }
 
-/// One fact of an entry's Details: its name, its value.
 fn fact(id: &str, label: &str, value: &str) -> Element {
     Box::new(ListRow::new(id, label).value(value).dense())
 }
 
-/// An entry's Details: `facts` one under another, then `extra`.
 fn details(facts: Vec<Element>, extra: Vec<Element>) -> Box<dyn ui::widget::Widget> {
     let column = facts.into_iter().chain(extra).fold(
         Column::new().with_no_padding().with_intrinsic_height(),
@@ -1026,8 +897,6 @@ fn details(facts: Vec<Element>, extra: Vec<Element>) -> Box<dyn ui::widget::Widg
     Box::new(column)
 }
 
-/// The facts every key has: when it was added, when its access ends by
-/// itself, and its fingerprint.
 fn key_facts(
     id: &str,
     added: Option<i64>,
@@ -1059,8 +928,6 @@ fn key_facts(
     facts
 }
 
-/// One entry: its name over `lines`, `icon` before it, Remove (or its
-/// question) on the trailing edge, its Details inside.
 fn entry_row(
     state: &PageState,
     id: &str,
@@ -1076,7 +943,6 @@ fn entry_row(
         .icon(icon);
     let asking = removal.is_some() && state.removing.get().as_deref() == Some(id);
     if asking {
-        // What removing it does takes the place of what it is, while asked.
         if let Some(removal) = &removal {
             row = row.secondary(removal.consequence.clone());
         }
@@ -1094,11 +960,8 @@ fn entry_row(
     Box::new(row)
 }
 
-/// Removing an entry: the button that does it, once asked.
 struct Removal {
-    /// The Remove that goes ahead, bound to what removes it.
     confirm: Button,
-    /// What removing it does, said while it is asked.
     consequence: String,
 }
 
@@ -1126,7 +989,6 @@ impl Removal {
         }
     }
 
-    /// Remove; once pressed, Cancel and the Remove that goes ahead.
     fn control(self, state: &PageState, id: &str, asking: bool) -> Element {
         if !asking {
             let ask = state.clone();
@@ -1364,8 +1226,6 @@ fn asking_row(asking: &Asking) -> LiveRow {
     row
 }
 
-/// What a request says under its name: the code to compare, and the device
-/// of theirs it asked through.
 fn asking_lines(asking: &Asking) -> Vec<String> {
     vec![
         t_args(

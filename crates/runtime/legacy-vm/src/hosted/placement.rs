@@ -1,21 +1,9 @@
-//! Which host runs a workspace's VM, when a Tilo host has more than one
-//! machine for VMs, and how many machines it wants.
-//!
-//! A VM's disk, memory and snapshot live on the host that first woke it, so
-//! a VM stays where it was placed: the host holding it runs it, and while
-//! that host is down the VM waits for it. A VM placed for the first time goes
-//! to the first host, in the hosts' order, with room for its size; the first
-//! host is the one always up, so the others fill only when it is full.
-//!
-//! The hosts wanted keep room ahead of demand: one more once the VMs awake
-//! take more than three quarters of the budget of the hosts up, or as soon as
-//! a VM waits for room, or to bring back a host that holds a waiting VM. They
-//! never shrink here: taking a host away leaves its VMs waiting for it, so
-//! that is an operator's choice, not a load's.
-//!
-//! [`place`] and [`hosts_wanted`] decide; [`Placer`] keeps the record of
-//! placements, asks each host's [`Request::Status`](super::control::Request)
-//! and scales the hosts.
+//! Which host runs a workspace's VM, when a Tilo host has more than one machine for
+//! VMs, and how many machines it wants. A VM stays where it was placed: its disk,
+//! memory and snapshot live there, so while that host is down the VM waits for it.
+//! Hosts are added when the awake VMs take more than three quarters of the budget,
+//! when a VM waits for room, or to bring back a host that holds a waiting VM; they
+//! are never removed here, since that is an operator's choice.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -30,16 +18,13 @@ use super::size::VmSize;
 /// host is wanted.
 const HEADROOM_PERCENT: u64 = 75;
 
-/// A host as the placer last saw it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostView {
     pub name: String,
-    /// Up and answering.
     pub ready: bool,
     pub load: HostLoad,
 }
 
-/// Where a VM runs, or that it waits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Placement {
     Host(String),
@@ -47,16 +32,10 @@ pub enum Placement {
     Wait,
 }
 
-/// Where the VM `vm` of `size` runs: the host `placed` names for it, or,
-/// placed nowhere yet, the first host up with room for it.
-///
-/// A host's load is what its kernel measures its VMs at, so what a new VM
-/// needs is what one costs before it is measured
-/// ([`memory::CLONE_MIB`](super::memory::CLONE_MIB)), whatever size it is:
-/// its size bounds the CPU it gets and the memory it may grow into, and the
-/// host admits by what it uses. The host's own admission is the authority; a
-/// host this places on and that then has no room answers Busy, which is what
-/// starts another machine.
+/// Where the VM runs: the host `placed` names for it, or, placed nowhere yet, the first host up
+/// with room. A new VM needs one clone's worth ([`memory::CLONE_MIB`]) whatever its size, which
+/// bounds the CPU and memory it may grow into; the host's own admission is the authority, and a
+/// host with no room answers Busy, which is what starts another machine.
 #[must_use]
 pub fn place(hosts: &[HostView], placed: Option<&str>, _size: VmSize) -> Placement {
     if let Some(holder) = placed {
@@ -96,8 +75,8 @@ pub fn hosts_wanted(hosts: &[HostView], waiting_mib: u64, holders: &[usize], max
     wanted.clamp(1, max.max(1))
 }
 
-/// A host as the placer reaches it: the name a placement answers with and a
-/// members file lists, and the address its Status answers at.
+/// A host as the placer reaches it: the name a placement answers with and a members file lists, and
+/// the address its Status answers at.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Host {
     pub name: String,
@@ -105,7 +84,6 @@ pub struct Host {
 }
 
 impl Host {
-    /// The host `name`, its Status at `status`.
     #[must_use]
     pub fn new(name: &str, status: &str) -> Self {
         Self {
@@ -131,7 +109,6 @@ struct Record {
     placed: BTreeMap<String, String>,
 }
 
-/// A VM waiting for room, as last asked for.
 #[derive(Clone, Copy, Debug)]
 struct Waiting {
     mib: u64,
@@ -246,7 +223,6 @@ impl Placer {
         }
     }
 
-    /// Look at the hosts' loads and want as many hosts as they need.
     pub fn rescale(&self) {
         if let Ok(views) = self.views() {
             self.rescale_with(&views);
@@ -291,7 +267,6 @@ impl Placer {
             .map_err(|e| format!("{}: {e}", self.record_path.display()))
     }
 
-    /// Answer one request on the placer's listener.
     pub fn handle(&self, request: Request) -> Reply {
         match request {
             Request::Place { vm } => self.place(&vm),
@@ -300,9 +275,8 @@ impl Placer {
     }
 }
 
-/// The hosts a stack runs, named by hand with where each answers: a stack
-/// that knows its machines (one machine of its own, say) places on them and
-/// starts none. A stateful set starts hosts instead.
+/// The hosts a stack runs, named by hand with where each answers: a stack that knows its machines
+/// places on them and starts none. A stateful set starts hosts instead.
 pub struct FixedHosts(Vec<Host>);
 
 impl FixedHosts {
@@ -426,8 +400,6 @@ mod tests {
             Placement::Wait,
             "a host whose VMs take all its memory places nothing more"
         );
-        // phase: a host with a clone's worth left takes the largest VM there
-        // is: the size bounds what the guest may grow into, not what it takes
         let nearly = [HostView {
             load: HostLoad {
                 budget_mib: Some(12 * GIB),
@@ -584,7 +556,6 @@ mod tests {
                 host: "vm-host-0".into()
             }
         );
-        // phase: the warm host fills; a new VM waits, and a host is wanted for it
         hosts
             .loads
             .lock()
@@ -597,7 +568,6 @@ mod tests {
             Reply::Busy("Starting another machine for it, about 3 minutes.".into())
         );
         assert_eq!(*hosts.count.lock().unwrap(), 2);
-        // phase: the new host is up; the waiting VM goes there
         hosts.loads.lock().unwrap().insert(
             "vm-host-1".into(),
             HostLoad {
@@ -612,7 +582,6 @@ mod tests {
                 host: "vm-host-1".into()
             }
         );
-        // phase: a placer started again keeps both placements, room or not
         drop(first);
         let again = placer();
         hosts
@@ -669,7 +638,6 @@ mod tests {
             },
             "the host the stack names answers, at the address it named"
         );
-        // phase: the one host is full, and there is no second to start
         loads
             .lock()
             .unwrap()
@@ -680,7 +648,6 @@ mod tests {
             placer.place(&request("ws2", VmSize::Small)),
             Reply::Busy("Starting another machine for it, about 3 minutes.".into())
         );
-        // phase: a placer started again reads the named host the same way
         assert_eq!(
             FixedHosts::parse("vm-host-0=127.0.0.1:7701")
                 .unwrap()

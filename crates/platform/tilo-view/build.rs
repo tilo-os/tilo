@@ -32,12 +32,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// One prop of a component, as the builder's method takes it.
 struct Field {
     name: String,
-    /// The Rust type of the argument.
     ty: String,
-    /// The argument, turned into the wire's value.
     into: String,
     required: bool,
 }
@@ -73,7 +70,6 @@ fn emit(out: &mut String, catalogue: &serde_json::Value) -> Result<(), Box<dyn s
         }
         components.push((name, fields));
     }
-    // The choice types first: the builders name them.
     for (name, cases) in &choices {
         let _ = writeln!(out, "/// One of the catalogue's closed sets (`{name}`).");
         let _ = writeln!(out, "#[derive(Clone, Copy, Debug, PartialEq, Eq)]");
@@ -98,7 +94,6 @@ fn emit(out: &mut String, catalogue: &serde_json::Value) -> Result<(), Box<dyn s
         );
         let _ = writeln!(out);
     }
-    // A builder per component: its required props as arguments, then a method per prop.
     for (name, fields) in &components {
         emit_builder(out, name, fields);
     }
@@ -169,7 +164,6 @@ fn emit_builder(out: &mut String, name: &str, fields: &[Field]) {
     let _ = writeln!(out);
 }
 
-/// The choice `name` and cases a prop type holds, if it is a choice anywhere inside it.
 fn choice_of(ty: &serde_json::Value) -> Option<(String, Vec<String>)> {
     if let Some(choice) = ty.get("choice") {
         let name = choice["name"].as_str()?.to_owned();
@@ -188,8 +182,6 @@ fn choice_of(ty: &serde_json::Value) -> Option<(String, Vec<String>)> {
     None
 }
 
-/// The Rust type a prop's values are given as. An optional prop takes the same type as a
-/// required one: a prop left out is absent, which an optional prop allows.
 fn map_type(ty: &serde_json::Value, choices: &mut BTreeSet<(String, Vec<String>)>) -> String {
     if let Some(inner) = ty.get("option") {
         return map_type(inner, choices);
@@ -272,7 +264,6 @@ fn into_expr(ty: &serde_json::Value, var: &str) -> String {
     template.replace("__VAR__", var)
 }
 
-/// The Rust name of a choice's case (`plain_text` → `PlainText`).
 fn variant(case: &str) -> String {
     let mut out = String::new();
     let mut upper = true;
@@ -292,7 +283,6 @@ fn variant(case: &str) -> String {
     out
 }
 
-/// Whether a prop's name is one the builder cannot be a method of (Rust's, or the builder's own).
 fn reserved_method(name: &str) -> bool {
     const RESERVED: &[&str] = &[
         "as", "box", "break", "const", "continue", "crate", "do", "else", "enum", "extern",

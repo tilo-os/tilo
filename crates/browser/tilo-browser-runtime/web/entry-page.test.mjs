@@ -391,13 +391,16 @@ test('an embedded workspace offers no invite sheet it could not carry out', asyn
   let deps;
   await fixture({search: '?embed=1', boot: async (options, page) => { deps = options.deps; return page; }});
   const embedded = deps;
-  const joining = {workspace: 'current', origin: ORIGIN, userPublicKey: USER};
+  // The host's own key rides along: it is a member of the workspaces it
+  // holds, and no person a link is made for.
+  const hostKey = Array(32).fill(0x2a);
+  const joining = {workspace: 'current', origin: ORIGIN, userPublicKey: USER, host: {hostCert: {user_public_key: hostKey}}};
   assert.equal(embedded.invite({peer: joining, entry: {base: 'https://web.example/'}}), null);
   await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
   // Named no earlier than admission names the person; the sheet makes the
   // link either way, and says who made it once there is a name.
   assert.deepEqual(deps.invite({peer: joining, entry: {base: 'https://web.example/'}}),
-    {base: 'https://web.example/', origin: ORIGIN, workspace: 'current', name: '', user: USER});
+    {base: 'https://web.example/', origin: ORIGIN, workspace: 'current', name: '', user: USER, host: '2a'.repeat(32)});
 });
 
 const LOUNGE = {name: 'Lounge', host: {origin: 'https://home.example'}, admission: 'https://home.example/peer/v1/directory/lounge/'};

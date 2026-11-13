@@ -1,15 +1,10 @@
-//! Slots and their numbered generations under `<root>/slots/<name>/`.
-//!
-//! ```text
-//! slots/<name>/slot.json          owner, kind, current generation, seat
-//! slots/<name>/generations/<n>.json  ordered layers + component map
-//! ```
-//!
-//! Generation 0 is the implicit base (no layers). Generation files are
-//! immutable once written; switching is a single atomic rewrite of
-//! `slot.json`, done only after the new generation was applied, so a
-//! failed apply leaves the slot on its previous generation and a retry
-//! does the whole transition again.
+//! Slots and their numbered generations under `<root>/slots/<name>/`: `slot.json`
+//! holds the owner, kind, current generation and seat, and `generations/<n>.json`
+//! the ordered layers and component map. Generation 0 is the implicit base.
+//! Generation files are immutable once written, and switching is one atomic rewrite
+//! of `slot.json` done only after the new generation was applied, so a failed apply
+//! leaves the slot on its previous generation and a retry does the whole transition
+//! again.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -40,39 +35,35 @@ pub struct SlotRecord {
     /// Set while this slot's session runs on seat0 instead of greetd.
     #[serde(default)]
     pub seat0: Option<Lease>,
-    /// Headful: the outputs its vkms card has, left to right. Empty means
-    /// one output at the compositor's defaults.
+    /// Headful: the outputs its vkms card has, left to right; empty means one output at the
+    /// compositor's defaults.
     #[serde(default)]
     pub outputs: Vec<OutputSpec>,
     /// The `device` slot only: the machine's own session, as found when
     /// the slot was last loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceSession>,
-    /// Its user is this VM's person (`slot create --identity device`): the
-    /// session runs on the machine's own identity tree, with no private root.
+    /// Its user is this VM's person (`slot create --identity device`): the session runs on the
+    /// machine's own identity tree, with no private root.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub device_identity: bool,
 }
 
-/// The machine's own session, which the `device` slot swaps into: the
-/// session a board image runs for its account without a greeter, or on a
-/// laptop the owner's Tilo login through greetd on seat0.
+/// The machine's own session, which the `device` slot swaps into: a board image's session for its
+/// account without a greeter, or on a laptop the owner's Tilo login through greetd on seat0.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceSession {
-    /// The unit that runs it: the board session's system unit, e.g.
-    /// `tilo-board-headless-session@tester.service`; the login's
-    /// `session-<id>.scope`; or `greetd.service` while the owner is logged
-    /// out.
+    /// The unit that runs it: the board session's system unit, the login's `session-<id>.scope`, or
+    /// `greetd.service` while the owner is logged out.
     pub unit: String,
     pub account: String,
-    /// Units `unit` starts for the session's own processes; they get the
-    /// slot's layers too.
+    /// Units `unit` starts for the session's own processes; they get the slot's layers too.
     #[serde(default)]
     pub units: Vec<String>,
     /// The compositor's control socket (`TILO_TEST_CONTROL`).
     pub control_socket: PathBuf,
-    /// Set for a greetd login: its layers merge system-wide with
-    /// `systemd-sysext`, and a swap restarts its desktop in place.
+    /// Set for a greetd login: its layers merge system-wide with `systemd-sysext`, and a swap
+    /// restarts its desktop in place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<Login>,
 }
@@ -83,15 +74,15 @@ pub struct Login {
     /// The logind session; `None` while the owner is logged out.
     #[serde(default)]
     pub session: Option<String>,
-    /// The session's `tilo-session`, which restarts the compositor on
-    /// SIGUSR1; `None` while the owner is logged out.
+    /// The session's `tilo-session`, which restarts the compositor on SIGUSR1; `None` while the
+    /// owner is logged out.
     #[serde(default)]
     pub wrapper: Option<u32>,
 }
 
 impl DeviceSession {
-    /// This login as it is while the owner is logged out: the layers still
-    /// apply, and reach the next login.
+    /// This login as it is while the owner is logged out: the layers still apply, and reach the
+    /// next login.
     #[must_use]
     pub fn logged_out(mut self) -> Self {
         if self.login.is_some() {
@@ -110,8 +101,8 @@ impl SlotRecord {
 }
 
 impl SlotRecord {
-    /// The user the slot's session runs as: `tds-<slot>`, the device
-    /// session's account, or none for the `vm` slot.
+    /// The user the slot's session runs as: `tds-<slot>`, the device session's account, or none for
+    /// the `vm` slot.
     pub fn user(&self) -> Option<String> {
         match self.kind {
             SlotKind::Vm => None,
@@ -230,13 +221,12 @@ impl SlotStore {
         Ok((record, true))
     }
 
-    /// Load a slot; the `vm` pseudo-slot always exists, and the `device`
-    /// pseudo-slot exists wherever `device` (the machine's own session) is
-    /// given, with that session recorded in it.
+    /// Load a slot; the `vm` pseudo-slot always exists, and the `device` pseudo-slot exists
+    /// wherever the machine's own session is given, recorded in it.
     ///
     /// # Errors
-    /// [`DaemonError::SlotNotFound`], [`DaemonError::NoDeviceSession`] and
-    /// I/O failures.
+    ///
+    /// [`DaemonError::SlotNotFound`], [`DaemonError::NoDeviceSession`] and I/O failures.
     pub fn load_with(
         &self,
         name: &str,
@@ -245,8 +235,8 @@ impl SlotStore {
         Self::check_name(name)?;
         if name == DEVICE_SLOT {
             let stored = self.try_load(name)?;
-            // A laptop's slot outlives the owner's login, so a swap that
-            // broke the desktop can still be rolled back from the greeter.
+            // A laptop's slot outlives the owner's login, so a swap that broke the desktop can
+            // still be rolled back from the greeter.
             let device = device
                 .or_else(|| {
                     let device = stored.as_ref()?.device.clone()?;
@@ -351,7 +341,7 @@ impl SlotStore {
         if !dir.exists() {
             return Ok(false);
         }
-        // Rename first so a half-finished removal is never mistaken for a slot.
+        // Rename first, so a half-finished removal is never mistaken for a slot.
         let doomed = self
             .dir
             .join(format!(".rm-{name}-{}", uuid::Uuid::new_v4().simple()));
@@ -360,8 +350,7 @@ impl SlotStore {
         Ok(true)
     }
 
-    /// Generation `number` (0 is the empty base).
-    ///
+    /// Generation `number`, 0 being the empty base.
     /// # Errors
     /// [`DaemonError::GenerationNotFound`] and I/O failures.
     pub fn generation(&self, name: &str, number: u64) -> Result<Generation, DaemonError> {
@@ -399,9 +388,9 @@ impl SlotStore {
         numbers
     }
 
-    /// Write the generation that results from putting `layer` in place of
-    /// `component`'s current layer. `None` when that is already current.
-    /// The slot keeps its current generation until [`Self::set_current`].
+    /// Write the generation that results from putting `layer` in place of `component`'s current
+    /// layer; `None` when that is already current. The slot keeps its current generation until
+    /// [`Self::set_current`].
     pub fn prepare_swap(
         &self,
         record: &SlotRecord,
@@ -501,8 +490,8 @@ impl SlotStore {
         Ok((from, to))
     }
 
-    /// The transition a rollback makes: to `to`, or the newest generation
-    /// older than the current one (the base when none is recorded).
+    /// The transition a rollback makes: to `to`, or the newest generation older than the current
+    /// one, the base when none is recorded.
     pub fn rollback_target(
         &self,
         record: &SlotRecord,
@@ -536,8 +525,8 @@ impl SlotStore {
         self.dir.join(name).join("pending")
     }
 
-    /// Record that a transition to `number` is being applied. Cleared by
-    /// [`Self::set_current`]; still present afterwards means it was cut short.
+    /// Record that a transition to `number` is being applied; [`Self::set_current`] clears it, and
+    /// one still present afterwards means the transition was cut short.
     pub fn mark_pending(&self, name: &str, number: u64) -> Result<(), DaemonError> {
         write_atomic(&self.pending_path(name), number.to_string().as_bytes())
     }
@@ -562,9 +551,9 @@ impl SlotStore {
             .ok()
     }
 
-    /// Delete generations older than the newest `keep` (the current one, an
-    /// interrupted transition's and `also_keep` are always kept) and return
-    /// the survivors' layers plus what was deleted.
+    /// Delete generations older than the newest `keep`, always keeping the current one, an
+    /// interrupted transition's and `also_keep`; returns the survivors' layers plus what was
+    /// deleted.
     pub fn prune(
         &self,
         record: &SlotRecord,

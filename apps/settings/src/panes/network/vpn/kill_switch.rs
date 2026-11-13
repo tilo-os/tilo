@@ -1,12 +1,6 @@
 //! A VPN profile's kill switch (docs/device-vpn.md, "Profile kill switch"):
-//! while the profile is set to connect and is not connected, nothing leaves
-//! the computer but through a tunnel.
-//!
-//! Settings changes the person's choice and tells the profile they turned
-//! off on purpose only through their section's actions
-//! ([`DeviceVpnPrefs`]); the session
-//! holds the block through the root helper and publishes which profiles
-//! block, which the profile page shows as "Blocking traffic".
+//! while the profile is set to connect and is not connected, nothing leaves the
+//! computer but through a tunnel.
 
 use settings_store::device_vpn::{self, PROFILE_KILL_SWITCHES, ProfileKillSwitch};
 use ui::LocalState;
@@ -20,7 +14,6 @@ use crate::prefs::DeviceVpnPrefs;
 use provider_settings_ui::widgets::{Item, error_caption, row, setting_row_described};
 
 impl NetworkModel {
-    /// The kill switch of the profile `uuid`, while it is on.
     pub(super) fn kill_switch(&self, uuid: &str) -> Option<ProfileKillSwitch> {
         let document = self.reach.storage.settings_document();
         PROFILE_KILL_SWITCHES
@@ -28,7 +21,6 @@ impl NetworkModel {
             .remove(uuid)
     }
 
-    /// Whether the session holds the profile `uuid`'s block now.
     pub(super) fn blocking(&self, uuid: &str) -> bool {
         self.vpn.devices.status.as_ref().is_some_and(|status| {
             status
@@ -45,8 +37,6 @@ impl NetworkModel {
         vpn.active || self.blocking(&vpn.uuid)
     }
 
-    /// Turn `connection`'s kill switch on or off; `allow_local`, when given,
-    /// lets the local network through while it blocks.
     pub(super) fn set_kill_switch(
         &mut self,
         connection: &str,
@@ -103,7 +93,6 @@ impl NetworkModel {
         was
     }
 
-    /// Forget the kill switch of the profile `uuid`, deleted.
     pub(super) fn forget_kill_switch(&mut self, uuid: &str) {
         if let Err(error) = self.release_profile(uuid).and_then(|()| {
             if self.kill_switch(uuid).is_none() {
@@ -124,8 +113,6 @@ impl NetworkModel {
 }
 
 impl Page<'_> {
-    /// The profile page's kill switch, and while it is on whether the local
-    /// network stays reachable, and the session's failure to block.
     pub(super) fn kill_switch_rows(
         &self,
         vpn: &VpnInfo,
@@ -181,14 +168,10 @@ impl Page<'_> {
 }
 
 impl NetworkModel {
-    /// The sample tunnel `uuid` with its kill switch on, for a capture: up,
-    /// or dropped with its block holding (and the local network let
-    /// through).
     pub(crate) fn sample_kill_switch(&mut self, uuid: &str, blocking: bool) {
         let switch = ProfileKillSwitch {
             allow_local: blocking,
         };
-        // A capture's fixture: written as it would be stored.
         let document = self.reach.storage.settings_document();
         let mut switches =
             PROFILE_KILL_SWITCHES.from_section(&document.section(device_vpn::SECTION));

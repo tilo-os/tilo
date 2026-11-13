@@ -37,7 +37,6 @@ pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
         Err(e) => tracing::debug!("tilo-tts: speech-dispatcher unavailable: {e}"),
     }
 
-    // 2. espeak-ng subprocess.
     #[cfg(not(target_arch = "wasm32"))]
     match crate::espeak::EspeakSpeaker::new() {
         Ok(s) => {
@@ -47,7 +46,6 @@ pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
         Err(e) => tracing::debug!("tilo-tts: espeak-ng unavailable: {e}"),
     }
 
-    // 3. null.
     tracing::warn!("tilo-tts: no TTS backend available; falling back to NullSpeaker (silent)");
     (Box::new(NullSpeaker::new()), "null")
 }
@@ -64,7 +62,6 @@ mod tests {
             // The returned speaker is usable: speaking must not panic either.
             s.speak("startup", true);
             s.stop();
-            // backend_name is one of the known three.
             assert!(matches!(
                 s.backend_name(),
                 "speech-dispatcher" | "espeak-ng" | "null"

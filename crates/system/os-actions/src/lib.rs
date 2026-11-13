@@ -1,37 +1,7 @@
-//! OS-level action wrappers (brightness, audio, Wi-Fi, Bluetooth, power-profile) shared
-//! between the Tilo compositor (`shell`) and the standalone Settings app (`apps/settings`).
-//! Both needed the same hardware controls and network and Bluetooth clients, and
-//! the Settings app must not depend on the compositor (they're peers, not parent/child), so
-//! the bindings live here as a single source of truth for both.
-//!
-//! Design notes:
-//!
-//! - A control that has a D-Bus owner goes through it, never through the owner's CLI:
-//!   `tilo-nm` for networking, `tilo-bluez` for Bluetooth, `tilo-power-mgmt` for power
-//!   profiles, logind, the power-supply class and `UPower`, `tilo-media` for the audio graph.
-//!   The few remaining subprocesses are the ones with no library behind them
-//!   (`brightnessctl`, `wpctl`, `fwupdmgr`, `iw`'s station dump, `pw-cli`'s client stop),
-//!   plus `systemctl` starting the charge-cap service.
-//! - Every CLI helper checks the binary's presence first via `which` and returns a clear
-//!   `"<binary> not installed"` error otherwise, so the QS panel and Settings app stay
-//!   functional on machines missing a tool.
-//! - [`std::process::Command`] (sync) is deliberate: both call sites are user-driven (slider
-//!   drag, toggle click), so getter calls happen only on rising-edge open — no tokio needed.
-//! - Parsers are extracted into private free functions so they're unit-testable against
-//!   sample stdout without spawning processes.
-//!
-//! ## Dispatcher trait
-//!
-//! Bluetooth and networking are the exceptions to the CLI wrappers: they use the
-//! `tilo-bluez` and `tilo-nm` D-Bus clients, because discovery, pairing and a secret
-//! handed over for one connection are bound to a bus connection, and so the shell, Settings
-//! and the rest of the OS read one model of each.
-//!
-//! [`Dispatcher`] is the side-effect interface used by the click handlers. The default
-//! production impl ([`RealDispatcher`]) calls the free functions in the per-domain modules;
-//! tests substitute a recording impl so the click handler can be asserted on without
-//! shelling out. The shell crate re-exports the trait as `QsActions` and the impl as
-//! `RealQsActions` for source compatibility.
+//! OS-level actions (brightness, audio, radios, power) for the compositor and the
+//! Settings app, which both drive the same hardware and do not depend on each other. A
+//! control with a D-Bus owner goes through it; the rest shell out to a tool, which is
+//! checked to exist first so a machine missing one still works.
 
 #![cfg_attr(
     test,
@@ -154,6 +124,12 @@ pub use privacy::{
     ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
     revoke_media_client,
 };
+pub use runtime_portal::tools::{
+    AppEntry, AppKind, AppRemoval, BackupsRoute, ContainerEngine, DisksRoute, DriveEntry,
+    FirewallRoute, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, TOOL_CONTEXT_ENV,
+    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute,
+    invocation_hex, list_drives, open_tool, tool_intent_from_env,
+};
 pub use session::{
     SessionAction, perform_session_action, request_logout, take_logout_request,
     user_switching_supported,
@@ -162,27 +138,14 @@ pub use time::{
     TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, set_ntp, set_timezone,
     valid_timezone,
 };
-// Typed tool requests are a sandbox service client, kept with the others in
-// runtime-portal; the shell and Settings name them through this crate.
-pub use runtime_portal::tools::{
-    AppEntry, AppKind, AppRemoval, BackupsRoute, ContainerEngine, DisksRoute, DriveEntry,
-    FirewallRoute, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, TOOL_CONTEXT_ENV,
-    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute,
-    invocation_hex, list_drives, open_tool, tool_intent_from_env,
-};
 pub use users::AccountRole;
 
 use std::time::Duration;
 
 use tracing::warn;
 
-/// Drive one system-service call to completion for a synchronous caller.
-///
-/// Every D-Bus client here shares the process's app runtime: the caller polls
-/// the call while the runtime thread drives the bus connection, so no module
-/// keeps a runtime of its own and a connection outlives the call that opened
-/// it. Callers are worker threads; on the UI thread this refuses rather than
-/// freezing a frame.
+/// Drives one system-service call to completion for a synchronous caller: the runtime thread polls the
+/// bus while the caller waits.
 pub(crate) fn block_on<T>(
     call: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
@@ -191,11 +154,8 @@ pub(crate) fn block_on<T>(
         .map_err(|error| error.to_string())?
 }
 
-/// A radio operation prepared on the owning session thread and executed by
-/// its worker. It carries no borrowed dispatcher or credential. Its result
-/// is the radios as read back after the change, when the dispatcher reads
-/// them (`None` for one that cannot), so a caller shows the machine's state
-/// rather than its own request.
+/// A radio operation prepared on the owning session thread and run by its worker; it carries no
+/// borrowed dispatcher or credential.
 pub type RadioWork = Box<dyn FnOnce() -> Result<Option<RadioState>, String> + Send>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,7 +165,6 @@ pub enum RadioChange {
 }
 
 impl RadioChange {
-    /// Execute the exact typed operation using this dispatcher's authority.
     pub fn execute(self, dispatcher: &dyn Dispatcher) -> Result<(), String> {
         match self {
             Self::Wifi(enabled) => dispatcher.set_wifi(enabled),
@@ -213,15 +172,11 @@ impl RadioChange {
         }
     }
 
-    /// Execute it and read the radios back: see
-    /// [`Dispatcher::apply_radio_change`].
     pub fn run(self, dispatcher: &dyn Dispatcher) -> Result<Option<RadioState>, String> {
         dispatcher.apply_radio_change(self)
     }
 
-    /// Whether `radios`, read after this change, show it happened; if not,
-    /// why. A dispatcher that reported success may still have left a radio
-    /// held off by a switch.
+    /// Whether `radios`, read after this change, show it happened; otherwise why not.
     pub fn outcome(self, radios: &RadioState) -> Result<(), String> {
         match self {
             Self::Wifi(enabled) => network::wifi_change_outcome(enabled, radios),
@@ -232,16 +187,12 @@ impl RadioChange {
     }
 }
 
-/// Side-effect interface for the OS actions. The default production impl
-/// ([`RealDispatcher`]) calls into the free functions in the per-domain modules; tests
-/// substitute a recording impl so the click handler can be asserted on without shelling out.
-/// (Shell call sites historically named this trait `QsActions`; a type-alias preserves it.)
+/// The side effects of the OS actions: the production impl forwards to this crate's functions, tests
+/// record what was asked.
 pub trait Dispatcher {
-    /// Set the display backlight to `pct` percent (0–100).
     fn set_brightness(&self, pct: f32) -> Result<(), String>;
-    /// Set one monitor, named by its DRM connector (`eDP-1`, `DP-2`), to
-    /// `pct` percent (0–100): the panel's backlight or an external monitor
-    /// over DDC/CI. Applied in the background; returns once queued.
+    /// Sets one monitor, named by its DRM connector (`eDP-1`, `DP-2`), to `pct` percent; applied in the
+    /// background, returns once queued.
     fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
         if brightness::BrightnessService::global().set(connector, pct) {
             Ok(())
@@ -249,19 +200,15 @@ pub trait Dispatcher {
             Err(format!("{connector} has no brightness control"))
         }
     }
-    /// Set the default audio sink volume to `pct` percent (0–100).
     fn set_volume(&self, pct: f32) -> Result<(), String>;
-    /// Enable or disable the Wi-Fi radio.
     fn set_wifi(&self, enabled: bool) -> Result<(), String>;
-    /// Prepare an owned radio operation without starting it. Explicit legacy
-    /// dispatchers may return `None` and retain their synchronous contract;
-    /// the production dispatcher always provides worker-safe operations.
+    /// Prepares an owned radio operation without starting it; an impl that only changes radios
+    /// synchronously returns `None`.
     fn prepare_radio_change(&self, _change: RadioChange) -> Option<RadioWork> {
         None
     }
-    /// Make a radio change and read the radios back afterwards. A dispatcher
-    /// that cannot read them returns `None`, and its caller reads them
-    /// separately.
+    /// Makes a radio change and reads the radios back; `None` when the impl cannot read them, and its
+    /// caller does.
     fn apply_radio_change(&self, change: RadioChange) -> Result<Option<RadioState>, String> {
         match change {
             RadioChange::Wifi(enabled) => self.set_wifi(enabled),
@@ -270,125 +217,74 @@ pub trait Dispatcher {
         .map(|()| None)
     }
 
-    /// Enable or disable the Bluetooth radio.
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String>;
-    /// Connect an accessory that is already paired on this machine.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the address is unknown locally or `BlueZ` cannot
-    /// establish the requested profiles.
     fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
         bluez::connect_address(address)
     }
-    /// Disconnect an accessory without forgetting its local bond.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the address is unknown locally or `BlueZ` rejects
-    /// the disconnect.
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
         bluez::disconnect_address(address)
     }
-    /// Look for Bluetooth devices in reach, or stop looking.
     fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
         bluetooth::scan_bluetooth(on)
     }
-    /// Pair the device at `address`, trusting it and connecting it. What it
-    /// asks to compare is a question its pairing agent asks the person.
-    ///
-    /// # Errors
-    ///
-    /// An address `BlueZ` does not know, or what it refused.
+    /// Pairs the device at `address`, trusting and connecting it; what its agent asks to compare is put
+    /// to the person.
     fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
         bluetooth::pair_bluetooth_handoff(address)
     }
-    /// Forget the device at `address`: its bond, its keys and its trust.
-    ///
-    /// # Errors
-    ///
-    /// An address `BlueZ` does not know, or what it refused.
     fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
         bluetooth::forget_bluetooth(address)
     }
-    /// Enable or disable wired (ethernet) networking.
     fn set_wired(&self, enabled: bool) -> Result<(), String> {
         let _ = enabled;
         Err("wired networking is not supported by this dispatcher".into())
     }
-    /// Enable or disable airplane mode (all radios off).
     fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
         network::set_airplane_mode(enabled)
     }
-    /// Enable or disable the Wi-Fi hotspot.
     fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
         network::set_hotspot(enabled)
     }
-    /// Enable or disable mobile broadband.
     fn set_mobile_broadband(&self, enabled: bool) -> Result<(), String> {
         network::set_mobile_broadband(enabled)
     }
-    /// Enable or disable the named VPN connection.
     fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
         network::set_vpn_connection(name, enabled)
     }
-    /// Connect to `ssid`, using `password` for secured networks.
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
-    /// Connect to `ssid`, which broadcasts no name, using `password` for
-    /// secured networks.
     fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
         let _ = (ssid, password);
         Err("joining a network with a hidden name is not supported by this dispatcher".into())
     }
-    /// Forget the saved network `profile` (`NetworkManager`'s UUID): its
-    /// name and its password.
-    ///
-    /// # Errors
-    ///
-    /// A profile `NetworkManager` does not know, or what it refused.
     fn forget_network(&self, profile: &str) -> Result<(), String> {
         let _ = profile;
         Err("forgetting saved networks is not supported by this dispatcher".into())
     }
-    /// Whether the saved network `profile` connects on its own when it is in
-    /// reach.
-    ///
-    /// # Errors
-    ///
-    /// A profile `NetworkManager` does not know, or what it refused.
     fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
         let _ = (profile, on);
         Err("saved network autoconnect is not supported by this dispatcher".into())
     }
-    /// Switch the active power profile.
     fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String>;
-    /// Toggle the default audio sink mute state. Default impl delegates to
-    /// [`default_node::toggle_mute`]; has a default body so existing shell-crate impls keep compiling.
     fn toggle_mute(&self) -> Result<(), String> {
         default_node::toggle_mute(DefaultNode::Sink)
     }
-    /// Set the sink mute state explicitly. Distinct from [`Self::toggle_mute`] because the
-    /// volume-up key needs to *clear* mute regardless of prior state — toggling could silence an
-    /// already-audible sink. Default body, same reason as above.
+    /// Sets the sink mute state explicitly: the volume-up key must clear mute whatever it was, and a
+    /// toggle could silence an audible sink.
     fn set_mute(&self, muted: bool) -> Result<(), String> {
         default_node::set_mute(DefaultNode::Sink, muted)
     }
-    /// Read the display backlight as a `0.0..=1.0` fraction.
     fn brightness(&self) -> Result<f32, String> {
         display::get_brightness()
     }
-    /// Read the keyboard backlight.
     fn keyboard_backlight(&self) -> Result<KeyboardBacklight, String> {
         keyboard_backlight::get_keyboard_backlight()
     }
-    /// Set the keyboard backlight to a raw hardware level.
     fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
         keyboard_backlight::set_keyboard_backlight(level)
     }
 }
 
-/// Production impl — every method forwards to the free shell-out helper of the same name.
-/// Stateless; cheap to construct (zero-sized struct).
+/// The production dispatcher: every method forwards to this crate's function of the same name.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct RealDispatcher;
 
@@ -447,19 +343,13 @@ impl Dispatcher for RealDispatcher {
     }
 }
 
-/// Wrapper around a `Result<(), String>` that funnels the error into `tracing::warn!` with a
-/// stable prefix, so a click-handler stays a one-liner:
-///
-/// ```ignore
-/// log_result("set_brightness", os_actions::set_brightness(value));
-/// ```
+/// Runs `result`, logging its error at warning level with `op` as prefix.
 pub fn log_result(op: &str, result: Result<(), String>) {
     if let Err(e) = result {
         warn!(target: "tilo::os_actions", op = op, error = %e, "os action failed");
     }
 }
 
-/// Same as [`log_result`] but for getter-shaped results that return a value alongside the error.
 pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
     match result {
         Ok(v) => Some(v),
@@ -470,9 +360,8 @@ pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
     }
 }
 
-/// Deadline enforced on every shell-out in this crate, via `process::run_capture`. A tool
-/// that exceeds it is killed and reported as a timeout, so a wedged daemon degrades to a
-/// stale reading instead of blocking its caller indefinitely.
+/// Applies to every shell-out in this crate: a tool that exceeds it is killed and reported as a
+/// timeout.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(2_500);
 
 #[cfg(test)]
@@ -480,8 +369,7 @@ mod dispatcher_tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// Recording dispatcher used by the dispatcher-level tests. Captures every call into a
-    /// `Vec<String>` so the test can assert the click translated into the right shell-out.
+    /// Records every call, so a test asserts what a click sent.
     #[derive(Default)]
     struct RecordingDispatcher {
         calls: RefCell<Vec<String>>,

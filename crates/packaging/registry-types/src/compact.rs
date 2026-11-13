@@ -1,23 +1,13 @@
 //! Compact catalogue snapshots and per-entry version indexes.
 //!
-//! A full snapshot carries every retained version of every entry. A compact
-//! snapshot carries, per entry, only
-//! the newest version of each target and release channel
-//! ([`newest_versions`]), plus the BLAKE3 hash and size of that entry's
-//! version index: a static file holding the complete publisher-signed entry.
-//! Clients fetch an index only to install or roll back to an older version
-//! and check it with [`verify_version_index`] against the signed hash.
+//! A full snapshot carries every retained version of every entry; a compact one carries the newest
+//! version of each target and channel, plus the hash and size of that entry's version index, a static
+//! file holding the complete publisher-signed entry that a client fetches only to install or roll back
+//! an older version ([`verify_version_index`] checks it against the signed hash).
 //!
-//! The registry signs both forms at every sequence with the same key. The
-//! compact form signs the hash of its full sibling as `snapshot_hash_hex`;
-//! that hash is the snapshot's identity in the chain and in client
-//! checkpoints, so a client may switch between the forms without tripping
-//! its rollback or fork checks.
-//!
-//! Both forms, the version indexes and the channel authorizations are part
-//! of the Store package format and carry its version,
-//! [`crate::PACKAGE_FORMAT_VERSION`], in their `protocol` field; a reader
-//! accepts every format in [`crate::READABLE_CATALOGUE_FORMATS`].
+//! The compact form signs its full sibling's hash as `snapshot_hash_hex`, which is the snapshot's
+//! identity in the chain and in client checkpoints, so a client may switch between the forms without
+//! tripping a rollback or fork check. Both carry [`crate::PACKAGE_FORMAT_VERSION`] in `protocol`.
 
 use std::collections::HashSet;
 
@@ -37,7 +27,6 @@ const COMPACT_INDEX_DOMAIN: &[u8] = b"tilo-registry-compact-index-v4\0";
 /// [`crate::entry::MAX_ENTRY_VERSIONS`] versions of a few hundred bytes each.
 pub const MAX_VERSION_INDEX_BYTES: u64 = 1024 * 1024;
 
-/// Where an entry's complete version list lives, by content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionIndexRef {
     pub blake3_hex: String,
@@ -53,7 +42,6 @@ pub struct CompactRegistryEntry {
     pub version_index: VersionIndexRef,
 }
 
-/// The compact form of one signed snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactRegistrySnapshot {
     pub protocol: u32,
@@ -66,7 +54,6 @@ pub struct CompactRegistrySnapshot {
     /// checkpoint and the next snapshot names as its predecessor.
     pub snapshot_hash_hex: String,
     pub publishers: Vec<PublisherAuthorization>,
-    /// App and bot entries.
     pub entries: Vec<CompactRegistryEntry>,
     /// The owner's signature, or the authorized channel key's when
     /// `channel_authorization` is present.
@@ -75,7 +62,6 @@ pub struct CompactRegistrySnapshot {
     pub channel_authorization: Option<ChannelAuthorization>,
 }
 
-/// A version index file: the complete publisher-signed entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryVersionIndex {
     pub protocol: u32,
@@ -96,7 +82,6 @@ struct CompactSigningPayload<'a> {
     channel_authorization: Option<&'a ChannelAuthorization>,
 }
 
-/// Why a version index was refused.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum VersionIndexError {
     #[error("version index is not the size the snapshot signs")]
@@ -158,7 +143,6 @@ pub fn version_index_bytes(entry: &RegistryEntry) -> Result<Vec<u8>, SnapshotErr
     .map_err(|_| SnapshotError::Encoding)
 }
 
-/// A version index file named by its content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VersionIndexFile {
     pub blake3_hex: String,
@@ -565,14 +549,12 @@ mod tests {
             CatalogueSnapshot::Full(full.clone()),
             CatalogueSnapshot::Compact(compact),
         ] {
-            // Issued at 10, valid until 20.
             assert_eq!(snapshot.expired_at(&owner_hex, 15), None, "fresh");
             assert_eq!(snapshot.expired_at(&owner_hex, 21), Some(20), "expired");
             assert!(snapshot.verify(&owner_hex, 21).is_err());
             let stranger = hex::encode(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
             assert_eq!(snapshot.expired_at(&stranger, 21), None, "another owner's");
         }
-        // Moving the expiry without the owner's signature is tampering, not expiry.
         let mut tampered = full;
         tampered.expires_at_unix = 19;
         assert_eq!(
@@ -678,7 +660,6 @@ mod tests {
             verify_compact_snapshot(&tampered, &owner_hex, 15),
             Err(SnapshotError::OwnerSignature)
         );
-        // A signer may not keep more than the newest versions either.
         let mut padded = compact.clone();
         padded.entries[0].entry.versions = full.entries[0].versions.clone();
         sign_compact_snapshot(&mut padded, &owner).unwrap();
@@ -698,7 +679,6 @@ mod tests {
         let (full, compact, indexes) = compact(&owner);
         let notes = &compact.entries[0];
 
-        // Bytes that are not the signed index.
         let mut flipped = indexes[0].bytes.clone();
         let last = flipped.len() - 2;
         flipped[last] ^= 1;
@@ -743,8 +723,6 @@ mod tests {
             committed(&version_index_bytes(&reordered).unwrap()),
             Err(VersionIndexError::PublisherSignature)
         );
-        // A validly signed but older entry of the same package does not
-        // reduce to the snapshot's entry.
         let older = entry("so.tilo.notes", full.entries[0].versions[1..].to_vec());
         assert_eq!(
             committed(&version_index_bytes(&older).unwrap()),

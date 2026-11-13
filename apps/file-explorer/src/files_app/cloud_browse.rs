@@ -445,19 +445,25 @@ impl FilesState {
         if let Some((account, folder)) = self.cloud_title() {
             let title =
                 folder.map_or_else(|| account.clone(), |folder| format!("{account} / {folder}"));
-            chrome
-                .nav
-                .set_content_header_leading(Some(ui::widget::Text::new(&title).into_widget()));
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome
+                    .nav
+                    .set_content_header_leading(Some(ui::widget::Text::new(&title).into_widget()));
+            });
             chrome.nav.set_content_header("", vec![]);
             self.cloud.header_shown = true;
         } else if self.cloud.header_shown {
             let (leading, actions, toolbar) = crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
             self.update_toolbar();
-            chrome
-                .nav
-                .set_content_header_leading(Some(Box::new(leading)));
-            chrome.nav.set_content_header("", vec![Box::new(actions)]);
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome
+                    .nav
+                    .set_content_header_leading(Some(Box::new(leading)));
+            });
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome.nav.set_content_header("", vec![Box::new(actions)]);
+            });
             self.cloud.header_shown = false;
         }
     }

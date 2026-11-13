@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 serde = { workspace = true, features = ["rc"] }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }

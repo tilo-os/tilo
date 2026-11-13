@@ -56,7 +56,7 @@ impl Workspaces {
         let device_key = hex::encode(device.device_public_key);
         let grants = share::share_grants(
             &member.policy,
-            (&member.person, &device_key, &member.authority(&bound), &cx),
+            (&member.person, &device_key, &member.authority(bound), &cx),
             share,
             node,
             access,
@@ -108,7 +108,7 @@ impl Workspaces {
         let bound = tilo_action_policy::roles::foreign_device_bound();
         let ids = share::ended_by(
             &member.policy,
-            (&member.person, &member.authority(&bound), &cx),
+            (&member.person, &member.authority(bound), &cx),
             share,
         );
         if ids.is_empty() {

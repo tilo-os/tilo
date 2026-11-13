@@ -1,4 +1,4 @@
-//! Real local DAV discovery → explicit selection → canonical store → Calendar.
+//! Local DAV discovery, an explicit selection, the canonical store, Calendar.
 use settings::accounts::{AccountKind, AccountRoot};
 use settings::panes::accounts::{AccountViewCommand, AccountsPane};
 use test_http::{Reply, Responder};
@@ -239,7 +239,6 @@ fn changing_or_canceling_a_live_discovery_draft_never_commits_it() {
         if change == "before-result" {
             assert!(!pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         } else {
-            // Polling a canceled/replaced form cannot consume the old receiver.
             pane.finish_form_submission_for_test(tilo_test_env::hang_bound());
             pane.submit_form_for_test();
         }

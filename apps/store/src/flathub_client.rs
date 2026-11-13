@@ -48,7 +48,6 @@ pub struct Remote {
     pub disabled: bool,
     /// System remotes are supplied by the image and cannot be deleted as this user.
     pub user_managed: bool,
-    /// Last configured-source read failure; independent sources remain usable.
     pub catalogue_error: Option<String>,
 }
 
@@ -128,8 +127,6 @@ pub struct AppStreamRecord {
     pub current_release_version: Option<String>,
     #[serde(default)]
     pub categories: Vec<CategoryRef>,
-    /// Some payloads carry a `homepage` inline URL; older records
-    /// tuck it under a `urls` object. We accept both.
     #[serde(default)]
     pub homepage: Option<String>,
     #[serde(default)]
@@ -138,10 +135,8 @@ pub struct AppStreamRecord {
     /// image per record so the detail sheet has a hero to show.
     #[serde(default)]
     pub screenshots: Vec<ScreenshotRef>,
-    /// Who makes the app (`developer_name`), as the app's metadata says.
     #[serde(default)]
     pub developer: String,
-    /// SPDX licence expression (`project_license`).
     #[serde(default)]
     pub license: String,
     /// When the app last changed on Flathub, Unix seconds; 0 when unknown.
@@ -305,8 +300,6 @@ fn unix_field(value: &serde_json::Value, names: &[&str]) -> u64 {
         .unwrap_or(0)
 }
 
-/// The language part of `locale` as Flathub's `locale` query parameter
-/// names it (`de`, `pt_BR`), so its localized fields follow the desktop.
 pub fn locale_parameter(locale: &str) -> String {
     let tag = locale.split('.').next().unwrap_or(locale).replace('-', "_");
     let valid = !tag.is_empty()
@@ -325,8 +318,6 @@ fn get_text(url: &str) -> Result<String, FlathubError> {
         .map_err(|e| FlathubError::Http(e.to_string()))
 }
 
-/// One of Flathub's collections (`popular`, `trending`, `recently-updated`,
-/// `recently-added`), first page, in `locale`.
 pub fn fetch_collection(
     name: &str,
     per_page: usize,
@@ -341,9 +332,6 @@ pub fn fetch_collection(
     decode_records(&text)
 }
 
-/// One page of Flathub's whole catalogue in `locale`: the search index with
-/// an empty query, `per_page` apps at a time. Answers the records and how
-/// many pages there are.
 pub fn fetch_catalogue_page(
     page: usize,
     per_page: usize,
@@ -376,7 +364,6 @@ pub fn fetch_catalogue_page(
     Ok((decode_records(&text)?, pages))
 }
 
-/// Full-text search of Flathub in `locale`.
 pub fn search_localized(query: &str, locale: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
     if query.trim().is_empty() {
         return Ok(Vec::new());
@@ -395,8 +382,6 @@ pub fn search_localized(query: &str, locale: &str) -> Result<Vec<AppStreamRecord
     decode_records(&text)
 }
 
-/// The full `AppStream` document of one app in `locale`, as JSON: the
-/// localized description, screenshots, releases, licence and developer.
 pub fn fetch_appstream_document(
     app_id: &str,
     locale: &str,
@@ -412,8 +397,6 @@ pub fn fetch_appstream_document(
     serde_json::from_str(&text).map_err(|e| FlathubError::Decode(e.to_string()))
 }
 
-/// What Flathub's build summary says about one app: its download and
-/// installed size and the permissions its sandbox grants, as JSON.
 pub fn fetch_summary(app_id: &str) -> Result<serde_json::Value, FlathubError> {
     if !crate::reports::valid_app_id(app_id) {
         return Err(FlathubError::Decode("invalid app id".into()));
@@ -431,7 +414,6 @@ fn string_field(value: &serde_json::Value, names: &[&str]) -> Option<String> {
     })
 }
 
-/// Decode the host service's machine-readable installed-app rows.
 pub fn installed_flatpaks(output: &str) -> Vec<(String, String)> {
     let mut installed = std::collections::BTreeMap::<String, (String, bool)>::new();
     for line in output.lines() {
@@ -458,8 +440,6 @@ pub fn installed_flatpaks(output: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Preserve the repository and scope, preferring this account's installation
-/// when the same app is also supplied by the device.
 pub fn installed_origins(output: &str) -> std::collections::HashMap<String, (String, bool)> {
     let mut installed = std::collections::HashMap::<String, (String, bool)>::new();
     for line in output.lines() {

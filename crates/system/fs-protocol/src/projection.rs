@@ -1,11 +1,5 @@
 //! The per-entry projections the filesystem answers through extended
 //! attributes, and the names it answers them under.
-//!
-//! The daemon writes each value with `to_xattr_bytes` and every reader
-//! decodes it with `parse_xattr`, so the JSON below is the one contract
-//! between the mount and the apps reading it. Every projection is bounded and
-//! self-validating: a value a reader accepts is one the daemon could have
-//! written.
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -15,7 +9,6 @@ use crate::files::{
     FileVersionV1, MAX_CONFLICT_VERSIONS,
 };
 
-/// An entry's sync state: `local`, `projected` or `downloading`.
 pub const SYNC_XATTR: &str = "user.tilo.sync";
 /// A file's thumbnail preview. Absent when not previewable, not locally
 /// generatable, and not replicated yet.
@@ -47,7 +40,6 @@ pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.tilo.record-index.by-id.
 /// Versioned availability snapshot. Unlike [`SYNC_XATTR`], this distinguishes
 /// transfer, retention policy, replica evidence, and freshness.
 pub const AVAILABILITY_XATTR: &str = "user.tilo.availability";
-/// Writable local-retention policy: `pinned` or `automatic`.
 pub const PIN_XATTR: &str = "user.tilo.pin";
 /// Write-only availability action. The only accepted value is `retry`, which
 /// schedules a bounded background hydration of the current content. No
@@ -55,7 +47,6 @@ pub const PIN_XATTR: &str = "user.tilo.pin";
 pub const AVAILABILITY_CONTROL_XATTR: &str = "user.tilo.availability-control";
 /// Bounded recent history and open conflicts of one record.
 pub const HISTORY_XATTR: &str = "user.tilo.history";
-/// Write-only history control (restore, conflict resolution).
 pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
 
 pub const METADATA_PROJECTION_VERSION: u16 = 1;
@@ -129,7 +120,6 @@ fn encode<T: Serialize>(value: &T, max: usize) -> Result<Vec<u8>, ProjectionErro
     Ok(bytes)
 }
 
-/// The hydration state of one filesystem entry, carried in [`SYNC_XATTR`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncState {
     /// Fully present locally — a read never touches the network. Directories,
@@ -138,12 +128,10 @@ pub enum SyncState {
     /// Metadata is projected but some content is not yet local; reading it
     /// will hydrate the missing bytes from a peer.
     Projected,
-    /// A hydration fetch for this file's content is in flight right now.
     Downloading,
 }
 
 impl SyncState {
-    /// The stable wire string carried in [`SYNC_XATTR`].
     pub fn as_str(self) -> &'static str {
         match self {
             SyncState::Local => "local",
@@ -164,7 +152,6 @@ impl SyncState {
     }
 }
 
-/// The value of [`METADATA_XATTR`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetadataProjectionV1 {
@@ -253,7 +240,6 @@ pub struct RecordIndexPageV3 {
     pub records: Vec<RecordIndexEntryV1>,
 }
 
-/// A record-index revision is a 64-digit hex digest.
 pub fn valid_record_index_revision(revision: &str) -> bool {
     revision.len() == 64 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -388,19 +374,20 @@ impl RecordIndexPageV3 {
     }
 }
 
-/// How much of the current payload is resident on this device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum Residency {
     /// Metadata is present, but no payload bytes are promised locally.
     NotResident,
     /// Some, but not all, payload bytes are present.
-    Partial { resident_bytes: u64 },
-    /// The complete current payload has been verified locally.
-    Resident { bytes: u64 },
+    Partial {
+        resident_bytes: u64,
+    },
+    Resident {
+        bytes: u64,
+    },
 }
 
-/// Current transfer lifecycle, independent of local residency.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferPhase {
@@ -425,7 +412,6 @@ pub struct TransferProgress {
     pub total_bytes: Option<u64>,
 }
 
-/// Explicit local retention policy. Directory policy applies transitively.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AvailabilityPolicy {
@@ -447,7 +433,6 @@ pub struct AvailabilityProjectionV1 {
     pub current_version: Option<FileVersionId>,
     pub residency: Residency,
     pub transfer: ProjectedTransfer,
-    /// Effective policy, with directory-pin inheritance already resolved.
     pub policy: AvailabilityPolicy,
     /// True when `policy == pinned` because a stable ancestor directory is
     /// pinned rather than because this record has a direct pin.
@@ -537,7 +522,6 @@ impl AvailabilityProjectionV1 {
         Ok(())
     }
 
-    /// At least one durable replica acknowledged the current version.
     pub fn safely_replicated(&self) -> bool {
         matches!(self.replicas, ProjectedReplicaEvidence::Known { durable, .. } if durable > 0)
     }
@@ -730,7 +714,6 @@ mod tests {
                 Err(ProjectionError::TooLarge { .. })
             ));
         }
-        // The three sync states round-trip; junk is rejected.
         {
             for state in [
                 SyncState::Local,
@@ -742,7 +725,6 @@ mod tests {
                     Some(state)
                 );
             }
-            // Trailing whitespace/newline (some xattr tools append one) is tolerated.
             assert_eq!(SyncState::from_xattr(b"local\n"), Some(SyncState::Local));
             assert_eq!(SyncState::from_xattr(b"bogus"), None);
             assert_eq!(SyncState::from_xattr(&[0xff, 0xfe]), None);

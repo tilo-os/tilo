@@ -1,24 +1,5 @@
-//! A real, signed, self-hosted registry you can point a running
-//! desktop at.
-//!
-//! Development tooling, not shipped: it exists so the install-on-open
-//! path can be exercised against a live compositor on a machine that
-//! has no registry to talk to. Everything it serves is genuinely
-//! signed and genuinely verified by the client — the only thing that
-//! is a fixture is the app itself.
-//!
-//! ```text
-//! cargo run -p app-cli --example serve-test-registry -- \
-//!     --config-dir /tmp/tilo-cfg --payload /bin/true
-//! ```
-//!
-//! Writes `registries.toml` into `--config-dir` pointing at itself,
-//! prints the port, and serves until killed.
-//!
-//! Point `--payload` at a binary inside an installed package's payload
-//! root and the package's own `manifest.toml` is what gets published —
-//! see [`authoring`] for why serving a synthesised one instead ships an
-//! app that cannot collaborate. `--manifest` names one explicitly.
+//! A signed, self-hosted registry to point a running Tilo at, with the slow and failing paths a
+//! development build wants to observe.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -59,8 +40,6 @@ fn run() -> Result<(), String> {
     let config_dir = PathBuf::from(arg("--config-dir").ok_or("--config-dir is required")?);
     let package_id = arg("--package-id").unwrap_or_else(|| "so.tilo.sheets".to_string());
     let name = arg("--name").unwrap_or_else(|| "Sheets".to_string());
-    // The payload binary the packaged app runs. `/bin/true` proves the
-    // install path; point it at a real client to prove the launch.
     let payload_bin = PathBuf::from(arg("--payload").unwrap_or_else(|| "/bin/true".to_string()));
 
     // Development knobs for observing the slow and failing paths a
@@ -125,8 +104,6 @@ fn run() -> Result<(), String> {
         homepage: None,
         publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
-            // What the package says it is, not a number chosen here —
-            // the entry and the manifest have to agree.
             version,
             released_at_unix: 1,
             artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
@@ -182,7 +159,6 @@ fn run() -> Result<(), String> {
         "registry {base_url} serving {package_id} ({name}) — config in {}",
         config_dir.display()
     );
-    // Flush so a harness waiting on stdout sees it immediately.
     let _ = std::io::stdout().flush();
 
     let entries = Arc::new(entries_json);
@@ -223,8 +199,6 @@ fn serve_one(mut stream: TcpStream, entries: &str, tapp: &[u8], delay_ms: u64) {
     } else {
         ("404 Not Found", "text/plain", b"no".to_vec())
     };
-    // Only the package download is slowed; the catalogue listing stays
-    // fast so the palette still fills in while you type.
     if delay_ms > 0 && is_tapp {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
     }

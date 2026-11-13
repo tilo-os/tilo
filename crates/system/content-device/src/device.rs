@@ -1,13 +1,10 @@
 //! The device content store, through the scoped capability the launcher hands an app.
 //!
-//! The filesystem daemon keeps this device's content and fetches what a collaborator or another
-//! of the user's devices stored; [`DeviceBackend`] is an app's view of it. Content arriving from
-//! elsewhere reads as [`ContentState::Pending`] until the daemon has it. A bounded in-process
-//! cache sits in front of the daemon so content drawn every frame is not read over the socket
-//! every frame.
-//!
-//! The capability is one inherited descriptor, taken once per process: [`crate::device()`]
-//! hands out stores over that one connection.
+//! [`DeviceBackend`] is an app's view of the filesystem daemon's content; content
+//! arriving from elsewhere reads as [`ContentState::Pending`] until the daemon has it.
+//! A bounded in-process cache sits in front of the daemon, so content drawn every
+//! frame is not read over the socket every frame. The capability is one inherited
+//! descriptor, taken once per process.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
@@ -20,26 +17,23 @@ use tilo_content::{
     valid_hash,
 };
 
-/// Bytes of recently read content kept in the process.
 const CACHE_BYTES: usize = 64 * 1024 * 1024;
-/// Content larger than this is read from the daemon each time rather than cached.
 const MAX_CACHED_ITEM: usize = 16 * 1024 * 1024;
 
 /// Content in the device content store.
 ///
 /// Nothing here holds a whole item it does not cache: a put streams to the daemon one
-/// [`runtime_fs::blobs::MAX_PUT_CHUNK`] at a time, and a read that misses the cache fetches
-/// ranges as it is consumed and is verified when it reaches its end.
+/// [`runtime_fs::blobs::MAX_PUT_CHUNK`] at a time, and a read that misses the cache
+/// fetches ranges as it is consumed and is verified when it reaches its end.
 pub struct DeviceBackend {
     client: BlobClient,
     cache: Arc<Mutex<Cache>>,
 }
 
-/// Least-recently-used content, bounded by total bytes.
 struct Cache {
     budget: usize,
     bytes: usize,
-    /// Advances on every touch; an entry's tick is its key in `order`.
+    /// Advances on every touch; an entry's value is its key in `order`.
     tick: u64,
     entries: HashMap<String, (Arc<[u8]>, u64)>,
     /// Hashes by last touch, least recently used first.
@@ -108,7 +102,6 @@ fn store_error(error: BlobError) -> ContentError {
     }
 }
 
-/// Passes a verified read through and caches a copy of it once it has ended.
 struct Filling<R> {
     inner: Verifying<R>,
     hash: String,
@@ -127,7 +120,6 @@ impl<R: Read> Read for Filling<R> {
             }
         };
         if n == 0 {
-            // `Verifying` ends only once the content matched its address.
             if let (Some(kept), Ok(mut cache)) = (self.kept.take(), self.cache.lock()) {
                 cache.insert(&self.hash, kept.into());
             }
@@ -139,7 +131,6 @@ impl<R: Read> Read for Filling<R> {
 }
 
 impl DeviceBackend {
-    /// A backend over `client`, an app-scoped capability.
     pub fn new(client: BlobClient) -> Self {
         Self {
             client,
@@ -191,7 +182,6 @@ impl ContentBackend for DeviceBackend {
         self.cached(&hash).is_some() || self.client.has(&hash).unwrap_or(false)
     }
 
-    /// Asks the daemon for an empty range: whether the content is readable, without reading it.
     fn state(&self, hash: &str) -> ContentState {
         let hash = hash.to_ascii_lowercase();
         if self.cached(&hash).is_some() {
@@ -212,15 +202,15 @@ impl ContentBackend for DeviceBackend {
         true
     }
 
-    /// The capability is the window's (room, app) scope: the daemon serves an
-    /// address only when that room references it.
+    /// The capability is the window's (room, app) scope: the daemon serves an address
+    /// only when that room references it.
     fn workspace_scoped(&self) -> bool {
         true
     }
 }
 
-/// The one launcher-granted device connection shared by stores in this process.
-/// The process's one connection to the daemon, over the descriptor the launcher handed it.
+/// The process's one connection to the daemon, over the descriptor the launcher
+/// handed it.
 pub(crate) fn client() -> Option<&'static BlobClient> {
     static CLIENT: OnceLock<Option<BlobClient>> = OnceLock::new();
     CLIENT
@@ -236,22 +226,20 @@ pub(crate) fn store() -> Option<ContentStore> {
         .map(|backend| ContentStore::from_backend(Arc::clone(backend) as Arc<dyn ContentBackend>))
 }
 
-/// The document media the session whose runtime directory this process runs in serves its apps
-/// (`TILO_FS_BLOB_SOCKET`, `fs serve-media`), reached as the session it is.
+/// The document media the session whose runtime directory this process runs in serves
+/// its apps (`TILO_FS_BLOB_SOCKET`, `fs serve-media`), reached as the session it is.
 ///
-/// A session's own process draws with the same pictures its apps do — the shell composes views of
-/// records whose stills an app's connector kept — and holds none of the launcher's inherited
-/// descriptors ([`client`]), so it reaches the daemon by its socket instead.
-///
-/// The daemon serves an address through a scope only while that workspace references it, and a
-/// session's process draws places of several workspaces: a store here reads every scope the daemon
-/// gives it with [`SESSION_WORKSPACES`], the workspace in front first, and stays with the one an
+/// A session's own process draws the same pictures its apps do but holds none of the
+/// launcher's inherited descriptors ([`client`]), so it reaches the daemon by its
+/// socket. The daemon serves an address through a scope only while that workspace
+/// references it, so a store here reads every scope the daemon gives it with
+/// [`SESSION_WORKSPACES`], the workspace in front first, and stays with the one an
 /// address was read through for the addresses drawn beside it.
 #[cfg(unix)]
 pub(crate) fn session_store(workspace: &str) -> Option<ContentStore> {
-    // One connection per socket, shared by every store a process opens over it: the driver thread
-    // behind it serves many calls at once, and a picture drawn every frame is asked for again each
-    // frame.
+    // One connection per socket, shared by every store a process opens over it: the driver
+    // thread behind it serves many calls at once, and a picture drawn every frame is asked
+    // for again each frame.
     static SESSIONS: OnceLock<Mutex<BTreeMap<std::path::PathBuf, BlobClient>>> = OnceLock::new();
     let socket = std::env::var_os(SESSION_MEDIA_SOCKET_ENV)
         .filter(|value| !value.is_empty())
@@ -272,9 +260,8 @@ pub(crate) fn session_store(workspace: &str) -> Option<ContentStore> {
             session
         }
     };
-    // The workspaces this store reaches, the one drawn this pass first: the session tells every
-    // workspace it draws with [`set_session_workspaces`], so a place of any of them reads its
-    // pictures.
+    // The workspaces this store reaches, the one drawn this pass first: the session tells
+    // every workspace it draws with [`set_session_workspaces`].
     let mut workspaces: Vec<String> = vec![workspace.to_owned()];
     if let Ok(held) = SESSION_WORKSPACES.lock() {
         workspaces.extend(held.iter().filter(|held| *held != workspace).cloned());
@@ -283,8 +270,8 @@ pub(crate) fn session_store(workspace: &str) -> Option<ContentStore> {
     for workspace in &workspaces {
         match session.scope(workspace, SESSION_APP) {
             Ok(held) => scopes.push(held),
-            // A workspace the daemon names no scope for holds none of its own: the store still
-            // serves the others.
+            // A workspace the daemon names no scope for holds none: the store still serves
+            // the others.
             Err(error) => {
                 tracing::debug!(%error, %workspace, "no document media scope for the session");
             }
@@ -299,14 +286,14 @@ pub(crate) fn session_store(workspace: &str) -> Option<ContentStore> {
     )
 }
 
-/// The workspaces the session's own process draws the content of: what a store it opens reads
-/// through, the workspace in front first. Set once as the session starts, and again when the
-/// workspaces the desk holds change.
+/// The workspaces the session's own process draws the content of: what a store it opens
+/// reads through, the workspace in front first. Set as the session starts, and again when
+/// the workspaces it holds change.
 #[cfg(unix)]
 static SESSION_WORKSPACES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Tell every store the session's process opens from here on which workspaces it draws, the one
-/// in front first: a place of any of them reads its pictures.
+/// Tell every store the session's process opens from here on which workspaces it draws,
+/// the one in front first.
 #[cfg(unix)]
 pub(crate) fn set_session_workspaces(workspaces: Vec<String>) {
     if let Ok(mut held) = SESSION_WORKSPACES.lock() {
@@ -314,15 +301,12 @@ pub(crate) fn set_session_workspaces(workspaces: Vec<String>) {
     }
 }
 
-/// Content of the several workspaces a session's process draws: a read asks each scope in turn,
-/// and an address one served is read through that scope from then on, so the stills drawn beside
-/// it cost no further lookups.
+/// Content of the several workspaces a session's process draws: a read asks each scope in
+/// turn, and an address one served is read through that scope from then on.
 #[cfg(unix)]
 pub struct SessionBackend {
-    /// The scopes, the workspace in front's first.
     scopes: Vec<DeviceBackend>,
     cache: Arc<Mutex<Cache>>,
-    /// The scope each address was last read through, by hash.
     held: Mutex<BTreeMap<String, usize>>,
 }
 
@@ -340,8 +324,8 @@ impl SessionBackend {
         self.cache.lock().ok()?.get(hash)
     }
 
-    /// The scopes to ask for `hash`: the one it was last read through first, then the workspace in
-    /// front's, then the rest.
+    /// The scopes to ask for `hash`: the one it was last read through first, then the
+    /// workspace in front's, then the rest.
     fn order(&self, hash: &str) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.scopes.len()).collect();
         if let Some(held) = self
@@ -360,7 +344,7 @@ impl SessionBackend {
 #[cfg(unix)]
 impl ContentBackend for SessionBackend {
     fn put(&self, _: &mut dyn Read, _: &str) -> Result<Stored, ContentError> {
-        // The session draws content; it never stores any of its own: what it shows is what an
+        // The session draws content; it never stores its own: what it shows is what an
         // app's connector kept.
         Err(ContentError::Io(
             "the session's document media reads content, never stores it".to_owned(),
@@ -428,21 +412,21 @@ impl ContentBackend for SessionBackend {
         true
     }
 
-    /// Every scope this store reads is one workspace's, so an address resolves only where that
-    /// workspace references it.
+    /// Every scope this store reads is one workspace's, so an address resolves only where
+    /// that workspace references it.
     fn workspace_scoped(&self) -> bool {
         true
     }
 }
 
 /// The variable naming the socket a session serves its document media at
-/// (`fs serve-media`): the same one the launcher reads to scope every app it starts.
+/// (`fs serve-media`), the one the launcher reads to scope every app it starts.
 #[cfg(unix)]
 pub(crate) const SESSION_MEDIA_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
 
-/// The app the session's own content is kept under: the workspace's reachability index is per
-/// workspace, not per app, so a still one app's connector kept is read here under the session's
-/// own name and serves every place that shows it.
+/// The app the session's own content is kept under: the reachability index is per
+/// workspace, not per app, so a still one app's connector kept is read here under the
+/// session's name and serves every place that shows it.
 #[cfg(unix)]
 const SESSION_APP: &str = "so.tilo.session";
 

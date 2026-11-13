@@ -245,6 +245,10 @@ pub struct MessageList {
     hovered_presented: Option<Rect>,
     arriving_step: Option<ui::arriving::Step>,
     zero_action: Option<(Rect, Intent)>,
+    /// Where the failed check's words stand, as laid out for this frame, so a
+    /// reader can tell it keeps the rows' inset. `Rect::ZERO` when the check
+    /// works.
+    banner: Rect,
     /// The failed check's control as last painted, in the list's banner or in
     /// the empty list's words: the way out of a check that cannot run.
     sync_action: Option<(Rect, Intent)>,
@@ -271,6 +275,7 @@ impl MessageList {
             hovered_presented: None,
             arriving_step: None,
             zero_action: None,
+            banner: Rect::ZERO,
             sync_action: None,
             labels: RowLabels::of(),
         }
@@ -465,10 +470,7 @@ impl MessageList {
             );
             return;
         }
-        self.row_h = ListRowFace::new("Ag")
-            .subtitle("Ag")
-            .secondary("Ag")
-            .height(ctx.text, theme);
+        self.row_h = row_height(ctx.text, theme);
         let unscrolled = RowFrame::new(r, self.row_h, false, theme);
         self.region
             .set_content_size(r.width(), unscrolled.content_height(queued.len(), theme));
@@ -603,18 +605,15 @@ impl MessageList {
         state: &MailState,
         rows: &[(MessageId, usize)],
         list: Rect,
+        row_h: f64,
         t: Affine,
         theme: &Theme,
     ) {
-        self.row_h = ListRowFace::new("Ag")
-            .subtitle("Ag")
-            .secondary("Ag")
-            .height(ctx.text, theme);
-        let unscrolled = RowFrame::new(list, self.row_h, false, theme);
+        let unscrolled = RowFrame::new(list, row_h, false, theme);
         self.region
             .set_content_size(list.width(), unscrolled.content_height(rows.len(), theme));
         // Rows stop short of the scroll bar when the list overflows.
-        let frame = RowFrame::new(list, self.row_h, self.region.overflows_vertically(), theme);
+        let frame = RowFrame::new(list, row_h, self.region.overflows_vertically(), theme);
         self.reveal(rows, state.selected, frame);
         let scroll = self.region.offset().y;
 
@@ -661,7 +660,7 @@ impl MessageList {
         ctx.scene.pop_layer();
         // Near the last row, the older mail is fetched before it is reached.
         if let Some(last) = slots.last()
-            && last.band.y0 - list.y1 < self.row_h * f64::from(OLDER_AHEAD_ROWS)
+            && last.band.y0 - list.y1 < row_h * f64::from(OLDER_AHEAD_ROWS)
         {
             state.wants_older.set(true);
         }
@@ -791,30 +790,72 @@ fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) -> Optio
     .map(|pill| (pill, Intent::AccountSettings))
 }
 
-/// The failed check, as painted above the rows: what cannot be reached, what
-/// it means, and the way out. Returns where the way out is and how tall the
-/// words are, so the rows start under them.
-fn paint_sync_banner(
-    ctx: &mut PaintCtx<'_>,
-    r: Rect,
-    text: &crate::notice::SyncFailureText,
-    pointer: Option<Point>,
-) -> (Option<(Rect, Intent)>, f64) {
-    let content = BannerContent {
+/// Where a frame's parts stand in the list's column: a failed check's words at
+/// the top, and the rows under them.
+struct Placed {
+    /// The failed check's banner; `Rect::ZERO` when the check works.
+    banner: Rect,
+    /// The rows' room: the column less the banner above them.
+    rows: Rect,
+}
+
+/// The failed check's words, as the banner reads them.
+fn sync_content(text: &crate::notice::SyncFailureText) -> BannerContent<'_> {
+    BannerContent {
         message: text.message.as_deref().map(std::borrow::Cow::Borrowed),
         action: text.action.as_ref().map(|offer| offer.label.as_str()),
         ..BannerContent::new(text.kind, &text.title)
+    }
+}
+
+/// The height a row takes at the current text scale, measured from the faces
+/// the rows are painted with so layout and paint agree.
+fn row_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
+    ListRowFace::new("Ag")
+        .subtitle("Ag")
+        .secondary("Ag")
+        .height(text, theme)
+}
+
+/// Lay the failed check's words and the rows under them into `column`.
+///
+/// The banner keeps the rows' own inset ([`RowFrame`]) and the step they leave
+/// above their first row, so it stands in the column rather than welded to the
+/// window's edges; the rows begin below it. A list that scrolls stops its rows
+/// short of the scroll bar, and the banner ends where they do.
+fn place(
+    column: Rect,
+    row_count: usize,
+    row_h: f64,
+    banner: Option<&BannerContent<'_>>,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) -> Placed {
+    let Some(content) = banner else {
+        return Placed {
+            banner: Rect::ZERO,
+            rows: column,
+        };
     };
-    let height = Banner::height(&content, r.width(), ctx.text, ctx.theme);
-    let rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + height);
-    let hit = Banner::paint(
-        ctx,
-        rect,
-        &content,
-        pointer.unwrap_or(Point::new(-1.0, -1.0)),
-    );
-    let offer = text.action.as_ref().map(|offer| offer.intent.clone());
-    (hit.action.zip(offer), height)
+    let still = RowFrame::new(column, row_h, false, theme);
+    let width = |frame: &RowFrame| (frame.x1 - frame.x0).max(0.0);
+    let mut height = Banner::height(content, width(&still), text, theme);
+    let scrolls =
+        still.content_height(row_count, theme) > (column.y1 - still.top - height).max(0.0) + 0.5;
+    let frame = if scrolls {
+        let frame = RowFrame::new(column, row_h, true, theme);
+        // A narrower banner may wrap onto one more line.
+        height = Banner::height(content, width(&frame), text, theme);
+        frame
+    } else {
+        still
+    };
+    let y1 = (frame.top + height).min(column.y1);
+    let banner = Rect::new(frame.x0, frame.top, frame.x1, y1);
+    Placed {
+        banner,
+        rows: Rect::new(column.x0, y1, column.x1, column.y1),
+    }
 }
 
 /// The empty list of an account whose check failed: what cannot be reached,
@@ -879,6 +920,7 @@ impl Widget for MessageList {
             // so none of a folder's rows or gestures are here.
             self.region.set_viewport(r, theme);
             self.slots.clear();
+            self.banner = Rect::ZERO;
             self.paint_outbox(&mut ctx, &state);
             return;
         }
@@ -888,12 +930,25 @@ impl Widget for MessageList {
         // fades: its words stand above the rows, or in the place the rows
         // would be while there are none.
         let failure = state.sync_error.as_ref().map(crate::notice::sync_failure);
-        let mut list = r;
-        if let (Some(text), false) = (&failure, rows.is_empty()) {
-            let (action, height) = paint_sync_banner(&mut ctx, r, text, self.pointer);
-            self.sync_action = action;
-            list.y0 = (r.y0 + height).min(r.y1);
-        }
+        let content = failure
+            .as_ref()
+            .filter(|_| !rows.is_empty())
+            .map(sync_content);
+        self.row_h = row_height(ctx.text, theme);
+        let placed = place(r, rows.len(), self.row_h, content.as_ref(), ctx.text, theme);
+        self.banner = placed.banner;
+        self.sync_action = match (&content, &failure) {
+            (Some(content), Some(text)) => Banner::paint(
+                &mut ctx,
+                placed.banner,
+                content,
+                self.pointer.unwrap_or(Point::new(-1.0, -1.0)),
+            )
+            .action
+            .zip(text.action.as_ref().map(|offer| offer.intent.clone())),
+            _ => None,
+        };
+        let list = placed.rows;
         self.region.set_viewport(list, theme);
         if rows.is_empty()
             && let Some(clock) = &state.first_fetch
@@ -915,7 +970,7 @@ impl Widget for MessageList {
             return;
         }
 
-        self.paint_rows(&mut ctx, &state, &rows, list, t, theme);
+        self.paint_rows(&mut ctx, &state, &rows, list, self.row_h, t, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1227,6 +1282,54 @@ mod tests {
         );
         let (_, intent) = list.sync_action.expect("the failure offers a way out");
         assert!(matches!(intent, Intent::CheckMail));
+    }
+
+    /// The failed check's words keep the rows' inset: the same side edges as
+    /// the rows below, a step of air above them, never a strip welded to the
+    /// column's edges.
+    #[test]
+    fn a_failed_check_keeps_the_rows_inset() {
+        let shared = shared();
+        let mut list = MessageList::new(shared.clone());
+        // Once scrolling (the sample mailbox is longer than this) and once
+        // with every row in view: the banner's edges follow the rows' both
+        // times.
+        for (height, scrolls) in [(400.0, true), (2400.0, false)] {
+            list.rect = Rect::new(0.0, 0.0, 340.0, height);
+            draw(&mut list);
+            assert_eq!(list.banner, Rect::ZERO, "a working check has no words");
+
+            shared
+                .borrow_mut()
+                .note_sync_failure("Anna".into(), crate::state::SyncCause::Unreachable);
+            draw(&mut list);
+            shared.borrow_mut().clear_sync_failure();
+            assert_eq!(
+                list.region.overflows_vertically(),
+                scrolls,
+                "the case is {height:?}"
+            );
+
+            let banner = list.banner;
+            let (_, first) = list.row_rects()[0];
+            assert!(banner.width() > 0.0 && banner.height() > 0.0);
+            assert!(
+                (banner.x0 - first.x0).abs() < 0.5,
+                "the banner starts on the rows' leading inset: {banner:?} then {first:?}"
+            );
+            assert!(
+                (banner.x1 - first.x1).abs() < 0.5,
+                "the banner ends on the rows' trailing inset: {banner:?} then {first:?}"
+            );
+            assert!(
+                banner.y0 > list.rect.y0,
+                "the banner stands a step below the column's top: {banner:?}"
+            );
+            assert!(
+                banner.y1 <= first.y0,
+                "the rows start under the banner: {banner:?} then {first:?}"
+            );
+        }
     }
 
     /// An empty mailbox whose check failed says that, not that nothing has

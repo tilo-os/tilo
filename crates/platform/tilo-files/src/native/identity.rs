@@ -1,16 +1,11 @@
-//! A file's durable identity: a 16-byte id stored on the file itself, in an
-//! extended attribute, so it follows the file through a rename or a move
-//! while a copy, or another file with the same bytes, is a different file.
-//!
-//! On Linux the attribute holds the id alone, which is also how a
-//! collaborative filesystem can serve an id of its own there. macOS carries
-//! extended attributes along on every copy — Finder's, `cp`'s and
-//! `std::fs::copy`'s, which clones the file on APFS — so there the id is
-//! followed by the inode it was minted for, and an id found on any other
-//! inode is one a copy inherited: the copy is given its own. A rename or a
-//! move within a volume keeps the inode; a move to another volume is a copy.
-//!
-//! Elsewhere files carry no id and every call reports none.
+//! A file's durable identity: a 16-byte id in an extended attribute, so it follows the
+//! file through a rename or a move while a copy, or another file with the same bytes,
+//! is a different file. On Linux the attribute carries the id alone, which is also how
+//! a collaborative filesystem can serve an id of its own there. macOS carries extended
+//! attributes along on every copy, so there the id is followed by the inode it was
+//! minted for, and an id found on any other inode is one a copy inherited: the copy is
+//! given its own. A rename or a move within a volume keeps the inode; a move to another
+//! volume is a copy. Elsewhere files carry no id and every call reports none.
 
 use std::io;
 use std::path::Path;
@@ -18,25 +13,15 @@ use std::path::Path;
 /// A file's id: 16 bytes, never all zero.
 pub type FileId = [u8; 16];
 
-/// The id stored on `path` under `attribute`, if it carries a well-formed
-/// one. Follows symlinks, as opening the file does.
+/// Follows symlinks, as opening the file does.
 #[must_use]
 pub fn read(path: &Path, attribute: &str) -> Option<FileId> {
     platform::read(path, attribute)
 }
 
-/// The id stored on `path` under `attribute`, storing `fresh` first when the
-/// path names a regular file that carries none of its own.
-///
-/// The write is create-only: when another process stores an id between the
-/// read and the write, its id is the one returned, so both agree. `Ok(None)`
-/// when the path is not a regular file, or `fresh` is all zero.
-///
-/// # Errors
-///
-/// The failure to store an id: a filesystem without extended attributes, a
-/// read-only file, or a target that has no file ids at all
-/// ([`io::ErrorKind::Unsupported`]).
+/// Stores `fresh` first when the path names a regular file that carries none of its own. The write is
+/// create-only: when another process stores an id between the read and the write, its id comes back, so
+/// both agree. `Ok(None)` when the path is not a regular file, or `fresh` is all zero.
 pub fn read_or_mint(path: &Path, attribute: &str, fresh: FileId) -> io::Result<Option<FileId>> {
     platform::read_or_mint(path, attribute, fresh)
 }
@@ -62,11 +47,10 @@ mod platform {
         ))
     }
 
-    /// The attribute's value, when it is exactly `N` bytes long.
     fn get<const N: usize>(path: &CString, name: &CString) -> Option<[u8; N]> {
         let mut buf = [0_u8; N];
-        // SAFETY: both strings are NUL-terminated and `buf` is writable for
-        // its full length, which is what we pass.
+        // SAFETY: both strings are NUL-terminated and `buf` is writable for its full length, which is
+        // what we pass.
         #[cfg(target_os = "linux")]
         let n = unsafe {
             libc::getxattr(
@@ -91,10 +75,8 @@ mod platform {
         (usize::try_from(n).ok() == Some(N)).then_some(buf)
     }
 
-    /// Store `value` unless the attribute exists. `Ok(false)` when it does.
     fn create(path: &CString, name: &CString, value: &[u8]) -> io::Result<bool> {
-        // SAFETY: NUL-terminated strings and a readable value of the length
-        // passed.
+        // SAFETY: NUL-terminated strings and a readable value of the length passed.
         #[cfg(target_os = "linux")]
         let rc = unsafe {
             libc::setxattr(
@@ -144,8 +126,8 @@ mod platform {
         }
         let (c_path, name) = c_strings(path, attribute)?;
         create(&c_path, &name, &fresh)?;
-        // Read back rather than trusting the value written: the stored
-        // attribute is the identity, whoever wrote it.
+        // Read back rather than trusting the value written: the stored attribute is the identity,
+        // whoever wrote it.
         Ok(read(path, attribute))
     }
 
@@ -185,9 +167,8 @@ mod platform {
         if usable(fresh).is_none() || !metadata.is_file() {
             return Ok(None);
         }
-        // An id bound to another inode came with a copy: drop it so the
-        // write below can stay create-only. There being none is fine.
-        // SAFETY: NUL-terminated strings.
+        // An id bound to another inode came with a copy: drop it so the write below can stay
+        // create-only. There being none is fine. SAFETY: NUL-terminated strings.
         unsafe {
             libc::removexattr(c_path.as_ptr(), name.as_ptr(), 0);
         }
@@ -242,8 +223,7 @@ mod tests {
         std::fs::rename(&first, &renamed).unwrap();
         assert_eq!(read(&renamed, ATTRIBUTE), id, "a rename keeps the id");
 
-        // On macOS the copy carries the attribute along; it is still a
-        // different file.
+        // On macOS the copy carries the attribute along; it is still a different file.
         let copy = dir.path().join("b copy.pdf");
         std::fs::copy(&renamed, &copy).unwrap();
         assert_eq!(read(&copy, ATTRIBUTE), None, "a copy has no id of its own");

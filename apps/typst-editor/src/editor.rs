@@ -1,17 +1,12 @@
 //! The source editor pane.
 //!
-//! The text-editing surface itself is the shared `ui::CodeEditor` — one caret
-//! / selection / clipboard / undo / IME / a11y implementation, a line-number
-//! gutter, and Typst syntax highlighting supplied by the toolkit's built-in
-//! `Language::Typst` highlighter. This module is now a thin shell that owns that
-//! widget and adds the Typst-editor-specific pieces: the inline
-//! compiler-diagnostic overlay (gutter severity markers, wavy squiggles under
-//! error spans, and the hover tooltip), rendered on top of the shared editor
-//! using its public geometry.
+//! A thin shell over the shared `ui::CodeEditor` (caret, selection, clipboard,
+//! undo, IME, a11y, line numbers, Typst highlighting) that adds the inline
+//! compiler-diagnostic overlay: gutter severity marks, squiggles under error
+//! spans and a hover tooltip.
 //!
-//! The editor shows the source text of the file the app has open and submits
-//! every edit as a splice of the file's `source` field, so a keystroke is an
-//! attributed, undoable, permission-checked action.
+//! Every edit is submitted as a splice of the open file's `source` field, so a
+//! keystroke is an attributed, undoable, permission-checked action.
 
 use automerge::AutoCommit;
 use vello::Scene;
@@ -28,37 +23,21 @@ use ui::widget::code_editor::{CodeEditor, Diagnostic as CodeDiagnostic, Language
 use crate::compile::{DiagKind, Diagnostic};
 use crate::resource::Workspace;
 
-/// Tab expands to this many spaces (soft tabs).
 const TAB_WIDTH: usize = 2;
 
 pub struct SourceEditor {
-    /// The shared code-editing widget — caret, selection, clipboard, undo,
-    /// gutter, and Typst syntax highlighting all live here — over the open
-    /// file's source.
     code: TextControl<CodeEditor, Workspace>,
-    /// Where the edits go, once the window is attached.
     dispatcher: Option<Dispatcher<Workspace>>,
-    /// Whether the source pane holds keyboard focus. Mirrored onto `code` each
-    /// frame so its caret paints and its key routing engages.
     pub focused: bool,
     rect: Rect,
-    /// Anchor byte for an in-flight click+drag selection.
     drag_anchor: Option<usize>,
-    /// Last known hover position (window space), or `None` when the pointer is
-    /// off the pane. Drives the inline-diagnostic tooltip.
     hover: Option<Point>,
-    /// The matches the window's search found, in reading order, and which of
-    /// them is the caret's.
     matches: Vec<ui::widget::FindMatch>,
     current: Option<usize>,
-    /// Counts the source it has seen, so the search finds again when an edit
-    /// moves the text under it.
     revision: u64,
 }
 
 impl SourceEditor {
-    /// An editor over no source, read only until a dispatcher is
-    /// [attached](Self::attach).
     pub fn new() -> Self {
         let nowhere = Workspace::paths()
             .files
@@ -139,8 +118,6 @@ impl SourceEditor {
         self.control_mut().set_rect(rect);
     }
 
-    /// Show the source at `path`, each edit a splice there once a
-    /// dispatcher is attached.
     pub fn follow(&mut self, path: Path<Workspace, String>) {
         self.revision = self.revision.wrapping_add(1);
         let mut control = Self::control_new();
@@ -151,14 +128,11 @@ impl SourceEditor {
         }
     }
 
-    /// Submit the edits of the source shown through `dispatcher`.
     pub fn attach(&mut self, dispatcher: Dispatcher<Workspace>) {
         self.code.attach(dispatcher.clone());
         self.dispatcher = Some(dispatcher);
     }
 
-    /// Show the open file's source as `doc` holds it. Called from the app's
-    /// `sync`.
     pub fn pull(&mut self, doc: &AutoCommit) {
         // An edit anywhere moves the text under the search: its next drive
         // finds again, keeping the match the person is looking at.
@@ -166,33 +140,26 @@ impl SourceEditor {
         self.code.pull(doc);
     }
 
-    /// Submit what the control edited since the last call: a splice of the
-    /// source, or taken back while no dispatcher is attached.
     fn submit(&mut self, edits: &mut ui::widget::Edits<'_>) {
         self.code.submit(edits);
     }
 
-    /// The caret's byte offset in the source.
     pub fn caret(&self) -> usize {
         self.control().cursor_pos()
     }
 
-    /// Move the caret to a byte offset (used by the screenshot harness).
     pub fn set_caret(&mut self, byte: usize) {
         self.control_mut().set_cursor_pos(byte);
     }
 
-    /// The current buffer text (mirrors the bound Automerge object).
     pub fn text(&self) -> &str {
         self.control().value()
     }
 
-    /// Programmatically set the buffer (local/unbound use — tests, seeding).
     pub fn set_text(&mut self, s: &str) {
         self.control_mut().set_text(s);
     }
 
-    /// Reset the caret to the document start (used when switching documents).
     pub fn reset_cursor(&mut self) {
         self.control_mut().set_cursor_pos(0);
         self.control_mut().scroll_by(-1.0e9);
@@ -213,20 +180,14 @@ impl SourceEditor {
         self.focused = true;
     }
 
-    /// Place the caret on a specific 1-based line (used when a diagnostic is
-    /// clicked). `_text` is unused — the widget holds the source.
     pub fn goto_line(&mut self, _text: &str, line_1based: usize) {
         self.control_mut().goto_line(line_1based);
     }
 
-    /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
-    /// only scrolls vertically.
     pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
         self.control_mut().scroll_by(f64::from(dy));
     }
 
-    /// Scroll the caret into view. The shared widget follows the caret after
-    /// every edit automatically, so this is a no-op kept for call-site parity.
     pub fn ensure_visible(&mut self, _text: &str) {}
 
     pub fn on_mouse_down(&mut self, p: Point, shift: bool, _text: &str) {
@@ -252,8 +213,6 @@ impl SourceEditor {
         }
     }
 
-    /// End of a click+drag. The anchor is kept so a following Shift+click still
-    /// extends from the original point.
     pub fn on_mouse_up(&mut self) {}
 
     /// Update the hover position (window space); `None` when the pointer leaves
@@ -309,11 +268,9 @@ impl SourceEditor {
         handled
     }
 
-    /// Paint the pane. The editor stands on the window ground: it fills
-    /// nothing of its own. The shared widget paints the gutter, line numbers,
-    /// current-line band, selection, highlighted text and caret, and the
-    /// compiler's diagnostics: a severity mark in the gutter and a squiggle
-    /// under each span, in the theme's status colours.
+    /// The shared widget paints the gutter, line numbers, current-line band,
+    /// selection, text and caret; this adds the diagnostics: a severity mark in the
+    /// gutter and a squiggle under each span, in the theme's status colours.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -361,18 +318,15 @@ impl SourceEditor {
         self.control().collect_damage_for(owner, regions);
     }
 
-    /// From the host's `mark_drawn`: the frame just drawn is on screen.
     pub fn mark_shown(&mut self) {
         self.control_mut().mark_shown();
     }
 
-    /// Where the caret is, in the window.
     #[cfg(test)]
     pub(crate) fn caret_rect(&self) -> Option<Rect> {
         ui::widget::Widget::ime_cursor_rect(self.control())
     }
 
-    /// Whether the hover card of a diagnostic shows over the window.
     pub fn shows_tooltip(&self) -> bool {
         self.control().shows_diagnostic_card()
     }
@@ -434,8 +388,6 @@ mod tests {
     use super::*;
     use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
 
-    /// A workspace whose one file holds `text`, and an editor showing it
-    /// that nothing edits.
     fn showing(text: &str) -> (AutoCommit, SourceEditor) {
         let mut workspace = Replica::<Workspace>::new();
         let id = Id::from_raw("file");

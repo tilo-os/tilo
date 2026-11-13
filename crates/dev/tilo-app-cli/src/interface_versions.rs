@@ -39,7 +39,6 @@ pub struct Mismatch {
     pub written: String,
     /// The version Tilo serves of it, `None` when it serves no such service.
     pub served: Option<u32>,
-    /// The exact fix.
     pub fix: String,
 }
 

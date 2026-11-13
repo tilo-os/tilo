@@ -123,7 +123,6 @@ fn bootstrap_child() {
         }
     }
 }
-/// Let `fds` survive into the child's exec (they are close-on-exec by default).
 fn inherit(command: &mut Command, fds: Vec<std::os::fd::RawFd>) {
     unsafe {
         command.pre_exec(move || {
@@ -149,7 +148,6 @@ fn invalid_inherited_connections_fail_closed() {
         "case malformed"
     );
 
-    // Aliased inherited descriptors are rejected before SDK ownership.
     {
         let (socket, _peer) = UnixStream::pair().unwrap();
         let fd = socket.as_raw_fd();
@@ -162,7 +160,6 @@ fn invalid_inherited_connections_fail_closed() {
         assert_eq!(output.status.code(), Some(21), "case aliased");
     }
 
-    // An inherited datagram is rejected as the wrong SDK transport.
     {
         let (socket, _peer) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let (stream, _stream_peer) = UnixStream::pair().unwrap();
@@ -213,7 +210,6 @@ fn invalid_inherited_connections_fail_closed() {
 }
 #[test]
 fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
-    // Explicit standalone bypasses host lookup.
     let output = child()
         .env("TILO_RUNTIME_STANDALONE", "1")
         .env("TILO_RUNTIME_BINARY", "/must-not-run")
@@ -225,7 +221,6 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
         "case explicit standalone"
     );
 
-    // Complete inherited connections take precedence over profile and binary.
     {
         let (a, _a_peer) = UnixStream::pair().unwrap();
         let (b, _b_peer) = UnixStream::pair().unwrap();
@@ -267,7 +262,6 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
 
 #[test]
 fn bootstrap_exec_keeps_arguments_and_hides_ancestor_descriptors() {
-    // Bootstrap exec preserves the original arguments and working directory.
     {
         let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -295,8 +289,6 @@ fn bootstrap_exec_keeps_arguments_and_hides_ancestor_descriptors() {
     }
 }
 
-/// Ancestor-owned descriptors are hidden even when bootstrap is skipped, and
-/// a standalone child ignores that metadata without mutating them.
 #[test]
 fn bootstrap_hides_ancestor_metadata_and_standalone_ignores_it() {
     let (a, _a_peer) = UnixStream::pair().unwrap();
@@ -318,7 +310,6 @@ fn bootstrap_hides_ancestor_metadata_and_standalone_ignores_it() {
         "case ancestor hidden"
     );
 
-    // A standalone child ignores ancestor metadata without mutating it.
     let output = child()
         .env(
             "TILO_RUNTIME_CONNECTION_OWNER_PID",
@@ -381,7 +372,6 @@ fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_
         )
     };
 
-    // Stock macOS or a foreign Linux desktop: the standalone runtime first.
     let foreign = run(&both, None, None);
     assert_eq!(
         chose(&foreign).as_deref(),
@@ -396,7 +386,6 @@ fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_
         "case GNOME: {}",
         why(&other_desktop)
     );
-    // Inside the Tilo desktop: the session's host.
     let tilo = run(&both, Some("tilo"), None);
     assert_eq!(
         chose(&tilo).as_deref(),
@@ -414,7 +403,6 @@ fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_
         String::from_utf8_lossy(&missing.stderr).contains("tilo-runtime-mcp"),
         "case tilo without its host"
     );
-    // The explicit binary overrides either choice.
     for desktop in [None, Some("tilo")] {
         let chosen = run(&both, desktop, Some(&explicit));
         assert_eq!(

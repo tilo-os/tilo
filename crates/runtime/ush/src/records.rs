@@ -117,7 +117,7 @@ impl Records {
     /// Returns [`RecordError::BadKey`] for a key that is not a record key.
     pub fn record_dir(&self, key: &str) -> Result<PathBuf, RecordError> {
         check_key(key)?;
-        DocStore::workspace_record_dir_at(&self.root, OWNER_APP_ID, &self.room, key)
+        DocStore::workspace_document_dir_at(&self.root, OWNER_APP_ID, &self.room, key)
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 
@@ -125,7 +125,7 @@ impl Records {
         check_key(key)?;
         std::fs::create_dir_all(&self.root).map_err(|e| RecordError::Store(e.to_string()))?;
         let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(self.root.clone()));
-        DocStore::shared(store, StorageKey::record(OWNER_APP_ID, &self.room, key))
+        DocStore::shared(store, StorageKey::document(OWNER_APP_ID, &self.room, key))
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 

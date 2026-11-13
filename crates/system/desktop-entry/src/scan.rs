@@ -1,18 +1,11 @@
-//! Finding every application entry installed on the host.
+//! Finding every application entry installed on the host. The search path is
+//! the XDG one: `$XDG_DATA_HOME/applications` first, then each
+//! `$XDG_DATA_DIRS` entry's `applications` in order; Flatpak's two export
+//! roots are appended when the environment did not already name them.
 //!
-//! The search path is the XDG one: `$XDG_DATA_HOME/applications` first, then each
-//! `$XDG_DATA_DIRS` entry's `applications` in order. Flatpak's two export roots are appended
-//! when the environment did not already name them — a desktop session usually puts them in
-//! `XDG_DATA_DIRS` itself, but a compositor started from a bare service manager may not have
-//! inherited that, and the apps are installed either way.
-//!
-//! ## Precedence
-//!
-//! Entries are keyed by desktop-file ID — the path relative to the `applications` directory
-//! with `/` folded to `-`. The **first** directory in the search order that provides an ID
-//! wins, and a later one is discarded — what makes a user's
-//! `~/.local/share/applications/foo.desktop` override the system's. A `Hidden=true` entry is
-//! the spec's tombstone; it wins the same way and then removes the ID entirely.
+//! Entries are keyed by desktop-file ID and the first directory in the search
+//! order that provides an ID wins, so a user's file overrides the system's. A
+//! `Hidden=true` tombstone wins the same way and then removes the ID entirely.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -20,56 +13,47 @@ use std::path::{Path, PathBuf};
 
 use crate::entry::{DesktopEntry, EntrySource, EntryType, parse};
 
-/// `XDG_CURRENT_DESKTOP` this desktop announces, and the name `OnlyShowIn` / `NotShowIn`
-/// are matched against.
+/// `XDG_CURRENT_DESKTOP` this desktop announces, and the name `OnlyShowIn` /
+/// `NotShowIn` are matched against.
 pub const CURRENT_DESKTOP: &str = "tilo";
-/// Desktops Tilo is compatible with for menu visibility. GNOME-only
-/// applications would otherwise vanish because we do not *be* GNOME. Menus only:
-/// autostart matches Tilo's own name, see [`crate::autostart::AUTOSTART_DESKTOPS`].
+/// Desktops Tilo is compatible with for menu visibility: GNOME-only
+/// applications would otherwise vanish because we do not *be* GNOME. Menus
+/// only; autostart matches Tilo's own name, see
+/// [`crate::autostart::AUTOSTART_DESKTOPS`].
 pub fn current_desktops() -> Vec<String> {
     vec![CURRENT_DESKTOP.to_string(), "GNOME".to_string()]
 }
 
-/// What a scan turned up, plus what it declined and why. The counters are not decoration:
-/// "the app I installed is not in the palette" has half a dozen legitimate causes
-/// (`NoDisplay`, an unresolved `TryExec`, a desktop filter, a tombstone), and reporting only
-/// the survivors couldn't distinguish any of them from a scanner bug.
+/// What a scan turned up, plus what it declined and why: "the app I installed
+/// is not in the palette" has half a dozen legitimate causes (`NoDisplay`, an
+/// unresolved `TryExec`, a desktop filter, a tombstone), and reporting only
+/// the survivors could not tell any of them from a scanner bug.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanStats {
-    /// `.desktop` files read.
     pub files_seen: usize,
-    /// Files that did not parse as a desktop entry at all.
     pub unparseable: usize,
-    /// Dropped because a higher-precedence directory already provided the same ID.
     pub shadowed: usize,
-    /// A differently-named desktop file described the same visible
-    /// application. Packaging aliases are common when an app moves between
-    /// distribution and Flatpak ownership; presenting both is not a useful
-    /// second application.
+    /// A differently-named desktop file described the same visible application.
+    /// Packaging aliases are common when an app moves between distribution and
+    /// Flatpak ownership; presenting both is not a useful second application.
     pub duplicate_aliases: usize,
-    /// Removed by a `Hidden=true` tombstone.
     pub tombstoned: usize,
-    /// `Type=` was not `Application`.
     pub not_an_application: usize,
-    /// `NoDisplay=true`.
     pub no_display: usize,
-    /// Excluded by `OnlyShowIn` / `NotShowIn`.
     pub other_desktop: usize,
-    /// `TryExec=` named a program that is not on this system.
     pub try_exec_missing: usize,
-    /// `Type=Application` with no `Exec=`, so nothing to run.
     pub no_exec: usize,
 }
 
-/// The result of one scan: the launchable entries, sorted by name, plus the accounting.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scan {
     pub entries: Vec<DesktopEntry>,
     pub stats: ScanStats,
-    /// The directories that were searched, in precedence order. Kept so a cache can stat them
-    /// for changes and a diagnostic can print them.
+    /// The directories that were searched, in precedence order, kept so a cache
+    /// can stat them for changes.
     pub dirs: Vec<PathBuf>,
-    /// The IDs a `Hidden=true` entry removed, sorted: what the person took off their apps.
+    /// The IDs a `Hidden=true` entry removed, sorted: what the person took off
+    /// their apps.
     pub hidden: Vec<String>,
 }
 
@@ -79,8 +63,8 @@ impl Scan {
     }
 }
 
-/// The `applications` directories to search, in precedence order. Reads the environment, so
-/// it reflects the session the compositor actually started in rather than a compiled-in guess.
+/// The `applications` directories to search, in precedence order, from the
+/// environment the compositor actually started in.
 pub fn application_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut push = |dir: PathBuf| {
@@ -95,32 +79,30 @@ pub fn application_dirs() -> Vec<PathBuf> {
     for base in tilo_paths::xdg::data_dirs() {
         push(base.join("applications"));
     }
-    // Flatpak's exports. Appended, not prepended: the dedup above keeps their real precedence if
-    // the session already listed them, and appending is correct otherwise — a hand-installed
-    // entry should override an export.
+    // Flatpak's exports, appended rather than prepended: the dedup keeps their
+    // real precedence if the session already listed them, and a hand-installed
+    // entry should override an export otherwise.
     if let Some(home) = tilo_paths::home() {
         push(home.join(".local/share/flatpak/exports/share/applications"));
     }
     push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
-    // What apps installed through the portal frontend's DynamicLauncher
-    // (web apps, shortcuts into an app), after the person confirmed each.
+    // What apps installed through the portal frontend's DynamicLauncher (web
+    // apps, shortcuts into an app), after the person confirmed each.
     if let Some(home) = tilo_paths::xdg::data_home() {
         push(home.join("xdg-desktop-portal/applications"));
     }
     dirs
 }
 
-/// Scan an explicit list of `applications` directories, in precedence order, filtering for
-/// `desktop`, and name each entry in the language `locales` names (see
-/// [`crate::locale::language_candidates`]; empty reads the unlocalised names). The
-/// directories are the caller's for the same reason: [`application_dirs`] answers the
-/// machine's, and a test drives real directories it built.
+/// Scan an explicit list of `applications` directories, in precedence order,
+/// filtering for `desktop`, naming each entry in the language `locales` names
+/// (empty reads the unlocalised names). A test drives real directories it
+/// built.
 pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String], locales: &[String]) -> Scan {
     let mut stats = ScanStats::default();
-    // id -> entry, first writer wins.
     let mut claimed: BTreeMap<String, DesktopEntry> = BTreeMap::new();
-    // IDs a tombstone has removed. Recorded separately so a later directory's file for the same
-    // ID stays suppressed.
+    // IDs a tombstone has removed, recorded so a later directory's file for the
+    // same ID stays suppressed.
     let mut tombstoned: Vec<String> = Vec::new();
 
     for dir in dirs {
@@ -140,8 +122,7 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String], locales: &[String]) -> Sc
             };
             let mut entry = entry;
             if let Some(downloaded) = entry.downloaded.as_mut() {
-                // The scan runs at startup and on its worker, never on the
-                // compositor's loop: this is where a missing file is noticed.
+                // The scan runs at startup and on its worker, never on the compositor's loop.
                 downloaded.present = std::fs::metadata(&downloaded.program).is_ok();
             }
             if entry.hidden {
@@ -182,9 +163,9 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String], locales: &[String]) -> Sc
             .position(|existing| desktop_entries_are_aliases(existing, &entry))
         {
             stats.duplicate_aliases = stats.duplicate_aliases.saturating_add(1);
-            // Where a host package and an identically identified Flatpak are
-            // both installed, retain the Flatpak. It has its own confinement,
-            // and this matches the host-app catalogue's existing preference.
+            // Where a host package and an identically identified Flatpak are both
+            // installed, keep the Flatpak: it has its own confinement, and the host-app
+            // catalogue prefers it too.
             if let Some(existing) = entries.get_mut(existing_index)
                 && entry_is_flatpak(&entry)
                 && !entry_is_flatpak(existing)
@@ -211,13 +192,12 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String], locales: &[String]) -> Sc
     }
 }
 
-/// Two separate desktop-file ids may be aliases, but name equality alone is
-/// far too broad ("Settings" and "Terminal" are common independent apps).
-/// The raw-command case is exact and source-agnostic.  A host/Flatpak pair
-/// with different launcher commands needs a stronger, stable identity: both
-/// files must declare the same `StartupWMClass`, and it must be exactly the
-/// Flatpak application id.  That is the freedesktop identity a compositor
-/// later uses to associate the mapped window with its launcher entry.
+/// Two desktop-file ids may be aliases, but name equality alone is far too
+/// broad ("Settings" and "Terminal" are common independent apps). The
+/// raw-command case is exact and source-agnostic; a host/Flatpak pair with
+/// different launcher commands needs a stable identity, so both files must
+/// declare the same `StartupWMClass`, and it must be exactly the Flatpak
+/// application id.
 fn desktop_entries_are_aliases(existing: &DesktopEntry, candidate: &DesktopEntry) -> bool {
     if !existing.name.eq_ignore_ascii_case(&candidate.name) {
         return false;
@@ -244,9 +224,10 @@ fn entry_is_flatpak(entry: &DesktopEntry) -> bool {
     matches!(entry.source, EntrySource::Flatpak { .. })
 }
 
-/// Every `.desktop` file under `dir`, with its desktop-file ID. The spec makes subdirectories
-/// part of the ID (`kde4/konsole.desktop` → `kde4-konsole`), so this walks rather than lists;
-/// depth is capped since it's the only thing depth buys and a symlink loop isn't worth the risk.
+/// Every `.desktop` file under `dir`, with its desktop-file ID. The spec makes
+/// subdirectories part of the ID (`kde4/konsole.desktop` → `kde4-konsole`), so
+/// this walks rather than lists; depth is capped since a symlink loop is not
+/// worth the risk.
 fn entry_files(dir: &Path) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     walk(dir, dir, 0, &mut out);
@@ -268,8 +249,8 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        // `metadata()` follows symlinks, which is what we want: Flatpak and distribution packaging
-        // both export entries as symlinks.
+        // `metadata()` follows symlinks, which is what we want: Flatpak and
+        // distribution packaging both export entries as symlinks.
         let is_dir = if file_type.is_symlink() {
             std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
         } else {
@@ -296,8 +277,6 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
     }
 }
 
-/// Whether `TryExec` names something runnable. An absolute path is checked directly; a bare
-/// name is looked up on `PATH`.
 pub fn program_exists(program: &str) -> bool {
     let program = program.trim();
     if program.is_empty() {
@@ -350,7 +329,6 @@ mod tests {
 
     #[test]
     fn scanned_ids_come_from_the_first_directory_and_tombstones_remove_them() {
-        // Phase `a_subdirectory_becomes_part_of_the_id`.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(tmp.path(), "kde4/konsole.desktop", &app("Konsole"));
@@ -358,9 +336,6 @@ mod tests {
             assert_eq!(scan.entries.len(), 1);
             assert_eq!(scan.entries[0].id, "kde4-konsole");
         }
-        // Phase `the_first_directory_to_provide_an_id_wins`.
-        // The whole point of the precedence order: a user's file replaces the system's, and the
-        // system's copy is not offered twice.
         {
             let user = tempfile::tempdir().unwrap();
             let system = tempfile::tempdir().unwrap();
@@ -380,7 +355,6 @@ mod tests {
             assert_eq!(scan.entries[0].name, "Mine");
             assert_eq!(scan.stats.shadowed, 1);
         }
-        // Phase `a_hidden_tombstone_removes_the_id_from_every_directory`.
         {
             let user = tempfile::tempdir().unwrap();
             let system = tempfile::tempdir().unwrap();
@@ -404,7 +378,6 @@ mod tests {
             assert_eq!(scan.stats.tombstoned, 2);
             assert_eq!(scan.hidden, ["so.tilo.notes", "x"]);
         }
-        // Phase `a_missing_directory_is_not_an_error`.
         {
             let scan = scan_dirs(
                 &[PathBuf::from("/nonexistent/tilo/applications")],
@@ -414,7 +387,6 @@ mod tests {
             assert!(scan.entries.is_empty());
             assert_eq!(scan.stats.files_seen, 0);
         }
-        // Phase `application_dirs_always_include_the_flatpak_exports`.
         {
             let dirs = application_dirs();
             assert!(
@@ -428,7 +400,6 @@ mod tests {
 
     #[test]
     fn scanned_rows_merge_by_stable_identity_but_keep_distinct_programs() {
-        // Phase `differently_named_files_for_the_same_application_are_one_row`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let body = "[Desktop Entry]\nType=Application\nName=Chat\n\
@@ -440,7 +411,6 @@ mod tests {
             assert_eq!(scan.entries.len(), 1, "aliases must not become two apps");
             assert_eq!(scan.stats.duplicate_aliases, 1);
         }
-        // Phase `host_and_flatpak_exports_with_the_same_stable_identity_are_one_row`.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(
@@ -465,7 +435,6 @@ mod tests {
                 EntrySource::Flatpak { .. }
             ));
         }
-        // Phase `same_name_host_and_flatpak_entries_without_a_shared_stable_identity_remain_distinct`.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(
@@ -486,7 +455,6 @@ mod tests {
             assert_eq!(scan.entries.len(), 2, "names alone must never merge apps");
             assert_eq!(scan.stats.duplicate_aliases, 0);
         }
-        // Phase `distinct_modes_of_one_program_remain_distinct_apps`.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(tmp.path(), "editor.desktop", &app("Editor"));
@@ -504,7 +472,6 @@ mod tests {
 
     #[test]
     fn scanned_entries_are_filtered_counted_sorted_and_labelled() {
-        // Phase `nodisplay_and_wrong_type_and_missing_exec_are_each_counted`.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(
@@ -531,7 +498,6 @@ mod tests {
             assert_eq!(scan.stats.no_exec, 1);
             assert_eq!(scan.stats.files_seen, 4);
         }
-        // Phase `entries_come_back_sorted_by_name`.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(tmp.path(), "z.desktop", &app("alpha"));
@@ -541,7 +507,6 @@ mod tests {
             let names: Vec<&str> = scan.entries.iter().map(|e| e.name.as_str()).collect();
             assert_eq!(names, vec!["alpha", "Mike", "Zulu"]);
         }
-        // Phase `a_flatpak_export_is_labelled_as_one`.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(
@@ -558,7 +523,6 @@ mod tests {
                 }
             );
         }
-        // Phase `try_exec_that_does_not_resolve_drops_the_entry`.
         {
             let tmp = tempfile::tempdir().unwrap();
             write(
@@ -579,9 +543,9 @@ mod tests {
         }
     }
 
-    /// What an entry is called is the caller's language, never the machine's:
-    /// the same directory reads as `Files` in an English session and `Dateien`
-    /// in a German one, whichever locale this test process runs in.
+    /// What an entry is called is the caller's language, never the machine's: the
+    /// same directory reads as `Files` in an English session and `Dateien` in a
+    /// German one, whichever locale this test process runs in.
     #[test]
     fn the_entries_are_named_in_the_language_the_caller_names() {
         let tmp = tempfile::tempdir().unwrap();

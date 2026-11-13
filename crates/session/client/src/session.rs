@@ -1367,21 +1367,24 @@ impl Task {
         });
     }
 
-    /// Say `frames` as object `sequence` of `workspace_id`'s presence track,
-    /// sealed under the workspace scope's keys by the plane itself.
+    /// Say `frames`, one burst, as one group of `workspace_id`'s presence
+    /// track, sealed under the workspace scope's keys by the plane itself.
     fn publish_presence(
         &mut self,
         workspace_id: u64,
         frames: Vec<collab_types::presence::Presence>,
     ) {
-        for frame in frames {
-            let Some(joined) = self.planes.joined_mut(workspace_id) else {
-                continue;
-            };
-            let sequence = joined.presence_seq.wrapping_add(1);
-            joined.presence_seq = sequence;
-            let _ = tilo_live::presence::say(&joined.plane, sequence, &frame);
-        }
+        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+            return;
+        };
+        let numbered: Vec<(u32, collab_types::presence::Presence)> = frames
+            .into_iter()
+            .map(|frame| {
+                joined.presence_seq = joined.presence_seq.wrapping_add(1);
+                (joined.presence_seq, frame)
+            })
+            .collect();
+        let _ = tilo_live::presence::say(&joined.plane, &numbered);
     }
 
     /// Apply one command while disconnected; what it publishes commits at once.

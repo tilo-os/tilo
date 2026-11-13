@@ -16,7 +16,6 @@
 
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
-use ui::headless::InspectionNode;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
@@ -37,18 +36,10 @@ fn settle(app: &mut TestApp<TlApp>) {
     }
 }
 
-fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
-    out.push(node);
-    for child in &node.children {
-        walk(child, out);
-    }
-}
-
 /// The rects of the widgets named `widget`, in tree order.
 fn rects_of(app: &mut TestApp<TlApp>, widget: &str) -> Vec<[f64; 4]> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == widget)
         .map(|node| node.rect)
@@ -68,8 +59,7 @@ fn menu_items(app: &mut TestApp<TlApp>) -> Vec<String> {
         }
     }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let mut out = Vec::new();
     for node in all.into_iter().filter(|node| node.widget == "ContextMenu") {
         if let Some(semantics) = &node.semantics
@@ -92,8 +82,7 @@ fn menu_item_bounds(app: &mut TestApp<TlApp>, name: &str) -> Option<ui::kurbo::R
         node.children.iter().find_map(|child| find(child, name))
     }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter()
         .filter(|node| node.widget == "ContextMenu")
         .find_map(|node| {
@@ -106,8 +95,7 @@ fn menu_item_bounds(app: &mut TestApp<TlApp>, name: &str) -> Option<ui::kurbo::R
 /// Every accessible name in the window, for a failure's message.
 fn all_names(app: &mut TestApp<TlApp>) -> Vec<String> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter()
         .filter_map(|node| node.semantics.as_ref().and_then(|a| a.name.clone()))
         .collect()
@@ -116,8 +104,7 @@ fn all_names(app: &mut TestApp<TlApp>) -> Vec<String> {
 /// Whether some text in the window reads `text`.
 fn shows(app: &mut TestApp<TlApp>, text: &str) -> bool {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter().any(|node| {
         node.semantics
             .as_ref()
@@ -135,8 +122,7 @@ fn last_message(app: &mut TestApp<TlApp>) -> [f64; 4] {
         return *rect;
     }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let names: Vec<String> = all.iter().map(|node| node.widget.clone()).collect();
     let said: Vec<String> = all
         .iter()
@@ -267,8 +253,7 @@ fn drawer_rows(app: &mut TestApp<TlApp>) -> Vec<String> {
         }
     }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let mut out = Vec::new();
     for node in all.into_iter().filter(|node| node.widget == "RichInput") {
         if let Some(access) = &node.semantics {
@@ -305,8 +290,7 @@ fn texts(access: &ui::a11y::AccessNode, out: &mut String) {
 /// Whether some node in the window says `text` in its name or value.
 fn reads(app: &mut TestApp<TlApp>, text: &str) -> bool {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter().any(|node| {
         node.semantics
             .as_ref()
@@ -317,8 +301,7 @@ fn reads(app: &mut TestApp<TlApp>, text: &str) -> bool {
 /// What the composer holds.
 fn draft(app: &mut TestApp<TlApp>) -> String {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter()
         .rev()
         .find(|node| node.widget == "RichInput")
@@ -332,7 +315,12 @@ fn draft(app: &mut TestApp<TlApp>) -> String {
 /// member.
 fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
     use ui::permissions::policy::{self, Role, Subject};
-    let me = app.permissions().standing().person.clone();
+    let me = app
+        .permissions()
+        .standing()
+        .person_id()
+        .unwrap_or_default()
+        .to_owned();
     let id = app.permissions().standing().workspace().to_owned();
     let mut policy = policy::WorkspacePolicy::new(&id, &me);
     policy.members.insert("u_mia".to_owned(), Role::Editor);
@@ -457,8 +445,7 @@ fn the_composers_drawer_offers_the_workspaces_people_and_writes_a_mention_that_i
     );
     let sent = {
         let snapshot = app.harness().inspection();
-        let mut all = Vec::new();
-        walk(&snapshot.root, &mut all);
+        let all = snapshot.root.nodes();
         all.iter()
             .rev()
             .find(|node| node.widget == "BlockEditor")

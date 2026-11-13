@@ -1,16 +1,10 @@
-//! Live repository backend, built on `git2`.
-//!
-//! Reads an on-disk repository into the render-friendly [`RepoModel`]:
-//! the working-tree status (staged / unstaged / untracked), per-file
-//! diffs, the commit history with ref decorations, and the branch / tag /
-//! stash / remote panels. The functions here are the only place that
-//! touch libgit2 — the rest of the app works purely off [`RepoModel`], so
-//! the headless screenshot path can substitute the bundled sample without
-//! a repository present.
-//!
-//! Everything is read-only and best-effort: a missing piece (no upstream,
-//! an unreadable object) is skipped rather than fatal, so a partially
-//! valid repo still renders.
+//! Live repository backend, built on `git2`. It reads an on-disk repository into
+//! the render-friendly [`RepoModel`] (working-tree status, per-file diffs, history
+//! with ref decorations, and the branch, tag, stash and remote panels), and this is
+//! the only place that touches libgit2 — the rest of the app works off
+//! [`RepoModel`], so the screenshot path can substitute the bundled sample. Reads
+//! are best-effort: a missing piece (no upstream, an unreadable object) is skipped
+//! rather than fatal.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,13 +21,11 @@ use crate::model::{
     RefLabel, Remote, RepoModel, Stash, Tag,
 };
 
-/// How many commits to walk for the history view. Bounded so a huge repo
-/// doesn't stall the first frame.
+/// How many commits the history view walks, so a huge repo does not stall the first frame.
 const HISTORY_LIMIT: usize = 400;
 
-/// Open the repository discovered from `path` (walks up to find `.git`)
-/// and read it into a full model plus a map of per-file diffs keyed by
-/// path. Returns `None` if no repository can be opened.
+/// Open the repository discovered from `path` (walking up to find `.git`) and read it into a model
+/// plus a map of per-file diffs keyed by path; `None` when no repository can be opened.
 pub fn load(path: &Path) -> Option<(RepoModel, DiffMap)> {
     let repo = Repository::discover(path).ok()?;
     let mut model = RepoModel::default();
@@ -89,8 +81,6 @@ fn read_head(repo: &Repository, model: &mut RepoModel) {
 }
 
 fn classify(status: Status) -> Option<(ChangeArea, ChangeKind)> {
-    // Prefer the staged view when both index and worktree changed; the
-    // unstaged delta surfaces separately via the worktree flags below.
     if status.contains(Status::CONFLICTED) {
         return Some((ChangeArea::Unstaged, ChangeKind::Conflicted));
     }
@@ -142,7 +132,6 @@ fn read_status(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
             continue;
         }
 
-        // A file can have both a staged and a worktree change; record each.
         if let Some((area, kind)) = classify(st) {
             model.staged.push(FileChange {
                 path: path.clone(),
@@ -169,8 +158,6 @@ fn read_status(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
         }
     }
 
-    // Build per-file diffs for the worktree (index→workdir) and the index
-    // (HEAD→index), and fold +/- counts back onto the list entries.
     collect_worktree_diffs(repo, model, diffs);
     collect_index_diffs(repo, model, diffs);
 }
@@ -197,10 +184,7 @@ fn collect_index_diffs(repo: &Repository, model: &mut RepoModel, diffs: &mut Dif
     fold_diff(&diff, model, diffs, true);
 }
 
-/// Render a `git2::Diff` to unified text per-file, parse it, store it, and
-/// fold +/- counts back onto the matching list entries.
 fn fold_diff(diff: &git2::Diff, model: &mut RepoModel, diffs: &mut DiffMap, staged: bool) {
-    // Accumulate raw unified text per new-path.
     let mut raw_by_path: HashMap<String, String> = HashMap::new();
     let _ = diff.print(DiffFormat::Patch, |delta, _hunk, line| {
         let path = delta
@@ -231,10 +215,8 @@ fn fold_diff(diff: &git2::Diff, model: &mut RepoModel, diffs: &mut DiffMap, stag
             }
         }
         let (adds, dels) = (fd.additions(), fd.deletions());
-        // Fold counts onto the list entry for the *matching* side only: the
-        // staged diff feeds the staged list, the worktree diff feeds the
-        // unstaged / untracked lists. A file present on both sides then keeps
-        // each side's own +/- counts rather than one clobbering the other.
+        // Fold counts onto the matching side only, so a file present on both sides keeps each
+        // side's own counts.
         let fold_into = |list: &mut Vec<FileChange>| -> bool {
             if let Some(fc) = list.iter_mut().find(|f| f.path == path) {
                 fc.additions = adds;
@@ -249,8 +231,8 @@ fn fold_diff(diff: &git2::Diff, model: &mut RepoModel, diffs: &mut DiffMap, stag
         } else if !fold_into(&mut model.unstaged) {
             fold_into(&mut model.untracked);
         }
-        // Store the diff under its side-specific key so the staged and
-        // worktree diffs of the same path never collide.
+        // Store the diff under its side-specific key, so the staged and worktree diffs of the same
+        // path never collide.
         diffs.insert(
             DiffKey {
                 staged,
@@ -277,13 +259,12 @@ fn find_delta(diff: &git2::Diff, path: &str) -> Option<Delta> {
 }
 
 fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) {
-    // Map oid -> ref labels so each commit row can show its decorations.
     let ref_map = ref_decorations(repo);
 
     let Ok(mut walk) = repo.revwalk() else { return };
     let _ = walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME);
     if walk.push_head().is_err() {
-        // No HEAD (empty repo) — also try every local branch tip.
+        // No HEAD (empty repo): also try every local branch tip.
         if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
             for b in branches.flatten() {
                 if let Some(oid) = b.0.get().target() {
@@ -292,7 +273,7 @@ fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) 
             }
         }
     }
-    // Include side branches so the graph shows lanes other than HEAD's.
+    // Include side branches, so the graph shows lanes other than HEAD's.
     if let Ok(branches) = repo.branches(None) {
         for b in branches.flatten() {
             if let Some(oid) = b.0.get().target() {
@@ -339,7 +320,6 @@ fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) 
 fn ref_decorations(repo: &Repository) -> HashMap<String, Vec<RefLabel>> {
     let mut map: HashMap<String, Vec<RefLabel>> = HashMap::new();
 
-    // HEAD pointer.
     if let Ok(head) = repo.head()
         && let Some(oid) = head.target()
     {
@@ -427,7 +407,6 @@ fn read_tags(repo: &Repository, model: &mut RepoModel) {
             .ok()
             .map(|o| short_id(&o.id().to_string()))
             .unwrap_or_default();
-        // Annotated-tag message, if any.
         let message = repo
             .revparse_single(&full)
             .ok()
@@ -442,8 +421,8 @@ fn read_tags(repo: &Repository, model: &mut RepoModel) {
 }
 
 fn read_stashes(repo: &Repository, model: &mut RepoModel) {
-    // `stash_foreach` needs a mutable repo; re-open to avoid threading the
-    // mutability through the read pipeline.
+    // `stash_foreach` needs a mutable repo; re-open to avoid threading mutability through the read
+    // pipeline.
     if let Ok(mut owned) = Repository::open(repo.path()) {
         let mut out: Vec<Stash> = Vec::new();
         let _ = owned.stash_foreach(|index, message, _oid| {
@@ -479,44 +458,30 @@ fn short_id(full: &str) -> String {
     full.chars().take(7).collect()
 }
 
-/// Coarse relative time string (e.g. "3 hr ago") against the current clock.
 fn relative_time(seconds: i64) -> String {
     ui::format::relative(ui::clock::local_now().timestamp().saturating_sub(seconds))
 }
 
-// =====================================================================
-// Write actions — these MUTATE the on-disk repository via libgit2.
-//
-// Every function opens (discovers) the repository fresh from `path`,
-// performs one real git operation, and returns a `Result`. The app calls
-// these from its event handlers and then re-runs [`load`] so the rendered
-// model reflects the actual post-operation repository state rather than a
-// hand-patched in-memory copy. None of these touch the render model.
-// =====================================================================
+// ----------------------------------- write actions ----------------------------------- These
+// mutate the on-disk repository: each opens the repository fresh, performs one git operation and
+// returns, and the app re-runs [`load`] afterwards, so the model reflects the repository rather
+// than a hand-patched copy.
 
-/// Open the repository discovered from `path`. Distinct from a plain
-/// `open` so a path inside a working tree (not the `.git` dir itself)
-/// resolves correctly, matching [`load`].
 fn open(path: &Path) -> anyhow::Result<Repository> {
     Repository::discover(path)
         .with_context(|| format!("no git repository at or above {}", path.display()))
 }
 
-/// Whether a real git repository can be discovered from `path`. Used by
-/// the app to render a graceful "not a repository" state.
 pub fn is_repo(path: &Path) -> bool {
     Repository::discover(path).is_ok()
 }
 
-/// Stage a single path: index-add for modified/new files, or stage a
-/// deletion when the file is gone from the working tree. Mirrors
-/// `git add <path>`.
+/// Stage a single path, or its deletion when it is gone from the working tree (`git add <path>`).
 pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let mut index = repo.index()?;
     let rel = Path::new(file);
-    // A dangling symlink is still a Git entry; checking its target would
-    // mistake it for a deletion.
+    // A dangling symlink is still a Git entry; checking its target would mistake it for a deletion.
     let wt_exists = repo
         .workdir()
         .is_some_and(|w| w.join(rel).symlink_metadata().is_ok());
@@ -525,7 +490,6 @@ pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
             .add_path(rel)
             .with_context(|| format!("git add {file}"))?;
     } else {
-        // Deletion: remove the path from the index so the staged delta shows.
         index
             .remove_path(rel)
             .with_context(|| format!("git add (deletion) {file}"))?;
@@ -534,9 +498,8 @@ pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Unstage a single path back to its HEAD state in the index, leaving the
-/// working tree untouched. Mirrors `git reset HEAD -- <path>` / `git
-/// restore --staged <path>`.
+/// Unstage a single path back to its HEAD state in the index, leaving the working tree untouched
+/// (`git reset HEAD -- <path>`).
 pub fn unstage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let rel = Path::new(file);
@@ -544,7 +507,6 @@ pub fn unstage_file(path: &Path, file: &str) -> anyhow::Result<()> {
         repo.reset_default(Some(head_commit.as_object()), [rel])
             .with_context(|| format!("git reset HEAD -- {file}"))?;
     } else {
-        // No commits yet: unstaging means removing it from the index.
         let mut index = repo.index()?;
         let _ = index.remove_path(rel);
         index.write()?;
@@ -552,26 +514,24 @@ pub fn unstage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Stage every change (tracked modifications, deletions, and untracked
-/// files). Mirrors `git add -A`.
+/// Stage every change: tracked modifications, deletions and untracked files (`git add -A`).
 pub fn stage_all(path: &Path) -> anyhow::Result<()> {
     let repo = open(path)?;
     let mut index = repo.index()?;
     index.add_all(["*"], IndexAddOption::DEFAULT, None)?;
-    // add_all does not record deletions of tracked files; update_all does.
+    // `add_all` does not record deletions of tracked files; `update_all` does.
     index.update_all(["*"], None)?;
     index.write()?;
     Ok(())
 }
 
-/// Unstage every staged change back to HEAD. Mirrors `git reset HEAD`.
+/// Unstage every staged change back to HEAD (`git reset HEAD`).
 pub fn unstage_all(path: &Path) -> anyhow::Result<()> {
     let repo = open(path)?;
     if let Some(head_commit) = repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
         repo.reset(head_commit.as_object(), ResetType::Mixed, None)
             .context("git reset HEAD")?;
     } else {
-        // Empty repo: clear the index entirely.
         let mut index = repo.index()?;
         index.clear()?;
         index.write()?;
@@ -579,22 +539,16 @@ pub fn unstage_all(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Stage or unstage a single hunk of a file, the per-hunk equivalent of
-/// `git add -p` / `git restore --staged -p`. When `unstage` is false the
-/// hunk is applied from the working-tree diff into the index; when true,
-/// the reverse of the index-vs-HEAD hunk is applied to the index.
-///
-/// `hunk_index` is the 0-based position of the hunk within the file's diff
-/// in the relevant direction (worktree diff for staging, index diff for
-/// unstaging) — the same ordering the UI assigns to its hunk buttons.
+/// Stage or unstage a single hunk (`git add -p` / `git restore --staged -p`). `hunk_index` is the
+/// 0-based position within the file's diff in the relevant direction, the same ordering the UI
+/// assigns to its hunk buttons.
 pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> anyhow::Result<()> {
     use std::cell::Cell;
     let repo = open(path)?;
     let rel = Path::new(file);
 
-    // An untracked file has no index base for libgit2's `apply` to patch
-    // against, so a per-hunk stage would fail. A brand-new file is a single
-    // whole-file addition anyway, so staging any of its hunks stages the file.
+    // An untracked file has no index base to patch against, and a brand-new file is one whole-file
+    // addition anyway, so staging any of its hunks stages the file.
     if !unstage {
         let st = repo.status_file(rel).unwrap_or_else(|_| Status::empty());
         if st.contains(Status::WT_NEW) && !st.contains(Status::INDEX_NEW) {
@@ -611,8 +565,8 @@ pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> 
     opts.pathspec(file).context_lines(3);
 
     let (diff, location, reverse) = if unstage {
-        // Index vs HEAD; reverse the hunk so applying it to the index undoes
-        // the staged change for that hunk only.
+        // Index against HEAD; reverse the hunk so applying it to the index undoes that hunk's
+        // staged change only.
         let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
         opts.reverse(true);
         let diff = repo
@@ -627,15 +581,15 @@ pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> 
         (diff, ApplyLocation::Index, false)
     };
 
-    // Count this file's hunks in delta order so we can match the UI index,
-    // then apply only the selected one. `Cell`s let the callbacks hold shared
-    // borrows so we can read the outcome after `apply` returns.
+    // Count this file's hunks in delta order to match the UI index, then apply only the selected
+    // one. `Cell`s let the callbacks share borrows, so the outcome is readable after `apply`
+    // returns.
     let seen = Cell::new(0usize);
     let applied = Cell::new(false);
     let mut apply_opts = ApplyOptions::new();
     apply_opts.hunk_callback(|hunk| {
-        // git2 invokes this per hunk of every (already-filtered) delta; we
-        // only let the target hunk through. Hunks arrive in file order.
+        // git2 invokes this per hunk of every already-filtered delta, in file order; only the
+        // target hunk is let through.
         let n = seen.get();
         let is_target = n == hunk_index;
         if is_target {
@@ -645,7 +599,7 @@ pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> 
         let _ = hunk;
         is_target
     });
-    // Restrict to our file so hunk ordering matches the single-file diff.
+    // Restrict to our file, so hunk ordering matches the single-file diff.
     apply_opts.delta_callback(move |delta| {
         delta.is_some_and(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
     });
@@ -664,23 +618,18 @@ pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> 
     Ok(())
 }
 
-/// Discard a file's *worktree* changes. For a tracked file this restores the
-/// working-tree copy from the index (`git restore <file>`), dropping unstaged
-/// edits while leaving anything already staged in the index intact; when
-/// nothing is staged the index equals HEAD, so the file returns to its
-/// committed state. For an untracked file it deletes the file from disk.
-/// Mirrors a GUI "Discard changes" on a changed row. Destructive — the caller
-/// is expected to confirm intent.
+/// Discard a file's worktree changes: a tracked file is restored from the index (`git restore
+/// <file>`), dropping unstaged edits while staged ones stay, and an untracked file is deleted from
+/// disk. Destructive; the caller confirms intent.
 ///
 /// # Errors
 ///
-/// Returns an error if the repository cannot be opened or if the file cannot be discarded.
+/// When the repository cannot be opened or the file cannot be discarded.
 pub fn discard_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let rel = Path::new(file);
     let st = repo.status_file(rel).unwrap_or_else(|_| Status::empty());
     if st.contains(Status::WT_NEW) && !st.contains(Status::INDEX_NEW) {
-        // Untracked: remove it from the working tree.
         if let Some(wd) = repo.workdir() {
             let full = wd.join(rel);
             if full.symlink_metadata().is_ok() {
@@ -689,8 +638,6 @@ pub fn discard_file(path: &Path, file: &str) -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    // Tracked: overwrite the working-tree copy from the index, discarding the
-    // unstaged edits (and recreating the file if it was deleted in the tree).
     let mut co = git2::build::CheckoutBuilder::new();
     co.path(rel).force();
     repo.checkout_index(None, Some(&mut co))
@@ -698,18 +645,15 @@ pub fn discard_file(path: &Path, file: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Discard a single hunk of a file's *worktree* changes, reverting just that
-/// hunk in the working tree (the discard direction of `git checkout -p`).
-/// `hunk_index` is the 0-based hunk position within the file's worktree diff,
-/// the same ordering the UI assigns to its hunk buttons. Destructive.
+/// Discard a single hunk of a file's worktree changes (`git checkout -p`, discard direction),
+/// `hunk_index` counting in the file's worktree diff. Destructive.
 pub fn discard_hunk(path: &Path, file: &str, hunk_index: usize) -> anyhow::Result<()> {
     use std::cell::Cell;
     let repo = open(path)?;
     let rel = Path::new(file);
 
-    // Reverse the index→workdir diff so applying a hunk to the working tree
-    // undoes that hunk's edit there. Hunks stay in top-to-bottom file order,
-    // matching the forward diff the UI displays.
+    // Reverse the index→workdir diff so applying a hunk to the working tree undoes that hunk's
+    // edit; hunks keep top-to-bottom order, matching the diff the UI shows.
     let mut opts = DiffOptions::new();
     opts.pathspec(file).context_lines(3).reverse(true);
     let diff = repo
@@ -739,11 +683,9 @@ pub fn discard_hunk(path: &Path, file: &str, hunk_index: usize) -> anyhow::Resul
     Ok(())
 }
 
-/// Create a commit from the current index with `message`, parented on the
-/// current HEAD (or as the root commit if the repo has none). The author
-/// and committer are read from the repository's signature (git config
-/// `user.name` / `user.email`); a missing identity is an error, matching
-/// `git commit`. Returns the new commit's short id. Mirrors `git commit`.
+/// Commit the current index with `message`, parented on HEAD or as the root commit, with the author
+/// from the repository's signature (a missing identity is an error, as in `git commit`). Returns
+/// the short id.
 pub fn commit(path: &Path, message: &str) -> anyhow::Result<String> {
     if message.trim().is_empty() {
         bail!("empty commit message");
@@ -769,9 +711,8 @@ pub fn commit(path: &Path, message: &str) -> anyhow::Result<String> {
     Ok(short_id(&oid.to_string()))
 }
 
-/// Check out an existing local branch and point HEAD at it. Mirrors `git
-/// checkout <branch>`. The working tree and index are updated to the
-/// branch tip (safe checkout — fails on conflicting local changes).
+/// Check out an existing local branch and point HEAD at it, updating the tree and index (safe
+/// checkout: it fails on conflicting local changes).
 pub fn checkout_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let (object, reference) = repo
@@ -793,21 +734,15 @@ pub fn checkout_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What to do with uncommitted work when a branch is checked out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckoutPlan {
-    /// Take the edits along: git's own behaviour when nothing conflicts.
     Carry,
-    /// Park them on the stash first, so the working tree is clean.
     Stash,
 }
 
-/// Switch branches, deciding what becomes of uncommitted work *before* the
-/// tree is touched.
-///
-/// [`CheckoutPlan::Stash`] parks the changes on the stash and reports its
-/// short id; if the checkout then fails, they are put back, so a failed
-/// switch never leaves the person's edits in neither place.
+/// Switch branches, deciding what becomes of uncommitted work before the tree is touched.
+/// [`CheckoutPlan::Stash`] parks the changes and reports the stash's short id; if the checkout then
+/// fails they are put back.
 pub fn checkout_branch_planned(
     path: &Path,
     name: &str,
@@ -821,8 +756,8 @@ pub fn checkout_branch_planned(
         CheckoutPlan::Stash => {
             let stashed = stash_save(path, &format!("before switching to {name}"))?;
             if let Err(error) = checkout_branch(path, name) {
-                // Put the work back where it was: a switch that failed must
-                // not also have hidden the edits.
+                // Put the work back where it was: a switch that failed must not also have hidden
+                // the edits.
                 let _ = stash_apply(path, 0);
                 return Err(error.context("the uncommitted changes were put back"));
             }
@@ -831,9 +766,7 @@ pub fn checkout_branch_planned(
     }
 }
 
-/// Create a new local branch at HEAD (or at `start_point` if given) and,
-/// when `checkout` is true, switch to it. Mirrors `git branch <name>` /
-/// `git checkout -b <name>`.
+/// Create a local branch at HEAD or at `start_point`, and switch to it when `checkout` is set.
 pub fn create_branch(
     path: &Path,
     name: &str,
@@ -862,9 +795,8 @@ pub fn create_branch(
     Ok(())
 }
 
-/// Delete a local branch. Refuses to delete the currently checked-out
-/// branch. Mirrors `git branch -d <name>` (force-deletes the ref like
-/// `-D`, since the GUI confirms intent).
+/// Delete a local branch, refusing the checked-out one; the ref is deleted even when its commits
+/// are unmerged, since the GUI confirmed intent.
 pub fn delete_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     if let Ok(head) = repo.head()
@@ -881,28 +813,21 @@ pub fn delete_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Which version of a conflicted file to keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictSide {
-    /// Our side of the merge (index stage 2).
     Ours,
-    /// Their side (index stage 3).
     Theirs,
 }
 
-/// What each side of a conflicted file brings, so the choice can name what
-/// it costs before it is made: the lines each side has that the other does
-/// not. Keeping one side discards the other's.
+/// What each side of a conflicted file brings, so the choice can name what it costs before it is
+/// made.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConflictCost {
-    /// Lines only our side has: what keeping *theirs* discards.
     pub ours: usize,
-    /// Lines only their side has: what keeping *ours* discards.
     pub theirs: usize,
 }
 
 impl ConflictCost {
-    /// The lines lost by keeping `side`.
     #[must_use]
     pub const fn discards(self, side: ConflictSide) -> usize {
         match side {
@@ -912,8 +837,7 @@ impl ConflictCost {
     }
 }
 
-/// What keeping each side of `file` would discard: the lines of the side
-/// that loses.
+/// What keeping each side of `file` would discard: the lines of the side that loses.
 pub fn conflict_cost(path: &Path, file: &str) -> anyhow::Result<ConflictCost> {
     let repo = open(path)?;
     let index = repo.index()?;
@@ -931,9 +855,7 @@ pub fn conflict_cost(path: &Path, file: &str) -> anyhow::Result<ConflictCost> {
     cost_between(&repo, file, &ours, &theirs)
 }
 
-/// The lines each of two versions has that the other does not, as git's own
-/// diff counts them: ours → theirs adds what only theirs has, and removes
-/// what only ours has.
+/// The lines each of two versions has that the other does not, as git's own diff counts them.
 fn cost_between(
     repo: &Repository,
     file: &str,
@@ -944,8 +866,7 @@ fn cost_between(
     let new = repo.find_blob(repo.blob(theirs)?)?;
     let mut opts = DiffOptions::new();
     opts.context_lines(0);
-    // A line the diff adds is one only their side has; a line it removes is
-    // one only ours has.
+    // A line the diff adds is one only their side has; a line it removes is one only ours has.
     let mut cost = ConflictCost::default();
     let mut count = |_delta: git2::DiffDelta<'_>,
                      _hunk: Option<git2::DiffHunk<'_>>,
@@ -971,10 +892,9 @@ fn cost_between(
     Ok(cost)
 }
 
-/// Resolve a conflicted file by keeping one side: the chosen stage's
-/// content is written to the working tree and staged, which clears the
-/// file's conflict. The other side is discarded — the merge is still in
-/// progress, so its `MERGE_HEAD` keeps the history that produced both.
+/// Resolve a conflicted file by keeping one side: the chosen stage is written to the working tree
+/// and staged, which clears the conflict. The other side is discarded, and `MERGE_HEAD` keeps the
+/// history that produced both.
 pub fn resolve_conflict(path: &Path, file: &str, side: ConflictSide) -> anyhow::Result<()> {
     let repo = open(path)?;
     let mut index = repo.index()?;
@@ -998,8 +918,8 @@ pub fn resolve_conflict(path: &Path, file: &str, side: ConflictSide) -> anyhow::
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&full, blob.content()).with_context(|| format!("write {file}"))?;
-    // Adding the path stages the resolved content and drops the conflict's
-    // stage entries, which is what "resolved" means to git.
+    // Adding the path stages the resolved content and drops the conflict's stage entries, which is
+    // what "resolved" means to git.
     index
         .add_path(Path::new(file))
         .with_context(|| format!("stage the resolved {file}"))?;
@@ -1007,8 +927,8 @@ pub fn resolve_conflict(path: &Path, file: &str, side: ConflictSide) -> anyhow::
     Ok(())
 }
 
-/// The files `commit` changed against its first parent (the empty tree for a
-/// root commit), each with its added and removed line counts.
+/// The files `commit` changed against its first parent (the empty tree for a root commit), with
+/// their line counts.
 pub fn commit_files(path: &Path, commit: &str) -> anyhow::Result<Vec<FileChange>> {
     let repo = open(path)?;
     let commit = repo
@@ -1026,7 +946,6 @@ pub fn commit_files(path: &Path, commit: &str) -> anyhow::Result<Vec<FileChange>
     Ok(files_of(&diff, &repo))
 }
 
-/// One file's diff in `commit`, against the commit's first parent.
 pub fn commit_file_diff(path: &Path, commit: &str, file: &str) -> anyhow::Result<FileDiff> {
     let repo = open(path)?;
     let commit = repo
@@ -1066,7 +985,6 @@ pub fn commit_file_diff(path: &Path, commit: &str, file: &str) -> anyhow::Result
     Ok(fd)
 }
 
-/// The changed files of `diff`, with their line counts.
 fn files_of(diff: &git2::Diff, repo: &Repository) -> Vec<FileChange> {
     let mut files = Vec::new();
     for (index, delta) in diff.deltas().enumerate() {
@@ -1108,9 +1026,8 @@ fn files_of(diff: &git2::Diff, repo: &Repository) -> Vec<FileChange> {
     files
 }
 
-/// Fetch refs from a remote (default `origin`, else the first configured
-/// remote). Mirrors `git fetch`. Best-effort credentials: SSH agent and
-/// default credential helpers are tried. Returns the remote name fetched.
+/// Fetch refs from a remote (default `origin`, else the first configured), best-effort through the
+/// SSH agent and default credential helpers. Returns the remote name fetched.
 pub fn fetch(path: &Path, remote_name: Option<&str>) -> anyhow::Result<String> {
     let repo = open(path)?;
     let name = resolve_remote(&repo, remote_name)?;
@@ -1132,9 +1049,8 @@ pub fn fetch(path: &Path, remote_name: Option<&str>) -> anyhow::Result<String> {
     Ok(name)
 }
 
-/// Pull = fetch then fast-forward the current branch to its upstream when
-/// possible. A non-fast-forward divergence is reported rather than
-/// silently merging (the GUI surfaces it). Mirrors `git pull --ff-only`.
+/// Fetch, then fast-forward the current branch to its upstream when possible; a divergence is
+/// reported rather than silently merged (`git pull --ff-only`).
 pub fn pull(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     let name = fetch(path, remote_name)?;
     let repo = open(path)?;
@@ -1160,8 +1076,8 @@ pub fn pull(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     if analysis.is_fast_forward() {
         let refname = format!("refs/heads/{branch_shorthand}");
         let mut reference = repo.find_reference(&refname)?;
-        // Check out against the old HEAD before advancing it: a conflict must
-        // leave both the user's edits and the branch tip untouched.
+        // Check out against the old HEAD before advancing it: a conflict must leave both the edits
+        // and the branch tip untouched.
         let target = repo.find_object(upstream_oid, None)?;
         repo.checkout_tree(&target, Some(git2::build::CheckoutBuilder::new().safe()))
             .context("cannot pull over local changes")?;
@@ -1173,8 +1089,7 @@ pub fn pull(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-/// Push the current branch to its remote. Mirrors `git push`. Pushes the
-/// branch to a like-named branch on the resolved remote.
+/// Push the current branch to a like-named branch on the resolved remote.
 pub fn push(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     let repo = open(path)?;
     let head = repo.head().context("no HEAD to push")?;
@@ -1202,8 +1117,7 @@ pub fn push(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Apply (without dropping) a stash entry by index. Mirrors `git stash
-/// apply stash@{index}`.
+/// Apply a stash entry without dropping it (`git stash apply stash@{index}`).
 pub fn stash_apply(path: &Path, index: usize) -> anyhow::Result<()> {
     let mut repo = open(path)?;
     repo.stash_apply(index, None)
@@ -1211,8 +1125,8 @@ pub fn stash_apply(path: &Path, index: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Push the working-tree + index changes onto the stash stack. Mirrors
-/// `git stash push`. Returns the new stash's oid as a short id.
+/// Push the working-tree and index changes onto the stash (`git stash push`); returns the new
+/// stash's short id.
 pub fn stash_save(path: &Path, message: &str) -> anyhow::Result<String> {
     let mut repo = open(path)?;
     let sig = repo
@@ -1229,8 +1143,7 @@ pub fn stash_save(path: &Path, message: &str) -> anyhow::Result<String> {
     Ok(short_id(&oid.to_string()))
 }
 
-/// Resolve a remote name: the caller's choice, else `origin`, else the
-/// first configured remote, else an error.
+/// The caller's remote, else `origin`, else the first configured remote, else an error.
 fn resolve_remote(repo: &Repository, want: Option<&str>) -> anyhow::Result<String> {
     let names = repo.remotes()?;
     let all: Vec<String> = names
@@ -1291,30 +1204,26 @@ fn credentials(
     }
 }
 
-/// Convenience used by tests and callers that already hold a path: the
-/// repository's workdir as an owned path, or the discovered git dir's
-/// parent when bare. Returns `None` when no repo is reachable.
+/// Tests and callers that hold a path: the repository's workdir, or the discovered git dir's parent
+/// when bare; `None` when no repository is reachable.
 pub fn workdir(path: &Path) -> Option<PathBuf> {
     let repo = Repository::discover(path).ok()?;
     repo.workdir().map(std::path::Path::to_path_buf)
 }
 
-/// Mark a path as an object kind for callers that want to validate a tree
-/// entry exists (used in tests to assert a commit's tree contains a file).
 pub fn tree_has_path(path: &Path, rev: &str, file: &str) -> anyhow::Result<bool> {
     let repo = open(path)?;
     let obj = repo.revparse_single(rev)?;
     let tree = obj.peel_to_tree()?;
     let found = tree.get_path(Path::new(file)).is_ok();
-    // Ensure we only report committed blobs, not directories.
     if found && let Ok(entry) = tree.get_path(Path::new(file)) {
         return Ok(entry.kind() == Some(ObjectType::Blob));
     }
     Ok(false)
 }
 
-/// Read all working directories, failing if any registered directory cannot be read.
-/// The main checkout is included even when called from a linked worktree.
+/// Every working directory, failing when a registered one cannot be read; the main checkout is
+/// included even when called from a linked worktree.
 pub fn list_worktrees(path: &Path) -> anyhow::Result<Vec<crate::model::Worktree>> {
     let current = Repository::discover(path)?;
     let repo = Repository::open(current.commondir())?;
@@ -1369,8 +1278,8 @@ pub fn list_worktrees(path: &Path) -> anyhow::Result<Vec<crate::model::Worktree>
     Ok(rows)
 }
 
-/// Create a new branch and linked checkout at an explicitly chosen revision.
-/// Never overwrite a branch or an existing path, and never switch the caller's HEAD.
+/// Create a branch and a linked checkout at a chosen revision: never overwriting a branch or an
+/// existing path, and never switching the caller's HEAD.
 pub fn create_worktree(
     path: &Path,
     destination: &ui::tilo_resource::AbsolutePath,

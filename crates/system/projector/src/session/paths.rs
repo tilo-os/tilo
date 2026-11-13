@@ -1,8 +1,5 @@
 //! The projection runtime directory and the media files a session keeps in
 //! it: the compositor's video socket, the HLS playlist and its segments.
-//!
-//! Session state (readiness, errors, stop requests, the capture profile)
-//! travels as control-socket events, never as files here.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -40,7 +37,6 @@ impl SessionPaths {
         })
     }
 
-    /// Removes the previous session's media files. The control socket stays.
     pub(crate) fn clear(&self) {
         for path in [&self.video_socket, &self.playlist] {
             let _ = fs::remove_file(path);

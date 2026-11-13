@@ -1,8 +1,8 @@
-//! Production account handoff in a private mount namespace and disposable chroot.
-//! Requires root (or passwordless sudo), mount namespaces and a disk-backed
-//! TMPDIR, which the ordinary test sandbox never gives, so it is ignored there
-//! and the `sandbox-host-ids` check runs it as root in a micro-VM. Missing
-//! isolation fails the test; this is not a VM installation or boot test.
+//! Production account handoff in a private mount namespace and disposable
+//! chroot. Requires root (or passwordless sudo), mount namespaces and a
+//! disk-backed TMPDIR, so the ordinary test sandbox ignores it and the
+//! `sandbox-host-ids` check runs it as root in a micro-VM; missing isolation
+//! fails the test.
 #[cfg(test)]
 mod tests {
     use account_custody::portable::{self, PortableBinding};
@@ -152,8 +152,8 @@ mod tests {
             let mut child = command
                 .spawn_locked()
                 .expect("execute production helper in chroot");
-            // A helper that refuses before reading closes its input: its
-            // status and stderr below say why, not the broken pipe.
+            // A helper that refuses before reading closes its input: its status and stderr
+            // below say why, not the broken pipe.
             if let Err(error) = child.stdin.take().unwrap().write_all(frame) {
                 assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
             }
@@ -251,8 +251,8 @@ mod tests {
         }
         if std::env::var_os(CHILD).is_none() {
             let scratch = std::env::var_os("TMPDIR").expect("disk-backed TMPDIR is required");
-            // Already root (the micro-VM), unshare directly; otherwise
-            // through passwordless sudo.
+            // Already root (the micro-VM), unshare directly; otherwise through passwordless
+            // sudo.
             let root = rustix::process::geteuid().is_root();
             let mut command = Command::new(if root { "unshare" } else { "sudo" });
             if !root {
@@ -321,8 +321,8 @@ mod tests {
     }
 
     fn verify_handoff(fixture: &Fixture, source: &Path, frame: &[u8]) {
-        // The source is deliberately writable by the destination UID: a custody
-        // alias regression must be caught by the guard, not by Unix permissions.
+        // The source is deliberately writable by the destination UID: a custody alias
+        // regression must be caught by the guard, not by Unix permissions.
         checked(Command::new("chown").args(["-R", "1000:1000"]).arg(source));
         let before = snapshot(source);
         fixture.run(

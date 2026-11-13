@@ -886,7 +886,7 @@ fn bot_standing(
             Rule::new(settle, KindSet::ALL, Answer::Allow),
         ]
     }));
-    let grants = rules
+    let grants: Vec<Grant> = rules
         .into_iter()
         .enumerate()
         .map(|(index, rule)| {
@@ -900,7 +900,10 @@ fn bot_standing(
             )
         })
         .collect();
-    Standing::person(WorkspacePolicy::new(workspace, installer), installer).bounded_by(bot, grants)
+    Standing::person(WorkspacePolicy::new(workspace, installer), installer).acting_as(
+        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(installation)),
+        grants,
+    )
 }
 
 /// What changed in the workspace's membership from `before` to `after`, as

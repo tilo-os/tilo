@@ -11,10 +11,9 @@ pub struct ResourceKind(String);
 impl ResourceKind {
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::InvalidResource`] if `ext` is empty
-    /// (after trimming and stripping a leading `.`), longer than 64
-    /// characters, or contains anything but letters, digits, `+`, `-` or
-    /// `_`.
+    /// [`DefaultAppError::InvalidResource`] for an empty extension, one over 64
+    /// characters, or one with characters other than letters, digits, `+`, `-`
+    /// or `_`.
     pub fn extension(ext: &str) -> Result<Self, DefaultAppError> {
         let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
         if ext.is_empty()
@@ -30,10 +29,8 @@ impl ResourceKind {
 
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::InvalidResource`] if `mime` has no `/`,
-    /// is longer than 255 characters, either side of the `/` is empty,
-    /// contains an invalid MIME token character, contains a second `/`, or
-    /// either side is a bare `*` wildcard.
+    /// [`DefaultAppError::InvalidResource`] unless `mime` is one non-wildcard
+    /// type whose sides hold valid token characters.
     pub fn mime(mime: &str) -> Result<Self, DefaultAppError> {
         let mime = mime.trim().to_ascii_lowercase();
         let Some((top, subtype)) = mime.split_once('/') else {
@@ -53,11 +50,9 @@ impl ResourceKind {
 
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::InvalidResource`] if `scheme` is empty
-    /// (after trimming and stripping a trailing `:`), longer than 32
-    /// characters, does not start with a letter, contains anything but
-    /// letters, digits, `+`, `-` or `.`, or names a reserved scheme
-    /// (`file`, `data`, `javascript`).
+    /// [`DefaultAppError::InvalidResource`] unless `scheme` is one registered
+    /// name a second `:`-free remainder can follow, not `file`, `data` or
+    /// `javascript`.
     pub fn scheme(scheme: &str) -> Result<Self, DefaultAppError> {
         let scheme = scheme.trim().trim_end_matches(':').to_ascii_lowercase();
         let mut chars = scheme.chars();
@@ -110,7 +105,6 @@ impl ResourceKind {
             .or_else(|| self.scheme_name().map(|s| format!("x-scheme-handler/{s}")))
     }
 
-    /// The inverse of [`Self::mimeapps_type`]: a `MimeType=` entry as a resource.
     pub fn from_mimeapps_type(value: &str) -> Option<Self> {
         let value = value.trim();
         match value.to_ascii_lowercase().strip_prefix("x-scheme-handler/") {
@@ -149,9 +143,9 @@ pub struct AppCandidate {
     pub package_id: String,
     pub display_name: String,
     pub resources: BTreeSet<ResourceKind>,
-    /// Picked for these resources on purpose rather than opened by default
-    /// (an editor that imports video): without an explicit choice, another
-    /// app claiming the resource wins. The manifest's `[providers].secondary`.
+    /// Picked for these resources on purpose rather than opened by default (an
+    /// editor that imports video): without an explicit choice, another app claiming
+    /// the resource wins. The manifest's `[providers].secondary`.
     pub secondary: bool,
 }
 
@@ -166,18 +160,16 @@ impl AppCandidate {
     }
 }
 
-/// The administrator's choice for a workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "app")]
 pub enum WorkspaceDefaultPolicy {
-    /// No workspace preference: resolve through each person's personal default.
     #[default]
     FollowPersonal,
     App(String),
 }
 
-/// A person's choice inside one workspace. `FollowWorkspace` is the absent/default
-/// state: it follows an admin app when set and otherwise reaches personal defaults.
+/// A person's choice inside one workspace. `FollowWorkspace` is the absent state:
+/// it follows an admin app when set and otherwise reaches personal defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "app")]
 pub enum UserWorkspaceChoice {
@@ -187,7 +179,6 @@ pub enum UserWorkspaceChoice {
     App(String),
 }
 
-/// The settings section holding a person's [`PersonalDefaults`].
 pub const PERSONAL_DEFAULTS_SECTION: &str = "default_apps";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,8 +242,8 @@ impl<'a> DefaultAppResolver<'a> {
         }
     }
 
-    /// Consult the host's `mimeapps.list` chain when choosing among host applications that
-    /// no personal or workspace choice names.
+    /// Consult the host's `mimeapps.list` chain when choosing among host
+    /// applications that no personal or workspace choice names.
     #[must_use]
     pub fn with_system_defaults(mut self, chain: &'a crate::mimeapps::MimeAppsChain) -> Self {
         self.system_defaults = Some(chain);
@@ -261,10 +252,10 @@ impl<'a> DefaultAppResolver<'a> {
 
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::InvalidPackage`] if `package_id` fails
-    /// [`validate_package_id`], [`DefaultAppError::NotInstalled`] if it
-    /// names no candidate, or [`DefaultAppError::DoesNotHandle`] if the
-    /// candidate does not claim `resource`.
+    /// [`DefaultAppError::InvalidPackage`] if `package_id` fails
+    /// [`validate_package_id`], [`DefaultAppError::NotInstalled`] if it names no
+    /// candidate, or [`DefaultAppError::DoesNotHandle`] if the candidate does not
+    /// claim `resource`.
     pub fn validate_app(
         &self,
         resource: &ResourceKind,
@@ -344,9 +335,9 @@ impl<'a> DefaultAppResolver<'a> {
     }
 
     /// Without an explicit choice: a Tilo package first, since it runs sandboxed and
-    /// collaborative, one that opens the resource ahead of one that is only picked
-    /// for it; then the host's own `mimeapps.list` default; then any host
-    /// application, deterministically by name.
+    /// collaborative, one that opens the resource ahead of one only picked for it;
+    /// then the host's own `mimeapps.list` default; then any host application,
+    /// deterministically by name.
     fn fallback(&self, resource: &ResourceKind) -> Option<DefaultAppSelection> {
         let mut candidates: Vec<&AppCandidate> = self
             .candidates
@@ -387,8 +378,8 @@ impl<'a> DefaultAppResolver<'a> {
 impl PersonalDefaults {
     /// # Errors
     ///
-    /// Returns an error if [`DefaultAppResolver::validate_app`] rejects
-    /// `package_id` for `resource`; the existing handler is left untouched.
+    /// An error if [`DefaultAppResolver::validate_app`] rejects `package_id` for
+    /// `resource`; the existing handler is untouched.
     pub fn set(
         &mut self,
         resource: ResourceKind,
@@ -400,9 +391,8 @@ impl PersonalDefaults {
         Ok(())
     }
 
-    /// The person's defaults, from their settings: the
-    /// [`PERSONAL_DEFAULTS_SECTION`] section, which follows them to each of
-    /// their devices.
+    /// The person's defaults, from the [`PERSONAL_DEFAULTS_SECTION`] section of
+    /// their settings, which follows them to each of their devices.
     #[cfg(feature = "host-storage")]
     pub fn load() -> Self {
         Self::from_section(&settings_store::load_section(PERSONAL_DEFAULTS_SECTION))
@@ -412,8 +402,7 @@ impl PersonalDefaults {
     ///
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::Persist`] if the settings could not be
-    /// written.
+    /// [`DefaultAppError::Persist`] when the settings cannot be written.
     #[cfg(feature = "host-storage")]
     pub fn save(&self) -> Result<(), DefaultAppError> {
         let serde_json::Value::Object(section) =
@@ -436,9 +425,9 @@ impl PersonalDefaults {
 
 /// # Errors
 ///
-/// Returns [`DefaultAppError::InvalidPackage`] if `id` is empty, longer
-/// than 255 characters, starts or ends with `.`, contains `..`, or
-/// contains anything but letters, digits, `.`, `-` or `_`.
+/// [`DefaultAppError::InvalidPackage`] if `id` is empty, over 255 characters,
+/// starts or ends with `.`, contains `..`, or holds anything but letters,
+/// digits, `.`, `-` or `_`.
 pub fn validate_package_id(id: &str) -> Result<(), DefaultAppError> {
     if id.is_empty()
         || id.len() > 255

@@ -1,10 +1,9 @@
 //! The host's fluent catalogue: chrome only. What an app says comes from the app's own source.
 
-// A window's frames are drawn in every window, so their words are part of the binary, in every
-// language they ship, rather than read from a language pack: a window that speaks German says
-// "Alle Notizen" beside the app's "Notiz" even where nobody installed a pack. They are shared
-// rather than a window's own, so they follow its language and never choose it (see
-// `ui::i18n::WIDGET_CATALOG`).
+// A window's frames are drawn in every window, so their words ship in the binary in every language
+// they ship, not in a language pack: a window that speaks German says "Alle Notizen" beside the
+// app's "Notiz". They are shared, so they follow its language and never choose it
+// (`ui::i18n::WIDGET_CATALOG`).
 pub static CATALOG: ui::i18n::EmbeddedCatalog = {
     let catalog = ui::i18n::EmbeddedCatalog::new(
         "en-US",
@@ -20,56 +19,46 @@ pub static CATALOG: ui::i18n::EmbeddedCatalog = {
     catalog
 };
 
-/// The catalogue's word `key` on this thread.
 #[must_use]
 pub fn t(key: &str) -> String {
     CATALOG.t(key)
 }
 
-/// The catalogue's word `key`, interpolating `args`.
 #[must_use]
 pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     CATALOG.t_args(key, args)
 }
 
-/// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
     CATALOG.ensure();
 }
 
-/// A package's catalogues join the person's words, so what it declares reads in their language
-/// (docs/designs/app-language/i18n.md): each `(locale, Fluent text)` the module carries is a
-/// catalogue the toolkit falls back through, in the language selected here.
-///
-/// These are the words of the package the window shows: they say which languages the window
-/// speaks ([`ui::i18n::speak_window_language`] chooses among them, once). A package the window
-/// uses takes [`add_shared_catalogues`].
+/// A package's catalogues join the person's words, so what it declares reads in their language.
+/// These are the words of the package the window shows: they say which languages the window speaks
+/// ([`ui::i18n::speak_window_language`] chooses among them, once). A package the window uses takes
+/// [`add_shared_catalogues`].
 pub fn add_catalogues(catalogues: &[(String, String)]) {
     add(catalogues, ui::i18n::I18nManager::add_resource);
 }
 
-/// The catalogues of a package the window uses (a view of another app it calls): its words are
-/// read in the language the window speaks, and being written in German does not make an
-/// English app's window German. A word of it the window's language lacks reads in the package's
-/// source language, never in another of its translations.
+/// The catalogues of a package the window uses (a view of another app it calls): read in the
+/// language the window speaks, and a word that language lacks reads in the package's source
+/// language, never in another of its translations.
 pub fn add_shared_catalogues(catalogues: &[(String, String)]) {
     add(catalogues, ui::i18n::I18nManager::add_shared_resource);
 }
 
-/// `catalogues` added as the words of one window ([`add_catalogues`]) or of packages it uses
-/// ([`add_shared_catalogues`]).
 fn add(catalogues: &[(String, String)], as_role: fn(&str, String)) {
-    // Before the host has read a word of its own there is no manager to take them, and they
-    // would be dropped: a package's words are read before the first widget draws.
+    // Before the host has read a word of its own there is no manager to take them, and they would
+    // be dropped: a package's words are read before the first widget draws.
     ensure();
     for (locale, text) in catalogues {
         as_role(locale, text.clone());
     }
 }
 
-/// The word `key` with `args` in the person's language — a declaration's label, its `noun` by
-/// `count`, or the platform's phrase — and `source` when no catalogue of theirs holds it.
-/// A count reaches a plural rule as a number.
+/// The word `key` with `args` in the person's language, or `source` when no catalogue of theirs
+/// holds it. A count reaches a plural rule as a number.
 #[must_use]
 pub fn word(key: &str, args: &[(String, String)], source: &str) -> String {
     ensure();
@@ -90,9 +79,8 @@ pub fn value_of(value: &str) -> ui::i18n::ArgValue {
     }
 }
 
-/// What the words resolve at now: it moves when the person's language, or a catalogue of theirs,
-/// does ([`ui::i18n::I18nManager::revision`]). A package published in one language is published
-/// again when it moves.
+/// Moves when the person's language, or a catalogue of theirs, does
+/// ([`ui::i18n::I18nManager::revision`]); a published package is published again when it moves.
 #[must_use]
 pub fn revision() -> u64 {
     ui::i18n::I18nManager::revision()
@@ -140,11 +128,6 @@ mod tests {
         }
     }
 
-    /// A window's language reaches the host's own words: a window that speaks German — because
-    /// the app it shows ships German — says its frames' sort menu and its More button in
-    /// German too, where the desktop's own catalogue would leave them in its source language.
-    /// The catalogue is shared, so the host's German alone does not make an English app's
-    /// window German: the app's own catalogue is what says which language the window speaks.
     #[test]
     fn a_windows_language_covers_the_hosts_own_words() {
         ensure();

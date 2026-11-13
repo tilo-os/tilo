@@ -2,42 +2,25 @@
 
 pub use tilo_platform_caps::{Availability, availability, available};
 
-/// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
 
-/// One capability of this crate, for [`availability`] and [`Unsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// Choosing files to read by contents:
-    /// [`PickRequest::send_contents`](crate::portal::PickRequest::send_contents).
     OpenContents,
-    /// Saving bytes where the user chooses:
-    /// [`PickRequest::send_save_contents`](crate::portal::PickRequest::send_save_contents).
-    /// On the web the browser downloads them.
     SaveContents,
-    /// Choosers that answer local paths, folders and open descriptors:
-    /// [`PickRequest::send`](crate::portal::PickRequest::send) and friends.
     Paths,
-    /// Opening a local file with its default app, or revealing it:
-    /// [`LaunchRequest`](crate::portal::LaunchRequest).
     Launch,
-    /// Handing a URI to its handler:
-    /// [`open_uri`](crate::portal::open_uri). The web opens only `http`,
-    /// `https`, `mailto` and `tel`.
     OpenUri,
 }
 
-// Shown to the person when an app asks a browser for something only a
-// device with local files can do; apps choose by contents or save through a
-// destination, which work here.
+/// Choosing files to read by contents.
 pub(crate) const WEB_PATHS: &str = "This browser can't choose a file by its place on this device.";
 pub(crate) const WEB_LAUNCH: &str = "This browser can't open files from this device in other apps.";
 
 impl tilo_platform_caps::Feature for Feature {
-    /// The feature's availability on Linux, macOS and the web, in that
-    /// order. A session may provide less at run time (no portal service), never
-    /// more.
+    /// Saving bytes where the person chooses; on the web the browser downloads
+    /// them.
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Unsupported};
         match self {

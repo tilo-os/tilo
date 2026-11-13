@@ -1,12 +1,6 @@
 //! The settings sections as the areas and the window act on them: each
 //! section's published actions, held from the view the window is attached
 //! through, and the dispatcher that runs them.
-//!
-//! An area that changes a section from an effect invokes the section's verb
-//! or field edit here ([`Sections::invoke`]), and a live row offering one of
-//! a section's operations (one app's notification rule on that app's row)
-//! takes it from here ([`Sections::operation`]). Outside a view (a window
-//! laid out on its own) nothing is held, and both refuse.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -17,8 +11,6 @@ use ui::storage::SettingsSchema;
 
 use crate::resource::Settings;
 
-/// A settings section, the person's own record, published as
-/// `settings:<kind>`.
 pub trait Section:
     SettingsSchema
     + ui::tilo_resource::Resource<State = Self>
@@ -41,8 +33,6 @@ impl<T> Section for T where
 {
 }
 
-/// The sections' published actions and the dispatcher that runs them.
-/// Cheap to clone; clones share what they hold.
 #[derive(Clone, Default)]
 pub struct Sections {
     attached: Option<Attached>,
@@ -50,16 +40,12 @@ pub struct Sections {
 
 #[derive(Clone)]
 struct Attached {
-    /// The window's own actions, for the controls it builds outside a part
-    /// (the sidebar, what search found).
     actions: Actions<Settings>,
     dispatcher: Dispatcher<Settings>,
-    /// The published actions of each section, by its type.
     held: Rc<HashMap<TypeId, Box<dyn Any>>>,
 }
 
 impl Sections {
-    /// Every section's published actions, from the view `cx`.
     #[must_use]
     pub fn of(cx: &ViewCx<Settings>) -> Self {
         Self {
@@ -71,20 +57,16 @@ impl Sections {
         }
     }
 
-    /// The window's actions; `None` outside a view.
     #[must_use]
     pub fn actions(&self) -> Option<&Actions<Settings>> {
         Some(&self.attached.as_ref()?.actions)
     }
 
-    /// The dispatcher the window's controls run through; `None` outside a
-    /// view.
     #[must_use]
     pub fn dispatcher(&self) -> Option<&Dispatcher<Settings>> {
         Some(&self.attached.as_ref()?.dispatcher)
     }
 
-    /// The published actions of section `T`; `None` outside a view.
     fn section<T: Section>(&self) -> Option<&Actions<T>> {
         self.attached
             .as_ref()?
@@ -104,12 +86,6 @@ impl Sections {
         self.section::<T>()?.operation(decl)
     }
 
-    /// Run `invoke`, one of section `T`'s actions, as its control runs it:
-    /// where the session keeps the section, as a step of the person's they
-    /// undo there; from an effect, continuing it as its caller's.
-    ///
-    /// # Errors
-    /// Outside a view, where no section is kept.
     pub fn invoke<T: Section>(
         &self,
         invoke: impl Into<ui::tilo_resource::Invoke<T>>,
@@ -122,7 +98,6 @@ impl Sections {
     }
 }
 
-/// The published actions of section `T`, held in `held`.
 fn hold<T: Section>(cx: &ViewCx<Settings>, held: &mut HashMap<TypeId, Box<dyn Any>>) {
     let section = cx.settings::<T>();
     if let Some(actions) = cx.record_actions(&section) {
@@ -130,7 +105,6 @@ fn hold<T: Section>(cx: &ViewCx<Settings>, held: &mut HashMap<TypeId, Box<dyn An
     }
 }
 
-/// Every section's published actions, from the view `cx`.
 fn held_sections(cx: &ViewCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
     let mut held = HashMap::new();
     hold::<crate::prefs::AppearancePrefs>(cx, &mut held);

@@ -15,9 +15,6 @@ use crate::model::{StoreItem, StoreSource};
 
 type Element = Box<dyn Widget>;
 
-/// The glyph that stands for a Tilo app everywhere on the desktop: Tilo apps
-/// ship no raster icon, and the shell shows this one in search, tabs and the
-/// switcher (`ui::icons::app_glyph`).
 #[must_use]
 pub fn tilo_glyph(item: &StoreItem) -> ui::icons::Icon {
     if item.bot.is_some() {
@@ -26,14 +23,10 @@ pub fn tilo_glyph(item: &StoreItem) -> ui::icons::Icon {
     ui::icons::app_glyph(&item.id, item.categories.first().map(String::as_str))
 }
 
-/// Whether the app's icon is artwork its source publishes (a Flathub icon)
-/// rather than the desktop's glyph for it.
 fn has_artwork(item: &StoreItem) -> bool {
     !matches!(item.source, StoreSource::Tilo { .. }) && item.icon_url.is_some()
 }
 
-/// The app's real icon at `size`: a Flathub app's published artwork (its
-/// initials on the neutral tile until it loads), a Tilo app's glyph.
 #[must_use]
 pub fn icon(item: &StoreItem, images: Option<&ui::ImageStore>, size: AvatarSize) -> Avatar {
     let avatar = Avatar::person(&item.name, &item.id).neutral().size(size);
@@ -44,7 +37,6 @@ pub fn icon(item: &StoreItem, images: Option<&ui::ImageStore>, size: AvatarSize)
     }
 }
 
-/// The app's icon as a row's leading art.
 fn row_art(item: &StoreItem, images: Option<&ui::ImageStore>) -> MediaSource {
     match (images, item.icon_url.as_deref()) {
         (Some(store), Some(url)) if has_artwork(item) => MediaSource::Url {
@@ -55,23 +47,19 @@ fn row_art(item: &StoreItem, images: Option<&ui::ImageStore>) -> MediaSource {
     }
 }
 
-/// The one thing a person does with an app from a list or its page.
 pub struct Primary {
     /// Names the control for keyboard traversal, tests and agents; never
     /// written to the document.
     pub key: String,
-    /// What pressing it does, in the person's words ("Open", "Install").
     pub label: String,
     /// Says what it does with the app's name, or why it cannot run now.
     pub tooltip: String,
     pub binding: Option<ActionBinding<()>>,
     pub enabled: bool,
-    /// While it runs: what is happening, shown inline in its place.
     pub progress: Option<String>,
 }
 
 impl Primary {
-    /// The control: the button, or while it runs, the progress in its place.
     #[must_use]
     pub fn control(self, size: ControlSize, role: ButtonRole) -> Element {
         if let Some(progress) = self.progress {
@@ -82,7 +70,6 @@ impl Primary {
         Box::new(self.button(size, role))
     }
 
-    /// The button alone, for a footer that takes a [`Button`].
     #[must_use]
     pub fn button(self, size: ControlSize, role: ButtonRole) -> Button {
         let mut button = Button::new(&self.key, &self.label)
@@ -145,8 +132,6 @@ pub fn card(
     card = match primary {
         None => card,
         Some(primary) if primary.progress.is_some() => {
-            // The footer takes a button; while the action runs its progress
-            // stands in the card's body instead, where the button was.
             let progress = primary.progress.clone().unwrap_or_default();
             card.with_footer(Actions::new(
                 Button::new(&primary.key, &progress)
@@ -164,8 +149,6 @@ pub fn card(
     Box::new(card)
 }
 
-/// An app as a row: its icon, name, tag line and source, and an optional
-/// control at its end. Activating the row opens the app's page.
 #[must_use]
 pub fn row(
     item: &StoreItem,

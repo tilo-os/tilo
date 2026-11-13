@@ -1,13 +1,11 @@
-//! What the window asks the player for, one request per verb: status, focus, the library's rows, shared playlists and bookmarks, and the playhead presence publishes.
-
 use super::{
     ActionDecl, Id, LibraryTab, PlayerResource, PlayerState, Rect, VideoEffect,
     shared_accessibility_targets, verbs,
 };
 
 impl PlayerState {
-    /// Invoke `effect` through the framework's door, as the palette and
-    /// agents do: its availability and permission are checked there.
+    /// Invoke `effect` through the framework's door, which checks its availability and
+    /// permission.
     pub(super) fn request(&self, effect: &VideoEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
@@ -18,8 +16,7 @@ impl PlayerState {
         self.missing_codec.is_some() && self.open_error.is_some()
     }
 
-    /// Where the empty state's action (Open a video, or the formats remedy)
-    /// stands among the player's accessible children, while it shows.
+    /// Where the empty state's action stands among the player's accessible children.
     pub(super) fn status_access_index(&self) -> Option<usize> {
         self.accessibility().children.iter().position(|node| {
             matches!(
@@ -29,10 +26,8 @@ impl PlayerState {
         })
     }
 
-    /// Give the keyboard to the library sheet's control at `path`, the
-    /// order [`Widget::accessibility`](ui::widget::Widget::accessibility) lists them in: "Back to video" where
-    /// the library fills the window, the three tabs, then the shared tab's
-    /// actions and rows or the local rows.
+    /// Give the keyboard to the library sheet's control at `path`, in the order
+    /// [`Widget::accessibility`](ui::widget::Widget::accessibility) lists them.
     pub(super) fn focus_player_control(&mut self, path: &[usize]) -> bool {
         if !self.library_visible {
             return false;
@@ -67,8 +62,8 @@ impl PlayerState {
         true
     }
 
-    /// The focus id of the local list's control at `library_index`: each
-    /// row's Play, then Clear on the recent tab, then each row's Remove.
+    /// The focus id of the local list's control at `library_index`: each row's Play, then
+    /// Clear on Recent, then each row's Remove.
     pub(super) fn local_row_focus(&self, library_index: usize) -> Option<String> {
         let play_count = self.library_row_hits.len();
         let clears = self.library_tab == LibraryTab::Recent && !self.recent.is_empty();
@@ -86,8 +81,8 @@ impl PlayerState {
         }
     }
 
-    /// Where the local list's control at `library_index` is, in the order
-    /// [`Self::local_row_focus`] names them.
+    /// Where the local list's control at `library_index` is, in [`Self::local_row_focus`]'s
+    /// order.
     pub(super) fn local_row_rect(&self, library_index: usize) -> Option<Rect> {
         let play_count = self.library_row_hits.len();
         let clears = self.library_tab == LibraryTab::Recent && !self.recent.is_empty();
@@ -151,9 +146,8 @@ impl PlayerState {
         self.request(&VideoEffect::HideLibrary);
     }
 
-    /// Back to the picture from a library that fills the window: the library
-    /// is one action away again, through the bar's sidebar toggle, the
-    /// `L` shortcut or the palette.
+    /// Back to the picture from a library that fills the window; the library is one action
+    /// away again through the bar, the `L` shortcut or the palette.
     pub(super) fn request_video_show(&mut self) {
         self.request_library_hide();
         self.player.reveal_controls();
@@ -166,9 +160,8 @@ impl PlayerState {
         });
     }
 
-    /// The Library button and `L` shortcut choose a concrete, replay-safe
-    /// effect from the current presentation. Nothing is a toggle: a replay
-    /// or delayed agent invocation must not invert a newer user choice.
+    /// The Library button and `L` choose a concrete effect from the current presentation.
+    /// Nothing is a toggle: a replay must not invert a newer choice.
     pub(super) fn request_library_visibility_change(&self) {
         if self.library_visible {
             self.request_library_hide();
@@ -183,9 +176,8 @@ impl PlayerState {
         });
     }
 
-    /// Submit a shared library verb or field edit through the framework's
-    /// door. The library shown follows once the document presents the
-    /// change.
+    /// Submit a library verb or field edit through the framework's door; the library shown
+    /// follows once the document presents the change.
     pub(super) fn dispatch_shared(&self, submit: impl ui::framework::Submit<PlayerResource>) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.submit(submit);
@@ -200,8 +192,8 @@ impl PlayerState {
         self.dispatch_shared(PlayerResource::DELETE_PLAYLIST.with(Id::from_raw(id)));
     }
 
-    /// The open video, added to the shared Watch later playlist; `None`
-    /// without an open video or when it is already there.
+    /// The open video added to Watch later; `None` without one, or when it is already
+    /// there.
     pub(super) fn watch_later(&self) -> Option<verbs::AddToWatchLater> {
         let media_ref = self.current_media_ref.clone()?;
         (!self.shared_library.on_watch_later(&media_ref)).then(|| verbs::AddToWatchLater {
@@ -231,8 +223,7 @@ impl PlayerState {
         }
     }
 
-    /// The shared library verbs bound to the playhead, for the palette and
-    /// agents: bookmark the moment shown, add the open video to Watch later.
+    /// The library's verbs bound to the playhead, for the palette and agents.
     pub(crate) fn playhead_declarations(&self) -> Vec<ActionDecl<PlayerResource>> {
         let Some(bookmark) = self.bookmark() else {
             return Vec::new();

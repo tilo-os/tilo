@@ -1,7 +1,7 @@
-//! A search hit or a link that names a setting opens its page scrolled to
-//! the setting, with the keyboard on its control: typing "disable touchpad
-//! while typing" in the desktop palette lands on that switch, not on the
-//! top of a long page.
+//! A search hit or a link that names a setting opens its page scrolled to the
+//! setting, with the keyboard on its control: typing "disable touchpad while
+//! typing" in the desktop palette lands on that switch, not on the top of a
+//! long page.
 
 use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
@@ -14,8 +14,6 @@ fn focused(widget: &dyn Widget) -> bool {
     widget.is_focused() || widget.children().into_iter().any(focused)
 }
 
-/// The rect of the first control of `setting`, and whether the keyboard is
-/// on it.
 fn control(root: &dyn Widget, setting: &settings_store::index::Setting) -> Option<(Rect, bool)> {
     if root.test_id().is_some_and(|id| setting.is_control(id)) {
         return Some((root.get_rect(), focused(root)));
@@ -71,9 +69,6 @@ fn a_setting_opens_scrolled_to_its_control_with_the_keyboard_on_it() {
     }
 }
 
-/// A reveal takes the keyboard and can cause a follow-up layout. Resizing
-/// must retain that target, but moving the keyboard on must stop retaining
-/// it: a reveal is not a permanent focus request.
 #[test]
 fn a_revealed_control_keeps_focus_across_layouts_until_the_keyboard_moves() {
     ui::i18n::I18nManager::init("en-US");
@@ -115,8 +110,6 @@ fn a_revealed_control_keeps_focus_across_layouts_until_the_keyboard_moves() {
     );
 }
 
-/// A link naming a setting opens Settings scrolled to it, as the palette's
-/// hit does.
 #[test]
 fn a_setting_link_shows_the_setting() {
     ui::i18n::I18nManager::init("en-US");
@@ -135,12 +128,9 @@ fn a_setting_link_shows_the_setting() {
         rect.y0 >= window.y0 && rect.y1 <= window.y1,
         "its control is on screen at {rect:?} in {window:?}"
     );
-    // A fresh window gives the keyboard to its first control when it is
-    // shown; the open window above keeps it on the setting.
     let _ = focused;
 }
 
-/// A reopened window shows the page it showed, unless a link names another.
 #[test]
 fn a_reopened_window_shows_its_page() {
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");

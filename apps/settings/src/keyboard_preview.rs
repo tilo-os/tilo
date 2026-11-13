@@ -1,10 +1,4 @@
 //! Native XKB legends over explicitly selected Open Group PC geometry.
-//!
-//! Compiling a drawing reads the installed XKB data, which takes long enough
-//! to hold a frame, so the window never compiles one: it asks for a drawing
-//! (`Preview::drawn`), shows that it is being drawn while it is compiled
-//! off the UI thread (`Preview::draw_in_background`), and is woken when it
-//! lands.
 use pc_keyboard_geometry::{Geometry, Key as GeometryKey};
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -12,8 +6,6 @@ use ui::lock::MutexRecover as _;
 use ui::{KeyboardMap, KeyboardMapKey};
 use vello::kurbo::Point;
 
-/// What one keyboard drawing is compiled from: the layout, the physical
-/// keyboard, its XKB options and whether it is drawn compact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Preview {
     pub(crate) source: String,
@@ -25,14 +17,12 @@ pub(crate) struct Preview {
 /// One compiled drawing's keys and size, or why it cannot be drawn.
 type Drawn = Result<(Vec<KeyboardMapKey>, taffy::Size<f64>), String>;
 
-/// The drawings compiled lately, oldest first, and those being compiled.
 #[derive(Default)]
 struct Drawings {
     done: VecDeque<(Preview, Arc<Drawn>)>,
     compiling: Vec<Preview>,
 }
 
-/// How many drawings are kept: the layouts a person flips between.
 const KEPT: usize = 8;
 
 static DRAWINGS: LazyLock<Mutex<Drawings>> = LazyLock::new(Mutex::default);
@@ -61,7 +51,6 @@ impl Preview {
             .map(|(_, drawn)| Arc::clone(drawn))
     }
 
-    /// Whether the drawing is compiled.
     pub(crate) fn is_drawn(&self) -> bool {
         self.compiled().is_some()
     }
@@ -183,9 +172,6 @@ pub(crate) fn map_for_form(
     Ok(KeyboardMap::new(keys, size, label).with_configuration(preview.source, preview.model))
 }
 
-/// The keys moved to the drawing's corner and the drawing cut to them, with
-/// a hair of room for the keycaps' edges: the published geometry's margins
-/// would show as empty bands above and below the keyboard.
 fn tight(mut keys: Vec<GeometryKey>) -> (taffy::Size<f64>, Vec<GeometryKey>) {
     const ROOM: f64 = 1.5;
     let points = || keys.iter().flat_map(|key| key.outline.iter());
@@ -233,22 +219,12 @@ pub(crate) fn device_keyboard_is_compact() -> bool {
     *COMPACT
 }
 
-/// SMBIOS chassis types of machines with a full-size keyboard of their own:
-/// desktop, low-profile desktop, pizza box, mini tower, tower, all in one,
-/// space-saving, lunch box, main server, expansion, sub chassis, bus
-/// expansion, peripheral, RAID, rack mount, sealed-case PC, multi-system.
 fn chassis_is_compact(chassis: Option<u32>) -> bool {
     !matches!(chassis, Some(3..=7 | 13 | 15..=24))
 }
 
-/// How far the function row moves down on a laptop's drawing: from the
-/// published geometry's row (y 23 to 41) to one unit above the number row
-/// (which starts at 62).
 const LAPTOP_FUNCTION_ROW_DROP: u8 = 20;
 
-/// The pc105 drawing without the Print/Scroll/Pause, navigation and numpad
-/// clusters, the Windows/Menu/right-Ctrl keys replaced by the arrows in one
-/// row: the main block a laptop keyboard is.
 fn compact_geometry(geometry: &Geometry) -> (f64, Vec<GeometryKey>) {
     const DROPPED: [&str; 12] = [
         "PRSC", "SCLK", "PAUS", "INS", "HOME", "PGUP", "DELE", "END", "PGDN", "NMLK", "RWIN",
@@ -270,8 +246,6 @@ fn compact_geometry(geometry: &Geometry) -> (f64, Vec<GeometryKey>) {
             continue;
         }
         let mut key = key.clone();
-        // A laptop's function row sits on top of the number row, without
-        // the desktop keyboard's gap.
         if key.name == "ESC" || key.name.starts_with("FK") {
             for point in &mut key.outline {
                 point[1] += f64::from(LAPTOP_FUNCTION_ROW_DROP);
@@ -301,8 +275,6 @@ pub(crate) fn compilation_count() -> usize {
     COMPILES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Legends that would be unreadable at keycap size, spelled the way keycaps
-/// spell them.
 fn short_legend(keysym: &str) -> Option<&'static str> {
     Some(match keysym {
         "Print" | "Sys_Req" => "PrtSc",
@@ -354,15 +326,11 @@ fn compile(
     Ok(finish(geometry, &native, source))
 }
 
-/// The drawing's keys: `native`'s legends for each position, laid out in
-/// `geometry`'s outlines.
 fn finish(
     geometry: &[GeometryKey],
     native: &[tilo_keyboard_map::Key],
     source: &settings_store::hardware::KeyboardInputSource,
 ) -> Vec<KeyboardMapKey> {
-    // The legends printed on a keyboard of the previewed layout, whatever
-    // language the desktop speaks.
     let caps = ui::Keycaps::from_xkb(
         source.layout.as_str(),
         source.variant.as_deref().unwrap_or(""),
@@ -380,10 +348,6 @@ fn finish(
                         .iter()
                         .map(|symbol| {
                             let printed = caps.native_symbol(&symbol.name, &symbol.text);
-                            // A layout whose keyboards print their own word
-                            // for the key (German "Entf", "Feststell") keeps
-                            // it; the English names are shortened as US
-                            // keycaps spell them.
                             if printed == english.native_symbol(&symbol.name, &symbol.text) {
                                 short_legend(&symbol.name).map_or(printed, str::to_owned)
                             } else {
@@ -435,8 +399,6 @@ mod tests {
         assert!(map.inspection_keys().iter().any(|(name, _)| name == "AD06"));
     }
 
-    /// The drawing is cut to its keys: no empty band above, below or
-    /// beside the keyboard.
     #[test]
     fn the_drawing_is_cut_to_its_keys() {
         let geometry = pc_keyboard_geometry::models().unwrap();
@@ -554,9 +516,6 @@ mod tests {
         let dvorak = at("us:dvorak", "AD01");
         assert_eq!(dvorak.physical, PhysicalKey::Code(KeyCode::KeyQ));
         assert_eq!(dvorak.levels.first().map(String::as_str), Some("'"));
-        // Every key reads as a keyboard of that layout prints it, whatever
-        // the desktop's language: German keyboards say "Rück", "Strg",
-        // "Umschalt"; US keycaps say "Bksp", "Ctrl", "Shift".
         let legend = |source: &str, name: &str| at(source, name).levels.first().cloned();
         assert_eq!(legend("de", "BKSP").as_deref(), Some("Rück"));
         assert_eq!(legend("de", "LCTL").as_deref(), Some("Strg"));

@@ -54,7 +54,6 @@ struct Opts {
     word: bool,
     listing: Listing,
     with_name: Option<bool>,
-    /// `-r` (`Some(false)`) or `-R`, which follows every symlink.
     recursive: Option<bool>,
     before: usize,
     after: usize,
@@ -330,7 +329,6 @@ pub fn grep(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     }
 }
 
-/// The compiled pattern, and whether matches must be whole words.
 struct Matcher {
     regex: Option<Regex>,
 }
@@ -455,7 +453,6 @@ pub fn translate(pattern: &str, extended: bool) -> Result<String, String> {
     Ok(out)
 }
 
-/// Whether a `$` just before `at` ends a basic expression or a group in it.
 fn anchor_end(chars: &[char], at: usize) -> bool {
     match chars.get(at) {
         None => true,
@@ -605,24 +602,18 @@ struct Run<'c, 'a> {
     with_name: bool,
     matched: bool,
     error: bool,
-    /// Whether a group of lines with context has been printed, so the next
-    /// one is set apart with `--`.
     grouped: bool,
-    /// The agent rendering, when the reader is one.
     agent: Option<Agent<'c, 'a>>,
 }
 
-/// What an agent is shown, as it is found.
 struct Agent<'c, 'a> {
     lines: Lines<'c, 'a>,
     names: Names,
-    /// The file whose lines are being shown.
     current: Option<String>,
     headers: bool,
 }
 
 impl Agent<'_, '_> {
-    /// Start `name`'s group if its lines are not the ones being shown.
     fn file(&mut self, name: &str) {
         if self.current.as_deref() != Some(name) {
             self.current = Some(name.to_string());
@@ -780,7 +771,6 @@ impl Run<'_, '_> {
         self.ctx.out(&out)
     }
 
-    /// A file `-l`, `-L` or a skipped binary file names.
     fn print_name(&mut self, name: &str) -> Result<(), Stop> {
         if let Some(a) = &mut self.agent {
             a.names.add_path(name, "");

@@ -101,8 +101,8 @@ impl ImportReview {
         Ok(())
     }
 
-    /// Save ordinary connection metadata only. Never opens custody, copies a
-    /// secret, calls a server, or overwrites an already configured account.
+    /// Writes connection metadata only: no secret, no server, and never over an
+    /// account that is already configured.
     pub fn commit(&mut self, root: &AccountRoot, revision: u64) -> Result<String, String> {
         if revision != self.revision {
             return Err(t("accounts-import-stale"));

@@ -61,7 +61,6 @@ pub mod content_purpose {
     pub const TERMINAL: u32 = 13;
 }
 
-/// Wire bits of `zwp_text_input_v3.content_hint`.
 pub mod content_hint {
     pub const NONE: u32 = 0;
     pub const COMPLETION: u32 = 0x1;
@@ -85,28 +84,18 @@ pub fn may_learn(purpose: InputPurpose, hints: u32) -> bool {
         && hints & (content_hint::HIDDEN_TEXT | content_hint::SENSITIVE_DATA) == 0
 }
 
-/// Map a Wayland `content_purpose` wire value to the OSK's own [`InputPurpose`].
-///
-/// `digits` is a numeric secret-ish field with no separators — closest to a PIN
-/// pad. `datetime` has no dedicated layout, so it borrows the date pad. `name`,
-/// `terminal`, `alpha`, and any unknown value fall back to free text, which is
-/// the safe default (every character reachable).
 pub fn purpose_from_wire(wire: u32) -> InputPurpose {
     use content_purpose as cp;
     match wire {
         cp::NUMBER => InputPurpose::Number,
-        // `digits` is a numeric secret-ish field with no separators — the
-        // same pad as an actual PIN.
         cp::DIGITS | cp::PIN => InputPurpose::Pin,
         cp::PHONE => InputPurpose::Telephone,
         cp::URL => InputPurpose::Url,
         cp::EMAIL => InputPurpose::Email,
         cp::PASSWORD => InputPurpose::Password,
-        // `datetime` has no dedicated layout, so it borrows the date pad.
         cp::DATE | cp::DATETIME => InputPurpose::Date,
         cp::TIME => InputPurpose::Time,
         cp::TERMINAL => InputPurpose::Terminal,
-        // normal / alpha / name / anything unrecognised → plain text.
         _ => InputPurpose::Text,
     }
 }
@@ -121,15 +110,9 @@ pub fn purpose_from_wire(wire: u32) -> InputPurpose {
 /// [`Done`]: ImEvent::Done
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImEvent {
-    /// A text input gained focus on this seat: the keyboard should appear.
-    /// Resets any pending content type (the protocol says `activate` clears it).
     Activate,
-    /// Text focus left: the keyboard should hide.
     Deactivate,
-    /// The focused field's content hints and purpose (raw wire values).
-    /// Pending until the next [`Done`](ImEvent::Done).
     ContentType { hint: u32, purpose: u32 },
-    /// Apply all state buffered since the last `Done` (the protocol commit point).
     Done,
 }
 
@@ -141,11 +124,8 @@ pub enum ImEvent {
 /// purpose (per the protocol's activate semantics).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImState {
-    /// Whether the keyboard should currently be on screen.
     visible: bool,
-    /// The applied purpose (what the visible layout reflects).
     purpose: InputPurpose,
-    /// The applied content hints ([`content_hint`] bits).
     hints: u32,
     /// A content type received but not yet applied by a `done`.
     pending: Option<(InputPurpose, u32)>,
@@ -166,14 +146,9 @@ impl Default for ImState {
 /// hide the window, and/or switch the layout. `None` fields mean "no change".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ImTransition {
-    /// `Some(true)` → became visible; `Some(false)` → became hidden.
     pub visibility_changed: Option<bool>,
-    /// `Some(p)` → the active purpose changed to `p`.
     pub purpose_changed: Option<InputPurpose>,
-    /// `Some(h)` → the active content hints changed to `h`.
     pub hints_changed: Option<u32>,
-    /// A text field gained or lost focus, so any composition in progress
-    /// belonged to the previous field.
     pub field_changed: bool,
 }
 
@@ -182,17 +157,14 @@ impl ImState {
         Self::default()
     }
 
-    /// Whether the keyboard should be on screen right now.
     pub fn visible(&self) -> bool {
         self.visible
     }
 
-    /// The currently applied input purpose.
     pub fn purpose(&self) -> InputPurpose {
         self.purpose
     }
 
-    /// The currently applied content hints.
     pub fn hints(&self) -> u32 {
         self.hints
     }
@@ -214,8 +186,6 @@ impl ImState {
         match event {
             ImEvent::Activate => {
                 self.visible = true;
-                // `activate` resets prior content_type state; until the field's
-                // own content_type arrives, assume free text without hints.
                 self.pending = None;
                 self.purpose = InputPurpose::Text;
                 self.hints = content_hint::NONE;
@@ -272,13 +242,6 @@ mod wayland {
         self, TiloInputContextKeyboardV1,
     };
 
-    /// Input-method client holding its own connection + event queue, independent
-    /// of the one winit owns.
-    ///
-    /// Events the compositor sends (activate / `content_type` / deactivate / done)
-    /// are decoded into [`ImEvent`]s and pushed onto a channel the app loop
-    /// drains via [`InputMethodClient::poll`]. Typed text goes the other way via
-    /// [`InputMethodClient::commit_text`].
     pub struct InputMethodClient {
         conn: Connection,
         queue: wayland_client::EventQueue<State>,
@@ -288,8 +251,6 @@ mod wayland {
         rx: Receiver<ImEvent>,
     }
 
-    /// Dispatch state. Tracks the `done` serial the protocol requires `commit` to
-    /// echo, and forwards decoded events to the channel.
     struct State {
         tx: Sender<ImEvent>,
         contexts: Vec<crate::service::ContextTransition>,
@@ -350,14 +311,10 @@ mod wayland {
             let decoded = match event {
                 Event::Activate => Some(ImEvent::Activate),
                 Event::Deactivate => Some(ImEvent::Deactivate),
-                Event::ContentType { hint, purpose } => {
-                    // Both are WEnums; the wire values are what our mappings
-                    // understand (and tolerate if unknown).
-                    Some(ImEvent::ContentType {
-                        hint: u32::from(hint),
-                        purpose: u32::from(purpose),
-                    })
-                }
+                Event::ContentType { hint, purpose } => Some(ImEvent::ContentType {
+                    hint: u32::from(hint),
+                    purpose: u32::from(purpose),
+                }),
                 Event::Done => {
                     // The serial `commit` must echo is the count of `done`s seen.
                     state.serial = state.serial.wrapping_add(1);
@@ -367,7 +324,6 @@ mod wayland {
                     state.unavailable = true;
                     None
                 }
-                // Surrounding-text / change-cause carry no auto-show signal.
                 _ => None,
             };
             if let Some(ev) = decoded {
@@ -461,8 +417,6 @@ mod wayland {
             let (globals, mut queue) = registry_queue_init::<State>(&conn).ok()?;
             let qh = queue.handle();
 
-            // The manager is the protocol that may be absent — its absence is the
-            // expected "no input-method, stay always-visible" path.
             let manager: ZwpInputMethodManagerV2 = globals.bind(&qh, 1..=1, ()).ok()?;
             let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=8, ()).ok()?;
 
@@ -509,12 +463,7 @@ mod wayland {
             self.queue.flush().map_err(|error| error.to_string())
         }
 
-        /// Pump the Wayland connection without blocking, then drain every decoded
-        /// [`ImEvent`] that arrived. Call once per app-loop tick.
         pub fn poll(&mut self) -> Vec<ImEvent> {
-            // Read any pending wire events and dispatch them into `State` (which
-            // forwards to the channel). Non-blocking: returns immediately if the
-            // socket has nothing.
             if let Some(guard) = self.conn.prepare_read() {
                 let _ = guard.read();
             }
@@ -536,28 +485,18 @@ mod wayland {
             tilo_input_context::wait::ConnectionWait::for_connection(&self.conn)
         }
 
-        /// Block until at least one event is available, dispatch it, and return
-        /// the drained batch. Lets a dedicated thread sleep on the socket instead
-        /// of busy-polling.
         pub fn blocking_dispatch(&mut self) -> Vec<ImEvent> {
             let _ = self.queue.blocking_dispatch(&mut self.state);
             let _ = self.queue.flush();
             self.rx.try_iter().collect()
         }
 
-        /// Replace the composing word with `text` and make it final:
-        /// `commit_string(text)` stages it and `commit(serial)` applies it,
-        /// where `serial` is the number of `done` events seen so far (the
-        /// protocol's required echo). Applying a commit also removes the
-        /// preedit, so an empty `text` still ends the composition.
         pub fn commit_text(&mut self, text: &str) {
             self.input_method.commit_string(text.to_string());
             self.input_method.commit(self.state.serial);
             let _ = self.queue.flush();
         }
 
-        /// Show `text` as the composing (preedit) word, cursor at its end.
-        /// An empty `text` clears the preedit.
         pub fn set_preedit(&mut self, text: &str) {
             let end = i32::try_from(text.len()).unwrap_or(i32::MAX);
             self.input_method
@@ -575,10 +514,6 @@ mod wayland {
             let _ = &self.conn;
         }
 
-        /// The serial `commit` will echo on the next [`commit_text`] — the count
-        /// of `done` events received. Exposed for tests / diagnostics.
-        ///
-        /// [`commit_text`]: InputMethodClient::commit_text
         pub fn serial(&self) -> u32 {
             self.state.serial
         }
@@ -691,7 +626,6 @@ mod tests {
             let t = s.reduce(ImEvent::Activate);
             assert!(s.visible());
             assert_eq!(t.visibility_changed, Some(true));
-            // No content type yet → still the default text layout.
             assert_eq!(s.purpose(), InputPurpose::Text);
             assert_eq!(t.purpose_changed, None);
         }
@@ -745,7 +679,6 @@ mod tests {
             let t = s.reduce(purpose_only(content_purpose::NUMBER));
             assert_eq!(s.purpose(), InputPurpose::Text);
             assert_eq!(t.purpose_changed, None);
-            // ...the following `done` applies it.
             let t = s.reduce(ImEvent::Done);
             assert_eq!(s.purpose(), InputPurpose::Number);
             assert_eq!(t.purpose_changed, Some(InputPurpose::Number));

@@ -7,12 +7,10 @@ use tilo_search::{Document, FieldWeight, Matching, Page};
 
 use crate::entry::{EntryId, SearchEntry};
 
-/// What a host search that keeps its own copy (Spotlight) must change.
+/// What a host search that keeps its own copy must change.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
-    /// Entries that are new or show differently.
     pub indexed: Vec<SearchEntry>,
-    /// Entries no longer offered: deleted, closed, or no longer permitted.
     pub removed: Vec<EntryId>,
 }
 
@@ -22,8 +20,8 @@ impl Changes {
     }
 }
 
-/// Every entry the last walk found, and a text index over them for the
-/// hosts that ask this runtime to match (GNOME Shell, `KRunner`).
+/// Every entry the last walk found, with a text index over them for the hosts
+/// that ask this runtime to match.
 pub struct ResourceIndex {
     entries: BTreeMap<EntryId, SearchEntry>,
     text: tilo_search::SearchIndex,
@@ -33,7 +31,6 @@ impl Default for ResourceIndex {
     fn default() -> Self {
         Self {
             entries: BTreeMap::new(),
-            // Names a person half remembers: words across fields and typos.
             text: tilo_search::SearchIndex::new(Matching::LOOSE),
         }
     }
@@ -44,7 +41,6 @@ impl ResourceIndex {
     pub fn replace(&mut self, entries: impl IntoIterator<Item = SearchEntry>) -> Changes {
         let mut next = BTreeMap::new();
         for entry in entries {
-            // Two live instances of one app offer the same resource once.
             next.entry(entry.id).or_insert(entry);
         }
         let mut changes = Changes::default();
@@ -83,7 +79,6 @@ impl ResourceIndex {
         self.entries.is_empty()
     }
 
-    /// The best `limit` entries for what a person typed, best first.
     pub fn search(&self, query: &str, limit: usize) -> Vec<&SearchEntry> {
         if query.trim().is_empty() {
             return Vec::new();

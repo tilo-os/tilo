@@ -1,10 +1,8 @@
 //! Tests for the PDF export engine.
 //!
-//! Snapshots are built directly (the structs are public) so the tests exercise
-//! `render_pdf` without coupling to tilo-doc's mutation API. We assert on the real
-//! output bytes — a valid PDF header, non-trivial length, the expected page
-//! count via `/Type /Page`, and (for the content-object test) the number of
-//! content streams emitted.
+//! Snapshots are built directly, since the structs are public, and the tests
+//! assert on the output bytes: a valid header, the page count via `/Type /Page`,
+//! and the number of content streams.
 
 use super::*;
 use std::collections::BTreeMap;
@@ -24,7 +22,6 @@ fn empty_snapshot() -> DocSnapshot {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn pdf_export_lays_out_blocks_tables_pages_and_images() {
-    // Phase `multi_block_snapshot_yields_valid_pdf_bytes`.
     {
         let snap = DocSnapshot {
             blocks: vec![
@@ -62,13 +59,9 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
         );
         assert!(count(&bytes, b"/Type /Catalog") == 1, "exactly one catalog");
     }
-    // Phase `heading_paragraph_list_produces_multiple_content_objects`.
     {
-        // A heading + paragraph + a 3-item list. We assert that more than one
-        // *content stream* object is emitted across the document — the production
-        // path writes one content stream per page, and each page references a
-        // FlateDecode'd stream. To get >1 content object deterministically we also
-        // assert the document drew text for every block.
+        // A heading, a paragraph and a 3-item list: more than one content stream object
+        // is emitted across the document, since every page gets its own.
         let snap = DocSnapshot {
             blocks: vec![
                 block_attr("heading", "Shopping List", &[("level", AttrVal::Int(1))]),
@@ -104,19 +97,16 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
         let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render");
         assert!(bytes.starts_with(b"%PDF"));
 
-        // The PDF must contain multiple distinct content/structural objects: at
-        // least the two fonts, the page, the content stream, the pages tree, and
-        // the catalog → well over one indirect object. Count " 0 obj" markers.
+        // At least the two fonts, the page, the content stream, the pages tree and the
+        // catalog: well over one indirect object. Count " 0 obj" markers.
         let n_objs = count(&bytes, b" 0 obj\n");
         assert!(n_objs > 1, "expected >1 indirect objects, got {n_objs}");
 
-        // And there is at least one content stream (FlateDecode'd).
         assert!(
             count(&bytes, b"/Filter /FlateDecode") >= 1,
             "at least one stream"
         );
     }
-    // Phase `empty_doc_yields_valid_single_page_pdf`.
     {
         let snap = empty_snapshot();
         let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render empty");
@@ -127,7 +117,6 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
         assert!(count(&bytes, b"/Count 1 ") == 1, "single-page document");
         assert_eq!(count(&bytes, b"/Type /Catalog"), 1);
     }
-    // Phase `long_document_paginates_to_multiple_pages`.
     {
         // Many paragraphs must overflow one page and start a second.
         let mut blocks = Vec::new();
@@ -157,9 +146,7 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
             "pages-tree Count matches page objects"
         );
     }
-    // Phase `table_block_renders_grid`.
     {
-        // table → rows → cells.
         let mut row1 = block("row", "");
         row1.children = vec![block("cell", "Name"), block("cell", "Score")];
         let mut row2 = block("row", "");
@@ -175,7 +162,6 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
         assert!(bytes.starts_with(b"%PDF"));
         assert!(bytes.len() > 400);
     }
-    // Phase `scanned_pdf_preserves_pages_images_and_searchable_invisible_text`.
     {
         let pages = vec![
             ScannedPdfPage {
@@ -203,7 +189,6 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
         assert!(text.contains("First receipt"));
         assert!(text.contains("Second receipt"));
     }
-    // Phase `image_block_with_decodable_png_embeds_xobject`.
     {
         // A 2x2 PNG built in-memory via the image crate, stored as a blob.
         let png = make_test_png();
@@ -216,9 +201,8 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
             ..empty_snapshot()
         };
         let bytes = render_pdf(&snap, &blobs).expect("render");
-        // The XObject dict is uncompressed in the object stream, so we can assert
-        // on it directly. (The page content stream that paints it via `Do` is
-        // FlateDecode-compressed, so its operators aren't visible in the raw bytes.)
+        // The XObject dict is uncompressed in the object stream, so it can be asserted
+        // on directly; the content stream painting it is compressed.
         assert!(
             count(&bytes, b"/Subtype /Image") >= 1,
             "image XObject embedded"
@@ -234,7 +218,6 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
             "page references the image XObject"
         );
     }
-    // Phase `image_block_with_bad_blob_draws_placeholder_not_error`.
     {
         let mut blobs = BTreeMap::new();
         blobs.insert("h".to_string(), vec![0u8, 1, 2, 3]); // not a valid image
@@ -249,14 +232,10 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
         // Must not error — degrades to a placeholder.
         let bytes = render_pdf(&snap, &blobs).expect("render with bad image");
         assert!(bytes.starts_with(b"%PDF"));
-        // No image XObject, but a rectangle (placeholder) was drawn.
         assert_eq!(count(&bytes, b"/Subtype /Image"), 0);
     }
 }
 
-/// Inline `strong` and `em` marks set their runs in Helvetica-Bold and
-/// Helvetica-Oblique, within one line and across a wrap, and the plain
-/// text around them stays regular.
 #[test]
 fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
     use std::io::Read as _;
@@ -284,7 +263,6 @@ fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
         ]]
     );
 
-    // Wrapped to a narrow column, every word is kept in its own face.
     let narrow = wrap(&styled(&paragraph, Style::default()), 60.0, BODY_SIZE);
     assert!(narrow.len() > 2, "{narrow:?}");
     let rejoined: Vec<String> = narrow
@@ -300,7 +278,6 @@ fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
         "{narrow:?}"
     );
 
-    // A heading is bold throughout, and its em run is bold italic.
     let mut heading = block_attr("heading", "Field notes", &[("level", AttrVal::Int(1))]);
     heading.marks = vec![mark("em", 6, 11)];
     assert_eq!(
@@ -317,7 +294,6 @@ fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
         ]]
     );
 
-    // The page declares every face and shows each run in its own.
     let snap = DocSnapshot {
         blocks: vec![paragraph],
         ..empty_snapshot()
@@ -345,7 +321,6 @@ fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
     assert!(stream.contains("(the team.) Tj"), "{stream}");
 }
 
-/// Lay `blocks` out onto pages without serializing them.
 fn lay_out(blocks: &[BlockView]) -> Layout {
     let mut layout = Layout::new();
     for block in blocks {
@@ -354,7 +329,6 @@ fn lay_out(blocks: &[BlockView]) -> Layout {
     layout
 }
 
-/// The page of the first text run containing `needle`.
 fn page_of(layout: &Layout, needle: &str) -> Option<usize> {
     std::iter::once(&layout.first_page)
         .chain(&layout.later_pages)
@@ -365,8 +339,6 @@ fn page_of(layout: &Layout, needle: &str) -> Option<usize> {
         })
 }
 
-/// The export breaks pages by the editor's rules: a heading that would end a
-/// page moves on with its text, and a manual page break starts a page.
 #[test]
 fn pdf_pages_break_like_the_editor() {
     // 31 one-line paragraphs fill the page to 620 of 648 points; the heading
@@ -416,7 +388,6 @@ fn block_attr(kind: &str, text: &str, attrs: &[(&str, AttrVal)]) -> BlockView {
     b
 }
 
-/// Count occurrences of a needle in a byte haystack.
 fn count(haystack: &[u8], needle: &[u8]) -> usize {
     if needle.is_empty() {
         return 0;

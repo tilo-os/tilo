@@ -4,7 +4,6 @@ use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr::NonNull;
 use zeroize::Zeroizing;
 
-/// libpam's opaque `pam_handle_t`.
 #[repr(C)]
 pub struct PamHandle {
     _private: [u8; 0],
@@ -42,7 +41,6 @@ unsafe extern "C" {
     fn pam_syslog(pamh: *const PamHandle, priority: c_int, fmt: *const c_char, ...);
 }
 
-/// The PAM return codes this module gives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Success,
@@ -73,7 +71,6 @@ impl Status {
         }
     }
 
-    /// A libpam result handed back unchanged.
     fn from_code(code: c_int) -> Self {
         match code {
             0 => Self::Success,

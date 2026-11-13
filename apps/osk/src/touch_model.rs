@@ -36,23 +36,14 @@ use crate::layout::KeyId;
 /// keeping taps stolen from inside the meant key below one in a hundred.
 pub const SIGMA_FRACTION: f64 = 0.25;
 
-/// Fraction of a key's width and height (centred) inside which a tap always
-/// selects that key, regardless of context.
 pub const CORE_FRACTION: f64 = 0.6;
 
-/// Share of uniform probability mixed into the context distribution so an
-/// unlikely letter stays reachable outside its core zone.
 pub const UNIFORM_SMOOTHING: f64 = 0.25;
 
-/// The tunable shape of [`resolve`]. [`ResolveParams::DEFAULT`] is what the
-/// keyboard ships; other values exist for the typing benchmark.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolveParams {
-    /// See [`SIGMA_FRACTION`].
     pub sigma: f64,
-    /// See [`CORE_FRACTION`].
     pub core: f64,
-    /// See [`UNIFORM_SMOOTHING`].
     pub smoothing: f64,
 }
 
@@ -81,32 +72,23 @@ const MIN_LEARNING_RATE: f32 = 0.05;
 /// Bound on the number of per-key offsets retained.
 pub(crate) const MAX_LEARNED_KEYS: usize = 64;
 
-/// One letter key the resolver may choose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TouchKey {
     pub id: KeyId,
-    /// The lower-case letter the key types.
     pub ch: char,
-    /// The key's on-screen rectangle.
     pub rect: Rect,
 }
 
-/// How likely each letter is to be typed next. Letters absent from the map
-/// have zero context probability (before smoothing). An empty distribution is
-/// uniform.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NextKeyDistribution {
     probs: HashMap<char, f64>,
 }
 
 impl NextKeyDistribution {
-    /// Every letter equally likely.
     pub fn uniform() -> Self {
         Self::default()
     }
 
-    /// Build from unnormalised per-letter masses. Non-positive and non-finite
-    /// masses are dropped; the rest are normalised to sum to one.
     pub fn from_weights(weights: impl IntoIterator<Item = (char, f64)>) -> Self {
         let mut probs: HashMap<char, f64> = HashMap::new();
         for (ch, w) in weights {
@@ -123,9 +105,6 @@ impl NextKeyDistribution {
         Self { probs }
     }
 
-    /// Mix two distributions: `(1 - other_share) · self + other_share · other`.
-    /// An empty side contributes nothing, so blending with an empty
-    /// distribution returns the other unchanged.
     #[must_use]
     pub fn blend(&self, other: &Self, other_share: f64) -> Self {
         if other.probs.is_empty() {
@@ -145,7 +124,6 @@ impl NextKeyDistribution {
         Self { probs }
     }
 
-    /// Whether the distribution carries no context (uniform).
     pub fn is_uniform(&self) -> bool {
         self.probs.is_empty()
     }
@@ -165,8 +143,6 @@ pub struct KeyOffset {
     pub samples: u32,
 }
 
-/// Per-user touch adaptation: one learned [`KeyOffset`] per letter. Plain
-/// data so it can be persisted or synced privately between a user's devices.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TouchModel {
     offsets: BTreeMap<char, KeyOffset>,
@@ -177,22 +153,18 @@ impl TouchModel {
         Self::default()
     }
 
-    /// The learned offset for `ch`, if any.
     pub fn offset(&self, ch: char) -> Option<KeyOffset> {
         self.offsets.get(&ch).copied()
     }
 
-    /// Number of keys with a learned offset.
     pub fn learned_keys(&self) -> usize {
         self.offsets.len()
     }
 
-    /// Every learned offset, by letter.
     pub fn offsets(&self) -> &BTreeMap<char, KeyOffset> {
         &self.offsets
     }
 
-    /// Take `offsets` as where this user tends to hit each letter.
     pub fn adopt(&mut self, offsets: &BTreeMap<char, KeyOffset>) {
         self.offsets = offsets
             .iter()
@@ -201,13 +173,10 @@ impl TouchModel {
             .collect();
     }
 
-    /// Forget every learned offset.
     pub fn clear(&mut self) {
         self.offsets.clear();
     }
 
-    /// Record that the user meant `ch` (drawn at `rect`) when touching
-    /// `touch`, moving that key's expected centre towards where they hit it.
     pub fn learn(&mut self, ch: char, touch: Point, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -226,7 +195,6 @@ impl TouchModel {
         entry.dy = (entry.dy + rate * (oy - entry.dy)).clamp(-MAX_OFFSET, MAX_OFFSET);
     }
 
-    /// Log-likelihood (up to a shared constant) of `touch` given key `k`.
     fn log_touch_likelihood(&self, touch: Point, k: &TouchKey, sigma: f64) -> f64 {
         let w = k.rect.width();
         let h = k.rect.height();
@@ -240,7 +208,6 @@ impl TouchModel {
     }
 }
 
-/// The inner `fraction` of `rect`.
 pub fn core_zone(rect: Rect, fraction: f64) -> Rect {
     let mx = rect.width() * (1.0 - fraction) * 0.5;
     let my = rect.height() * (1.0 - fraction) * 0.5;
@@ -258,7 +225,6 @@ pub fn resolve(
     resolve_with(touch, keys, p_next, model, ResolveParams::DEFAULT)
 }
 
-/// [`resolve`] with explicit [`ResolveParams`].
 pub fn resolve_with(
     touch: Point,
     keys: &[TouchKey],
@@ -294,19 +260,13 @@ pub fn resolve_with(
         .map(|(id, _)| id)
 }
 
-/// One sampled cell of the effective hit map.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HitCell {
     pub rect: Rect,
-    /// The key a tap at the cell's centre resolves to.
     pub key: KeyId,
-    /// The letter key whose drawn rectangle holds the cell's centre.
     pub drawn: KeyId,
 }
 
-/// Sample the effective hit areas over `area` on a `step`-sized grid: what a
-/// tap at each cell's centre resolves to in this context. Drives the debug
-/// overlay that shows how context grows and shrinks the invisible targets.
 pub fn hit_map(
     area: Rect,
     step: f64,
@@ -339,8 +299,6 @@ pub fn hit_map(
     cells
 }
 
-/// Remembers the [`NextKeyDistribution`] for one typing context so it is
-/// computed once per keystroke rather than once per candidate or pointer move.
 #[derive(Clone, Debug, Default)]
 pub struct NextKeyCache {
     context: Option<(Option<String>, String)>,
@@ -456,7 +414,6 @@ mod tests {
     fn core_zone_always_wins() {
         let keys = qwerty_keys();
         let r = key(&keys, 'r');
-        // Context says only 'e' can follow, but the tap is well inside 'r'.
         let only_e = NextKeyDistribution::from_weights([('e', 1.0)]);
         let core = core_zone(r.rect, CORE_FRACTION);
         let touch = Point::new(core.x0 + 0.5, core.center().y);

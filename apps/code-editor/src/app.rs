@@ -856,13 +856,22 @@ impl CodeApp {
         };
         let Some(buffer) = self.session.active_buffer() else {
             self.editor.reconcile_from_doc(doc);
-            Self::note("Text edit was refused: no active file", ToastKind::Error);
+            Self::note(
+                CATALOG.t("code-editor-edit-refused-no-file"),
+                ToastKind::Error,
+            );
             return;
         };
         let file_id = self.buffer_key(buffer.node);
         if let Err(error) = self.dispatch_text_action(doc, file_id, &edit.base, &edit.next) {
             self.editor.reconcile_from_doc(doc);
-            Self::note(format!("Text edit was refused: {error}"), ToastKind::Error);
+            Self::note(
+                CATALOG.t_args(
+                    "code-editor-edit-refused",
+                    &[("detail", ArgValue::Text(error.to_string()))],
+                ),
+                ToastKind::Error,
+            );
         }
     }
 
@@ -1337,10 +1346,7 @@ impl CodeApp {
                                 });
                         self.pending_open = created;
                     }
-                    Err(error) => Self::note(
-                        format!("Could not create {name}: {error}"),
-                        ToastKind::Error,
-                    ),
+                    Err(error) => Self::note_create_failed(&name, &error),
                 }
             }
             Command::OpenFolder => self.request_open_folder(),
@@ -1357,7 +1363,7 @@ impl CodeApp {
                 if let Some(node) = self.session.active_buffer().map(|b| b.node)
                     && !self.request_format(doc, node, format_workflow::AfterFormat::Nothing)
                 {
-                    Self::note("No formatter is running for this file", ToastKind::Error);
+                    Self::note(CATALOG.t("code-editor-no-formatter"), ToastKind::Error);
                 }
             }
             Command::SaveAs => {
@@ -1375,7 +1381,7 @@ impl CodeApp {
                 }
             }
             Command::NextTheme => Self::note(
-                "Choose appearance in the operating system's settings",
+                CATALOG.t("code-editor-theme-in-system-settings"),
                 ToastKind::Info,
             ),
             Command::GoToSearch => {
@@ -1414,6 +1420,20 @@ impl CodeApp {
             }
         }
         self.dispatch_editor_text_edits(doc);
+    }
+
+    /// Say why a new file was refused, naming it and what the store answered.
+    fn note_create_failed(name: &str, error: &tilo_actions::ActionError) {
+        Self::note(
+            CATALOG.t_args(
+                "code-editor-create-failed",
+                &[
+                    ("name", ArgValue::Text(name.to_string())),
+                    ("detail", ArgValue::Text(error.to_string())),
+                ],
+            ),
+            ToastKind::Error,
+        );
     }
 
     fn toggle_bottom_panel(&mut self) {
@@ -1460,7 +1480,10 @@ impl CodeApp {
 
     pub fn go_to_line(&mut self, line_1based: usize) {
         if !self.editor.is_bound() {
-            Self::note("Open a file to jump to a line", ToastKind::Error);
+            Self::note(
+                CATALOG.t("code-editor-go-to-line-needs-file"),
+                ToastKind::Error,
+            );
             return;
         }
         let target = line_1based
@@ -2424,7 +2447,10 @@ impl CodeApp {
         self.search_truncated = false;
         self.search_files_scanned = 0;
         let Some(root) = self.session.project.root_path() else {
-            Self::note("Open a project folder to search it", ToastKind::Error);
+            Self::note(
+                CATALOG.t("code-editor-search-needs-folder"),
+                ToastKind::Error,
+            );
             return;
         };
         self.last_search_needle.clone_from(&query.needle);

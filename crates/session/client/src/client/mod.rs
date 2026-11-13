@@ -291,7 +291,8 @@ impl Client {
     /// A session takes these from its planes on every [`follow`](Self::follow). One with no plane
     /// of its own — a test, an embedder that carries the frames itself — hands them here instead.
     pub fn heard_presence(&self, workspace: &str, from: EndpointId, frame: &Frame) {
-        if self.presence.heard_presence(workspace, from, frame) {
+        let heard = self.presence.heard_presence(workspace, from, frame);
+        if heard | self.know_governed(workspace, from) {
             self.touched();
         }
     }
@@ -299,9 +300,21 @@ impl Client {
     /// One member's presence frame as its track carried it, opened by the workspace's board: what a
     /// host that carries the frames itself (a page's endpoint) hands its session.
     pub fn heard_body(&self, workspace: &str, from: EndpointId, body: &[u8]) {
-        if self.presence.heard_body(workspace, from, body) {
+        let heard = self.presence.heard_body(workspace, from, body);
+        if heard | self.know_governed(workspace, from) {
             self.touched();
         }
+    }
+
+    /// Know `from`, heard in `workspace` without a certificate of theirs, as the person the
+    /// workspace's governance admitted their device as: every surface that draws them — the bar's
+    /// face, the People list, their pointer, their caret in an app — then draws one person, by one
+    /// name and in one colour. Whether that is new here.
+    fn know_governed(&self, workspace: &str, from: EndpointId) -> bool {
+        self.presence.unknown_person(workspace, from)
+            && self
+                .governed_person(workspace, from)
+                .is_some_and(|person| self.presence.admitted_as(workspace, from, person))
     }
 
     /// The person the workspace `workspace`'s governance admitted `device` as: who a member is

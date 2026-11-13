@@ -59,7 +59,6 @@ impl AccessibilitySettings {
     }
 
     /// Turn the screen reader on or off. The field is changed only here:
-    /// the palette and agents find it by the words people use for it.
     #[action(
         id = "set-screen-reader",
         keywords = "narrator, voiceover, accessibility, read aloud"

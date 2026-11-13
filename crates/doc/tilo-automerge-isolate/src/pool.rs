@@ -26,10 +26,7 @@ use crate::worker;
 use crate::{Applied, Dependencies, Limits, Rejected};
 use tilo_lock::MutexRecover as _;
 
-/// Extra time for a full document sent to rebuild a worker's copy.
 const REBUILD_PER_MIB: Duration = Duration::from_millis(250);
-/// Document states whose worker the pool remembers; the least recently used
-/// quarter is forgotten when full.
 const ROUTES: usize = 4096;
 /// How long a new worker that is still running may take to say it is ready.
 /// Starting means executing this whole program again, which on a loaded
@@ -42,9 +39,7 @@ pub(crate) struct Pool {
     limits: Limits,
     slots: Vec<Mutex<Option<Worker>>>,
     next: AtomicUsize,
-    /// Which worker last saw each document state, and when.
     routes: Mutex<Routes>,
-    /// Times an apply rebuilt a worker copy from a full save.
     #[cfg(test)]
     full_rebuilds: AtomicUsize,
 }
@@ -83,7 +78,6 @@ impl Pool {
         let mut next = if key.complete_heads().is_some() {
             Base::Cached
         } else {
-            // Missing dependency hashes do not identify the queued changes.
             #[cfg(test)]
             self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
             Base::Full(full_save(doc))
@@ -122,8 +116,6 @@ impl Pool {
                             self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
                             Base::Full(full_save(doc))
                         }
-                        // A worker that cannot build the caller's own save
-                        // is not working.
                         Base::Full(_) => return Err(Rejected::Crashed),
                     };
                 }
@@ -135,8 +127,6 @@ impl Pool {
                 }
                 Reply::Applied(Applied::Changed(_)) => {
                     drop(worker);
-                    // The worker may keep the state it started from, for
-                    // other documents at it.
                     self.remember(key, slot);
                     let applied = engine::apply_trusted(doc, incoming, dependencies)?;
                     self.remember(Key::of(doc), slot);
@@ -174,7 +164,6 @@ impl Pool {
         known.unwrap_or_else(|| self.any_slot())
     }
 
-    /// Round robin over the workers.
     fn any_slot(&self) -> usize {
         self.next
             .fetch_add(1, Ordering::Relaxed)
@@ -188,9 +177,6 @@ impl Pool {
         }
     }
 
-    /// Send `request` to the worker in `slot`, starting one if there is
-    /// none. A worker that had exited for being idle is replaced, and a
-    /// request it died waiting for is sent again to its replacement.
     fn call(
         &self,
         slot: &mut Option<Worker>,
@@ -242,8 +228,6 @@ fn mib(bytes: usize) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
-/// Which worker last saw each document state, bounded by forgetting the
-/// least recently used states rather than all of them at once.
 #[derive(Default)]
 struct Routes {
     slots: HashMap<Key, (usize, u64)>,
@@ -273,12 +257,9 @@ impl Routes {
     }
 }
 
-/// What the worker builds the caller's document from.
 enum Base {
     Cached,
-    /// Its copy at an earlier state, plus the caller's changes since.
     After(Key, Vec<u8>),
-    /// The caller's full save.
     Full(Vec<u8>),
 }
 
@@ -289,8 +270,6 @@ fn full_save(doc: &mut AutoCommit) -> Vec<u8> {
     })
 }
 
-/// The changes the worker needs to bring one of its copies up to `doc`,
-/// if it holds a state that `doc` descends from.
 fn catch_up(doc: &mut AutoCommit, cached: &[Key]) -> Option<(Key, Vec<u8>)> {
     cached.iter().find_map(|key| {
         let heads = key.complete_heads()?;
@@ -365,7 +344,6 @@ impl Worker {
                     "automerge worker did not say it was ready within {STARTUP:?}"
                 )))
             }
-            // It ended without a word: this program does not serve workers.
             Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 worker.kill();
                 Err(Rejected::Unavailable(not_serving()))
@@ -387,7 +365,6 @@ impl Worker {
         let _ = self.child.wait();
     }
 
-    /// Whether the process has exited, as an idle worker does.
     fn exited(&mut self) -> bool {
         !matches!(self.child.try_wait(), Ok(None))
     }
@@ -404,8 +381,6 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        // Closing the request pipe ends the worker's loop; a worker stuck
-        // on an input is killed.
         if matches!(self.child.try_wait(), Ok(None)) {
             let _ = self.child.kill();
             let _ = self.child.wait();
@@ -413,11 +388,6 @@ impl Drop for Worker {
     }
 }
 
-/// How to start a worker: this executable again, or the worker program a
-/// library in someone else's executable named ([`crate::serve_workers_from`]).
-/// The same arguments select worker mode in a program that calls
-/// [`crate::dispatch_early`] and, as a test filter, the test `test_worker!`
-/// defines in a test binary.
 fn command(limits: &Limits) -> Command {
     let mut command = match crate::WORKER_PROGRAM.get() {
         Some(program) => Command::new(program),
@@ -501,12 +471,7 @@ fn spawn_with(
             {
                 return Err(io::Error::last_os_error());
             }
-            for (resource, value) in [
-                (libc::RLIMIT_CORE, 0),
-                // Heap and private anonymous mappings; the executable's own
-                // mapped image does not count.
-                (libc::RLIMIT_DATA, memory_bytes),
-            ] {
+            for (resource, value) in [(libc::RLIMIT_CORE, 0), (libc::RLIMIT_DATA, memory_bytes)] {
                 let limit = libc::rlimit {
                     rlim_cur: value,
                     rlim_max: value,
@@ -522,7 +487,6 @@ fn spawn_with(
         });
     }
     let child = spawner().spawn(command)?;
-    // The worker holds its own copies now.
     drop((request_read, reply_write));
     Ok(child)
 }
@@ -631,9 +595,6 @@ mod tests {
         let key = Key::of(&mut queued[0].0);
         assert_eq!(key, Key::of(&mut queued[1].0));
         assert!(key.complete_heads().is_none());
-        // Before the bypass this raw response is Applied: the worker used the
-        // second queue under the first queue's identical incomplete key. Do
-        // not apply in the caller, where independent decoding masks that error.
         let reply = worker.call(
             Request::Apply {
                 key: key.clone(),
@@ -648,8 +609,6 @@ mod tests {
             matches!(reply, Ok(Reply::Uncached(ref keys)) if keys.iter().all(|key| key.complete_heads().is_some())),
             "an incomplete state cannot authorize cached worker acceptance"
         );
-        // Sending the actual retained queue resolves its dependency and may
-        // cache the resulting COMPLETE state under its exact applied heads.
         assert!(matches!(
             worker.call(
                 Request::Apply {
@@ -688,7 +647,6 @@ mod tests {
         assert!(std::fs::File::open("/proc/self/status").is_ok());
         assert!(std::os::unix::net::UnixStream::pair().is_ok());
 
-        // `openat` is answered with EPERM and the worker lives on.
         let worker = Worker::spawn(&limits()).unwrap();
         let reply = worker.call(Request::Escape(Escape::Open).encode(), STARTUP);
         let message = match reply {
@@ -702,7 +660,6 @@ mod tests {
         let reply = worker.call(Request::Load { incoming: &[] }.encode(), STARTUP);
         assert!(matches!(reply, Ok(Reply::Loaded(_))));
 
-        // Anything else off the list kills it.
         let mut worker = Worker::spawn(&limits()).unwrap();
         let reply = worker.call(Request::Escape(Escape::Socket).encode(), STARTUP);
         assert!(
@@ -837,8 +794,6 @@ mod tests {
         );
     }
 
-    /// Two collaborators' history with concurrent heads, merges, a text and
-    /// an author, saved as one document chunk.
     fn collaborated() -> AutoCommit {
         let mut ada = AutoCommit::new()
             .with_actor(automerge::ActorId::from(vec![0xa1; 16]))
@@ -881,8 +836,6 @@ mod tests {
         let Ok(Reply::Loaded(hashes)) = reply else {
             panic!("a load is answered with its hashes");
         };
-        // Every change's hash, in the order the document chunk lists them:
-        // the order the known-hash load requires.
         let mut reference = engine::load(&saved).unwrap();
         assert_eq!(hashes, reference.document().change_hashes());
         assert_eq!(hashes.len(), doc.get_changes(&[]).len());
@@ -902,7 +855,6 @@ mod tests {
         assert_eq!(changes(&mut validated), changes(&mut reference));
         assert_eq!(validated.save(), reference.save());
 
-        // And so does the pool, end to end.
         let pool = Pool::new(limits());
         let mut admitted = pool.load(&saved).unwrap();
         assert_eq!(changes(&mut admitted), changes(&mut reference));
@@ -917,8 +869,6 @@ mod tests {
         let mut remote = doc.fork();
         remote.put(automerge::ROOT, "after", 1).unwrap();
         remote.commit();
-        // A document chunk followed by a change chunk: the worker's document
-        // holds a change the document chunk does not.
         saved.extend(remote.save_after(&heads));
         let worker = Worker::spawn(&limits()).unwrap();
         let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);

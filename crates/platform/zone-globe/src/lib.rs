@@ -1,21 +1,10 @@
-//! The time-zone globe: the Earth drawn as a globe with the land, the night
-//! side and every zone's city, turned by dragging. It is the time-zone
-//! picker's visual: clicking a city's dot, or anywhere else on the globe,
-//! chooses the zone of the city there or nearest to it, and a zone chosen in
-//! the picker turns the globe to face its city. The arrow keys walk from
-//! city to city and Enter chooses one.
+//! The time-zone globe: the Earth drawn orthographically with the land, the night
+//! side and every zone's city, turned by dragging for the time-zone picker.
 //!
-//! The land is Natural Earth's 1:110m polygons (`data/world-land.b64`), the
-//! cities are the installed tzdata's, and the night side is where the sun
-//! is down at the clock's current time.
-//!
-//! **Projection.** The front hemisphere is orthographic. Points behind it
-//! continue outward along the same azimuth (radius `2R − R·sin c`), so every
-//! coastline stays one closed, non-crossing ring however the globe is turned,
-//! and clipping the fill to the disk leaves exactly the visible land. A ring
-//! that encloses the point opposite the view's centre would map to the
-//! outside of its image, so the land is filled even-odd with a frame around
-//! it.
+//! Points behind the front hemisphere continue outward along the same azimuth
+//! (radius `2R − R·sin c`), so a coastline stays one closed, non-crossing ring
+//! however the globe turns. The land is filled even-odd with a frame around it,
+//! since a ring enclosing the point opposite the centre maps outside its image.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,44 +23,35 @@ use ui::i18n::ArgValue;
 
 ui::embedded_catalog!(fn, ["en-US", "de-DE"]);
 
-/// A time zone's city where the installed tzdata places it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeZonePoint {
-    /// The zone's IANA id (`Europe/Berlin`).
     pub id: String,
-    /// The region the id names (`Europe`).
     pub region: String,
-    /// The city the id names (`Berlin`).
     pub city: String,
-    /// Published by the installed tzdata `zone1970.tab`/`zone.tab`, not
-    /// guessed from the identifier. Stored as microdegrees so the model stays
+    /// From the installed tzdata `zone1970.tab`; microdegrees keep [`TimeZonePoint`]
     /// `Eq` and exact enough for a compact picker.
     pub latitude_e6: i32,
-    /// The city's longitude, in microdegrees.
     pub longitude_e6: i32,
 }
 
 impl TimeZonePoint {
-    /// The city's latitude, in degrees.
     #[must_use]
     pub fn latitude(&self) -> f64 {
         f64::from(self.latitude_e6) / 1_000_000.0
     }
 
-    /// The city's longitude, in degrees.
     #[must_use]
     pub fn longitude(&self) -> f64 {
         f64::from(self.longitude_e6) / 1_000_000.0
     }
 }
 
-/// The land masses, from Natural Earth's 1:110m land polygons
-/// (`data/world-land.b64`, format and provenance in `data/README.md`).
-/// tzdata publishes where each zone's city is, but nothing installed
-/// describes the coastlines the cities sit on.
+/// Natural Earth's 1:110m land polygons (`data/world-land.b64`, format and
+/// provenance in `data/README.md`): tzdata says where each zone's city is, not
+/// which coastline it sits on.
 const WORLD_LAND: &str = include_str!("../data/world-land.b64");
 
-/// The value of base64 digit `c`, or `None` for padding and line breaks.
+/// `None` for padding and line breaks.
 const fn sextet(c: u8) -> Option<u8> {
     match c {
         b'A'..=b'Z' => Some(c.wrapping_sub(b'A')),
@@ -83,7 +63,6 @@ const fn sextet(c: u8) -> Option<u8> {
     }
 }
 
-/// How many bytes standard, padded base64 `text` holds.
 const fn decoded_len(mut text: &[u8]) -> usize {
     let mut digits = 0_usize;
     while let [c, rest @ ..] = text {
@@ -95,9 +74,8 @@ const fn decoded_len(mut text: &[u8]) -> usize {
     digits.wrapping_mul(3) / 4
 }
 
-/// The `N` bytes of standard, padded base64 `text`; line breaks are
-/// skipped. Evaluated while compiling, so the app carries the bytes, not
-/// their base64 text and a decoder.
+/// The `N` bytes of standard, padded base64 `text`, decoded while compiling, so
+/// the app carries the bytes and no decoder.
 const fn decode_base64<const N: usize>(mut text: &[u8]) -> [u8; N] {
     let mut out = [0_u8; N];
     let mut slots: &mut [u8] = &mut out;
@@ -126,10 +104,9 @@ const fn decode_base64<const N: usize>(mut text: &[u8]) -> [u8; N] {
 static WORLD_LAND_BYTES: [u8; decoded_len(WORLD_LAND.as_bytes())] =
     decode_base64(WORLD_LAND.as_bytes());
 
-/// Walk `WORLD_LAND`: each ring is a little-endian `u16` point count, its
-/// first point as two `i16` (longitude, latitude) in tenths of a degree,
-/// then one `i8` pair per further point, the step from the point before.
-/// `visit` gets each point in degrees and whether it starts a ring.
+/// Walk `WORLD_LAND`: each ring is a little-endian `u16` point count, its first
+/// point as two `i16` (longitude, latitude) in tenths of a degree, then one `i8`
+/// pair per further point, the step from the point before.
 pub fn walk_world_land(mut visit: impl FnMut(f64, f64, bool)) {
     let mut bytes = WORLD_LAND_BYTES.as_slice();
     while let [n0, n1, x0, x1, y0, y1, rest @ ..] = bytes {
@@ -152,14 +129,11 @@ pub fn walk_world_land(mut visit: impl FnMut(f64, f64, bool)) {
     }
 }
 
-/// One coastline: its points as unit vectors, and its points in degrees for
-/// the point-in-ring test.
 struct Ring {
     points: Vec<[f64; 3]>,
     degrees: Vec<(f64, f64)>,
 }
 
-/// The coastlines, decoded once.
 static RINGS: LazyLock<Vec<Ring>> = LazyLock::new(|| {
     let mut rings: Vec<Ring> = Vec::new();
     walk_world_land(|longitude, latitude, starts| {
@@ -178,9 +152,8 @@ static RINGS: LazyLock<Vec<Ring>> = LazyLock::new(|| {
 });
 
 impl Ring {
-    /// Whether the ring encloses the place at `longitude`, `latitude`:
-    /// the rings do not cross the antimeridian, so a planar test in degrees
-    /// answers it.
+    /// Whether the ring encloses the place. Rings do not cross the antimeridian, so
+    /// a planar test in degrees answers it.
     fn encloses(&self, longitude: f64, latitude: f64) -> bool {
         let mut inside = false;
         let mut previous = self.degrees.last().copied();
@@ -197,7 +170,6 @@ impl Ring {
     }
 }
 
-/// The unit vector of a place, from degrees.
 fn unit(longitude: f64, latitude: f64) -> [f64; 3] {
     let (lambda, phi) = (longitude.to_radians(), latitude.to_radians());
     [
@@ -236,7 +208,6 @@ fn normalized(a: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// The great-circle distance between two places in degrees.
 pub fn degrees_apart(a: (f64, f64), b: (f64, f64)) -> f64 {
     dot(unit(a.0, a.1), unit(b.0, b.1))
         .clamp(-1.0, 1.0)
@@ -244,15 +215,12 @@ pub fn degrees_apart(a: (f64, f64), b: (f64, f64)) -> f64 {
         .to_degrees()
 }
 
-/// Which way the globe faces: the place at its centre, in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
     pub longitude: f64,
     pub latitude: f64,
 }
 
-/// How far the globe may tilt toward a pole: past this the land near the
-/// pole is all that shows.
 const MAX_TILT_DEGREES: u8 = 70;
 
 impl View {
@@ -268,12 +236,10 @@ fn wrap_longitude(longitude: f64) -> f64 {
     (longitude + 180.0).rem_euclid(360.0) - 180.0
 }
 
-/// The globe's projection at a size and a view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Projection {
     centre: Point,
     radius: f64,
-    /// The view's centre, east and north as unit vectors.
     forward: [f64; 3],
     east: [f64; 3],
     north: [f64; 3],
@@ -299,8 +265,6 @@ impl Projection {
         dot(p, self.forward) > 0.0
     }
 
-    /// Where `p` lands: orthographic in front, continued outward behind
-    /// (see the module's note).
     fn project(&self, p: [f64; 3]) -> Point {
         let (x, y) = (dot(p, self.east), dot(p, self.north));
         let sine = x.hypot(y);
@@ -339,7 +303,6 @@ impl Projection {
         ))
     }
 
-    /// The opposite of the view's centre, in degrees.
     fn antipode(&self) -> (f64, f64) {
         let p = scaled(self.forward, -1.0);
         (
@@ -348,8 +311,6 @@ impl Projection {
         )
     }
 
-    /// A frame around everything the projection reaches, for a ring that
-    /// encloses the antipode (filled even-odd, it turns the ring inside out).
     fn frame(&self, path: &mut BezPath) {
         let r = self.radius * 2.5;
         let (x, y) = (self.centre.x, self.centre.y);
@@ -376,7 +337,6 @@ impl Projection {
         }
     }
 
-    /// The land, filled even-odd.
     fn land(&self) -> BezPath {
         let mut path = BezPath::new();
         let (longitude, latitude) = self.antipode();
@@ -392,8 +352,8 @@ impl Projection {
         path
     }
 
-    /// Where the sun is more than `angle` degrees from overhead, at `unix`:
-    /// the night side at 90, with the twilight band beyond it.
+    /// Where the sun is more than `angle` degrees from overhead at `unix`: the night
+    /// side at 90, with the twilight band beyond it.
     fn dark_side(&self, unix: i64, angle: f64) -> BezPath {
         let away = scaled(sun_overhead(unix), -1.0);
         let reach = (180.0 - angle).to_radians();
@@ -451,14 +411,14 @@ impl Projection {
     }
 }
 
-/// The point where the sun stands overhead at `unix`, as a unit vector: its
-/// declination from the day of the year, its longitude from the time of day.
-/// Accurate to a degree or so, which is a pixel on the globe.
 /// A count of seconds within a year, which an `f64` holds exactly.
 fn seconds(within_year: i64) -> f64 {
     u32::try_from(within_year).map_or(0.0, f64::from)
 }
 
+/// The point where the sun stands overhead at `unix`, as a unit vector: its
+/// declination from the day of the year, its longitude from the time of day.
+/// Accurate to a degree or so, which is a pixel on the globe.
 fn sun_overhead(unix: i64) -> [f64; 3] {
     let day = seconds(unix.rem_euclid(365 * 86_400 + 21_600)) / 86_400.0;
     let declination = -23.44 * (std::f64::consts::TAU * (day + 10.0) / 365.25).cos();
@@ -466,10 +426,6 @@ fn sun_overhead(unix: i64) -> [f64; 3] {
     unit(wrap_longitude((12.0 - hours) * 15.0), declination)
 }
 
-/// The globe's colours, from the theme: land a step off the sea in the
-/// theme's own ink, and night and the sphere's falloff darker in both
-/// polarities (dark themes darken toward their ground, light ones with a
-/// wash of their ink).
 struct GlobePalette {
     land: vello::peniko::Color,
     night: vello::peniko::Color,
@@ -480,34 +436,24 @@ impl GlobePalette {
     fn of(colors: &ui::tokens::colors::Colors) -> Self {
         if colors.palette.dark {
             Self {
-                // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
                 land: colors.text_primary.multiply_alpha(0.26),
-                // ratchet-allow(literal_alpha, desktop_ground): the time-zone globe is content drawing (land, night and shade on the sphere)
                 night: colors.surfaces.base.multiply_alpha(0.5),
-                // ratchet-allow(literal_alpha, desktop_ground): the time-zone globe is content drawing (land, night and shade on the sphere)
                 shade: colors.surfaces.base.multiply_alpha(0.55),
             }
         } else {
             Self {
-                // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
                 land: colors.text_primary.multiply_alpha(0.16),
-                // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
                 night: colors.text_primary.multiply_alpha(0.07),
-                // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
                 shade: colors.text_primary.multiply_alpha(0.08),
             }
         }
     }
 }
 
-/// What the globe keeps across the pane's rebuilds: which way it faces,
-/// the zone it last faced, the keyboard's city, and the land
-/// already projected for the current size and view.
 #[derive(Default)]
 pub struct GlobeState {
     pub view: Option<View>,
-    /// The zone the globe was last turned to face, so a zone chosen
-    /// elsewhere (the picker) turns it once.
+    /// The zone the globe was last turned to face.
     faced: Option<String>,
     cursor: Option<usize>,
     land: Option<(Projection, BezPath)>,
@@ -515,18 +461,14 @@ pub struct GlobeState {
 
 pub type SharedGlobe = Rc<RefCell<GlobeState>>;
 
-/// The globe widget. Rebuilt with the pane; everything it must remember is
-/// in its [`GlobeState`].
+/// The globe widget; what it remembers is in its [`GlobeState`].
 pub struct TimeZoneGlobe {
     points: Rc<[TimeZonePoint]>,
     selected: String,
     state: SharedGlobe,
-    /// The clock's time, for the night side.
     now: i64,
     hover: Option<usize>,
     last_cursor: Point,
-    /// Where a press landed and the view it started from, while the button
-    /// is down; and whether it has moved far enough to be a drag.
     press: Option<(Point, View, bool)>,
     focused: bool,
     hit_radius: f64,
@@ -535,9 +477,7 @@ pub struct TimeZoneGlobe {
     tooltip: Option<String>,
 }
 
-/// The globe's diameter, at the default text size.
 const DIAMETER: f32 = ui::tokens::Metrics::BASE.figure_size;
-/// How far a press may move and still be a click.
 const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.click_slop as f64;
 
 impl TimeZoneGlobe {
@@ -550,9 +490,8 @@ impl TimeZoneGlobe {
         let selected = selected.into();
         {
             let mut shared = state.borrow_mut();
-            // The globe faces the chosen zone's city when it first shows
-            // and whenever the zone is chosen anywhere else; a turn the
-            // person made by dragging stays until then.
+            // Faces the chosen zone's city when it first shows and whenever the zone is
+            // chosen elsewhere; a turn the person made by dragging stays until then.
             if (shared.view.is_none() || shared.faced.as_deref() != Some(selected.as_str()))
                 && let Some(point) = points.iter().find(|point| point.id == selected)
             {
@@ -609,7 +548,6 @@ impl TimeZoneGlobe {
             .map(|point| unit(point.longitude(), point.latitude()))
     }
 
-    /// The city whose dot is under `position`, on the front of the globe.
     fn point_at(&self, position: Point) -> Option<usize> {
         let projection = self.projection();
         if position.distance(projection.centre) > projection.radius + self.hit_radius {
@@ -638,8 +576,6 @@ impl TimeZoneGlobe {
         self.state.borrow().cursor
     }
 
-    /// Move the keyboard's city to the nearest one in a direction, and turn
-    /// the globe to it.
     fn move_cursor(&self, east: f64, north: f64) {
         let current = self
             .cursor()
@@ -671,7 +607,6 @@ impl TimeZoneGlobe {
             let mut state = self.state.borrow_mut();
             state.cursor = Some(target);
             let view = state.view.unwrap_or_else(|| View::facing(0.0, 0.0));
-            // Turn only as far as keeps the city in view.
             let facing = degrees_apart(
                 (view.longitude, view.latitude),
                 (point.longitude(), point.latitude()),
@@ -689,7 +624,6 @@ impl TimeZoneGlobe {
                 return;
             }
             self.selected.clone_from(&point.id);
-            // Chosen here, already in view: the globe stays where it is.
             self.state.borrow_mut().faced = Some(point.id.clone());
             if let Some(action) = &mut self.action {
                 let _ = action.emit(point.id.clone());
@@ -697,7 +631,6 @@ impl TimeZoneGlobe {
         }
     }
 
-    /// The city nearest `place` (longitude, latitude).
     fn nearest_to(&self, place: (f64, f64)) -> Option<usize> {
         self.points
             .iter()
@@ -720,7 +653,6 @@ impl TimeZoneGlobe {
             return false;
         }
         let radius = self.projection().radius;
-        // A drag across the globe's radius turns it by about a radian.
         let longitude = view.longitude - ((position.x - start.x) / radius).to_degrees();
         let latitude = view.latitude + ((position.y - start.y) / radius).to_degrees();
         self.state.borrow_mut().view = Some(View::facing(longitude, latitude));
@@ -739,9 +671,6 @@ impl TimeZoneGlobe {
             )
         })
     }
-    /// The cities on the globe's face: a dot for each, then the hovered,
-    /// the keyboard's and the chosen one marked, and the focus ring. The
-    /// pane shows no globe without zones to place on it.
     fn paint_cities(
         &self,
         scene: &mut Scene,
@@ -756,7 +685,6 @@ impl TimeZoneGlobe {
 
         let selected = self.selected_index();
         let cursor = self.cursor().filter(|_| self.focused);
-        // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
         let dots = colors.text_primary.multiply_alpha(0.55);
         let mut marks = BezPath::new();
         for index in 0..self.points.len() {
@@ -771,7 +699,6 @@ impl TimeZoneGlobe {
                 marks.extend(Circle::new(at, 1.8).path_elements(0.1));
             }
         }
-        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.fill(Fill::NonZero, transform, dots, None, &marks);
         for (index, emphasis) in [(self.hover, false), (cursor, false), (selected, true)] {
             let Some(index) = index else { continue };
@@ -783,8 +710,7 @@ impl TimeZoneGlobe {
             }
             let at = projection.project(p);
             if emphasis {
-                // The chosen city: the person's accent, ringed in the ground
-                // so it stands off the land and the night.
+                // The chosen city, ringed in the ground so it stands off the land and the night.
                 // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.fill(
                     Fill::NonZero,
@@ -793,7 +719,6 @@ impl TimeZoneGlobe {
                     None,
                     &Circle::new(at, 6.5),
                 );
-                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -802,7 +727,6 @@ impl TimeZoneGlobe {
                     &Circle::new(at, 4.5),
                 );
             } else {
-                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -817,7 +741,6 @@ impl TimeZoneGlobe {
             }
         }
         if self.focused {
-            // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
@@ -841,8 +764,7 @@ impl Widget for TimeZoneGlobe {
         self.hit_radius = f64::from(theme.tokens.metrics.min_pointer_target) / 2.0;
         let diameter = DIAMETER * theme.tokens.metrics.min_pointer_target
             / ui::tokens::Metrics::BASE.min_pointer_target;
-        // As wide as it may be up to its diameter, never wider than the
-        // column it is in, and always round.
+        // As wide as the column allows, never wider than its diameter, and always round.
         let style = Style {
             size: Size {
                 width: Dimension::length(diameter),
@@ -877,17 +799,14 @@ impl Widget for TimeZoneGlobe {
         theme: &Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
-        // The globe turns and hovers through state it shares with the rest
-        // of the app: what it paints is only current until the next input.
         ui::outside_paint::note();
         let colors = &theme.tokens.colors;
         let palette = GlobePalette::of(colors);
-        // The globe's paths are built around the origin and moved into
-        // place, so scrolling the page never projects the land again.
+        // Paths are built around the origin and moved into place, so scrolling the page
+        // never projects the land again.
         let transform = transform.pre_translate(self.rect.center().to_vec2());
         let projection = Projection::new(Point::ZERO, self.radius(), self.view());
         let disk = Circle::new(projection.centre, projection.radius);
-        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.fill(
             Fill::NonZero,
             transform,
@@ -897,7 +816,6 @@ impl Widget for TimeZoneGlobe {
         );
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &disk);
-        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -915,14 +833,11 @@ impl Widget for TimeZoneGlobe {
                 state.land = Some((projection, projection.land()));
             }
             if let Some((_, land)) = &state.land {
-                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.fill(Fill::EvenOdd, transform, palette.land, None, land);
             }
         }
-        // The night: the twilight band, then the night inside it.
         let night = palette.night;
         for angle in [96.0, 90.0] {
-            // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
             scene.fill(
                 Fill::EvenOdd,
                 transform,
@@ -931,19 +846,15 @@ impl Widget for TimeZoneGlobe {
                 &projection.dark_side(self.now, angle),
             );
         }
-        // Light from the upper left: the far edge of the sphere falls off.
         let shade = vello::peniko::Gradient::new_radial(
             Point::new(-projection.radius * 0.35, -projection.radius * 0.4),
             (projection.radius * 1.55) as f32,
         )
         .with_stops([
-            // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
             (0.0_f32, palette.shade.multiply_alpha(0.0)),
-            // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
             (0.6_f32, palette.shade.multiply_alpha(0.0)),
             (1.0_f32, palette.shade),
         ]);
-        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.fill(
             Fill::NonZero,
             transform,
@@ -952,7 +863,6 @@ impl Widget for TimeZoneGlobe {
             &disk,
         );
         scene.pop_layer();
-        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -1004,8 +914,6 @@ impl Widget for TimeZoneGlobe {
                 if dragged {
                     return;
                 }
-                // A dot chooses its city's zone; anywhere else on the globe
-                // chooses the zone of the city nearest the place.
                 if let Some(index) = self
                     .point_at(self.last_cursor)
                     .or_else(|| self.nearest_to(self.projection().place_at(self.last_cursor)?))
@@ -1140,8 +1048,6 @@ mod tests {
         )
     }
 
-    /// The packed land data decodes whole: every ring, every point on the
-    /// globe.
     #[test]
     fn the_packed_land_decodes_to_rings_on_the_globe() {
         let (mut rings, mut points, mut northmost) = (0, 0, f64::MIN);
@@ -1158,8 +1064,6 @@ mod tests {
         assert_eq!(RINGS.len(), 119);
     }
 
-    /// The front of the globe is where its centre faces, a click finds the
-    /// place it was drawn at, and the back continues outside the disk.
     #[test]
     fn a_place_is_drawn_where_a_click_finds_it() {
         let globe = projection(10.0, 45.0);
@@ -1181,9 +1085,6 @@ mod tests {
         assert!(globe.place_at(Point::new(250.0, 100.0)).is_none());
     }
 
-    /// Turned to any side, the globe draws the land under its cities and
-    /// open water elsewhere, including views whose far side lies inside a
-    /// continent (the even-odd frame).
     #[test]
     fn the_land_is_under_the_cities_from_every_side() {
         let inland = [(13.4, 52.5), (-104.9, 39.7), (116.4, 39.9), (-47.9, -15.8)];
@@ -1212,8 +1113,6 @@ mod tests {
         }
     }
 
-    /// The night side is opposite the sun: at noon UTC near an equinox,
-    /// Greenwich is in daylight and the date line in the night.
     #[test]
     fn the_night_is_where_the_sun_is_down() {
         // 2026-03-20 12:00 UTC.
@@ -1269,17 +1168,13 @@ mod tests {
             (view.longitude, view.latitude)
         };
         assert!(degrees_apart(facing(&state), (4.9, 52.37)) < 40.0);
-        // Anywhere on the globe chooses the city nearest the place: Utrecht
-        // is Amsterdam's, the middle of Honshu Tokyo's.
         assert_eq!(globe.nearest_to((5.12, 52.09)), Some(0));
         assert_eq!(globe.nearest_to((137.0, 36.0)), Some(2));
 
-        // The person drags the globe a little; a rebuild keeps their turn.
         state.borrow_mut().view = Some(View::facing(10.0, 40.0));
         let _ = TimeZoneGlobe::new(Rc::clone(&points), "Europe/Amsterdam", Rc::clone(&state), 0);
         assert_eq!(facing(&state), (10.0, 40.0));
 
-        // Tokyo chosen in the picker: the globe turns to face it.
         let _ = TimeZoneGlobe::new(Rc::clone(&points), "Asia/Tokyo", Rc::clone(&state), 0);
         assert!(degrees_apart(facing(&state), (139.69, 35.69)) < 40.0);
     }

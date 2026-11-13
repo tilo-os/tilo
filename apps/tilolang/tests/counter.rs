@@ -24,17 +24,14 @@ fn settle(app: &mut HostedApp) {
 
 /// The id of the control whose accessible name is `name`.
 fn control_named(app: &mut HostedApp, name: &str) -> String {
-    fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
-        let named = node
-            .semantics
+    let named = |node: &&ui::headless::InspectionNode| {
+        node.semantics
             .as_ref()
-            .is_some_and(|access| access.name.as_deref() == Some(name));
-        if named && let Some(id) = &node.test_id {
-            return Some(id.clone());
-        }
-        node.children.iter().find_map(|child| find(child, name))
-    }
-    find(&app.harness().inspection().root, name)
+            .is_some_and(|access| access.name.as_deref() == Some(name))
+    };
+    (app.harness().inspection().root.nodes().into_iter())
+        .filter(named)
+        .find_map(|node| node.test_id.clone())
         .unwrap_or_else(|| panic!("no control named `{name}`"))
 }
 

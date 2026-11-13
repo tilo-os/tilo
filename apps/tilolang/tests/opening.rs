@@ -5,7 +5,6 @@
 use serde_json::Map;
 use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
-use ui::headless::InspectionNode;
 
 const NOTES: &str = "so.tilo.lang.notes";
 /// The workspace `--data-dir` opens.
@@ -31,22 +30,10 @@ impl Drop for Scratch {
 
 /// Everything the window says, as a screen reader hears it.
 fn said(app: &mut HostedApp) -> Vec<String> {
-    fn walk(node: &InspectionNode, out: &mut Vec<String>) {
-        if let Some(name) = node
-            .semantics
-            .as_ref()
-            .and_then(|access| access.name.clone())
-        {
-            out.push(name);
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
     app.harness().relayout();
-    let mut out = Vec::new();
-    walk(&app.harness().inspection().root, &mut out);
-    out
+    (app.harness().inspection().root.nodes().into_iter())
+        .filter_map(|node| node.semantics.as_ref()?.name.clone())
+        .collect()
 }
 
 fn settle(app: &mut HostedApp) {

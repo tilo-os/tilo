@@ -39,19 +39,13 @@ use crate::resource::{ReportProjection, StoreEffect};
 use crate::widgets::app::{self as app_widget, Primary};
 use crate::widgets::visible_version;
 
-/// How wide a page's content may grow, in lines of body text, so it widens
-/// with the text scale like every other text-sized measure.
 #[derive(Clone, Copy)]
 pub(super) enum Measure {
-    /// Grids of cards and lists use the canvas.
     Catalogue,
-    /// Prose, facts and forms stay at a readable measure.
     Reading,
 }
 
 impl Measure {
-    /// The page column's width in lines of body text: the shell lines the
-    /// title, its actions and the search field up with it.
     pub(super) const CATALOGUE_LINES: u8 = 55;
 
     fn width(self, theme: &Theme) -> f32 {
@@ -65,15 +59,11 @@ impl Measure {
 
 type Element = Box<dyn Widget>;
 
-/// How many cards or rows a long list shows before Show more.
 pub(super) const PAGE: usize = 48;
 
-/// The width of one screenshot in the gallery, in lines of body text.
 const SCREENSHOT_LINES: u8 = 14;
 
 impl StoreState {
-    /// Compose the whole tree. Called from `build_layout`; also used by tests
-    /// to inspect the composition graph directly.
     pub(super) fn compose(&self, theme: &Theme) -> Element {
         if self.safety_open {
             self.build_safety_center(theme)
@@ -138,13 +128,10 @@ impl StoreState {
         )
     }
 
-    /// A quiet paragraph of prose.
     fn prose(text: &str) -> Element {
         Box::new(Text::new(text).with_role(TextRole::Body).dimmed())
     }
 
-    /// The top of every catalogue view: a running operation or a failure.
-    /// The view switcher is the window bar's ([`super::window_bar`]).
     fn catalogue_top(&self) -> Vec<Element> {
         let mut top = Vec::new();
         if !self.items.is_empty()
@@ -155,8 +142,6 @@ impl StoreState {
         top
     }
 
-    /// Persistent operation feedback belongs in document flow: `Banner` is the
-    /// shared alert, readable at large type and announced as a status.
     pub(super) fn operation_notice(&self) -> Option<Element> {
         if self.worker_busy && self.active_operation.is_none() && self.pending_jobs > 0 {
             let detail = if self.status_line.is_empty() {
@@ -219,7 +204,6 @@ impl StoreState {
         })
     }
 
-    /// The one action an app offers from a list or its page.
     pub(super) fn primary(&self, item: &StoreItem) -> Primary {
         let action = item.action_kind(self.flatpak_available);
         let busy = self
@@ -241,8 +225,6 @@ impl StoreState {
             }),
             label,
             binding: bindings::package(item, action),
-            // One operation no longer freezes the Store: jobs are concurrent
-            // by construction, and each has its own row.
             enabled: unavailable.is_none(),
             progress: busy.then(|| progress_label(action, &item.name)),
         }
@@ -259,7 +241,6 @@ impl StoreState {
         )
     }
 
-    /// An app as a row with `trailing` at its end, opening its page.
     fn row(&self, item: &StoreItem, trailing: Option<Element>, meta: Option<String>) -> Element {
         app_widget::row(
             item,
@@ -270,7 +251,6 @@ impl StoreState {
         )
     }
 
-    /// An app as a row whose end is its one action.
     fn action_row(&self, item: &StoreItem, meta: Option<String>) -> Element {
         if item.not_built_for_this_device() {
             // Nothing to offer: the row says it is not available here, and
@@ -309,7 +289,6 @@ impl StoreState {
         ids.iter().filter_map(|id| self.item(id))
     }
 
-    /// A grid of the apps `ids` names under `title`, or nothing without one.
     fn shelf(&self, title: &str, ids: &[String]) -> Option<Element> {
         let cards: Vec<Element> = self.items_of(ids).map(|item| self.card(item)).collect();
         (!cards.is_empty()).then(|| {
@@ -331,9 +310,6 @@ impl StoreState {
         })
     }
 
-    /// Home: Updates when there are any, Tilo's apps and Flathub's popular
-    /// ones, the recently updated, and the categories. Real content only; a
-    /// shelf with nothing in it is left out.
     pub(super) fn build_home(&self, theme: &Theme) -> Element {
         let mut children = self.catalogue_top();
         let home = self
@@ -398,7 +374,6 @@ impl StoreState {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// Every app in `category`, Tilo first.
     pub(super) fn build_category(&self, theme: &Theme, category: &str) -> Element {
         let mut children = self.catalogue_top();
         let ids = catalogue::in_category(&self.items, &self.blocks, category);
@@ -420,7 +395,6 @@ impl StoreState {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// The apps of one configured Flatpak repository.
     fn build_repository(&self, theme: &Theme, remote: &str) -> Element {
         let mut children = self.catalogue_top();
         let ids = self.repository_ids(remote);
@@ -432,7 +406,6 @@ impl StoreState {
                 .take(self.shown)
                 .map(|item| self.card(item))
                 .collect();
-            // The window bar's location names the repository.
             children.push(Box::new(Section::new(vec![Box::new(CardGrid::new(cards))])));
             children.extend(self.show_more(ids.len()));
         }
@@ -470,7 +443,6 @@ impl StoreState {
         })
     }
 
-    /// Why the catalogue couldn't be read, if it couldn't.
     fn catalogue_unreachable(&self) -> Option<&String> {
         self.operation_error.as_ref().or_else(|| {
             self.remotes
@@ -479,7 +451,6 @@ impl StoreState {
         })
     }
 
-    /// Updates: one list, Update all, and Update on each app.
     pub(super) fn build_updates(&self, theme: &Theme) -> Element {
         let mut children = self.catalogue_top();
         let ids = self.update_ids();
@@ -512,7 +483,6 @@ impl StoreState {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// On this device: every app here, Tilo first, by name.
     pub(super) fn build_installed(&self, theme: &Theme) -> Element {
         let mut children = self.catalogue_top();
         let mut here: Vec<&StoreItem> = self
@@ -573,9 +543,6 @@ impl StoreState {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// Search inside the Store: apps, then bots, found on this device as the
-    /// person types; then what Flathub has that the kept catalogue does not,
-    /// in its own section so nothing above it moves when it arrives.
     pub(super) fn build_search(&self, theme: &Theme) -> Element {
         let mut children = Vec::new();
         if self.items.is_empty() && self.remote_results.is_empty() {
@@ -645,12 +612,8 @@ impl StoreState {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// The catalogue has nothing to show: on its way, offline or empty. One
-    /// sentence and at most one action.
     fn empty_catalogue(&self) -> Element {
         if self.worker_busy && self.items.is_empty() {
-            // The catalogue on its way: the framework's placeholder, in the
-            // shape of the cards it brings.
             return Box::new(
                 self.catalogue_read
                     .view(|()| -> Element { Box::new(Spacer::new()) })
@@ -671,9 +634,6 @@ impl StoreState {
         })
     }
 
-    /// The page of the focused app: who makes it and what it is, its one
-    /// action, its screenshots, what it does and what changed, its facts and
-    /// what it may do, and blocking and reporting it.
     pub(super) fn build_detail(&self, theme: &Theme) -> Option<Element> {
         let id = self.focused_detail.as_ref()?;
         let item = self
@@ -752,8 +712,6 @@ impl StoreState {
         Some(self.page(theme, Measure::Reading, false, children))
     }
 
-    /// The top of the page: the app's icon, name, developer and tag line,
-    /// then what can be done with it.
     fn detail_header(&self, item: &StoreItem) -> Element {
         let mut identity = Column::new()
             .with_no_padding()
@@ -807,7 +765,6 @@ impl StoreState {
         )
     }
 
-    /// Who makes the app: its listing's developer, else its kept details'.
     pub(super) fn developer(&self, item: &StoreItem) -> String {
         if !item.listing.developer.is_empty() {
             return item.listing.developer.clone();
@@ -818,10 +775,6 @@ impl StoreState {
             .unwrap_or_default()
     }
 
-    /// The page's actions: its one primary action (Open for a Tilo app, which
-    /// downloads it when needed; Install for a Flathub app), with its progress
-    /// inline while it runs; then keeping a Tilo app on this device, and
-    /// removing an installed one.
     fn detail_actions(&self, item: &StoreItem) -> Element {
         if self.blocks.is_blocked(&item.id) {
             // A blocked app cannot be opened or installed from here; its
@@ -913,8 +866,6 @@ impl StoreState {
         Box::new(row)
     }
 
-    /// What the page shows beyond the catalogue row, from the app's kept or
-    /// fetched details and its listing.
     pub(super) fn page_facts(&self, item: &StoreItem) -> PageFacts {
         let details = self.details.get(&item.id);
         let paragraphs = details
@@ -940,7 +891,6 @@ impl StoreState {
             .map(|details| details.releases.clone())
             .filter(|releases| !releases.is_empty())
             .unwrap_or_else(|| {
-                // A Tilo listing names its versions and when they shipped.
                 item.versions
                     .iter()
                     .filter(|version| version.released_at_unix > 0)
@@ -984,8 +934,6 @@ impl StoreState {
         }
     }
 
-    /// The screenshots as one horizontal gallery, each loading from the disk
-    /// cache or the network on its own.
     fn gallery(&self, item: &StoreItem, shots: &[String], theme: &Theme) -> Option<Element> {
         let store = self.images.as_ref()?;
         if shots.is_empty() {
@@ -1131,7 +1079,6 @@ impl StoreState {
         rows
     }
 
-    /// Who blocked the app, and for the person who did, the way back.
     fn blocked_notice(&self, item: &StoreItem) -> Option<Element> {
         let blockers = self.blocks.blockers(&item.id);
         // A policy's block is the one that matters: lifting the person's own
@@ -1165,8 +1112,6 @@ impl StoreState {
         Some(Box::new(banner))
     }
 
-    /// Blocking the app: it then appears in no list and no search, here or in
-    /// the desktop's search.
     fn block_section(&self, item: &StoreItem) -> Element {
         if self.blocks.is_blocked(&item.id) {
             return Box::new(Section::titled(
@@ -1191,9 +1136,6 @@ impl StoreState {
         ))
     }
 
-    /// What a bot may reach: the apps whose actions it uses or whose changes
-    /// it watches, the connectors it needs, and whether it posts under other
-    /// names.
     fn bot_access(&self, bot: &crate::model::BotListing) -> Element {
         let mut rows: Vec<Element> = Vec::new();
         for app in &bot.apps {
@@ -1290,7 +1232,6 @@ impl StoreState {
         )
     }
 
-    /// Reporting a problem with the app, or reading how decisions are made.
     fn report_section(item: &StoreItem) -> Element {
         let mut report = Button::new(
             &format!("store.report.create.{}", item.id),
@@ -1346,8 +1287,6 @@ impl StoreState {
         self.page(theme, Measure::Reading, false, children)
     }
 
-    /// One report draft or moderation case: its status, the concern field
-    /// and what can be done with it.
     fn report_form(&self, report: &ReportProjection) -> Element {
         let item = self.item(&report.app_id);
         let mut export = Button::new(
@@ -1440,8 +1379,6 @@ impl StoreState {
         ))
     }
 
-    /// The note of `app_id`'s report: every keystroke one edit of the
-    /// document's text, merging with a collaborator typing in it.
     fn report_note_field(&self, app_id: &str) -> NoteField {
         let input = TextInput::new(vec![])
             .with_id(&format!("store.report.note.{app_id}"))
@@ -1454,8 +1391,6 @@ impl StoreState {
         })
     }
 
-    /// Flatpak repositories: the form that adds one and the list of those
-    /// configured on this machine.
     pub(super) fn build_remotes(&self, theme: &Theme) -> Element {
         let mut add = Button::new("store.remote.add", &CATALOG.t("store-remote-add"))
             .role(ButtonRole::Primary);
@@ -1544,7 +1479,6 @@ impl StoreState {
     }
 }
 
-/// What an app's page shows beyond its catalogue row.
 #[derive(Clone, Debug, Default)]
 pub(super) struct PageFacts {
     pub paragraphs: Vec<String>,
@@ -1553,12 +1487,10 @@ pub(super) struct PageFacts {
     pub license: String,
     pub download_bytes: u64,
     pub installed_bytes: u64,
-    /// `None` when nobody said what the app may do.
     pub permissions: Option<Vec<Permission>>,
     pub homepage: Option<String>,
 }
 
-/// What a running action says in place of its button.
 pub(super) fn progress_label(action: ActionKind, name: &str) -> String {
     let key = match action {
         ActionKind::Open | ActionKind::FlatpakOpen => "store-progress-opening",
@@ -1586,11 +1518,7 @@ fn update_meta(item: &StoreItem) -> String {
     }
 }
 
-/// An installed app's row meta in On this device: whether it is kept.
 fn device_meta(item: &StoreItem) -> String {
-    // What it costs on this device is the question after "can I install
-    // it": the size stands where the row's value stands, and the state the
-    // source gives it when no size is known.
     if let Some(bytes) = item.versions.first().map(|version| version.size_bytes)
         && bytes > 0
     {
@@ -1669,7 +1597,6 @@ fn whats_new(releases: &[catalogue::Release]) -> Element {
     Box::new(Section::titled(CATALOG.t("store-whats-new"), children))
 }
 
-/// What the app may do on this device, in plain words, the broad ones first.
 fn permissions_section(item: &StoreItem, permissions: Option<&[Permission]>) -> Element {
     let rows: Vec<Element> = match permissions {
         Some([]) => vec![StoreState::prose(&CATALOG.t("store-permissions-none"))],
@@ -1723,7 +1650,6 @@ fn permission_icon(permission: &Permission) -> Icon {
     }
 }
 
-/// What a directory bot does, as its signed listing says: when it runs.
 fn bot_does(bot: &crate::model::BotListing) -> Element {
     let lines: Vec<Element> = bot
         .triggers
@@ -1780,7 +1706,6 @@ fn trust_explanation(item: &StoreItem) -> String {
     }
 }
 
-/// A digest as far as a person compares it: its start and its end.
 fn digest_summary(hash: &str) -> String {
     let head: String = hash.chars().take(12).collect();
     let tail: String = hash
@@ -1794,7 +1719,6 @@ fn digest_summary(hash: &str) -> String {
     format!("BLAKE3 {head}…{tail}")
 }
 
-/// Exact package identity remains inspectable without dominating the page.
 fn technical_properties(item: &StoreItem) -> Vec<Property> {
     let mut rows = vec![
         Property::new(CATALOG.t("store-app-id"), &item.id)
@@ -1836,7 +1760,6 @@ fn technical_properties(item: &StoreItem) -> Vec<Property> {
     rows
 }
 
-/// What the app is doing on this device.
 pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
     use crate::model::InstalledState;
     let on_device = CATALOG.t("store-fact-on-device");
@@ -1895,8 +1818,6 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
     }
 }
 
-/// A fact row whose value is a web address, with the action that opens it
-/// in the browser.
 fn link_row(label: String, url: String, open: String) -> Property {
     let mut row = Property::new(label, url.clone()).with_kind(TextKind::Identifier);
     if let Some(binding) = crate::bindings::effect(&StoreEffect::OpenLink { url }) {

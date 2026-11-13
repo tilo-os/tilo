@@ -1,15 +1,7 @@
 //! Sign-in for the accounts that never take a typed password in Settings:
-//! Google Drive, `OneDrive` and Dropbox (`OAuth` in the system browser),
-//! Nextcloud (Login Flow v2 in the system browser) and `iCloud` Drive (Apple
-//! ID, password, then the verification code).
-//!
-//! [`SignInFlow`] is the device-local state of one such sign-in. Network
-//! steps run on worker threads; the pane's `sync` polls
-//! [`SignInFlow::poll`] and persists the [`Completed`] result through its
-//! transactional account save. The browser is opened through the desktop's
-//! URI opener (`ui::portal`), never a spawned host tool. Google's files-only
-//! path stays available; explicit service choices request Gmail only with
-//! consent and validate its mailbox before either service account is saved.
+//! Google Drive, `OneDrive` and Dropbox through `OAuth` in the system browser,
+//! Nextcloud through Login Flow v2, and `iCloud` Drive with an Apple ID and a
+//! verification code.
 
 use std::sync::Arc;
 
@@ -24,13 +16,10 @@ use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
-/// Opens a URL in the person's browser.
 pub trait BrowserOpener: Send + Sync {
-    /// Start opening `url`; the outcome arrives on the channel.
     fn open(&self, url: &str) -> ui::portal::LaunchChannel;
 }
 
-/// The desktop's URI opener (the `OpenURI` portal inside the sandbox).
 pub struct PortalOpener;
 
 impl BrowserOpener for PortalOpener {
@@ -39,12 +28,10 @@ impl BrowserOpener for PortalOpener {
     }
 }
 
-/// A finished sign-in, ready to be saved.
 pub struct Completed {
     pub kind: AccountKind,
     pub existing_id: Option<String>,
     pub display_name: String,
-    /// Non-secret connection settings merged into the account envelope.
     pub config: serde_json::Value,
     pub secret: accounts::Secret,
     /// A mailbox validated by Gmail, only after explicit mail consent.
@@ -94,7 +81,6 @@ enum Outcome {
     NeedsAuthorization(OAuthCloud),
     Completed(Box<Completed>),
     NeedsCode(ICloudChallenge),
-    /// The code was wrong; ask again for the same challenge.
     CodeRejected(ICloudChallenge, String),
     Failed(String),
 }
@@ -132,7 +118,6 @@ enum Stage {
     },
 }
 
-/// See the module docs.
 pub struct SignInFlow {
     kind: AccountKind,
     existing_id: Option<String>,
@@ -144,8 +129,6 @@ pub struct SignInFlow {
     password: ui::LocalState<String>,
     code: ui::LocalState<String>,
     stage: Stage,
-    /// An outcome received by [`SignInFlow::wait_for_test`], applied by the
-    /// next [`SignInFlow::poll`].
     ready: Option<Outcome>,
     message: Option<String>,
     files: ui::LocalState<bool>,
@@ -158,7 +141,6 @@ pub struct SignInFlow {
     saved_id: Option<accounts::AccountId>,
 }
 
-/// Choices captured before the browser starts, with reauthentication metadata.
 struct SelectedServices {
     files: bool,
     mail: bool,
@@ -167,9 +149,6 @@ struct SelectedServices {
     expected_mail: Option<String>,
 }
 
-/// The account configuration of an `OAuth` sign-in: the provider and its
-/// storage as the provider describes it (drive ids, a team space root),
-/// asked once with the fresh access token.
 fn oauth_completed(
     custodian: &Custodian,
     cloud: OAuthCloud,
@@ -266,8 +245,6 @@ fn oauth_completed(
     }))
 }
 
-/// The account configuration of an `iCloud` sign-in: the Apple ID and where
-/// the storage daemon finds the account.
 fn icloud_config(
     auth: &dyn account_custody::icloud::ICloudAuth,
     apple_id: &str,
@@ -305,7 +282,6 @@ pub fn unavailable_reason(kind: AccountKind, custodian: &Custodian) -> Option<St
 }
 
 impl SignInFlow {
-    /// Whether the flow signs an account in again, rather than adding one.
     pub fn renews_an_account(&self) -> bool {
         self.existing_id.is_some()
     }
@@ -369,12 +345,10 @@ impl SignInFlow {
         }
     }
 
-    /// Resolve a linked mailbox's stable identity through the canonical store.
     pub fn expect_mailbox(&mut self, email: Option<String>) {
         self.expected_mail = email;
     }
 
-    /// Set the idle form's service choices for semantic actions.
     pub fn select_services(&self, files: bool, mail: bool, mode: FilesMode) -> Result<(), String> {
         if !matches!(self.stage, Stage::Form) {
             return Err("Service choices cannot change while sign-in is running".into());
@@ -454,7 +428,6 @@ impl SignInFlow {
         }
     }
 
-    /// A worker is running.
     pub fn busy(&self) -> bool {
         matches!(self.stage, Stage::Waiting { .. })
     }
@@ -489,7 +462,6 @@ impl SignInFlow {
         }
     }
 
-    /// The primary action: start the sign-in, or verify the entered code.
     pub fn submit(&mut self) {
         self.submit_requested();
     }
@@ -563,7 +535,6 @@ impl SignInFlow {
         self.kind == AccountKind::GoogleDrive && matches!(self.stage, Stage::Form)
     }
 
-    /// Compatibility action opting into Files and the full Gmail IMAP/SMTP scope.
     pub fn submit_with_google_mail(&mut self) {
         if !self.can_request_google_mail() {
             return;
@@ -977,7 +948,6 @@ impl SignInFlow {
         };
     }
 
-    /// End a running step. The flow stays open at its form.
     pub fn cancel(&mut self) {
         self.preparation = None;
         self.ready = None;
@@ -996,8 +966,6 @@ impl SignInFlow {
         self.stage = Stage::Form;
     }
 
-    /// Advance running steps. Returns the result once, when the sign-in
-    /// completed. Returns whether anything visible changed in `.1`.
     pub fn poll(&mut self) -> (Option<Completed>, bool) {
         let Stage::Waiting { urls, launch, .. } = &mut self.stage else {
             return (None, false);
@@ -1132,7 +1100,6 @@ impl SignInFlow {
             match receiver.recv_timeout(remaining()) {
                 Ok(url) => *launch = Some(self.opener.open(&url)),
                 Err(channel::RecvTimeoutError::Timeout) => return false,
-                // The worker failed before learning a URL; its outcome follows.
                 Err(channel::RecvTimeoutError::Disconnected) => {}
             }
         }
@@ -1145,7 +1112,6 @@ impl SignInFlow {
         }
     }
 
-    /// Report a failure to persist a completed sign-in.
     pub fn save_failed(&mut self, error: &str) {
         let changing_mode = self.preparation.take().is_some();
         self.message = Some(if changing_mode {
@@ -1157,8 +1123,6 @@ impl SignInFlow {
         });
     }
 
-    /// The flow's card.
-    /// The sign-in card; `bind` gives each button its effect.
     pub fn section(
         &self,
         bind: &dyn Fn(Button, super::AccountsEffect) -> Button,

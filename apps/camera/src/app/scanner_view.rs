@@ -22,18 +22,10 @@ use ui::theme::Theme;
 
 /// Where the scanner's parts sit for one window size.
 pub(super) struct ScannerLayout {
-    /// The column beside the guide on a wide window.
     pub side: Option<Rect>,
-    /// The square the code is held in.
     pub guide: Rect,
-    /// The result card, when a code is decoded and not dismissed.
     pub card: Option<Rect>,
-    /// Where the recent scans may grow: under the card in the side column
-    /// on a wide window, under the card or the guide otherwise. `None`
-    /// when not even one scan fits.
     pub recent: Option<Rect>,
-    /// The band above the guide that holds the hint, or the tag naming a
-    /// detected code.
     pub hint: Rect,
 }
 
@@ -49,7 +41,6 @@ pub(super) fn code_icon(kind: &CodeKind) -> Icon {
     }
 }
 
-/// The tag over a code detected in the viewfinder, e.g. "QR code detected".
 pub(super) fn detected_label(symbology: &str) -> String {
     let name = if symbology.eq_ignore_ascii_case("QR Code") {
         "QR code"
@@ -67,7 +58,6 @@ struct CardContent {
     actions: Vec<&'static str>,
 }
 
-/// The first action a code offers is the card's main one.
 fn action_role(index: usize) -> ButtonRole {
     if index == 0 {
         ButtonRole::Primary
@@ -87,7 +77,6 @@ impl CardContent {
 }
 
 impl CameraApp {
-    /// Paint the scanner.
     pub(super) fn draw_scanner(
         &mut self,
         scene: &mut Scene,
@@ -405,7 +394,6 @@ impl CameraApp {
             .paint(scene, t, tr, theme);
     }
 
-    /// No camera: scan a code from a saved image instead.
     fn draw_scanner_offline(
         &mut self,
         scene: &mut Scene,
@@ -438,7 +426,6 @@ impl CameraApp {
         );
     }
 
-    /// The height of the result card for `code` at `width`.
     fn scan_card_height(
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -599,7 +586,6 @@ impl CameraApp {
         }
     }
 
-    /// The height of the recent scans holding their heading and one scan.
     fn recent_scans_min_height(tr: &mut TextRenderer, theme: &Theme) -> f64 {
         let local = on_panel(theme);
         let spacing = &theme.tokens.spacing;

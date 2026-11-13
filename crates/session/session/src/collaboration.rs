@@ -38,6 +38,23 @@ impl Session {
                     .collect()
             });
             plane.carets.follow(sync, workspaces);
+            // Who is here in the workspace in front, named and coloured as the bar and People
+            // draw them: the apps there are told, so a caret wears its person's face.
+            if let Some((workspace, _)) = sync.front_members() {
+                let people = sync
+                    .here()
+                    .borrow()
+                    .persons()
+                    .into_iter()
+                    .map(|(id, name, (r, g, b))| tilo_desktop_model::Collaborator {
+                        id,
+                        name,
+                        cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
+                        ..tilo_desktop_model::Collaborator::default()
+                    })
+                    .collect();
+                plane.desk.set_people(&workspace, people);
+            }
         }
         // Whose view this device follows: their window here comes forward each time the place they
         // work in moves, and their app where no window here shows it.

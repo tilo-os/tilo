@@ -1,26 +1,14 @@
-//! How often idle threads wake.
-//!
-//! A thread that has nothing to do should be blocked until something
-//! happens. Each time the kernel switches it out it counts a context switch,
-//! voluntary when it blocked (a timer, a poll, a condvar that someone keeps
-//! signalling) and involuntary when it was preempted while running. An idle
-//! thread that keeps counting is a thread that keeps waking, and every
-//! wakeup costs a laptop's CPU the chance to stay in a deep sleep state.
-//!
-//! Two scales:
-//!
-//! - one thread of the test process: [`spawned_thread`] finds the thread a
-//!   service starts, [`named_thread`] one already running,
-//!   [`assert_stays_asleep`] fails if it is scheduled at all
-//!   while idle, and [`context_switches`] and [`asleep_runs`] read its
-//!   counts;
-//! - a whole process tree, such as a compositor the test spawned and every
-//!   app it started: [`idle_wakeups`] samples every thread of it over a
-//!   window and returns per-thread rates, as [`Wakeups`].
-//!
-//! Linux only: the counts come from `/proc`. Elsewhere the process-level
-//! calls return an error rather than an empty sample, so a gate that cannot
-//! observe its subject fails instead of passing.
+//! How often idle threads wake. A thread that has nothing to do should be blocked until something
+//! happens, and each time the kernel switches it out counts a context switch: voluntary when it
+//! blocked (a timer, a poll, a condvar that someone keeps signalling), involuntary when it was
+//! preempted while running. An idle thread that keeps counting is a thread that keeps waking, and
+//! every wakeup costs a laptop's CPU the chance to stay in a deep sleep state. Two scales: one
+//! thread of the test process ([`spawned_thread`], [`named_thread`], [`assert_stays_asleep`],
+//! [`context_switches`], [`asleep_runs`]), or a whole process tree, such as a compositor the test
+//! spawned and every app it started ([`idle_wakeups`] samples every thread of it over a window, as
+//! [`Wakeups`]). Linux only: the counts come from `/proc`. Elsewhere the process-level calls return
+//! an error instead of an empty sample, so a gate that cannot observe its subject fails instead of
+//! passing.
 
 #![allow(
     clippy::panic,
@@ -40,7 +28,6 @@ fn own_thread_ids() -> BTreeSet<String> {
         .collect()
 }
 
-/// `(voluntary, involuntary)` context switches in a `/proc/.../status` text.
 fn switch_counts(status: &str) -> (u64, u64) {
     let mut counts = (0, 0);
     for line in status.lines() {
@@ -54,12 +41,6 @@ fn switch_counts(status: &str) -> (u64, u64) {
     counts
 }
 
-/// Context switches, voluntary and involuntary, of thread `tid` of this
-/// process so far.
-///
-/// # Panics
-/// The thread's `/proc/self/task/<tid>/status` cannot be read: not Linux,
-/// or no such thread.
 pub fn context_switches(tid: &str) -> u64 {
     let status =
         std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).expect("thread status");
@@ -67,27 +48,9 @@ pub fn context_switches(tid: &str) -> u64 {
     voluntary.saturating_add(involuntary)
 }
 
-/// Run `start` and return its result with the id of the thread it spawned
-/// under `comm` (the kernel's 15-byte truncation of the thread name).
-///
-/// Only for a thread no other test of the process can start at the same
-/// time: test binaries run their tests as threads of one process, and a
-/// thread found by name may be another test's. Where that can happen, have
-/// the code under test record its thread's [`current_thread_id`] instead.
-///
-/// A thread the found one starts carries its name too until it names
-/// itself (Linux copies the parent's name to a new thread), so two
-/// matches for a moment are a parent and its child; only one that stays
-/// is another test's.
-///
-/// # Panics
-/// `/proc/self/task` cannot be listed, or no single new thread of that name
-/// is there within the hang bound.
 pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
     let before = own_thread_ids();
     let started = start();
-    // A thread names itself once it runs, so it may not be named yet; nor
-    // may a thread it started, which goes by its name until then.
     let what = format_args!(
         "exactly one new thread named {comm} (a second one that stays was started by another \
          test of this process, so which is this test's is unknown)"
@@ -106,19 +69,10 @@ pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
     (started, tid)
 }
 
-/// The id of this process's one live thread named `comm` (the kernel's
-/// 15-byte truncation of the thread name).
-///
-/// # Panics
-/// `/proc/self/task` cannot be listed, or not exactly one thread has that
-/// name.
 pub fn named_thread(comm: &str) -> String {
     named_threads(comm).unwrap_or_else(|named| panic!("{named} live threads named {comm}, not one"))
 }
 
-/// The id of this process's one live thread named `comm`, if there is
-/// exactly one: a thread names itself once it runs, so a thread just
-/// spawned may not be there yet.
 pub fn live_named(comm: &str) -> Option<String> {
     named_threads(comm).ok()
 }
@@ -137,20 +91,12 @@ fn named_threads(comm: &str) -> Result<String, usize> {
     }
 }
 
-/// What `/proc` says about thread `tid` at one moment.
 struct Sample {
-    /// Blocked in the kernel (state `S`): on a timer, a poll, a lock or a
-    /// channel rather than running or runnable.
     asleep: bool,
-    /// Context switches so far. A thread counts one when it goes to sleep,
-    /// a moment *after* the kernel marks it asleep.
     switches: u64,
-    /// Times the thread has been scheduled in so far, counted as it wakes.
     runs: u64,
 }
 
-/// The state letter of a `/proc/self/task/<tid>/status` text: `S` asleep,
-/// `R` running or runnable, `D` waiting for IO.
 fn state_of(status: &str) -> Option<char> {
     status
         .lines()
@@ -160,14 +106,10 @@ fn state_of(status: &str) -> Option<char> {
         .next()
 }
 
-/// A thread's state and counts, or `None` for a thread that cannot be read
-/// because it is gone.
 fn sample(tid: &str) -> Option<Sample> {
     let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).ok()?;
     let (voluntary, involuntary) = switch_counts(&status);
     let asleep = state_of(&status) == Some('S');
-    // `/proc/<tid>/schedstat`: CPU nanoseconds, runqueue nanoseconds, and how
-    // many time slices the thread has run, which is one per scheduling in.
     let schedstat = std::fs::read_to_string(format!("/proc/self/task/{tid}/schedstat")).ok()?;
     let runs = schedstat.split_whitespace().nth(2)?.parse().ok()?;
     Some(Sample {
@@ -177,7 +119,6 @@ fn sample(tid: &str) -> Option<Sample> {
     })
 }
 
-/// A count of thread `tid` read once it is asleep.
 fn asleep_count(tid: &str, pick: impl Fn(&Sample) -> u64) -> u64 {
     crate::wait_for(format_args!("thread {tid} to fall asleep"), || {
         assert!(
@@ -190,32 +131,10 @@ fn asleep_count(tid: &str, pick: impl Fn(&Sample) -> u64) -> u64 {
     })
 }
 
-/// The context switches of thread `tid` once it is asleep.
-///
-/// The count lags: a thread on its way to sleep has already set its state,
-/// and the kernel counts the switch a moment later, so the count read here
-/// can still owe the switch of the park it was settled on. Use this where
-/// switches are the subject; [`asleep_runs`] counts how often a thread was
-/// scheduled in.
-///
-/// # Panics
-/// The thread has exited, does not fall asleep within the hang bound, or
-/// its counts cannot be read.
 pub fn asleep_switches(tid: &str) -> u64 {
     asleep_count(tid, |sample| sample.switches)
 }
 
-/// How often thread `tid` has been scheduled in, counted once it is asleep.
-///
-/// This is the exact count of the thread's wakeups, and the one an idle gate
-/// wants: a thread is scheduled in as it wakes, so a sleeping thread's count
-/// is final, however long the kernel then takes to count the switch it took
-/// to get there.
-///
-/// # Panics
-/// The thread has exited, does not fall asleep within the hang bound, its
-/// counts cannot be read, or it has never run (the kernel's scheduling
-/// statistics are off, so the count cannot see its wakeups).
 pub fn asleep_runs(tid: &str) -> u64 {
     let runs = asleep_count(tid, |sample| sample.runs);
     assert!(
@@ -226,28 +145,11 @@ pub fn asleep_runs(tid: &str) -> u64 {
     runs
 }
 
-/// Whether thread `tid` of this process is blocked in the kernel (state
-/// `S`): waiting on a lock, a poll, a condvar or a timer, rather than
-/// running or about to run; `false` for a thread that cannot be read.
-///
-/// A test that wants to observe a thread *while* it waits, say to check
-/// that a held lock has not been granted, waits until this holds instead of
-/// sleeping for a while and hoping the thread got there.
 pub fn blocked(tid: &str) -> bool {
     std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
         .is_ok_and(|status| state_of(&status) == Some('S'))
 }
 
-/// Fail if thread `tid`, once asleep, is scheduled at all during an idle
-/// 400 ms. It may start or finish work first, however slowly: the window
-/// opens once it has gone to sleep, and closes once it is asleep again.
-///
-/// What it counts is [`asleep_runs`], not context switches: a switch is
-/// counted a moment after the thread is marked asleep, so a settle can catch
-/// a park that is still being counted and report it inside the window.
-///
-/// # Panics
-/// The thread was scheduled, or its counts cannot be read.
 pub fn assert_stays_asleep(tid: &str, what: &str) {
     let settled = asleep_runs(tid);
     std::thread::sleep(Duration::from_millis(400));
@@ -255,28 +157,19 @@ pub fn assert_stays_asleep(tid: &str, what: &str) {
     assert_eq!(woke, 0, "idle {what} woke {woke} times in 400 ms");
 }
 
-/// One thread's context switches at one instant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreadSample {
     pub pid: u32,
     pub tid: u32,
-    /// The process's name (`/proc/<pid>/comm`).
     pub process: String,
-    /// The thread's name (`/proc/<pid>/task/<tid>/comm`).
     pub comm: String,
     pub voluntary: u64,
     pub involuntary: u64,
-    /// CPU time the thread has run, user and system, in the kernel's
-    /// `USER_HZ` ticks ([`CPU_TICK`] each).
     pub cpu_ticks: u64,
 }
 
-/// One `USER_HZ` tick of `/proc/.../stat` CPU time. `USER_HZ` is part of
-/// the kernel's user ABI and 100 on every architecture Tilo runs on.
 pub const CPU_TICK: Duration = Duration::from_millis(10);
 
-/// User plus system CPU ticks in a `/proc/.../stat` text: fields 14 and 15,
-/// counted after the parenthesised name, which may contain spaces.
 fn cpu_ticks(stat: &str) -> u64 {
     let Some((_, rest)) = stat.rsplit_once(')') else {
         return 0;
@@ -295,8 +188,6 @@ fn unsupported() -> io::Error {
     )
 }
 
-/// A thread or process that exits between listing and reading is gone, not
-/// an error.
 fn gone(error: &io::Error) -> bool {
     matches!(error.kind(), io::ErrorKind::NotFound) || error.raw_os_error() == Some(3)
 }
@@ -305,7 +196,6 @@ fn read_comm(path: &str) -> io::Result<String> {
     Ok(std::fs::read_to_string(path)?.trim().to_owned())
 }
 
-/// Context switches of every thread of `pid`.
 pub fn sample_process(pid: u32) -> io::Result<Vec<ThreadSample>> {
     if !cfg!(target_os = "linux") {
         return Err(unsupported());
@@ -346,21 +236,16 @@ pub fn sample_process(pid: u32) -> io::Result<Vec<ThreadSample>> {
     Ok(samples)
 }
 
-/// The kernel's id for the calling thread, as [`ThreadSample::tid`] names it,
-/// so a test can leave the thread that drives it out of a sample.
 pub fn current_thread_id() -> io::Result<u32> {
     if !cfg!(target_os = "linux") {
         return Err(unsupported());
     }
-    // `/proc/thread-self` links to `<pid>/task/<tid>`.
     std::fs::read_link("/proc/thread-self")?
         .file_name()
         .and_then(|name| name.to_str()?.parse().ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "/proc/thread-self"))
 }
 
-/// The parent of `pid`, from `/proc/<pid>/stat` (the field after the
-/// parenthesised name, which may itself contain spaces and parentheses).
 fn parent_of(pid: u32) -> io::Result<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
     stat.rsplit_once(')')
@@ -368,10 +253,6 @@ fn parent_of(pid: u32) -> io::Result<u32> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("/proc/{pid}/stat")))
 }
 
-/// `root` and every process descended from it.
-///
-/// # Errors
-/// Not Linux, `/proc` cannot be listed, or `root` does not exist.
 pub fn process_tree(root: u32) -> io::Result<Vec<u32>> {
     if !cfg!(target_os = "linux") {
         return Err(unsupported());
@@ -401,11 +282,6 @@ pub fn process_tree(root: u32) -> io::Result<Vec<u32>> {
     Ok(tree)
 }
 
-/// Every thread of `root`'s process tree. Processes that exit while it is
-/// read are left out; `root` itself must still be there.
-///
-/// # Errors
-/// As [`process_tree`] and [`sample_process`] for `root`.
 pub fn sample_tree(root: u32) -> io::Result<Vec<ThreadSample>> {
     let mut samples = Vec::new();
     for pid in process_tree(root)? {
@@ -418,48 +294,35 @@ pub fn sample_tree(root: u32) -> io::Result<Vec<ThreadSample>> {
     Ok(samples)
 }
 
-/// One process's threads of one name, over a window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WakeupRow {
     pub process: String,
     pub thread: String,
-    /// Threads of this name seen in the window.
     pub threads: usize,
     pub voluntary: u64,
     pub involuntary: u64,
-    /// CPU time run in the window, in [`CPU_TICK`]s. A thread that spins
-    /// without ever blocking makes few context switches; this shows it.
     pub cpu_ticks: u64,
 }
 
 impl WakeupRow {
-    /// Voluntary and involuntary switches together.
     pub fn wakeups(&self) -> u64 {
         self.voluntary.saturating_add(self.involuntary)
     }
 }
 
-/// What a process tree did while idle, by process and thread name, busiest
-/// first.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Wakeups {
     pub window: Duration,
     pub rows: Vec<WakeupRow>,
-    /// Threads that appeared during the window. A service that spawns a
-    /// thread per tick shows up here even when each one is too short-lived
-    /// to be sampled.
     pub threads_started: usize,
-    /// Processes in the tree at the end of the window.
     pub processes: usize,
 }
 
 impl Wakeups {
-    /// Context switches of the whole tree in the window.
     pub fn total(&self) -> u64 {
         self.rows.iter().map(WakeupRow::wakeups).sum()
     }
 
-    /// `count` over the window, per second.
     pub fn rate(&self, count: u64) -> f64 {
         let seconds = self.window.as_secs_f64();
         if seconds > 0.0 {
@@ -469,30 +332,18 @@ impl Wakeups {
         }
     }
 
-    /// The whole tree's wakeups per second.
     pub fn per_second(&self) -> f64 {
         self.rate(self.total())
     }
 
-    /// Voluntary switches of the whole tree in the window: how often its
-    /// threads blocked again, which is once per wakeup.
     pub fn blocking(&self) -> u64 {
         self.rows.iter().map(|row| row.voluntary).sum()
     }
 
-    /// The whole tree's voluntary switches per second.
-    ///
-    /// Unlike [`Wakeups::per_second`] this leaves out preemptions. A thread
-    /// preempted while it handles one wakeup has still woken once, and how
-    /// often it is preempted depends on what else the machine runs, so a
-    /// gate on a shared runner that counts them measures the runner too. A
-    /// thread that spins without blocking barely shows here; pair this with
-    /// a bound on [`Wakeups::total_cpu_percent`].
     pub fn blocking_per_second(&self) -> f64 {
         self.rate(self.blocking())
     }
 
-    /// Share of one core `ticks` of CPU time are over the window, in percent.
     pub fn cpu_percent(&self, ticks: u64) -> f64 {
         let seconds = self.window.as_secs_f64();
         if seconds > 0.0 {
@@ -503,12 +354,10 @@ impl Wakeups {
         }
     }
 
-    /// The whole tree's CPU time over the window, in percent of one core.
     pub fn total_cpu_percent(&self) -> f64 {
         self.cpu_percent(self.rows.iter().map(|row| row.cpu_ticks).sum())
     }
 
-    /// Wakeups per second of the threads of process `process`, by name.
     pub fn process_per_second(&self, process: &str) -> f64 {
         self.rate(
             self.rows
@@ -555,7 +404,6 @@ impl fmt::Display for Wakeups {
     }
 }
 
-/// How often [`idle_wakeups`] looks at the tree within a window.
 const SAMPLE_EVERY: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
@@ -566,7 +414,6 @@ struct Seen {
     last: (u64, u64, u64),
 }
 
-/// Every thread seen so far, from its first to its latest sample.
 #[derive(Default)]
 struct Tally {
     seen: BTreeMap<(u32, u32), Seen>,
@@ -575,7 +422,6 @@ struct Tally {
 }
 
 impl Tally {
-    /// Open the window: these threads count from where they are now.
     fn open(samples: Vec<ThreadSample>) -> Self {
         let mut tally = Self::default();
         for sample in samples {
@@ -593,7 +439,6 @@ impl Tally {
         tally
     }
 
-    /// A later sample: known threads move on, new ones count from zero.
     fn observe(&mut self, samples: Vec<ThreadSample>) {
         self.processes = samples
             .iter()
@@ -610,7 +455,6 @@ impl Tally {
                     *started = started.saturating_add(1);
                     Seen::default()
                 });
-            // A thread renames itself once it runs; keep the latest name.
             entry.process = sample.process;
             entry.comm = sample.comm;
             entry.last = counts;
@@ -658,10 +502,6 @@ impl Tally {
 }
 
 impl Wakeups {
-    /// What happened between two samples of the same threads taken `window`
-    /// apart, such as two [`sample_process`] calls around an idle stretch
-    /// the caller drives itself. Threads only in `after` count from zero;
-    /// threads only in `before` exited and are left out.
     pub fn between(before: Vec<ThreadSample>, after: Vec<ThreadSample>, window: Duration) -> Self {
         let live: BTreeSet<(u32, u32)> = after
             .iter()
@@ -674,16 +514,6 @@ impl Wakeups {
     }
 }
 
-/// Wait `settle`, then count every context switch of every thread of
-/// `root`'s process tree over `window`.
-///
-/// Threads present when the window opens count from their state then;
-/// threads that start inside it count from zero, and one that exits keeps
-/// what it had made when last sampled. The caller's own threads are not
-/// part of the tree unless the caller is `root`'s descendant.
-///
-/// # Errors
-/// Not Linux, or `root` exits before the window closes.
 pub fn idle_wakeups(root: u32, settle: Duration, window: Duration) -> io::Result<Wakeups> {
     std::thread::sleep(settle);
     let mut tally = Tally::open(sample_tree(root)?);
@@ -747,8 +577,6 @@ mod tests {
             .iter()
             .find(|row| row.thread == "idle-probe-poll")
             .unwrap_or_else(|| panic!("the polling thread is in the table:\n{wakeups}"));
-        // 100/s nominally; a loaded runner stretches the sleeps, never
-        // shortens them.
         let rate = wakeups.rate(row.wakeups());
         assert!(
             (20.0..=150.0).contains(&rate),
@@ -783,14 +611,12 @@ mod tests {
         assert!(!wakeups.rows.iter().any(|row| row.thread == "gone"));
         assert_eq!(wakeups.threads_started, 1);
         assert_eq!(wakeups.total(), 11);
-        // Without the new worker's one preemption: 4 + 6 over 2 s.
         assert_eq!(wakeups.blocking(), 10);
         assert!(
             (wakeups.blocking_per_second() - 5.0).abs() < 1e-9,
             "{wakeups}"
         );
         assert_eq!(wakeups.processes, 1);
-        // 4 + 6 ticks of 10 ms over 2 s.
         assert!(
             (wakeups.total_cpu_percent() - 5.0).abs() < 1e-9,
             "{wakeups}"
@@ -826,9 +652,6 @@ mod tests {
         use std::os::unix::net::UnixStream;
 
         let (mut driver, mut parked) = UnixStream::pair().expect("a socket pair");
-        // The id of the thread it starts: a thread names itself once it runs,
-        // so a lookup by name right after the spawn finds none on a runner
-        // that has not scheduled it yet.
         let (_, tid) = spawned_thread("idle-runs-probe", || {
             std::thread::Builder::new()
                 .name("idle-runs-probe".into())
@@ -842,8 +665,6 @@ mod tests {
         let settled = asleep_runs(&tid);
         driver.write_all(&[1]).expect("wake the parked thread");
         assert_stays_asleep(&tid, "the thread after one wakeup");
-        // The write is the one thing that woke it since; a preemption before
-        // it parked again is another run, but no window of sleep is.
         assert!(
             asleep_runs(&tid) > settled,
             "the write did not wake the parked thread"

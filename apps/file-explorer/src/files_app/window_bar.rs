@@ -59,12 +59,16 @@ impl FilesState {
             let (path_widget, actions_widget, toolbar) =
                 crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
-            chrome
-                .nav
-                .set_content_header("", vec![Box::new(actions_widget)]);
-            chrome
-                .nav
-                .set_content_header_leading(Some(Box::new(path_widget)));
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome
+                    .nav
+                    .set_content_header("", vec![Box::new(actions_widget)]);
+            });
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome
+                    .nav
+                    .set_content_header_leading(Some(Box::new(path_widget)));
+            });
             ui::window_toolbar::declare(None);
         }
         true

@@ -66,12 +66,9 @@ struct Spec {
     precision: Option<usize>,
 }
 
-/// What one pass over the format came to.
 #[derive(Default)]
 struct Pass {
-    /// `\c` ended all output.
     stop: bool,
-    /// The last thing that went wrong, to report.
     error: Option<String>,
     /// The error ends the command (a bad conversion), rather than only
     /// failing it (a bad number).
@@ -268,7 +265,6 @@ fn number_arg(arg: Option<&str>) -> (i64, Option<String>) {
     if let Some(n) = crate::arith::parse_number(trimmed) {
         return (n, None);
     }
-    // The longest leading decimal number.
     let sign = usize::from(trimmed.starts_with(['+', '-']));
     let digits = trimmed
         .get(sign..)
@@ -317,7 +313,6 @@ fn integer(spec: &Spec, conv: char, n: i64) -> String {
     digits
 }
 
-/// `floor(log10(|value|))`, the exponent `%g` chooses its form by.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "a finite double's decimal exponent is within ±324; `as` saturates the rest"

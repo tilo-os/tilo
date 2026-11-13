@@ -1108,6 +1108,7 @@ fn a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait() {
 
 #[test]
 fn the_machine_record_is_read_by_one_shell_line_that_runs_the_whole_script() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
     let line = branch_admit::machine_line();
     assert_eq!(line.len(), 1, "{line:?}");
     let dir = tempfile::tempdir().unwrap();
@@ -1121,7 +1122,7 @@ fn the_machine_record_is_read_by_one_shell_line_that_runs_the_whole_script() {
     let out = std::process::Command::new("sh")
         .args(["-c", &joined])
         .current_dir(dir.path())
-        .output()
+        .output_locked()
         .unwrap();
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(

@@ -166,14 +166,16 @@ fn bot_replica(page: &Replica) -> Replica {
     let bot = Subject::bot(BOT);
     let grant = Grant::new(
         "bot:moderation",
-        bot.clone(),
+        bot,
         TreePath::workspace(ROOM),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         Subject::person(OWNER),
     );
-    let standing =
-        Standing::person(WorkspacePolicy::new(ROOM, OWNER), OWNER).bounded_by(bot, vec![grant]);
+    let standing = Standing::person(WorkspacePolicy::new(ROOM, OWNER), OWNER).acting_as(
+        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(BOT)),
+        [grant],
+    );
     let mut bot = Replica::open(
         &AppCatalogue::native(),
         page.app_id(),

@@ -1,5 +1,5 @@
-//! The panes' part of Settings: the areas, effect families, live
-//! areas and settings rows they bring ([`crate::area::Part`]).
+//! The panes' part of Settings: the areas, effect families, live areas and
+//! settings rows they bring ([`crate::area::Part`]).
 
 use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
@@ -14,8 +14,6 @@ use crate::panes::{
     accessibility, appearance, billing, devices_access, keyboard_shortcuts, region,
 };
 
-/// The host client Device mesh carries pairing requests on, which the areas
-/// that act through the host share.
 #[cfg(feature = "tilo-os")]
 fn mesh_remote(made: &crate::area::Areas) -> ui::RemoteActions {
     made.find::<device_mesh::DeviceMeshArea>()
@@ -23,15 +21,11 @@ fn mesh_remote(made: &crate::area::Areas) -> ui::RemoteActions {
         .unwrap_or_default()
 }
 
-/// The host's client, where no Device mesh carries one.
 #[cfg(not(feature = "tilo-os"))]
 fn mesh_remote(_made: &crate::area::Areas) -> ui::RemoteActions {
     ui::RemoteActions::current()
 }
 
-/// Every area the window holds, in the order they are made: an area made
-/// later may use one made before (Users and Storage act through Device
-/// mesh's host client).
 pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     (10, |context, _| {
         Box::new(accessibility::Software::for_device(context.devices))
@@ -130,7 +124,6 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     }),
 ];
 
-/// Every area's vocabulary, in the order the union declares them.
 pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (20, appearance::AppearanceEffect::FAMILY),
     #[cfg(feature = "tilo-os")]
@@ -235,7 +228,6 @@ macro_rules! live {
     };
 }
 
-/// Every area with live rows, in the order their rows are published.
 pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
     live!(
         250,
@@ -247,16 +239,12 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
     live!(10, "settings.rows.notifications", Notifications, notifications::NotificationsArea, read Vec::new),
     #[cfg(feature = "tilo-os")]
     live!(20, "settings.rows.default_apps", DefaultApps, personal_apps::DefaultAppsArea, read personal_apps::DefaultAppsEffect),
-    // Input reads a small snapshot file the compositor keeps, on a timer of
-    // its own; it has nothing slow to put off.
     #[cfg(feature = "tilo-os")]
     live!(50, "settings.rows.input", Keyboard, always mouse_keyboard::InputArea),
     #[cfg(feature = "tilo-os")]
     live!(90, "settings.rows.bluetooth", Bluetooth, bluetooth::BluetoothArea, read bluetooth::BluetoothEffect),
     #[cfg(feature = "tilo-os")]
     live!(140, "settings.rows.audio", Sound, audio::AudioArea, read audio::AudioEffect),
-    // Displays probe brightness on threads of their own; the rest is a few
-    // small files.
     #[cfg(feature = "tilo-os")]
     live!(
         180,
@@ -264,10 +252,8 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
         Displays,
         display::DisplayArea
     ),
-    // Networks are read on a thread of their own.
     #[cfg(feature = "tilo-os")]
     live!(200, "settings.rows.network", Network, network::NetworkArea),
-    // Printers read on a thread of their own.
     #[cfg(feature = "tilo-os")]
     live!(
         70,
@@ -277,7 +263,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
     ),
     #[cfg(feature = "tilo-os")]
     live!(80, "settings.rows.users", Users, users::UsersArea, read users::UsersEffect),
-    // Speakers ask the broker on a thread of their own.
     #[cfg(feature = "tilo-os")]
     live!(
         110,
@@ -299,8 +284,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
     live!(240, "settings.rows.drives", Storage, always drives::DrivesArea),
 ];
 
-/// The settings these panes show, as Settings' search shows them: a row
-/// built by the function its pane builds it with, or what it is set to.
 const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_row!("appearance.hide_top_bar", crate::prefs::DesktopControlsDevice => appearance::hide_top_bar),
     crate::setting::setting_row!("appearance.text_size", crate::prefs::AppearancePrefs => accessibility::text_size),

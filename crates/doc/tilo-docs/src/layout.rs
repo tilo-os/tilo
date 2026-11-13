@@ -8,13 +8,11 @@ use crate::book::{Book, Page};
 use crate::html::escape;
 use crate::markdown::Rendered;
 
-/// The files every page names, by their content-addressed paths.
 #[derive(Debug, Clone)]
 pub struct Assets {
     pub stylesheet: String,
     pub script: String,
     pub icon: String,
-    /// Fonts the stylesheet uses first, preloaded.
     pub preload_fonts: Vec<String>,
 }
 
@@ -75,7 +73,6 @@ pub fn page(context: &Context<'_>) -> String {
     html
 }
 
-/// The page for an address in the book that names no page.
 #[must_use]
 pub fn not_found(book: &Book, assets: &Assets) -> String {
     let mut html = String::with_capacity(16 * 1024);
@@ -106,8 +103,6 @@ pub fn not_found(book: &Book, assets: &Assets) -> String {
     html
 }
 
-/// What a page's head says about it; `page` is its title, canonical address
-/// and Markdown address, for a page of the book.
 struct Meta<'a> {
     title: &'a str,
     description: &'a str,

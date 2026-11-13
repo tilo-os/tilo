@@ -51,7 +51,7 @@ impl Enrollment {
             return Err(Error::ReceiptMismatch);
         }
         let standing: Standing = serde_json::from_value(admission.standing.clone())?;
-        if standing.person != admission.reporter_user {
+        if standing.person_id() != Some(admission.reporter_user.as_str()) {
             return Err(Error::ReceiptMismatch);
         }
         let workspace = destination.workspace.clone();
@@ -67,7 +67,7 @@ impl Enrollment {
             owner: caller(owner),
             reporter: caller(reporter),
             permissions: PermissionContext::new(
-                Actor::person(standing.person.clone()).in_workspace(workspace),
+                Actor::person(standing.person_id().unwrap_or_default()).in_workspace(workspace),
                 serde_json::from_value(admission.sandbox.clone())?,
                 standing,
             )
@@ -612,7 +612,7 @@ impl CanonicalDestination {
 
 impl CanonicalReceiptSource for CanonicalRecord {
     fn namespace(&self) -> (String, String) {
-        self.records.package_and_home()
+        self.records.app_and_home()
     }
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
         if self
@@ -712,7 +712,7 @@ impl Host {
             return Err(Error::ReceiptMismatch);
         }
         let namespace = blake3::hash(&serde_json::to_vec(&pin.destination)?);
-        let key = StorageKey::package(format!("so.tilo.feedback-authority.{}", namespace.to_hex()));
+        let key = StorageKey::app(format!("so.tilo.feedback-authority.{}", namespace.to_hex()));
         let lease = store.lease(&key)?;
         // Durable on the store's own thread where this one must not wait;
         // reading needs no flush.

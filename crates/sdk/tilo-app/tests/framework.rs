@@ -538,7 +538,7 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
     let viewer = app.permissions();
     let mut standing = viewer.standing().clone();
     let workspace = TreePath::workspace(&standing.policy.workspace);
-    let person = Subject::person(standing.person.clone());
+    let person = Subject::person(standing.person_id().unwrap_or_default());
     std::sync::Arc::make_mut(&mut standing.policy)
         .grants
         .extend([

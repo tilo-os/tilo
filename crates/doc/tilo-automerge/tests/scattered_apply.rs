@@ -59,7 +59,6 @@ fn scattered(changes: usize, letters: usize, rng: &mut Rng) -> (AutoCommit, ObjI
     (ada, busy, fresh)
 }
 
-/// Letters the larger probe change types, each at its own random place.
 const PLACES: u32 = 16;
 
 fn median(mut samples: Vec<u64>) -> u64 {
@@ -123,8 +122,6 @@ fn scattered_histories_match_upstream() {
         let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
         let (mut base, busy, fresh) = scattered(2_000, 4, &mut rng);
         let base_bytes = base.save();
-        // Three collaborators type at once at random places, now and then
-        // merging what the others typed.
         let mut actors: Vec<AutoCommit> = (1..=3u8)
             .map(|i| base.fork().with_actor(ActorId::from(vec![i; 16])))
             .collect();

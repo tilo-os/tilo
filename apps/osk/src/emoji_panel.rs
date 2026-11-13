@@ -36,75 +36,50 @@ use vello::peniko::{BlendMode, Fill};
 use crate::i18n;
 use ui::widget::DrawChild;
 
-/// How many emoji chips a typed word may add to the suggestion strip.
 pub const EMOJI_SUGGESTIONS: usize = 2;
-/// Search results listed at most.
 const SEARCH_RESULTS: usize = 64;
 /// Emoji glyph size relative to its cell. Emoji are content: the size follows
 /// the cell, not the text scale.
 const GLYPH_CONTENT_PX_RATIO: f64 = 0.55;
 
-/// Which face of the panel is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanelMode {
-    /// The keyboard shows its keys.
     Closed,
-    /// Tabs and the grid replace the keys.
     Browse,
-    /// The keys type into the emoji search field.
     Search,
 }
 
-/// What a point on the panel is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelHit {
-    /// The search field; activating it starts a search.
     Search,
-    /// A group tab.
     Group(usize),
-    /// An emoji in the grid or the search strip.
     Emoji(String),
-    /// A form in the open skin-tone row.
     Tone(String),
-    /// Back to the letter keys.
     Letters,
-    /// Delete before the caret in the edited field.
     Delete,
-    /// Leave the search for the grid.
     EndSearch,
-    /// Inside the panel, on nothing that acts.
     Nothing,
 }
 
-/// One titled run of emoji in the grid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub heading: String,
     pub emoji: Vec<String>,
 }
 
-/// The rects the keyboard gives the panel, top to bottom.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PanelBands {
-    /// The toolbar band (the search strip while searching).
     pub toolbar: Rect,
-    /// The suggestion band (the search field).
     pub suggestion: Rect,
-    /// The key band (tabs, grid and bottom row while browsing).
     pub keys: Rect,
-    /// Height of one key row, for the bottom row.
     pub row_height: f64,
-    /// Smallest grid cell, a comfortable touch target.
     pub min_cell: f64,
     pub heading_height: f64,
-    /// Inset of the search field and the grid's headings from their band.
     pub inset: f64,
-    /// The size an emoji group's tab glyph is drawn at.
     pub tab_glyph: f64,
 }
 
 impl PanelBands {
-    /// Sizes from the theme's spacing scale and metrics.
     #[must_use]
     pub fn sized_by(mut self, spacing: &Spacing, metrics: &Metrics) -> Self {
         self.min_cell = f64::from(spacing.s12);
@@ -115,14 +90,12 @@ impl PanelBands {
     }
 }
 
-/// The skin-tone row opened on one emoji.
 #[derive(Clone, Debug)]
 struct Tones {
     base: String,
     anchor: Rect,
 }
 
-/// The panel's state and last laid-out geometry.
 pub struct EmojiPanel {
     catalogue: &'static Catalogue,
     mode: PanelMode,
@@ -154,8 +127,10 @@ impl EmojiPanel {
             mode: PanelMode::Closed,
             group: 0,
             scroll: 0.0,
-            // window-bar: service, the on-screen keyboard has no window bar
-            search: SearchField::new().with_placeholder(&i18n::t("osk-emoji-search")),
+            // The on-screen keyboard has no window bar.
+            search: ui::window_toolbar::exempt!(Service, {
+                SearchField::new().with_placeholder(&i18n::t("osk-emoji-search"))
+            }),
             tones: None,
             bands: PanelBands::default(),
             search_rect: Rect::ZERO,
@@ -187,7 +162,6 @@ impl EmojiPanel {
         self.mode == PanelMode::Search
     }
 
-    /// The selected group's index into [`Catalogue::groups`].
     pub fn group(&self) -> usize {
         self.group
     }
@@ -200,19 +174,16 @@ impl EmojiPanel {
         self.catalogue
     }
 
-    /// The emoji whose skin-tone row is open.
     pub fn tones_for(&self) -> Option<&str> {
         self.tones.as_ref().map(|t| t.base.as_str())
     }
 
-    /// Show the grid.
     pub fn open(&mut self) {
         self.mode = PanelMode::Browse;
         self.tones = None;
         self.pressed = None;
     }
 
-    /// Back to the keys. The query and scroll position go; the group stays.
     pub fn close(&mut self) {
         self.mode = PanelMode::Closed;
         self.search.set_query("");
@@ -222,7 +193,6 @@ impl EmojiPanel {
         self.pressed = None;
     }
 
-    /// Type into the search field with the keys.
     pub fn start_search(&mut self) {
         if self.mode == PanelMode::Closed {
             return;
@@ -232,7 +202,6 @@ impl EmojiPanel {
         self.search.set_focused(true);
     }
 
-    /// Leave the search for the grid, dropping the query.
     pub fn end_search(&mut self) {
         if self.mode != PanelMode::Search {
             return;
@@ -243,7 +212,6 @@ impl EmojiPanel {
         self.tones = None;
     }
 
-    /// Show group `index` (clamped) from its top.
     pub fn select_group(&mut self, index: usize) {
         let last = self.catalogue.groups().len().saturating_sub(1);
         self.group = index.min(last);
@@ -251,21 +219,18 @@ impl EmojiPanel {
         self.tones = None;
     }
 
-    /// Append `text` to the query.
     pub fn type_text(&mut self, text: &str) {
         let mut query = self.search.value().to_owned();
         query.push_str(text);
         self.set_query(&query);
     }
 
-    /// Delete the query's last character.
     pub fn backspace(&mut self) {
         let mut query = self.search.value().to_owned();
         query.pop();
         self.set_query(&query);
     }
 
-    /// Replace the query.
     pub fn set_query(&mut self, query: &str) {
         // A programmatic query leaves the caret after the text, as typing would.
         self.search.set_query(query);
@@ -273,7 +238,6 @@ impl EmojiPanel {
         self.tones = None;
     }
 
-    /// The best matches for the query, best first.
     pub fn results(&self) -> Vec<String> {
         let query = self.search.value().trim();
         if query.is_empty() {
@@ -286,7 +250,6 @@ impl EmojiPanel {
             .collect()
     }
 
-    /// The grid's sections: this user's recents, then the selected group.
     pub fn sections(&self, recents: &Recents) -> Vec<Section> {
         let mut sections = Vec::new();
         if !recents.is_empty() {
@@ -309,8 +272,6 @@ impl EmojiPanel {
         sections
     }
 
-    /// The emoji the search strip shows: matches, or the recents before a
-    /// query is typed.
     fn strip_emoji(&self, recents: &Recents) -> Vec<String> {
         if self.search.value().trim().is_empty() {
             recents.items().to_vec()
@@ -339,8 +300,6 @@ impl EmojiPanel {
         self.tones = None;
     }
 
-    /// The open row's choices: the default form, then each tone lightest
-    /// first.
     pub fn tone_options(&self) -> Vec<String> {
         let Some(tones) = &self.tones else {
             return Vec::new();
@@ -355,8 +314,6 @@ impl EmojiPanel {
         self.tones = None;
     }
 
-    /// Lay the current face out in `bands` in `theme`, reading `recents` for
-    /// the grid.
     pub fn layout(&mut self, bands: PanelBands, recents: &Recents, theme: &Theme) {
         self.bands = bands;
         self.cells.clear();
@@ -381,9 +338,6 @@ impl EmojiPanel {
         self.layout_tones();
     }
 
-    /// The visible edge of a key on the bottom row, from the band's edge: the
-    /// one left and right edge the search field, the headings, the first
-    /// emoji and the Letters key all share.
     fn edge(&self) -> f64 {
         let row = self
             .bands
@@ -393,7 +347,6 @@ impl EmojiPanel {
         crate::presentation::key_pad_for_height(row)
     }
 
-    /// The search field: the suggestion band, between the keys' edges.
     fn field_rect(&self) -> Rect {
         let PanelBands {
             suggestion, keys, ..
@@ -415,8 +368,6 @@ impl EmojiPanel {
         self.search_rect = self.field_rect();
         let edge = self.edge();
         let bottom_h = row_height.min(keys.height() * 0.3).max(0.0);
-        // One row at the bottom: the way back to the letters, the group tabs
-        // and Delete.
         let bottom = Rect::new(keys.x0, keys.y1 - bottom_h, keys.x1, keys.y1);
         let side = (bottom.width() * 0.12).max(bottom_h);
         self.letters_rect = Rect::new(bottom.x0, bottom.y0, bottom.x0 + side, bottom.y1);
@@ -496,7 +447,6 @@ impl EmojiPanel {
             .union(self.bands.keys);
         let x0 = (tones.anchor.center().x - width * 0.5)
             .clamp(bounds.x0, (bounds.x1 - width).max(bounds.x0));
-        // Above the pressed emoji when there is room, as a finger covers it.
         let y0 = if tones.anchor.y0 - cell >= bounds.y0 {
             tones.anchor.y0 - cell
         } else {
@@ -513,7 +463,6 @@ impl EmojiPanel {
             .collect();
     }
 
-    /// What is at `p`; `None` outside the panel.
     pub fn hit(&self, p: Point) -> Option<PanelHit> {
         if !self.is_open() {
             return None;
@@ -562,7 +511,6 @@ impl EmojiPanel {
         }
     }
 
-    /// The rect an emoji was last laid out at, in the grid or the strip.
     pub fn emoji_rect(&self, text: &str) -> Option<Rect> {
         self.cells
             .iter()
@@ -575,17 +523,14 @@ impl EmojiPanel {
         self.mode == PanelMode::Browse && self.grid.contains(p)
     }
 
-    /// Latch the target a press landed on.
     pub fn press(&mut self, hit: PanelHit) {
         self.pressed = Some(hit);
     }
 
-    /// Take the target the last press latched, if any.
     pub fn take_pressed(&mut self) -> Option<PanelHit> {
         self.pressed.take()
     }
 
-    /// Paint the current face.
     #[allow(
         clippy::too_many_lines,
         reason = "one paint pass keeps the panel's layer order visible: field, tabs, grid, bottom row, tone row"
@@ -702,8 +647,6 @@ impl EmojiPanel {
         }
     }
 
-    /// The group tabs: the toolkit's underline tab strip, each tab marked by
-    /// its group's emoji (content, drawn at the icon size).
     fn draw_tabs(
         &self,
         scene: &mut Scene,
@@ -737,8 +680,6 @@ impl EmojiPanel {
         }
     }
 
-    /// The panel's semantic nodes: every control it paints, each with the
-    /// action target [`crate::widget::OskWidget`] resolves.
     pub fn accessibility(&self) -> Vec<AccessNode> {
         let mut nodes = Vec::new();
         if !self.is_open() {
@@ -843,7 +784,6 @@ impl EmojiPanel {
         }
     }
 
-    /// The localised name of `text`, with its tone when it carries one.
     pub fn spoken_name(&self, text: &str) -> String {
         let Some(found) = self.catalogue.lookup(text) else {
             return text.to_owned();
@@ -862,7 +802,6 @@ impl EmojiPanel {
     }
 }
 
-/// `base` in its default form, then in each skin tone lightest first.
 fn tone_forms(catalogue: &Catalogue, base: &str) -> Vec<String> {
     std::iter::once(None)
         .chain(SkinTone::ALL.into_iter().map(Some))
@@ -880,7 +819,6 @@ fn tone_key(tone: SkinTone) -> &'static str {
     }
 }
 
-/// One emoji centred in its cell, over a pressed veneer when held.
 fn draw_emoji(
     scene: &mut Scene,
     transform: Affine,
@@ -1010,7 +948,6 @@ mod tests {
         p.layout(bands(), &Recents::default(), &Theme::dark());
         let at = p.tone_cells[3].1.center();
         assert_eq!(p.hit(at), Some(PanelHit::Tone("👍🏽".into())));
-        // Anywhere else dismisses rather than acting.
         assert_eq!(p.hit(Point::new(1.0, 300.0)), Some(PanelHit::Nothing));
     }
 

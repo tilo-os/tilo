@@ -139,6 +139,10 @@ pub(crate) fn desk(
                 Box::new(surface),
                 handle.clone(),
                 CollaborationLaunchpad::new(),
+                {
+                    let lists = options.lists.clone();
+                    Rc::new(move || crate::host_actions::cards(&lists))
+                },
                 Rc::clone(&asks),
                 beneath,
             )

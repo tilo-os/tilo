@@ -1,14 +1,11 @@
-//! The runtime's view tree as retained widgets, reconciled by key.
-//!
-//! A view evaluates to a tree of [`UiNode`]s with stable keys. The first tree is built into
-//! widgets of the shared layout primitives (`Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`)
-//! and the toolkit's controls. When the view runs again, the new tree is reconciled against the
-//! old one: a node with the same key and kind keeps its widget (and with it focus, scroll
-//! position and text state), a child that is new is built, and one that is gone is dropped. Text,
-//! input and checkbox values live in shared state, so a changed value touches no widget.
-//!
-//! Nothing here draws or measures. Layout belongs to the primitives, and every length is in `rem`
-//! or a rhythm token: a view never names a pixel.
+//! The runtime's view tree as retained widgets, reconciled by key. A view evaluates to a tree of
+//! [`UiNode`]s with stable keys. The first tree is built into widgets of the shared layout
+//! primitives (`Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`) and the toolkit's controls. When
+//! the view runs again, the new tree is reconciled against the old one: a node with the same key
+//! and kind keeps its widget (and with it focus, scroll position and text state), a child that is
+//! new is built, and one that is gone is dropped. Text, input and checkbox values live in shared
+//! state, so a changed value touches no widget. Nothing here draws or measures. Layout belongs to
+//! the primitives, and every length is in `rem` or a rhythm token: a view never names a pixel.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -31,35 +28,24 @@ use crate::adapter::{Adapter, NodeSource};
 use crate::pane::Pane;
 use ui::presence::PathSegment;
 
-/// What a person did to the view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiEvent {
-    /// The button `key` was activated.
     Press(String),
-    /// The input `key` now holds `text`.
     Edit(String, String),
-    /// The rich-text input `key` now holds `rich`.
     EditRich(String, tilo_render_protocol::patch::rich::RichText),
-    /// The checkbox `key` is now `checked`.
     Toggle(String, bool),
-    /// The suggestion in the invocation card `key` was allowed or declined.
     Resolve(String, bool),
-    /// The node `key`'s event `event` happened (a case of a `choice` was picked, a row of a
-    /// list selected), carrying a value when the event carries one.
     Fire(String, String, Option<Value>),
-    /// A row of a resource was activated: show the resource.
     Open(crate::ResourceRef),
-    /// A reference in rich text was activated: open what it refers to (the `mention` mark's
-    /// value).
     OpenReference(String),
 }
 
 /// Where controls report what the person did.
 pub type EventSink = Rc<Reports>;
 
-/// What the person did, in the order they did it: what the window's own controls report here,
-/// and what the described components report through the view's adapter, which is taken in
-/// before each report of the controls' so that neither overtakes the other.
+/// What the person did, in the order they did it: what the window's own controls report here, and
+/// what the described components report through the view's adapter, which is taken in before each
+/// report of the controls' so that neither overtakes the other.
 #[derive(Default)]
 pub struct Reports {
     events: RefCell<Vec<UiEvent>>,
@@ -67,19 +53,16 @@ pub struct Reports {
 }
 
 impl Reports {
-    /// Report `event`, after what the components reported before it.
     pub fn push(&self, event: UiEvent) {
         self.take_in();
         self.events.borrow_mut().push(event);
     }
 
-    /// Everything reported since the last call, oldest first.
     pub fn take(&self) -> Vec<UiEvent> {
         self.take_in();
         std::mem::take(&mut *self.events.borrow_mut())
     }
 
-    /// Whether nothing was reported.
     pub fn is_empty(&self) -> bool {
         self.take_in();
         self.events.borrow().is_empty()
@@ -99,7 +82,6 @@ impl Reports {
     }
 }
 
-/// A case of an enum, as a control shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Case {
     /// The variant's name, what the runtime is told.
@@ -108,7 +90,6 @@ pub struct Case {
     pub icon: Option<ui::icons::Icon>,
 }
 
-/// Builds and reconciles the widgets of a view tree.
 pub struct Reconciler {
     sink: EventSink,
     texts: HashMap<String, LocalState<String>>,
@@ -120,17 +101,15 @@ pub struct Reconciler {
     navigation: Option<Navigation>,
     /// What the components it builds report, shared with every reconciler of the same view.
     adapter: Adapter,
-    /// Where the rows of the virtual lists it builds come from.
     rows: Option<crate::adapter::RowsOf>,
-    /// Each component of the view that did not build or take its props, and why: shown as a
-    /// caption in its place, and read by whoever checks the view (layout-check, tests), so a
-    /// component that does not build is never only a log line. Shared with every reconciler of
-    /// the same view.
+    /// Each component of the view that did not build or take its props, and why: shown as a caption
+    /// in its place, and read by whoever checks the view (layout-check, tests), so a component that
+    /// does not build is never only a log line. Shared with every reconciler of the same view.
     broken: Rc<RefCell<Vec<String>>>,
-    /// The fragments that fill because the filled fragment they are the lone child of does,
-    /// by key, each with the weight it passes on: a view call's fragment holds the fragment
-    /// the view's body renders in, which holds the view's root, so a call's `fill` reaches
-    /// that root through each fragment between ([`fragment_fill`]).
+    /// The fragments that fill because the filled fragment they are the lone child of does, by key,
+    /// each with the weight it passes on: a view call's fragment holds the fragment the view's body
+    /// renders in, which holds the view's root, so a call's `fill` reaches that root through each
+    /// fragment between ([`fragment_fill`]).
     filling: HashMap<String, f32>,
 }
 
@@ -138,7 +117,6 @@ fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
     node.props.get(name)
 }
 
-/// How a value reads on screen.
 #[must_use]
 pub fn display(value: &Value) -> String {
     let formats = ui::format::Formats::current();
@@ -154,8 +132,8 @@ pub fn display(value: &Value) -> String {
         }
         Value::Float(number) => formats.decimal(*number, 2),
         Value::Bool(flag) => flag.to_string(),
-        // A case by the name the runtime holds it by: a control that offers the cases finds
-        // its own among them by the same name.
+        // A case by the name the runtime holds it by: a control that offers the cases finds its own
+        // among them by the same name.
         Value::Enum(case) => case.clone(),
         Value::Principal(who) => who.id.clone(),
         Value::Opt(Some(inner)) => display(inner),
@@ -165,7 +143,6 @@ pub fn display(value: &Value) -> String {
     }
 }
 
-/// The flag `name` of `node`: a bool as the runtime lowers one (`Int`), or a `Bool`.
 pub(crate) fn flag(node: &UiNode, name: &str) -> bool {
     match prop(node, name) {
         Some(Value::Int(number)) => *number != 0,
@@ -182,8 +159,6 @@ fn token<'a>(node: &'a UiNode, name: &str) -> Option<&'a str> {
     }
 }
 
-/// The cases a `choice` node shows, as its app read them from the enum it chooses from: each a
-/// name, a label and an icon.
 fn cases_of(node: &UiNode) -> Vec<Case> {
     let Some(Value::List(cases)) = prop(node, "cases") else {
         return Vec::new();
@@ -266,8 +241,8 @@ fn position(node: &UiNode) -> Option<At> {
     })
 }
 
-/// How many leads a node reserves before its own content (`lead: 1`): a document's body stands
-/// one lead in, under the text its heading's control leads to.
+/// How many leads a node reserves before its own content (`lead: 1`): a document's body is one lead
+/// in, under the text its heading's control leads to.
 fn lead(node: &UiNode) -> i16 {
     match prop(node, "lead") {
         Some(Value::Int(count)) => i16::try_from(*count).unwrap_or(0),
@@ -285,7 +260,6 @@ pub fn normalize(node: &UiNode) -> UiNode {
     crate::date::under_headings(crate::shell::titled_lists(out))
 }
 
-/// The tree with a page inside another page, or inside a block's view, a plain stack.
 fn page_once(node: &UiNode) -> UiNode {
     fn walk(node: &UiNode, inside: bool) -> UiNode {
         let nested = inside || node.kind == "page" || node.kind == "embed";
@@ -307,8 +281,8 @@ fn page_once(node: &UiNode) -> UiNode {
 /// How a child is sized in its container: `fill`, `min:`, `max:` bound its inline size.
 pub(crate) fn fit_of(node: &UiNode) -> Fit {
     let mut fit = number(node, "fill").map_or_else(Fit::hug, Fit::fill);
-    // A grid's `min` is its columns' least width, not its own: it takes the width it is given
-    // and holds as many such columns as fit, one where none does.
+    // A grid's `min` is its columns' least width, not its own: it takes the width it is given and
+    // holds as many such columns as fit, one where none does.
     if node.kind != "grid" {
         fit.width.min = length(node, "min");
     }
@@ -319,17 +293,17 @@ pub(crate) fn fit_of(node: &UiNode) -> Fit {
     fit
 }
 
-/// How `child` is sized in its container `parent`: the fit its own arguments ask for, the
-/// columns it spans, where it sits among layers.
+/// How `child` is sized in its container `parent`: the fit its own arguments ask for, the columns
+/// it spans, where it sits among layers.
 #[cfg(test)]
 fn placement(parent: &UiNode, child: &UiNode) -> Placement {
     placement_in(parent, None, child)
 }
 
-/// The weight `child` fills its container `parent` with because `parent` is a fragment that
-/// fills, by its own `fill` or by `inherited` (the weight the fragment it is the lone child
-/// of passed on), and `child` is all it holds and asks nothing of its own: a call of a view
-/// stands for what the view draws.
+/// The weight `child` fills its container `parent` with because `parent` is a fragment that fills,
+/// by its own `fill` or by `inherited` (the weight the fragment it is the lone child of passed on),
+/// and `child` is all it holds and asks nothing of its own: a call of a view stands for what the
+/// view draws.
 fn fragment_fill(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Option<f32> {
     if parent.kind != "fragment" || parent.children.len() != 1 || number(child, "fill").is_some() {
         return None;
@@ -337,17 +311,15 @@ fn fragment_fill(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Opt
     number(parent, "fill").or(inherited)
 }
 
-/// [`placement`] of `child` in `parent`, which fills with `inherited` when the fragment it is
-/// the lone child of passed that on ([`fragment_fill`]).
 fn placement_in(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Placement {
     let mut fit = fit_of(child);
-    // Beside siblings in a row, a container takes the room they leave rather than hugging
-    // its content, so what it holds lays out in the width the row offers. A row that wraps
-    // flows its items at their own width instead, as chips and tags do; and a row with a
-    // spacer has said where its room goes, so its containers hold what they hold and the
-    // spacer takes the rest (a bar's leading and trailing parts, each a group of its own). A
-    // row whose group must give way when it is short of room (a card's title truncating
-    // beside its menu) leaves the spacer out: the group then takes the room itself.
+    // Beside siblings in a row, a container takes the room they leave instead of hugging its
+    // content, so what it holds lays out in the width the row offers. A row that wraps flows its
+    // items at their own width instead, as chips and tags do; and a row with a spacer has said
+    // where its room goes, so its containers hold what they hold and the spacer takes the rest (a
+    // bar's leading and trailing parts, each a group of its own). A row whose group must give way
+    // when it is short of room (a card's title truncating beside its menu) leaves the spacer out:
+    // the group then takes the room itself.
     if parent.kind == "row"
         && !flag(parent, "wrap")
         && !parent
@@ -361,11 +333,11 @@ fn placement_in(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Plac
         fit.width.min = length(child, "min");
         fit.width.max = length(child, "max");
     }
-    // A call of a view stands for what the view draws: `show(r, fill)` or a filled call of
-    // a view asks the view itself to fill, so the lone root it draws (a window's NavShell, a
-    // list) takes the fragment's room instead of hugging its content. The view's body is a
-    // fragment of its own inside the call's, and a view whose root is a call of another view
-    // is one more: each passes the fill on.
+    // A call of a view stands for what the view draws: `show(r, fill)` or a filled call of a view
+    // asks the view itself to fill, so the lone root it draws (a window's NavShell, a list) takes
+    // the fragment's room instead of hugging its content. The view's body is a fragment of its own
+    // inside the call's, and a view whose root is a call of another view is one more: each passes
+    // the fill on.
     if let Some(weight) = fragment_fill(parent, inherited, child) {
         let min = fit.width.min;
         let max = fit.width.max;
@@ -387,8 +359,8 @@ fn placement_in(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Plac
     }
 }
 
-/// The shell of a node: everything of it but its children. Two nodes with equal shells keep
-/// their container widget; only the children are reconciled.
+/// The shell of a node: everything of it but its children. Two nodes with equal shells keep their
+/// container widget; only the children are reconciled.
 fn same_shell(a: &UiNode, b: &UiNode) -> bool {
     a.kind == b.kind
         && a.key == b.key
@@ -415,8 +387,8 @@ fn is_container(kind: &str) -> bool {
     )
 }
 
-/// Container widgets, whatever their layout, as the keyed reconciler reaches their children:
-/// each change through the container's slot operations, which describe it to the window.
+/// Container widgets, whatever their layout, as the keyed reconciler reaches their children: each
+/// change through the container's slot operations, which describe it to the window.
 trait SlotHost {
     fn child_mut(&mut self, index: usize) -> Option<&mut Element>;
     fn replace(&mut self, index: usize, element: Element);
@@ -424,7 +396,6 @@ trait SlotHost {
     fn remove(&mut self, index: usize);
     fn move_slot(&mut self, from: usize, to: usize);
     fn set_placement(&mut self, index: usize, placement: Placement);
-    /// Reserve `lead` leads before what the container holds.
     fn set_lead(&mut self, lead: i16);
 }
 
@@ -459,7 +430,6 @@ impl<L: ui::widget::arrange::Layout + 'static> SlotHost for ui::widget::arrange:
     }
 }
 
-/// How a child is sized and placed in its container.
 #[derive(Clone, Copy)]
 struct Placement {
     fit: Fit,
@@ -519,8 +489,7 @@ impl Reconciler {
         }
     }
 
-    /// A reconciler of the same view as `other`: its widgets report to the same sink and
-    /// adapter.
+    /// A reconciler of the same view as `other`: its widgets report to the same sink and adapter.
     #[must_use]
     pub fn sharing(other: &Self) -> Self {
         Self {
@@ -538,7 +507,6 @@ impl Reconciler {
         }
     }
 
-    /// Each component of the view that did not build or take its props, and why, as of now.
     #[must_use]
     pub fn broken(&self) -> Vec<String> {
         self.broken.borrow().clone()
@@ -551,31 +519,26 @@ impl Reconciler {
             .push(format!("{} ({}): {error}", node.kind, node.key));
     }
 
-    /// Read the rows of the virtual lists it builds from `rows`.
     #[must_use]
     pub fn with_rows(mut self, rows: crate::adapter::RowsOf) -> Self {
         self.rows = Some(rows);
         self
     }
 
-    /// The rows of the virtual list `key`, as the host renders them.
     #[must_use]
     pub fn rows_of(&self, key: &str) -> Option<ui::component::SharedRows> {
         self.rows.as_ref().and_then(|rows| rows(key))
     }
 
-    /// What the components of the view report.
     #[must_use]
     pub fn adapter(&self) -> &Adapter {
         &self.adapter
     }
 
-    /// Have the components it builds report to `adapter`, the view's.
     pub fn report_to(&mut self, adapter: Adapter) {
         self.adapter = adapter;
     }
 
-    /// The text the control `key` shows, kept in step with what it is bound to.
     pub fn text_state(&mut self, key: &str) -> LocalState<String> {
         self.texts
             .entry(key.to_owned())
@@ -583,7 +546,6 @@ impl Reconciler {
             .clone()
     }
 
-    /// The flag the control `key` shows, kept in step with what it is bound to.
     pub fn flag_state(&mut self, key: &str) -> LocalState<bool> {
         self.flags
             .entry(key.to_owned())
@@ -591,7 +553,6 @@ impl Reconciler {
             .clone()
     }
 
-    /// The whole number the control `key` shows, kept in step with what it is bound to.
     pub fn count_state(&mut self, key: &str) -> LocalState<i64> {
         self.counts
             .entry(key.to_owned())
@@ -599,7 +560,6 @@ impl Reconciler {
             .clone()
     }
 
-    /// The number the control `key` shows, kept in step with what it is bound to.
     pub fn number_state(&mut self, key: &str) -> LocalState<f64> {
         self.numbers
             .entry(key.to_owned())
@@ -607,7 +567,6 @@ impl Reconciler {
             .clone()
     }
 
-    /// Show `number` in the control `key`, reporting whether that changed what it shows.
     pub fn set_count(&self, key: &str, number: i64) -> bool {
         if let Some(state) = self.counts.get(key)
             && state.get() != number
@@ -618,7 +577,6 @@ impl Reconciler {
         false
     }
 
-    /// Show `number` in the control `key`, reporting whether that changed what it shows.
     pub fn set_number(&self, key: &str, number: f64) -> bool {
         if let Some(state) = self.numbers.get(key)
             && state.get().total_cmp(&number).is_ne()
@@ -629,7 +587,6 @@ impl Reconciler {
         false
     }
 
-    /// The rich text the rich input `key` shows, kept in step with what it is bound to.
     pub fn rich_state(
         &mut self,
         key: &str,
@@ -642,7 +599,6 @@ impl Reconciler {
             .clone()
     }
 
-    /// Show `rich` in the rich input `key`, reporting whether that changed what it shows.
     pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) -> bool {
         if let Some(state) = self.riches.get(key)
             && state.with(|shown| shown != rich)
@@ -659,8 +615,6 @@ impl Reconciler {
         self.navigation.clone()
     }
 
-    /// Show `text` in the input or text node `key`, whatever widget shows it, reporting whether
-    /// that changed what it shows.
     pub fn set_text(&self, key: &str, text: &str) -> bool {
         if let Some(state) = self.texts.get(key)
             && state.with(|shown| shown != text)
@@ -671,7 +625,6 @@ impl Reconciler {
         false
     }
 
-    /// Show `checked` in the checkbox `key`, reporting whether that changed what it shows.
     pub fn set_flag(&self, key: &str, checked: bool) -> bool {
         if let Some(state) = self.flags.get(key)
             && state.get() != checked
@@ -682,12 +635,10 @@ impl Reconciler {
         false
     }
 
-    /// The widgets of the tree under `node`.
     pub fn build(&mut self, node: &UiNode) -> Element {
         let mut element = self.build_kind(node);
-        // A container's lead is room of its own, over the padding it keeps: what it holds
-        // stands that far in from its leading edge, under the text a heading's control leads
-        // to.
+        // A container's lead is room of its own, over the padding it keeps: what it holds is that
+        // far in from its leading edge, under the text a heading's control leads to.
         let lead = lead(node);
         if lead > 0 {
             with_host(&mut element, |host| host.set_lead(lead));
@@ -695,7 +646,6 @@ impl Reconciler {
         element
     }
 
-    /// The widget of `node` itself, before the lead its arguments reserve.
     fn build_kind(&mut self, node: &UiNode) -> Element {
         if crate::adapter::component_name(&node.kind).is_some() {
             return self.component(node);
@@ -733,7 +683,6 @@ impl Reconciler {
         }
     }
 
-    /// A node of a described component, built by the one adapter from its description.
     fn component(&mut self, node: &UiNode) -> Element {
         let Some(description) = crate::adapter::description_of(node) else {
             self.note_broken(node, &ui::component::Error::unknown(&node.kind));
@@ -747,18 +696,18 @@ impl Reconciler {
             self.note_broken(node, &error);
             self.text_of(node, "", TextRole::Caption)
         });
-        // A control that runs an app action, or edits a record's field, says which one: the
-        // window may move it between its bar, an empty state and a header row, and the person
-        // may read the window in another language, and what it does stays what it does.
+        // A control that runs an app action, or edits a record's field, says which one: the window
+        // may move it between its bar, an empty state and a header row, and the person may read the
+        // window in another language, and what it does stays what it does.
         match self.adapter.identity_of(node) {
             Some(identity) => Box::new(ui::widget::Identified::new(built, identity)),
             None => built,
         }
     }
 
-    /// Bring `widget`, built for the component node `old_node`, to `new_node`: its props in
-    /// place where the widget takes them, and the views in its slots reconciled where they
-    /// stand. `Some` is the widget built anew when it could not.
+    /// Bring `widget`, built for the component node `old_node`, to `new_node`: its props in place
+    /// where the widget takes them, and the views in its slots reconciled where they stand. `Some`
+    /// is the widget built anew when it could not.
     fn update_component(
         &mut self,
         widget: &mut Element,
@@ -766,8 +715,8 @@ impl Reconciler {
         new_node: &UiNode,
         description: &'static ui::component::Description,
     ) -> Option<Element> {
-        // What the control does is not a prop it takes in place: a control the view now binds
-        // to another action says so by being built again.
+        // What the control does is not a prop it takes in place: a control the view now binds to
+        // another action says so by being built again.
         if self.adapter.identity_of(old_node) != self.adapter.identity_of(new_node) {
             return Some(self.build(new_node));
         }
@@ -785,8 +734,8 @@ impl Reconciler {
                 }
             }
         }
-        // Each slot of the widget takes its views by key, in place: those gone removed, those
-        // kept moved and reconciled where they stand, those new built.
+        // Each slot of the widget takes its views by key, in place: those gone removed, those kept
+        // moved and reconciled where they stand, those new built.
         for slot in description
             .slots
             .iter()
@@ -803,9 +752,9 @@ impl Reconciler {
             };
             self.reconcile_views(views, &old, &new);
         }
-        // A slot of components whose own views changed (a run's items, each holding a view of
-        // its own): the part's views change where they stand, so the widget keeps what they
-        // hold rather than being built again around them.
+        // A slot of components whose own views changed (a run's items, each holding a view of its
+        // own): the part's views change where they stand, so the widget keeps what they hold
+        // instead of being built again around them.
         for slot in description
             .slots
             .iter()
@@ -885,10 +834,10 @@ impl Reconciler {
             let Some(view) = views.view_mut(index) else {
                 continue;
             };
-            // The view carries the fit its node asks for, so a view that comes to say `fill`
-            // asks for the room the component gives it from the next build on (the slot keeps
-            // the fit it was placed with, as a rule a view's own arguments do not change under
-            // its key). A [`Fitted`] asking for nothing sizes as a bare view does.
+            // The view carries the fit its node asks for, so a view that comes to say `fill` asks
+            // for the room the component gives it from the next build on (the slot keeps the fit it
+            // was placed with, as a rule a view's own arguments do not change under its key). A
+            // [`Fitted`] asking for nothing sizes as a bare view does.
             if let Some(fitted) = view
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<ui::widget::Fitted>())
@@ -927,10 +876,10 @@ impl Reconciler {
         }
     }
 
-    /// `node`, built, as the view a described component's slot holds: a component as its
-    /// widget, a view of another kind in a pane the reconciler reaches again, each in a
-    /// [`ui::widget::Fitted`] carrying the fit its node wrote, so a view that says `fill` fills
-    /// the slot the component puts it in ([`ui::widget::arrange::Slot::new`] takes the fit).
+    /// `node`, built, as the view a described component's slot holds: a component as its widget, a
+    /// view of another kind in a pane the reconciler reaches again, each in a
+    /// [`ui::widget::Fitted`] carrying the fit its node wrote, so a view that says `fill` fills the
+    /// slot the component puts it in ([`ui::widget::arrange::Slot::new`] takes the fit).
     pub(crate) fn slot_view(&mut self, node: &UiNode) -> Element {
         let built = self.build(node);
         let pane: Element = if crate::adapter::description_of(node).is_some() {
@@ -952,17 +901,17 @@ impl Reconciler {
             .collect()
     }
 
-    /// How `child` is sized in its container `parent` ([`placement_in`]), and, for a fragment
-    /// that fills because `parent` passes its fill on, the weight it passes on in turn: placed
-    /// before it is built, so what it holds is placed knowing it.
+    /// How `child` is sized in its container `parent` ([`placement_in`]), and, for a fragment that
+    /// fills because `parent` passes its fill on, the weight it passes on in turn: placed before it
+    /// is built, so what it holds is placed knowing it.
     fn place(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Placement {
         let child = placed.node;
         let through = &placed.through;
         let inherited = self.filling.get(&parent.key).copied();
         let mut placement = placement_in(parent, inherited, child);
-        // A fragment draws nothing of its own, so what it asks for is the child standing under
-        // it: a `for`'s fill reaches each row it places in a row or a grid, and the narrowest
-        // width it names floors each of them.
+        // A fragment draws nothing of its own, so what it asks for is the child standing under it:
+        // a `for`'s fill reaches each row it places in a row or a grid, and the narrowest width it
+        // names floors each of them.
         let mut passed = None;
         let mut aspect = None;
         for fragment in through {
@@ -1002,7 +951,6 @@ impl Reconciler {
         placement
     }
 
-    /// `child`, built, as a slot of its container `parent`.
     fn slot(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Slot {
         let child = placed.node;
         let Placement { fit, span, at } = self.place(parent, placed);
@@ -1105,7 +1053,7 @@ impl Reconciler {
             Page::new()
         };
         // A page that fills takes the height its pane gives it: a canvas's content (a board's
-        // lanes) stands on the pane's floor, and what it holds scrolls inside it.
+        // lanes) is on the pane's floor, and what it holds scrolls inside it.
         if flag(node, "fill") {
             page = page.filling();
         }
@@ -1132,10 +1080,10 @@ impl Reconciler {
         for slot in self.slots(node) {
             inner = inner.push_slot(slot);
         }
-        // A surface that fills its pane gives what it holds the pane's height, so its content
-        // stands at the pane's size and pans inside it rather than growing to its own: the desk
-        // a person pans, and a row of windows kept to their own widths whose bars and apps fill
-        // the room between the desk's edges.
+        // A surface that fills its pane gives what it holds the pane's height, so its content is
+        // the pane's size and pans inside it instead of growing: the desk a person pans, and a row
+        // of windows kept to their own widths whose bars and apps fill the room between the desk's
+        // edges.
         let filling = flag(node, "fill") || token(node, "axis") == Some("both");
         if filling {
             inner = inner.fill_height();
@@ -1153,8 +1101,8 @@ impl Reconciler {
         } else {
             Scrollable::new_vertical().fit_content_height()
         };
-        // A row that shares the desk's width by weight fills it when its
-        // children fit, and scrolls once their least widths need more.
+        // A row that shares the desk's width by weight fills it when its children fit, and scrolls
+        // once their least widths need more.
         let scroll = if filling && across == Some("horizontal") {
             scroll.with_content_min_viewport_width()
         } else {
@@ -1210,12 +1158,12 @@ impl Reconciler {
     }
 
     /// A block an agent or a person wrote, rendered inline: its result in a card, so it reads as
-    /// somebody's message rather than as part of the app.
+    /// somebody's message, not as part of the app.
     fn embed(&mut self, node: &UiNode) -> Element {
         let inner = self.stack(node, Rhythm::Related);
         if !frames(node) {
-            // A view made of objects (an agent's answer of cards) stands as they do: a card
-            // never stands in another, so the boundary draws nothing of its own.
+            // A view made of objects (an agent's answer of cards) is as they are: a card is never
+            // in another, so the boundary draws nothing of its own.
             return Box::new(Container::new().with_no_padding().with_child(inner));
         }
         // A view boundary: the card takes the width its column offers, up to the readable measure,
@@ -1258,8 +1206,8 @@ impl Reconciler {
             card = card.push_slot(slot);
         }
         if state == "suggested" && flag(node, "can_resolve") {
-            // An ask the authority raised answers as a confirmation, one answer per line when
-            // the card is too narrow for both.
+            // An ask the authority raised answers as a confirmation, one answer per line when the
+            // card is too narrow for both.
             let choices = Row::row()
                 .wrap()
                 .gap(Rhythm::Related)
@@ -1283,9 +1231,9 @@ impl Reconciler {
     }
 
     /// A proposal waiting on the person: one calm block on the inset surface — who proposes it,
-    /// what it would do, and the answer to it — so it is noticed where it stands among what the
-    /// view draws. What it would do is the action's own proposal view when it declares one, and
-    /// otherwise the words it would say, each value as its type shows it (a day as the day fact).
+    /// what it would do, and the answer to it — so it is noticed among what the view draws. What it
+    /// would do is the action's own proposal view when it declares one, and otherwise the words it
+    /// would say, each value as its type shows it (a day as the day fact).
     fn suggestion(&mut self, node: &UiNode) -> Element {
         let (who, identity) = match prop(node, "author") {
             Some(Value::Principal(who)) => (who.name.clone(), who.id.clone()),
@@ -1327,20 +1275,20 @@ impl Reconciler {
             ));
         let mut rows: Vec<Element> = Vec::new();
         if flag(node, "view") {
-            // The action shows what it would do itself: the sentence says who proposes it, the
-            // view stands under it, and the answer beneath.
+            // The action shows what it would do itself: the sentence says who proposes it, the view
+            // is under it, and the answer beneath.
             rows.push(Box::new(sentence));
             for child in &node.children {
                 rows.push(self.build(child));
             }
             rows.push(Box::new(choices));
         } else {
-            // The words the action would say stand in the sentence, after who proposes it.
+            // The words the action would say are in the sentence, after who proposes it.
             for child in &node.children {
                 sentence = sentence.push(self.build(child));
             }
-            // The answer stands at the end of the sentence's line when it fits there, and below
-            // it when the room is too narrow.
+            // The answer is at the end of the sentence's line when it fits there, and below it when
+            // the room is too narrow.
             rows.push(Box::new(
                 Row::row()
                     .fill_width()
@@ -1366,8 +1314,8 @@ impl Reconciler {
         )
     }
 
-    /// The button answering the invocation card `node`: allowing it or declining it. The answer
-    /// to a suggestion is compact, so it stands at the end of the sentence's own line.
+    /// The button answering the invocation card `node`: allowing it or declining it. The answer to
+    /// a suggestion is compact, so it is at the end of the sentence's line.
     fn answer(
         &self,
         node: &UiNode,
@@ -1400,7 +1348,6 @@ impl Reconciler {
         ))
     }
 
-    /// A block that did not compile or failed: the diagnostics, as text.
     fn error_block(&mut self, node: &UiNode) -> Element {
         let mut block = Stack::stack()
             .gap(Rhythm::Tight)
@@ -1417,7 +1364,6 @@ impl Reconciler {
         Box::new(block)
     }
 
-    /// A text slot of host chrome or of a record, with its own state.
     fn fixed_text(&mut self, key: &str, value: &str, role: TextRole) -> Slot {
         let state = self
             .texts
@@ -1454,8 +1400,8 @@ impl Reconciler {
         Box::new(section)
     }
 
-    /// The field `node`: its label and every control its block holds, one under the next. A
-    /// day and the time of that day stand as one field's two controls.
+    /// The field `node`: its label and every control its block holds, one under the next. A day and
+    /// the time of that day are one field's two controls.
     fn field_of(&mut self, node: &UiNode) -> Field {
         let mut panes: Vec<Element> = node.children.iter().map(|child| self.pane(child)).collect();
         let content = match panes.len() {
@@ -1471,13 +1417,12 @@ impl Reconciler {
         };
         let label = crate::date::shown(node, "label").unwrap_or_default();
         if label.is_empty() {
-            // The form's title says what its one field asks: no label stands beside it.
+            // The form's title says what its one field asks: no label beside it.
             return Field::unlabeled(content);
         }
         Field::custom(label, content)
     }
 
-    /// `node` built, in the pane the holder reaches it again by.
     fn pane(&mut self, node: &UiNode) -> Element {
         Box::new(Pane::new(self.build(node)))
     }
@@ -1507,7 +1452,6 @@ impl Reconciler {
         None
     }
 
-    /// A switch bound to a `Bool`, with its label: a row of a form.
     fn toggle(&mut self, node: &UiNode) -> Element {
         let state = self
             .flags
@@ -1537,10 +1481,10 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let names: Vec<String> = cases.iter().map(|case| case.name.clone()).collect();
-        // A form's quick choices stand one under the next, each the width of the field and read
-        // as a row: the label at its leading edge, and what the choice stands for at its
-        // trailing edge where the choice says its cases hold one ("Tomorrow morning …
-        // Sat 09:00"). A label is never squeezed or elided, and every choice is one press.
+        // A form's quick choices are one under the next, each the width of the field and read as a
+        // row: the label at its leading edge, and what the choice stands for at its trailing edge
+        // where the choice says its cases hold one ("Tomorrow morning … Sat 09:00"). A label is
+        // never squeezed or elided, and every choice is one press.
         if flag(node, "list") {
             let mut list = Stack::stack().fill_width().gap(Rhythm::Tight);
             for (index, case) in cases.iter().enumerate() {
@@ -1596,8 +1540,6 @@ impl Reconciler {
         }
     }
 
-    /// A list inside content: its rows (a card's preview, which has only those it shows), as a
-    /// section of the page.
     fn rows(&mut self, node: &UiNode) -> Element {
         let row_kind = crate::adapter::kind("ListRow");
         let rows: Vec<Element> = node
@@ -1615,17 +1557,17 @@ impl Reconciler {
         Box::new(Section::new(rows))
     }
 
-    /// Bring `old`, the widget built for `old_node`, up to date with `new_node`: the same
-    /// widget, changed in place, or the one built in its stead.
+    /// Bring `old`, the widget built for `old_node`, up to date with `new_node`: the same widget,
+    /// changed in place, or the one built in its stead.
     pub fn update(&mut self, mut old: Element, old_node: &UiNode, new_node: &UiNode) -> Element {
         self.update_in(&mut old, old_node, new_node).unwrap_or(old)
     }
 
-    /// Bring `widget`, built for `old_node`, up to date with `new_node` in place: a changed
-    /// value sets the widget that shows it, which draws itself again, and a container's
-    /// children are inserted, removed, moved or replaced by key through its slot operations.
-    /// `Some` is a widget built for `new_node` that its container shows instead (through its
-    /// own `replace`): `widget` could not take the change.
+    /// Bring `widget`, built for `old_node`, up to date with `new_node` in place: a changed value
+    /// sets the widget that shows it, which draws itself again, and a container's children are
+    /// inserted, removed, moved or replaced by key through its slot operations. `Some` is a widget
+    /// built for `new_node` that its container shows instead (through its own `replace`): `widget`
+    /// could not take the change.
     pub fn update_in(
         &mut self,
         widget: &mut Element,
@@ -1714,8 +1656,8 @@ impl Reconciler {
         .is_some()
     }
 
-    /// A container whose own arguments changed: a new shell around the children, which keep
-    /// their widgets.
+    /// A container whose own arguments changed: a new shell around the children, which keep their
+    /// widgets.
     fn rebuild_shell(
         &mut self,
         old: &mut Element,
@@ -1728,7 +1670,6 @@ impl Reconciler {
         });
         let moved = with_host(old, |old_host| {
             with_host(&mut fresh, |host| {
-                // The old children, in order, into the new shell; then reconciled there.
                 for (index, child) in placed(old_node).into_iter().enumerate() {
                     let widget = old_host
                         .child_mut(index)
@@ -1760,9 +1701,9 @@ impl Reconciler {
         }
     }
 
-    /// Bring the slots of `host`, built for `old_node`'s children, to `new_node`'s by key:
-    /// those gone removed, those kept moved to their place and reconciled in it, those new
-    /// built and inserted.
+    /// Bring the slots of `host`, built for `old_node`'s children, to `new_node`'s by key: those
+    /// gone removed, those kept moved to their place and reconciled in it, those new built and
+    /// inserted.
     fn reconcile_slots(&mut self, host: &mut dyn SlotHost, old_node: &UiNode, new_node: &UiNode) {
         let mut held = placed(old_node);
         let placing = placed(new_node);
@@ -1822,13 +1763,12 @@ fn holder_parts(node: &UiNode) -> Vec<&UiNode> {
     }
 }
 
-/// What a holder's widget is built from besides its parts' contents: its own props, and the
-/// key, kind and props of each part (a field's label).
-/// One part of a holder as its shape compares: its key, its kind and its props.
+/// What a holder's widget is built from besides its parts' contents: its own props, and the key,
+/// kind and props of each part (a field's label).
 type PartShape = (String, String, Vec<(String, Value)>);
 
-/// Where a bound control is for presence: the resource and the field it edits, so collaborators
-/// at the same field see each other's carets. A control bound to view state has none.
+/// Where a bound control is for presence: the resource and the field it edits, so collaborators at
+/// the same field see each other's carets. A control bound to view state has none.
 pub(crate) fn presence_path(node: &UiNode) -> Vec<PathSegment> {
     node.binding
         .as_ref()
@@ -1867,8 +1807,8 @@ fn arrived_card(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
 }
 
 /// The window that arrived under `new_node` since `old_node`, by its key: the frames a row of a
-/// desk holds, the last of them new. A row pans to the window just placed in it, as the desk's
-/// own row does, so the place that just came onto the desk stands where the person can see it.
+/// desk holds, the last of them new. A row pans to the window just placed in it, as the desk's own
+/// row does, so the place that just came onto the desk is where the person can see it.
 fn arrived_window(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
     fn frames<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
         if node.kind == crate::adapter::kind("WindowFrame") {
@@ -1888,8 +1828,8 @@ fn arrived_window(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Whether the embedded view `node` is framed as one object: unless it is made of objects
-/// itself, its cards standing at its top or in its top layout.
+/// Whether the embedded view `node` is framed as one object: unless it is made of objects itself,
+/// its cards standing at its top or in its top layout.
 fn frames(node: &UiNode) -> bool {
     !node
         .children
@@ -1897,16 +1837,15 @@ fn frames(node: &UiNode) -> bool {
         .any(|child| child.kind == "ui.Card" || holds_cards(child))
 }
 
-/// Whether `node` holds cards, directly or through the fragments a `match` or `if` leaves.
 /// The children `node` places in its slots. What a `for` or an `if` places in a grid or a row
 /// arrives as a fragment; there each of its children is a cell or an item of its own, where a
-/// fragment built as a stack would pile them into one. Elsewhere a fragment is a slot of its
-/// own, its children stacked tight.
+/// fragment built as a stack would pile them into one. Elsewhere a fragment is a slot of its own,
+/// its children stacked tight.
 fn placed(node: &UiNode) -> Vec<Placed<'_>> {
-    // A row and a grid place every child a loop's fragment holds, as slots of their own, so a
-    // row's items share the row's spans one by one. Every other container keeps a fragment as
-    // a slot of its own: a view call is a box standing where the view put it, and what the
-    // view asks for is asked of that box.
+    // A row and a grid place every child a loop's fragment holds, as slots of their own, so a row's
+    // items share the row's spans one by one. Every other container keeps a fragment as a slot of
+    // its own: a view call is a box standing where the view put it, and what the view asks for is
+    // asked of that box.
     fn flatten<'a>(node: &'a UiNode, through: &mut Vec<&'a UiNode>, out: &mut Vec<Placed<'a>>) {
         for child in &node.children {
             if child.kind == "fragment" {
@@ -1977,7 +1916,6 @@ fn holder_shape(node: &UiNode) -> Vec<PartShape> {
     shape
 }
 
-/// Every [`Pane`] under `widget`, in order, not looking inside a pane.
 fn collect_panes<'a>(widget: &'a mut dyn ui::widget::Widget, out: &mut Vec<&'a mut Pane>) {
     if widget.as_any().is_some_and(<dyn std::any::Any>::is::<Pane>) {
         if let Some(pane) = widget
@@ -1993,8 +1931,8 @@ fn collect_panes<'a>(widget: &'a mut dyn ui::widget::Widget, out: &mut Vec<&'a m
     }
 }
 
-/// Whether `a` and `b` have the same shell but for their property `name`, which the widget
-/// built for `a` takes in place.
+/// Whether `a` and `b` have the same shell but for their property `name`, which the widget built
+/// for `a` takes in place.
 fn same_shell_but(a: &UiNode, b: &UiNode, name: &str) -> bool {
     let strip = |node: &UiNode| {
         let mut props = node.props.clone();
@@ -2043,7 +1981,6 @@ mod tests {
         Reconciler::new(Rc::default())
     }
 
-    /// The identity of each child widget of a container.
     fn identities(container: &Element) -> Vec<usize> {
         container
             .children()
@@ -2052,8 +1989,8 @@ mod tests {
             .collect()
     }
 
-    /// A component that does not build is shown as an empty caption in its place, and said:
-    /// whoever checks the view (layout-check, a test) reads why, never only a log line.
+    /// A component that does not build is shown as an empty caption in its place, and said: whoever
+    /// checks the view (layout-check, a test) reads why, never only a log line.
     #[test]
     fn a_component_that_does_not_build_is_recorded_with_why() {
         let mut reconciler = reconciler();
@@ -2160,7 +2097,6 @@ mod tests {
         assert_eq!(after, before, "both keep their pane");
     }
 
-    /// The stack `element` is, as the arrangement that leads what it holds.
     fn arrangement(
         element: &mut Element,
     ) -> &mut ui::widget::arrange::Arranged<ui::widget::arrange::FlexLayout> {
@@ -2260,8 +2196,7 @@ mod tests {
         use tilo_render_protocol::patch::rich::{Attr, Block, Embed, InlineView, Mark, RichText};
         const TASK: &str =
             r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":""}"#;
-        // Written while the task was called "Acquisition plan"; the window is told how the
-        // reference reads for the person it shows the text to.
+        // The window is told how the reference reads for the person it shows the text to.
         let read_as = |view: InlineView| {
             Value::Rich(RichText {
                 blocks: vec![Block {
@@ -2294,7 +2229,6 @@ mod tests {
         );
     }
 
-    /// The rect `built` lays out its keyed node `key` at in a window of `size`.
     fn laid_out(view: &UiNode, size: (u32, u32), key: &str) -> ui::vello::kurbo::Rect {
         let built = reconciler().build(view);
         let harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
@@ -2411,6 +2345,9 @@ mod tests {
     /// A `spacer` in a row takes the room its neighbours leave, so what follows it stands at
     /// the row's trailing edge (a bar's status), and a group beside it holds what it holds
     /// rather than taking that room itself.
+    /// A `spacer` in a row takes the room its neighbours leave, so what follows it is at the row's
+    /// trailing edge (a bar's status), and a group beside it holds what it holds rather than taking
+    /// that room itself.
     #[test]
     fn a_spacer_sends_what_follows_it_to_the_rows_trailing_edge() {
         let mut trailing = stack("end", vec![text("b", "trailing")]);
@@ -2427,9 +2364,9 @@ mod tests {
         assert!(end.width() < 200.0, "it hugs its text: {end:?}");
     }
 
-    /// A filled call of a view (`show(r, fill)`, a filled call of another package's view)
-    /// stands for the view: the root the view draws takes the call's whole room, as a window's
-    /// shell does, rather than hugging its content.
+    /// A filled call of a view (`show(r, fill)`, a filled call of another package's view) stands
+    /// for the view: the root the view draws takes the call's whole room, as a window's shell does,
+    /// rather than hugging its content.
     #[test]
     fn a_filled_view_calls_root_takes_the_calls_room() {
         let mut call = node("fragment", "call");
@@ -2443,10 +2380,10 @@ mod tests {
         );
     }
 
-    /// A view's body renders in a fragment of its own inside its call's, and a view whose root
-    /// is a call of another view (a mailbox's view listing through its list's view) puts one
-    /// call inside the other: a filled call reaches the root the innermost view draws, as it
-    /// is built and once the view draws something else there.
+    /// A view's body renders in a fragment of its own inside its call's, and a view whose root is a
+    /// call of another view (a mailbox's view listing through its list's view) puts one call inside
+    /// the other: a filled call reaches the root the innermost view draws, as it is built and once
+    /// the view draws something else there.
     #[test]
     fn a_filled_calls_fill_reaches_the_root_of_the_view_it_calls_through_each_fragment() {
         let body = |key: &str, child: UiNode| UiNode {
@@ -2480,9 +2417,9 @@ mod tests {
         );
     }
 
-    /// A grid's `min` is the least width of its columns, never its own: on a phone narrower
-    /// than one column it takes the width it is given and holds one column, rather than
-    /// reaching past the window. A stack's `min` stays its own least width.
+    /// A grid's `min` is the least width of its columns, never its own: on a phone narrower than
+    /// one column it takes the width it is given and holds one column, rather than reaching past
+    /// the window. A stack's `min` stays its own least width.
     #[test]
     fn a_grids_least_column_width_is_not_its_own_least_width() {
         let with_min = |kind: &str| {
@@ -2495,8 +2432,8 @@ mod tests {
     }
 
     /// What a `for` places in a grid (a fragment per item) fills the grid's cells one by one,
-    /// rather than each item piling its cells into one; and an item added later takes cells of
-    /// its own while those already shown keep their widgets.
+    /// rather than each item piling its cells into one; and an item added later takes cells of its
+    /// own while those already shown keep their widgets.
     #[test]
     fn a_grids_cells_from_a_for_are_each_a_cell_and_keep_their_widgets() {
         let item = |key: &str, cells: [&str; 3]| UiNode {

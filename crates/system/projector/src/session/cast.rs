@@ -25,7 +25,6 @@ use super::receiver_address;
 use crate::error::ProjectorError;
 use crate::http::{MediaTelemetry, random_media_token, start_http_server, wake_http_listener};
 
-/// How often a streaming session samples receiver telemetry.
 const FEEDBACK_TICK: Duration = Duration::from_millis(100);
 
 struct SessionEvents {
@@ -179,7 +178,6 @@ fn adapt_capture_profile(
     }
 }
 
-/// The Cast SDK protocol for a receiver discovered as `protocol`.
 fn cast_protocol(protocol: ProjectionProtocol) -> Result<ProtocolType, ProjectorError> {
     match protocol {
         ProjectionProtocol::FCast => Ok(ProtocolType::FCast),
@@ -292,7 +290,6 @@ impl MediaServer {
             video_thread: Some(video_thread),
             http_thread: None,
         };
-        // On failure `server` drops here and stops the video ingest.
         let (port, http_thread) = start_http_server(
             paths.root.clone(),
             server.stop.clone(),
@@ -305,7 +302,6 @@ impl MediaServer {
         Ok(server)
     }
 
-    /// The playlist URL the receiver loads, served at `local_addr`.
     fn playlist_url(&self, local_addr: &fcast_sender_sdk::IpAddr) -> String {
         format!(
             "http://{}:{}/{}/live.m3u8",
@@ -319,7 +315,6 @@ impl MediaServer {
 impl Drop for MediaServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // Wake workers that are waiting in accept.
         let _ = std::os::unix::net::UnixStream::connect(&self.video_socket);
         if let Some(http_thread) = self.http_thread.take() {
             wake_http_listener(self.receiver, self.port);
@@ -357,7 +352,6 @@ fn run_adaptive_feedback_loop(
     let mut last_seen_requests = 0;
     let mut current_profile = initial_profile;
     let mut recovery_attempts = 0u8;
-    // The tick samples telemetry; a stop request ends the wait at once.
     while !ctx.session.wait_stop(FEEDBACK_TICK) {
         let requests = ctx.telemetry.requests.load(Ordering::Acquire);
         let now_ms = ctx.telemetry.elapsed_millis();
@@ -725,7 +719,6 @@ mod tests {
             ));
             let paths = SessionPaths::for_root(root.clone()).expect("session paths");
             paths.clear();
-            // Large enough for every hardware encoder's minimum frame size.
             let size: u32 = 256;
             let mut pipeline =
                 HlsPipeline::start(&paths, false).expect("start production HLS pipeline");

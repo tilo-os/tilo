@@ -1,6 +1,3 @@
-//! The window: the [`PlayerState`] the view shares with its effect handler,
-//! laid out with its player hosted as the window's one child.
-
 use super::{
     Affine, AppModel, EffectStatus, Element, FloatingSurfaceProvider, FullscreenProvider, HashMap,
     LaunchInput, Live, ModelPath, NodeId, PlayerResource, PlayerState, Point, PresenceCtx, Rc,
@@ -11,25 +8,20 @@ use crate::actions;
 use ui::framework::Publishes;
 use ui::widget::DrawChild;
 
-/// The player's window over the shared [`PlayerState`].
 pub struct PlayerApp {
     state: Rc<RefCell<PlayerState>>,
-    /// The player as the window's child in the widget tree.
     host: PlayerHost,
-    /// The shared library as the document holds it, shown as it changes;
-    /// `None` for a window outside the framework.
+    /// The shared library as the document holds it, shown as it changes; `None` outside
+    /// the framework.
     document: Option<Live<PlayerResource>>,
     presented: Option<(u64, u64)>,
 }
 
 impl PlayerApp {
-    /// A player with a fresh engine and no media loaded, for a window built
-    /// in `mode`; see [`PlayerState::new`].
     pub fn new(mode: RunMode) -> Self {
         Self::over(PlayerState::new(mode))
     }
 
-    /// The window over `state`.
     pub(crate) fn over(state: PlayerState) -> Self {
         let state = Rc::new(RefCell::new(state));
         Self {
@@ -42,24 +34,18 @@ impl PlayerApp {
         }
     }
 
-    /// What the window shows, shared with the view's effect handler.
     pub(crate) fn state(&self) -> RefMut<'_, PlayerState> {
         self.state.borrow_mut()
     }
 
-    /// Open what the launch named; see [`PlayerState::open_launch`].
     pub fn open_launch(&mut self, launch: &LaunchInput<'_>) {
         self.state().open_launch(launch);
     }
 
-    /// Read access to the inner video surface, for tests that assert a
-    /// decoded frame landed.
     pub fn player(&self) -> Ref<'_, VideoPlayer> {
         Ref::map(self.state.borrow(), |state| &state.player)
     }
 
-    /// Show the shared library the document holds now, when it changed
-    /// since.
     fn follow_document(&mut self) {
         let Some(document) = &self.document else {
             return;
@@ -77,13 +63,12 @@ impl Default for PlayerApp {
     }
 }
 
-/// The view over `window`: the shared library's verbs bound to the playhead,
-/// the window's state attached to the framework and shared with the effect
-/// handler, and the live rows of what the player shows.
+/// The view over `window`: the library's verbs bound to the playhead, the window attached
+/// to the framework, and the live rows of what the player shows.
 pub(crate) fn window(cx: &ViewCx<PlayerResource>, mut window: PlayerApp) -> Element {
     window.document = Some(cx.live().clone());
-    // The playhead is the player's, not the document's, so the player says
-    // what it is on and the view publishes those verbs.
+    // The playhead is the player's, not the document's, so the player says what it is on
+    // and the view publishes those verbs.
     let playhead = crate::resource::Playhead::default();
     let published = Rc::clone(&playhead);
     cx.bind_declarations(move |_| published.borrow().clone());
@@ -189,8 +174,7 @@ impl Widget for PlayerApp {
         self.state().adjust_layout_style(taffy, node, text)
     }
 
-    /// The player's place follows the docked library, which follows the
-    /// window's width.
+    /// The player's place follows the docked library, which follows the window's width.
     fn composition_follows_allocation(&self) -> bool {
         true
     }
@@ -215,7 +199,7 @@ impl Widget for PlayerApp {
         if !self.state().handle_event(event, ctx) {
             return;
         }
-        // Forward everything else to the player (its controls + shortcuts).
+        // Everything else is the player's: its controls and shortcuts.
         let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
@@ -314,9 +298,8 @@ impl Widget for PlayerApp {
     }
 }
 
-/// The window's player in the widget tree: every pass the tree runs on the
-/// player reaches it in the shared state, where the view's effect handler
-/// drives it too.
+/// The window's player in the widget tree: every pass the tree runs on the player reaches
+/// it in the shared state, where the view's effect handler drives it too.
 pub(super) struct PlayerHost {
     state: Rc<RefCell<PlayerState>>,
 }

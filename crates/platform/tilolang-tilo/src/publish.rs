@@ -248,7 +248,8 @@ pub fn action_type(
     // is a trial run of the action, and publishing every item's actions must not run them all.
     let no_params = params.is_empty();
     // Published by its name, as a native verb is: what an agent at the door lists and calls. The
-    // build above plans it by its id, which is what its records keep.
+    // build above plans it by the id the declaration keeps, which is also what a change of it
+    // says in the record (and its words are keyed by).
     let spec = if no_params {
         ActionSpec::deferred_on(
             action.name.clone(),
@@ -290,6 +291,9 @@ pub fn action_type(
     if is_destructive(action) {
         spec = spec.destructive();
     }
+    // What a change of it says it by: the id the declaration keeps, which is not the name it is
+    // published under.
+    action.id.clone_into(&mut spec.type_mut().declared);
     // `key: "e"`: the plain key that runs it while its window has the keyboard, shown at the
     // action's row as the keyboard in use spells it.
     if let Some(key) = &action.key {

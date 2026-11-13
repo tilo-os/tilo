@@ -10,12 +10,10 @@ use ui::widget::Widget;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent};
 use winit::event::MouseScrollDelta;
 
-/// The sample library: the only place demo feeds come from.
 fn app() -> FeedsApp {
     FeedsApp::new_demo()
 }
 
-/// Mount `app` over an empty document in the production frame host.
 fn framed_at(mut app: FeedsApp, viewport: (u32, u32)) -> Framed<FeedsApp> {
     let doc = synced(&mut app);
     let mut state = ui::State::new();
@@ -27,15 +25,12 @@ fn framed(app: FeedsApp) -> Framed<FeedsApp> {
     framed_at(app, (1280, 800))
 }
 
-/// Run frames until a staged scenario or a settled layout is in place.
 fn settle(app: &mut Framed<FeedsApp>) {
     for _ in 0..(SETTLED_LAYOUTS + 3) {
         Framed::harness_mut(app).relayout();
     }
 }
 
-/// A new library's document: stamped with the storage version it is
-/// written at, as the framework creates one.
 fn new_library() -> AutoCommit {
     let mut doc = AutoCommit::new();
     ui::tilo_resource::evolution::write_version(&mut doc, Library::VERSION).unwrap();
@@ -47,7 +42,6 @@ pub(super) fn synced(app: &mut FeedsApp) -> AutoCommit {
     sync_over(app, new_library())
 }
 
-/// Sync `app` over `doc`, writing what a component fixture writes.
 fn sync_over(app: &mut FeedsApp, mut doc: AutoCommit) -> AutoCommit {
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.feeds",
@@ -66,12 +60,10 @@ pub(super) fn loaded(doc: &AutoCommit) -> Library {
     Library::read(doc).unwrap()
 }
 
-/// Show the window what `doc` holds now, as the framework presents it.
 fn present(app: &FeedsApp, doc: &AutoCommit) {
     app.present_library(Rc::new(loaded(doc)));
 }
 
-/// An article a refresh fetched, titled `title`.
 fn fetched(title: &str, published: i64, blocks: Vec<ContentBlock>) -> Fetched {
     Fetched {
         title: title.into(),
@@ -83,7 +75,6 @@ fn fetched(title: &str, published: i64, blocks: Vec<ContentBlock>) -> Fetched {
     }
 }
 
-/// The id of the `n`th subscription the window shows.
 fn nth_feed(app: &FeedsApp, n: usize) -> Id {
     app.core().store.feeds.ids().nth(n).unwrap().clone()
 }
@@ -116,7 +107,6 @@ fn named_key(k: NamedKey) -> WindowEvent {
     key_event(Key::Named(k), None)
 }
 
-/// Drive the root's real `handle_event` with explicit modifiers.
 fn dispatch_mods(
     a: &mut FeedsApp,
     doc: &mut AutoCommit,
@@ -148,8 +138,6 @@ fn find_role(node: &AccessNode, role: Role) -> Option<&AccessNode> {
         .find_map(|child| find_role(child, role))
 }
 
-/// A live app starts empty and offers to add a feed; only the demo build
-/// seeds and opens sample content.
 #[test]
 fn startup_is_empty_live_and_populated_only_in_demo() {
     let live = FeedsApp::new();
@@ -197,7 +185,6 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     assert_eq!(loaded(&doc).feeds.len(), demo.core().store.feeds.len());
 }
 
-/// The reader's commands as the window's bar holds them.
 fn bar_actions() -> Vec<ToolbarAction> {
     ui::window_toolbar::declared()
         .map(|bar| bar.actions)
@@ -211,9 +198,6 @@ fn bar_action(name: &str) -> ToolbarAction {
         .unwrap_or_else(|| panic!("{name} is in the window bar: {:?}", bar_actions()))
 }
 
-/// The empty library disables what has nothing to act on and offers one
-/// action in its empty state; the bar offers no commands for an article
-/// that is not there.
 #[test]
 fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
     let mut mounted = framed(FeedsApp::new());
@@ -265,9 +249,6 @@ fn an_open_article_offers_its_commands() {
     assert!(star.enabled);
 }
 
-/// New folder heads the sidebar's Feeds, where folders are made, not the
-/// window bar (its press opens the dialog through the published effect:
-/// `host_input::a_guests_new_folder_opens_its_dialog_unasked`).
 #[test]
 fn new_folder_heads_the_sidebars_feeds() {
     let mut mounted = framed(FeedsApp::new_demo());
@@ -290,9 +271,6 @@ fn new_folder_heads_the_sidebars_feeds() {
     );
 }
 
-/// The reader's commands are the window bar's: the window draws no header
-/// row of its own, the open article's commands lead, the library's follow
-/// in the bar's menu, and each runs from there.
 #[test]
 fn the_readers_commands_are_the_window_bars_and_run_from_it() {
     let mut mounted = framed(FeedsApp::new_demo());
@@ -395,7 +373,6 @@ fn the_readers_commands_are_the_window_bars_and_run_from_it() {
 )]
 #[test]
 fn refresh_runs_off_thread_and_lands_through_the_store() {
-    // --- phase: refresh only enqueues; the draw-time drain applies results ---
     {
         let mut a = app();
         let mut doc = synced(&mut a);
@@ -453,7 +430,6 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         );
     }
 
-    // --- phase: a feed pins the certificate of its first fetch, and only that ---
     {
         let mut a = app();
         let mut doc = synced(&mut a);
@@ -488,7 +464,6 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         );
     }
 
-    // --- phase: a large batch persists at most FLUSH_BUDGET writes a frame ---
     {
         let mut a = app();
         let mut doc = synced(&mut a);
@@ -543,7 +518,6 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         assert!(loaded(&doc).articles.len() >= total);
     }
 
-    // --- phase: progress finishes when every feed reported back ---
     {
         let mut a = app();
         let doc = synced(&mut a);
@@ -587,7 +561,6 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         assert!(a.core().next_wake_deadline().is_none());
     }
 
-    // --- phase: the progress shows above the list in the window ---
     {
         let a = app();
         a.force_refresh_in_progress();
@@ -603,9 +576,6 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
     }
 }
 
-/// A refresh asked for while one runs fetches nothing twice and keeps its
-/// count, and a subscription added meanwhile joins it: the batch ends, and
-/// an agent's refresh is answered, only once every feed in flight is back.
 #[test]
 fn a_running_refresh_waits_for_every_feed_it_fetches() {
     let mut a = app();
@@ -656,8 +626,6 @@ fn a_running_refresh_waits_for_every_feed_it_fetches() {
     assert_eq!(pending(&a), 0);
 }
 
-/// Reading settings, read and star state and places persist through the
-/// document.
 #[test]
 fn reader_state_edits_persist_through_the_document() {
     let mut a = app();
@@ -714,13 +682,10 @@ fn reader_state_edits_persist_through_the_document() {
     assert_eq!(loaded(&doc).total_unread(), 0, "marked read in the library");
 }
 
-/// The id of the `n`th article the library holds.
 fn nth_article(app: &FeedsApp, n: usize) -> Id {
     app.core().store.articles.ids().nth(n).unwrap().clone()
 }
 
-/// The window's semantics: the sidebar list, the article rows with their
-/// star, the reader document; operating them runs the same actions.
 #[test]
 fn accessibility_mirrors_and_operates_the_reader() {
     let mut mounted = framed(app());
@@ -777,8 +742,6 @@ fn accessibility_mirrors_and_operates_the_reader() {
     assert_eq!(a.active_filter(), Filter::Tag(tagged.1));
 }
 
-/// The modal's field is a real native control: accessibility edits it and
-/// the footer submits a real subscription.
 #[test]
 fn the_add_dialog_field_is_native_and_submits_a_subscription() {
     check_add_dialog_native_accessibility_sets_the_field();
@@ -822,8 +785,6 @@ fn the_tag_editor_uses_the_canonical_action() {
     assert!(loaded(&doc).article(&id).unwrap().tags.is_empty());
 }
 
-/// The shell docks the sidebar in a wide window, floats it as a drawer in
-/// a narrower one and pushes the article in a narrow one.
 #[test]
 fn the_window_shell_adapts_to_its_width() {
     // Wide: the sidebar, the list and the article side by side.
@@ -905,7 +866,6 @@ fn opml_portal_import_and_export_report_honestly() {
         assert_eq!(picks[0].title(), "Import OPML");
     };
 
-    // --- phase: import adds every feed and persists; re-import adds none ---
     {
         let mut a = app();
         let mut doc = synced(&mut a);
@@ -926,7 +886,6 @@ fn opml_portal_import_and_export_report_honestly() {
         );
     }
 
-    // --- phase: export writes the snapshot to the chosen path ---
     {
         let mut a = app();
         let doc = synced(&mut a);
@@ -947,7 +906,6 @@ fn opml_portal_import_and_export_report_honestly() {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    // --- phase: cancel and failure are reported as such ---
     for outcome in [
         PortalOutcome::Cancelled,
         PortalOutcome::Failed("test denial".into()),
@@ -974,7 +932,6 @@ fn opml_portal_import_and_export_report_honestly() {
         );
     }
 
-    // --- phase: import reads the chosen file; cancel changes nothing ---
     {
         let mut a = app();
         let mut doc = synced(&mut a);
@@ -1015,8 +972,6 @@ fn opml_portal_import_and_export_report_honestly() {
     }
 }
 
-/// A right click on a feed opens its menu on that row; the menu owns the
-/// keyboard and pointer while open and runs its actions.
 #[test]
 fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     let mut mounted = framed(app());
@@ -1119,8 +1074,6 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     ));
 }
 
-/// The sidebar's counts are the unread articles of each place, the same
-/// metric the list emphasises; the titles follow the chosen place.
 #[test]
 fn sidebar_counts_and_titles_follow_the_library() {
     let mut a = app();
@@ -1249,7 +1202,6 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
     assert_eq!(mounted.core().list.scroll(), 0.0);
 }
 
-/// Links open only web, Gemini and mail addresses.
 #[test]
 fn article_links_reject_local_files() {
     let mut reader = FeedsApp::new();
@@ -1396,8 +1348,6 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
     assert!(host.state().folders.is_empty());
 }
 
-/// Draw frames the way a window's host does after input: the frame the
-/// input asked for, then one more only while the app asks for it.
 fn pump_frames(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) {
     host.harness().relayout();
     for _ in 0..32 {
@@ -1409,7 +1359,6 @@ fn pump_frames(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) {
     }
 }
 
-/// How wide the sidebar stands on screen, as the shell last laid it out.
 fn sidebar_width(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) -> f64 {
     host.with_widget(|app: &mut FeedsApp| app.shell().geometry().sidebar_column.width())
         .unwrap()
@@ -1477,10 +1426,6 @@ fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
     assert!(sidebar_width(&mut host) < 0.5, "the shortcut collapsed it");
 }
 
-/// In a half-width window, where the sidebar is a screen of its own, the
-/// window bar's Show sidebar brings it up from the article list: the places
-/// are not reachable only through Back. The places' screen then holds Back to
-/// the list it covered, and the toggle stands aside for it.
 #[test]
 fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
     let libraries: [(fn() -> FeedsApp, u32); 2] = [(FeedsApp::new, 640), (app, 640)];
@@ -1526,7 +1471,6 @@ fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
     }
 }
 
-/// The sidebar row for `feed`, with its own status and second line.
 fn feed_row(core: &Core, feed: &Id) -> ui::widget::NavItem {
     fn find(items: &[ui::widget::NavItem], id: &str) -> Option<ui::widget::NavItem> {
         for item in items {
@@ -1546,9 +1490,6 @@ fn feed_row(core: &Core, feed: &Id) -> ui::widget::NavItem {
         .unwrap_or_else(|| panic!("the sidebar holds {id}"))
 }
 
-/// A failed refresh of one subscription marks that row with an honest reason
-/// and leaves the others alone; its next success clears the mark. The batch
-/// summary stays a count.
 #[test]
 fn a_failed_subscription_says_so_in_its_own_row_until_it_refreshes() {
     let mut a = app();
@@ -1623,9 +1564,6 @@ fn a_failed_subscription_says_so_in_its_own_row_until_it_refreshes() {
     assert!(a.core().feed_failures.is_empty());
 }
 
-/// The failing subscription's row says why to assistive technology too: the
-/// list folds the row's second line and its error status into the description
-/// a screen reader hears.
 #[test]
 fn the_failing_rows_reason_reaches_assistive_technology() {
     let mut a = app();
@@ -1666,7 +1604,6 @@ fn the_failing_rows_reason_reaches_assistive_technology() {
     );
 }
 
-/// The first semantic node named `name`, at any depth.
 fn named_node<'a>(node: &'a AccessNode, name: &str) -> Option<&'a AccessNode> {
     if node.name.as_deref() == Some(name) {
         return Some(node);

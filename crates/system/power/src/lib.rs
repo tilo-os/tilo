@@ -1,40 +1,7 @@
-//! Tilo **power management** — suspend-on-idle, lid/power-key handling,
-//! suspend inhibitors, and battery thresholds, built on `systemd-logind` and
-//! `UPower` over D-Bus.
-//!
-//! # Shape
-//!
-//! The crate is split into a **pure policy core** and **D-Bus integration**,
-//! so every decision is unit-testable without a bus:
-//!
-//! * [`policy`] — the [`PowerPolicy`] and the lid / power-key decisions.
-//! * [`battery`] — the [`BatteryMonitor`] threshold state machine
-//!   (low-warning + critical auto-suspend, with hysteresis).
-//! * [`inhibit`] — the [`InhibitRegistry`], the ref-counted "don't suspend"
-//!   API the shell and apps hold while media plays / a task runs.
-//! * [`config`] — reading the policy from the person's settings the
-//!   Settings pane writes.
-//! * [`logind`] / [`upower`] — the `zbus` proxies (suspend, inhibit
-//!   locks, battery + lid reads, sleep signals).
-//! * [`sysfs`] — the one reader of the kernel's power-supply class: the
-//!   composite battery snapshot, the remaining time, per-supply detail
-//!   (level, health, cycles), and which charge-limit control the hardware
-//!   exposes. Bus-free and synchronous, for callers that need a number on a
-//!   plain thread (the compositor's status indicator, the Settings power
-//!   card, the installer's low-battery check) rather than a subscription.
-//! * [`bridge`] — the `Send + Sync` mailbox between the async service and the
-//!   synchronous compositor loop.
-//! * [`service`] — the [`PowerService`] async orchestrator the compositor
-//!   spawns.
-//!
-//! # Wiring
-//!
-//! The compositor's idle state machine (`tilo_compositor::idle`) grows a
-//! *suspend* threshold and emits a suspend transition, which the compositor
-//! loop turns into a [`bridge::PowerCommand::Suspend`] — gated by
-//! [`InhibitRegistry::is_inhibited`]. The service issues
-//! `logind.Suspend`, mirrors the registry into a logind `idle:sleep` lock,
-//! watches the battery, and reacts to the lid.
+//! Power management — suspend on idle, lid and power-key handling, suspend
+//! inhibitors and battery thresholds — built on `systemd-logind` and `UPower`
+//! over D-Bus. The decisions are pure policy ([`policy`], [`battery`]) so they
+//! are testable without a bus; the D-Bus I/O sits behind them.
 
 pub mod battery;
 #[cfg(feature = "service")]

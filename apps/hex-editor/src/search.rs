@@ -1,22 +1,18 @@
-//! Search across the byte buffer — either a hex pattern (`de ad be ef`)
-//! or a literal UTF-8 text string. Pure functions over `&[u8]`; the view
-//! owns the query string and current match cursor.
+//! Finding a hex pattern or literal text in the bytes. Pure functions; the view owns
+//! the query and the match cursor.
 
-/// What kind of needle the query string represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchKind {
     Hex,
     Text,
 }
 
-/// Upper bound for retained match offsets. A binary file can contain millions
-/// of one-byte hits; keeping every one would turn a local find into an
-/// unbounded allocation and make the result counter misleadingly expensive.
+/// Upper bound for retained matches: a binary file can hold millions of one-byte
+/// hits.
 pub const MAX_RETAINED_MATCHES: usize = 10_000;
 
-/// Parse a hex query like "de ad", "deadbeef", or "DE-AD" into raw bytes.
-/// Whitespace and the separators `-`, `:`, `,` are ignored. Returns None
-/// if any remaining char isn't a hex digit or the digit count is odd.
+/// A hex query like `de ad`, `deadbeef` or `DE-AD` as bytes; whitespace and `-`, `:`,
+/// `,` are ignored.
 pub fn parse_hex_query(query: &str) -> Option<Vec<u8>> {
     let cleaned: String = query
         .chars()
@@ -34,7 +30,6 @@ pub fn parse_hex_query(query: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Turn a query string + kind into the literal needle bytes.
 pub fn needle(query: &str, kind: SearchKind) -> Option<Vec<u8>> {
     match kind {
         SearchKind::Hex => parse_hex_query(query),
@@ -48,18 +43,15 @@ pub fn needle(query: &str, kind: SearchKind) -> Option<Vec<u8>> {
     }
 }
 
-/// How a text query matches the bytes: letter case and word boundaries. A
-/// hex query is always exact.
+/// How a text query matches: letter case and word boundaries. A hex query is always
+/// exact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatchRules {
-    /// Letters must agree in case.
     pub match_case: bool,
-    /// The match must not touch another letter, digit or underscore.
     pub whole_word: bool,
 }
 
 impl MatchRules {
-    /// Byte-exact, anywhere: how a hex pattern matches.
     pub const EXACT: Self = Self {
         match_case: true,
         whole_word: false,
@@ -70,7 +62,6 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-/// Like `find_all_bounded`, under `rules`.
 pub fn find_matches(
     haystack: &[u8],
     needle: &[u8],

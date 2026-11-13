@@ -130,6 +130,9 @@ pub struct DeskLayer {
     /// a secondary press opens stands at the pointer.
     cursor: Option<Point>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    /// The verbs the empty desk offers now: the cards whose apps this host has, read every pass so
+    /// an app installed or removed while the desk stands changes them.
+    start_cards: Rc<dyn Fn() -> Vec<LaunchpadAction>>,
     /// The cards the windows' apps present over the desk, for a host with no
     /// compositor to give each one a window of its own.
     cards: cards::Cards,
@@ -169,11 +172,14 @@ impl DeskLayer {
 
     /// The desk over `surface` (whose host side is `handle` ), with `launchpad` on a desk with no
     /// windows and `beneath` (a host's own layers) under both, putting what it asks into `asks` .
+    /// `start_cards` names the verbs that desk offers, read each pass: the cards of the apps this
+    /// host has ([`LaunchpadAction::ALL`] for a host that can open them all).
     #[must_use]
     pub fn new(
         surface: Box<dyn Widget>,
         handle: DesktopHandle,
         launchpad: CollaborationLaunchpad,
+        start_cards: Rc<dyn Fn() -> Vec<LaunchpadAction>>,
         asks: Rc<RefCell<Vec<DesktopAsk>>>,
         beneath: Vec<Box<dyn Widget>>,
     ) -> Self {
@@ -209,6 +215,7 @@ impl DeskLayer {
                     })
                     .collect(),
                 template: launchpad,
+                cards: Rc::clone(&start_cards),
                 rebuilt: false,
                 handle: handle.clone(),
                 asks: Rc::clone(&asks),
@@ -222,6 +229,7 @@ impl DeskLayer {
             workspace: Cell::new(workspace),
             cursor: None,
             asks,
+            start_cards,
             cards: cards::Cards::default(),
             hosts_cards: false,
             rect: Rect::ZERO,
@@ -396,7 +404,7 @@ impl ui::resources::PublishesResources for DeskLayer {
             search,
         )];
         if self.handle.read(desk_is_empty) {
-            resources.push(launchpad_resource());
+            resources.push(launchpad_resource(&(self.start_cards)()));
         }
         resources
     }

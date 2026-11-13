@@ -343,13 +343,14 @@ impl DailyControls {
             .no_wrap()
             .with_id("browser.find")
             .with_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s1)
-            .push(Box::new(
+            .push(Box::new(ui::window_toolbar::exempt!(Fallback, {
+                // While the bar hosts the window, its search finds in the page.
                 TextInput::from_state(&self.query)
                     .with_id(FIND_INPUT)
                     .with_kind(ui::widget::TextInputKind::Search)
                     .with_accessible_name(crate::resource::CATALOG.t("browser-menu-find"))
-                    .with_placeholder(crate::resource::CATALOG.t("browser-menu-find")),
-            ))
+                    .with_placeholder(crate::resource::CATALOG.t("browser-menu-find"))
+            })))
             .push(Box::new(
                 Container::new()
                     .with_no_padding()

@@ -1,7 +1,6 @@
-//! Account creation and private first-login migration metadata delivery.
-//!
-//! The root seed is intent, not actor authority. Production account facts come
-//! from NSS; fixture paths are accepted only for the unprivileged caller itself.
+//! Account creation and private first-login migration metadata delivery. The
+//! root seed is intent, not actor authority: production account facts come from
+//! NSS, and fixture paths are accepted only for the unprivileged caller itself.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -99,8 +98,8 @@ struct Account {
     home: PathBuf,
 }
 
-/// getent uses the installed NSS configuration, including directory services.
-/// Never parse /etc/passwd as a substitute or resolve an executable via PATH.
+/// getent uses the installed NSS configuration, including directory services;
+/// never parse /etc/passwd as a substitute or resolve an executable via PATH.
 fn account(host: &dyn Host, key: &str) -> Result<Option<Account>> {
     let output = host.run(&["/usr/bin/getent", "--", "passwd", key])?;
     if output.code == Some(2) && output.stdout.is_empty() {
@@ -134,7 +133,7 @@ fn account(host: &dyn Host, key: &str) -> Result<Option<Account>> {
 fn account_by_name(host: &dyn Host, name: &str) -> Result<Option<Account>> {
     if !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()) {
         // getent treats numeric keys as UIDs, whereas getpwnam accepts numeric
-        // usernames. id's explicit operand retains the name lookup semantics.
+        // usernames; id's explicit operand keeps the name lookup semantics.
         let output = host.run(&["/usr/bin/id", "--user", "--", name])?;
         if output.code == Some(1) && output.stdout.is_empty() {
             return Ok(None);
@@ -366,8 +365,8 @@ fn publish(directory: &OwnedFd, name: &str, raw: &Value, account: &Account) -> R
         }
         return Ok(());
     }
-    // The proc descriptor pins the destination, even if an ancestor is renamed.
-    // NamedTempFile provides unpredictable O_EXCL mode-0600 creation and cleanup.
+    // The proc descriptor pins the destination, even if an ancestor is renamed;
+    // NamedTempFile gives unpredictable O_EXCL mode-0600 creation and cleanup.
     let pinned = format!("/proc/self/fd/{}", directory.as_raw_fd());
     let mut temporary = tempfile::Builder::new()
         .prefix(".migration-")
@@ -442,8 +441,8 @@ fn deliver_user_plan(host: &dyn Host, options: &Options) -> Result<String> {
         .get("operation_id")
         .and_then(Value::as_str)
         .ok_or_else(|| Fail::Refusal("migration operation ID is missing".into()))?;
-    // Validation above uses the shared Migration model; retain a local path guard
-    // so future model extensions can never turn an operation ID into a path.
+    // Validation above uses the shared Migration model; the local path guard keeps
+    // a future model extension from turning an operation ID into a path.
     if operation.is_empty() || operation.contains('/') || operation.contains('\0') {
         return refuse("migration operation ID is not a filename");
     }

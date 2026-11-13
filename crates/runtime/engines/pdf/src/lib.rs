@@ -1,24 +1,10 @@
-//! Tilo's PDF engine, as an engine library beside the shared runtime
+//! Tilo's PDF engine, as its own library in the runtime bundle
 //! (`libtilo_pdf_engine.so`).
 //!
-//! `tilo-pdf` carries two PDF engines' worth of code: hayro, the in-process
-//! rasteriser with its own font stack (an older `skrifa` and `read-fonts`
-//! than the toolkit's), CPU renderer (`vello_cpu`), character-map tables and
-//! JPEG 2000 decoder, and the pdfium helper's client, plus PDF export
-//! (`pdf-writer`, `subsetter`). None of it is on any app's way to its first frame, and only
-//! the apps that read PDFs reach it at all: PDF Viewer, Files and Print
-//! Centre (Writer writes its PDFs through `tilo-doc-pdf`). Inside `libruntime_dylib.so` every app process
-//! mapped and relocated it. Here it is a library of its own in the runtime
-//! bundle that only those apps name `DT_NEEDED`.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crate it provides, which
-//! records it as provided by this library for the apps' `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -29,9 +15,8 @@ pub use tilo_pdf;
 /// process (hayro, the engine every target has), checking its geometry and
 /// the colour it painted.
 ///
-/// The engine's check binary and the apps' `--probe-pdf-engine` call it, so
-/// a release proves the library loads and runs against the runtime it ships
-/// with, and that the apps load it themselves.
+/// The engine's check binary and the app's `--probe-…` call it, so a release
+/// proves the library loads and runs against its runtime.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use tilo_pdf::{Engine, RenderOptions};
@@ -52,7 +37,6 @@ pub fn self_check() -> Result<String, String> {
     let bitmap = document
         .render(0, &RenderOptions::default())
         .map_err(|error| format!("hayro could not render the page: {error}"))?;
-    // The page is one red rectangle: its centre pixel is red, opaque.
     let (width, height) = (bitmap.width(), bitmap.height());
     let centre = usize::try_from(
         u64::from(height / 2)

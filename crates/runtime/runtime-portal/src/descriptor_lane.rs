@@ -41,7 +41,6 @@ struct Outbound {
     next: u32,
 }
 
-/// The sending side of one connection's descriptor lane. Clones share it.
 #[derive(Clone, Default)]
 pub struct DescriptorSender(Arc<Mutex<Outbound>>);
 
@@ -102,7 +101,6 @@ impl ReceivedDescriptors {
         })))
     }
 
-    /// Take the descriptor the peer sent as `number`; each is taken once.
     #[must_use]
     pub fn take(&self, number: u32) -> Option<OwnedFd> {
         self.0.lock().ok()?.pending.remove(&number)
@@ -117,7 +115,6 @@ impl ReceivedDescriptors {
         }
     }
 
-    /// How many descriptors are held, untaken.
     #[must_use]
     pub fn held(&self) -> usize {
         self.0.lock().map_or(0, |received| received.pending.len())
@@ -146,10 +143,6 @@ impl ReceivedDescriptors {
     }
 }
 
-/// A connected Unix stream that carries a descriptor lane: what it writes
-/// carries descriptors queued on its [`DescriptorSender`], and what it reads
-/// fills its [`ReceivedDescriptors`]. Without a receiver, descriptors the
-/// peer sends are closed on receipt.
 pub struct DescriptorStream {
     stream: UnixStream,
     outbound: Option<DescriptorSender>,
@@ -157,7 +150,6 @@ pub struct DescriptorStream {
 }
 
 impl DescriptorStream {
-    /// A client end whose writes carry what `sender` queues.
     #[must_use]
     pub const fn sending(stream: UnixStream, sender: DescriptorSender) -> Self {
         Self {
@@ -167,7 +159,6 @@ impl DescriptorStream {
         }
     }
 
-    /// A service end that keeps what the peer sends in `received`.
     #[must_use]
     pub const fn receiving(stream: UnixStream, received: ReceivedDescriptors) -> Self {
         Self {
@@ -177,7 +168,6 @@ impl DescriptorStream {
         }
     }
 
-    /// Whether a descriptor waits for this stream's next write.
     fn sends_descriptors(&self) -> bool {
         self.outbound.as_ref().is_some_and(|outbound| {
             outbound
@@ -268,7 +258,6 @@ impl AsyncRead for DescriptorStream {
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         let Some(inbound) = &this.inbound else {
-            // A plain read closes any descriptor the peer sent.
             return Pin::new(&mut this.stream).poll_read(cx, buf);
         };
         loop {

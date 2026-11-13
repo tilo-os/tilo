@@ -12,7 +12,6 @@
 
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
-use ui::headless::InspectionNode;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 
@@ -33,30 +32,12 @@ fn settle(app: &mut TestApp<TlApp>) {
     }
 }
 
-fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
-    out.push(node);
-    for child in &node.children {
-        walk(child, out);
-    }
-}
-
 /// Every resource `resources` publishes, with the ones under them.
 fn flattened(resources: &[ui::tilo_actions::ResourceSpec]) -> Vec<&ui::tilo_actions::ResourceSpec> {
     resources
         .iter()
         .flat_map(|resource| std::iter::once(resource).chain(flattened(&resource.children)))
         .collect()
-}
-
-/// The id the package's ids lock gives `name`.
-fn id_of(name: &str) -> String {
-    include_str!("../../tl/board/app.ids")
-        .lines()
-        .find_map(|line| {
-            let (key, id) = line.split_once(" = ")?;
-            (key.trim() == name).then(|| id.trim().to_owned())
-        })
-        .unwrap_or_else(|| panic!("the ids lock names `{name}`"))
 }
 
 /// The controls bound to an action the window does not publish: the live host refuses to
@@ -75,8 +56,7 @@ fn stale_bindings(app: &mut TestApp<TlApp>) -> Vec<String> {
 /// says what the card stands for.
 fn card_rect(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter()
         .find(|node| {
             node.widget == "ListRow"
@@ -101,8 +81,7 @@ fn menu_items(app: &mut TestApp<TlApp>) -> Vec<String> {
         }
     }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let mut out = Vec::new();
     for node in all.into_iter().filter(|node| node.widget == "ContextMenu") {
         if let Some(semantics) = &node.semantics
@@ -145,7 +124,7 @@ fn a_board_holding_cards_publishes_its_actions_and_each_card_its_own_control() {
         .collect();
     for action in ["new_card", "move_to", "delete_card"] {
         assert!(
-            actions.contains(&id_of(action).as_str()),
+            actions.contains(&action),
             "the board publishes `{action}`: {actions:?}"
         );
     }

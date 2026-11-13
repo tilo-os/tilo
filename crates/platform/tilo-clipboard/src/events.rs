@@ -15,7 +15,6 @@ use std::rc::Rc;
 
 /// The data of one trusted clipboard event (the browser's `DataTransfer`).
 pub trait EventTransfer {
-    /// Offer `text` as `text/plain`. Returns whether the event took it.
     fn set_text(&self, text: &str) -> bool;
     /// Offer `html` as `text/html` with `plain` as its `text/plain`
     /// fallback. Returns whether the event took both. The default offers
@@ -24,29 +23,21 @@ pub trait EventTransfer {
         let _ = html;
         self.set_text(plain)
     }
-    /// The event's `text/plain`, if any.
     fn text(&self) -> Option<String>;
-    /// Paired HTML/plain payloads from this same event. Optional and bounded;
-    /// returning `None` leaves the ordinary plain-text read available.
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
         None
     }
-    /// The picture this same event pastes (a screenshot, an image copied in
-    /// another app), as an encoded file of one of
-    /// [`PASTED_IMAGE_TYPES`](crate::PASTED_IMAGE_TYPES). Optional.
     fn image(&self) -> Option<crate::ClipboardImage> {
         None
     }
 }
 
-/// How a copy made inside a click ended, reported to whoever dispatched it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CopyReport {
     Copied,
     Failed(String),
 }
 
-/// Where a copy made inside a click reports how it ended.
 type Report = Rc<dyn Fn(CopyReport)>;
 
 /// Only the web backend reads the event; the desktop backends ignore it.
@@ -58,14 +49,11 @@ struct Transfer {
     copied: bool,
 }
 
-/// What of an event's data has been read: each at most once.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 #[derive(Default)]
 struct Taken {
     read: bool,
-    /// Whether rich text was probed (a refused offer leaves plain to read).
     rich_attempted: bool,
-    /// Its picture.
     image: bool,
 }
 
@@ -74,8 +62,6 @@ thread_local! {
     static INPUT: RefCell<Option<Report>> = const { RefCell::new(None) };
 }
 
-/// Run `run` while `transfer` is the clipboard event being dispatched. The
-/// event is read at most once and written at most once.
 pub fn during<R>(transfer: Rc<dyn EventTransfer>, run: impl FnOnce() -> R) -> R {
     struct Clear(Option<Transfer>);
     impl Drop for Clear {
@@ -120,12 +106,10 @@ pub fn copied() -> bool {
     TRANSFER.with_borrow(|slot| slot.as_ref().is_some_and(|t| t.copied))
 }
 
-/// Whether a clipboard event is being dispatched on this thread.
 pub fn in_event() -> bool {
     TRANSFER.with_borrow(Option::is_some)
 }
 
-/// Write `text` to the event being dispatched. `None` when there is none.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn write(text: &str) -> Option<bool> {
     TRANSFER.with_borrow_mut(|slot| {
@@ -137,8 +121,6 @@ pub(crate) fn write(text: &str) -> Option<bool> {
     })
 }
 
-/// Write formatted text to the event being dispatched. `None` when there is
-/// none.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn write_rich(html: &str, plain: &str) -> Option<bool> {
     TRANSFER.with_borrow_mut(|slot| {
@@ -150,8 +132,6 @@ pub(crate) fn write_rich(html: &str, plain: &str) -> Option<bool> {
     })
 }
 
-/// Read the event being dispatched, once. `None` when there is none, it was
-/// already read, or it holds no text.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn read() -> Option<String> {
     TRANSFER.with_borrow_mut(|slot| {
@@ -180,8 +160,6 @@ pub(crate) fn read_rich() -> Option<crate::RichTextOffer> {
     })
 }
 
-/// The picture the event being dispatched pastes, once. `None` when there
-/// is no event, it was already read, or it pastes no picture.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn read_image() -> Option<crate::ClipboardImage> {
     TRANSFER.with_borrow_mut(|slot| {
@@ -196,7 +174,6 @@ pub(crate) fn read_image() -> Option<crate::ClipboardImage> {
     })
 }
 
-/// The report of the input event being dispatched, if any.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn input_report() -> Option<Report> {
     INPUT.with_borrow(Clone::clone)

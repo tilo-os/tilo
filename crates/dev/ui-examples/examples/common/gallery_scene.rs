@@ -2,11 +2,6 @@
 //! interactive `gallery` example (live window) and the `gallery_shots` example
 //! (offscreen PNGs, light + dark). Kept in `examples/common/` so Cargo does not
 //! auto-build it as its own example; each example `#[path]`-includes it.
-//!
-//! The single entry point, [`build_showcase`], seeds the CRDT document with the
-//! state the interactive controls read (toggles, checkbox, slider, text field,
-//! dropdown, data table) and returns the root widget: a vertical column of titled
-//! cards, one per component family.
 
 use automerge::transaction::Transactable;
 
@@ -95,12 +90,6 @@ fn specimen_pair(
     )
 }
 
-/// The gallery's canonical multilingual typography review corpus.
-///
-/// Kept as its own builder so the offscreen regression test renders exactly
-/// the same widget developers inspect in the full component gallery.
-/// The role ladder and the serif reading specimens. Split out of
-/// `build_typography_showcase` to keep that under the line cap.
 fn typography_intro_and_serif(column: Column, _theme: &Theme) -> Column {
     column
         .push(Box::new(
@@ -140,9 +129,6 @@ fn typography_intro_and_serif(column: Column, _theme: &Theme) -> Column {
         ))
 }
 
-/// BEFORE/AFTER typography-feature specimen pairs (kerning through
-/// variable-font optical sizing), all on the reading role. Split out of
-/// `build_typography_showcase` to keep that under the line cap.
 fn typography_feature_pairs(column: Column, theme: &Theme) -> Column {
     let reading = || TextRole::Reading;
     column
@@ -194,9 +180,6 @@ fn typography_feature_pairs(column: Column, theme: &Theme) -> Column {
         ))
 }
 
-/// The remaining BEFORE/AFTER specimen pairs (wrapping through hanging
-/// punctuation), plus the pagination note. Split out of
-/// `build_typography_showcase` to keep that under the line cap.
 fn typography_wrapping_and_punctuation(column: Column, theme: &Theme) -> Column {
     column
         .push(specimen_pair(
@@ -239,9 +222,6 @@ fn typography_wrapping_and_punctuation(column: Column, theme: &Theme) -> Column 
         ))
 }
 
-/// Code sample, multilingual scripts, hyphenation demo, `BiDi` text and
-/// emoji clusters. Split out of `build_typography_showcase` to keep that
-/// under the line cap.
 fn typography_scripts_and_bidi(column: Column, _theme: &Theme) -> Column {
     column
                 .push(Box::new(
@@ -302,9 +282,6 @@ pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
     card(None, "Typography & Scripts", Box::new(column))
 }
 
-/// Seeds `state.doc` with the toggle/checkbox/slider/text/dropdown values
-/// the interactive controls read. Split out of `build_showcase` to keep
-/// that under the line cap.
 fn seed_gallery_state(state: &mut State) {
     let root = state.root.clone();
     let _ = state.doc.put(&root, "sw_wifi", true);
@@ -333,8 +310,6 @@ fn seed_gallery_state(state: &mut State) {
     }
 }
 
-/// Buttons, switches, checkbox, slider and toggle-group. Split out of
-/// `build_showcase` to keep that under the line cap.
 fn build_controls_card(theme: &Theme) -> Box<dyn Widget> {
     card(
         Some(CARD_W),
@@ -389,7 +364,6 @@ fn build_controls_card(theme: &Theme) -> Box<dyn Widget> {
 }
 
 /// Text field, search field, dropdown, stepper and breadcrumb. Split out
-/// of `build_showcase` to keep that under the line cap.
 fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
     card(
         Some(CARD_W),
@@ -430,8 +404,6 @@ fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
     )
 }
 
-/// Badges, chips and avatars. Split out of `build_showcase` to keep that
-/// under the line cap.
 fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
     card(
         Some(CARD_W),
@@ -484,8 +456,6 @@ fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
     )
 }
 
-/// Progress bars and a spinner. Split out of `build_showcase` to keep
-/// that under the line cap.
 fn build_feedback_card(theme: &Theme) -> Box<dyn Widget> {
     card(
         Some(CARD_W),
@@ -508,8 +478,6 @@ fn build_feedback_card(theme: &Theme) -> Box<dyn Widget> {
     )
 }
 
-/// The full-width stat-tile row. Split out of `build_showcase` to keep
-/// that under the line cap.
 fn build_metrics_card() -> Box<dyn Widget> {
     card(
         None,
@@ -535,8 +503,6 @@ fn build_metrics_card() -> Box<dyn Widget> {
     )
 }
 
-/// Ring gauge, sparkline, bar gauge and area chart. Split out of
-/// `build_showcase` to keep that under the line cap.
 fn build_charts_card(theme: &Theme) -> Box<dyn Widget> {
     let accent = theme.tokens.colors.intent.accent;
     card(
@@ -575,8 +541,6 @@ fn build_charts_card(theme: &Theme) -> Box<dyn Widget> {
     )
 }
 
-/// Tab bar and toolbar. Split out of `build_showcase` to keep that under
-/// the line cap.
 fn build_navigation_card(theme: &Theme) -> Box<dyn Widget> {
     card(
         Some(CARD_W),
@@ -606,8 +570,6 @@ fn build_navigation_card(theme: &Theme) -> Box<dyn Widget> {
     )
 }
 
-/// The four inline-banner severities. Split out of `build_showcase` to
-/// keep that under the line cap.
 fn build_banners_card() -> Box<dyn Widget> {
     card(
         None,
@@ -640,8 +602,6 @@ struct Task {
     hours: Option<u32>,
 }
 
-/// The empty-state and data-table cards. Split out of `build_showcase`
-/// to keep that under the line cap.
 fn build_empty_and_table_cards() -> (Box<dyn Widget>, Box<dyn Widget>) {
     let empty = card(
         None,

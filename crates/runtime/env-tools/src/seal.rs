@@ -17,14 +17,11 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
-/// The timestamp every sealed entry carries.
 pub const EPOCH: i64 = 0;
 
 /// Paths (relative to the tree root, `/`-separated) the seal drops along
 /// with everything below them. Package-manager state and per-build churn.
 pub const EXCLUDED: &[&str] = &[
-    // The rpm database and dnf's history: rewritten by every transaction,
-    // and the runtime's own copy is the one the guest reads.
     "usr/lib/sysimage/rpm",
     "usr/lib/sysimage/libdnf5",
     "usr/lib/sysimage/dnf",
@@ -36,7 +33,6 @@ pub const EXCLUDED: &[&str] = &[
     "etc/hostname",
     "etc/machine-id",
     "etc/ld.so.cache",
-    // Shadow databases: unreadable in a guest and per-system.
     "etc/shadow",
     "etc/gshadow",
     "etc/shadow-",
@@ -52,23 +48,17 @@ pub const EXCLUDED: &[&str] = &[
     "usr/lib/.build-id",
 ];
 
-/// File-name suffixes dropped wherever they appear.
 const EXCLUDED_SUFFIXES: &[&str] = &[".rpmnew", ".rpmsave", ".rpmorig"];
 
-/// What a seal kept and what it couldn't.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SealReport {
     pub files: u64,
     pub symlinks: u64,
     /// Bytes of regular-file content kept.
     pub bytes: u64,
-    /// Excluded subtrees and files that were present.
     pub dropped: Vec<String>,
-    /// Runtime files the transaction deleted; a tool can't delete.
     pub whiteouts: Vec<String>,
-    /// Kept files that replace one of the runtime's at the same path.
     pub shadows: Vec<String>,
-    /// Sockets, fifos, device nodes and names an image can't carry.
     pub skipped: Vec<String>,
 }
 
@@ -87,7 +77,6 @@ fn err(path: &Path) -> impl FnOnce(std::io::Error) -> SealError + '_ {
     }
 }
 
-/// Whether the seal drops `rel` (a `/`-separated path under the tree root).
 pub fn is_excluded(rel: &str) -> bool {
     EXCLUDED.iter().any(|ex| {
         rel == *ex
@@ -222,8 +211,6 @@ fn is_whiteout(path: &Path, meta: &std::fs::Metadata) -> bool {
 }
 
 fn has_xattr(path: &Path, name: &str) -> bool {
-    // The shared Unix adapter preserves no-follow semantics on Linux and
-    // macOS, whose native getxattr signatures differ.
     xattr::get(path, name).is_ok_and(|value| value.is_some())
 }
 

@@ -2585,6 +2585,51 @@ fn parked_surfaces_coalesce_and_document_changes_wait_behind_parked_commands() {
     assert!(shovel.try_recv().is_ok());
 }
 
+/// A caret that moves while typing fills the queue waits for room rather than
+/// being dropped, and only the newest word under its key is said: the last
+/// caret of a burst is the one everyone sees.
+#[test]
+fn the_last_caret_of_a_burst_waits_for_room_and_is_the_one_said() {
+    let (mut transport, mut shovel) = parking_transport(1);
+    let caret = |pos: usize| {
+        TransportCommand::Primary(CollabRequest::Presence {
+            key: PresenceKey::Tab {
+                id: "note".to_owned(),
+            },
+            payload: PresencePayload::Caret { pos },
+        })
+    };
+    assert_eq!(
+        transport.submit(TransportCommand::Primary(
+            CollabRequest::document_incremental(b"typed".to_vec())
+        )),
+        Ok(())
+    );
+    for pos in 1..=50 {
+        assert_eq!(
+            transport.submit(caret(pos)),
+            Ok(()),
+            "a caret is never shed"
+        );
+    }
+    assert_eq!(transport.spill.len(), 1, "one caret waits, the newest");
+    let mut said = Vec::new();
+    while let Ok(queued) = shovel.try_recv() {
+        said.push(queued.command);
+        let mut events = Vec::new();
+        transport.drain(&mut events);
+    }
+    let Some(SdkCommand::Primary(CollabRequest::Presence {
+        payload: PresencePayload::Caret { pos },
+        ..
+    })) = said.last()
+    else {
+        panic!("the caret is said once there is room: {}", said.len());
+    };
+    assert_eq!(*pos, 50, "the caret said is where the burst ended");
+    assert!(transport.spill.is_empty());
+}
+
 #[cfg(unix)]
 struct RefusedDocumentIdentity;
 

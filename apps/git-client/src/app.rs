@@ -1,17 +1,10 @@
-//! The git client's window.
-//!
-//! `GitClientState` holds the in-memory [`RepoModel`], the diffs, the
-//! active screen and all transient selection and scroll state; the view
-//! shares it with its effect handler, and [`GitClientApp`] draws it.
-//! Durable preferences live in the CRDT via [`Settings`]. The window's bar
-//! holds the client's controls (`window_bar`): the repository as the
-//! location, the screens as its views, the list column's toggle, Fetch, Pull
-//! and Push, the diff's layout and syntax highlighting, and History. The widget paints no header row:
-//! the list column of the Changes and History screens stands on the sidebar
-//! region through a [`SidebarDrawer`] (docked when the window is wide, a
-//! floating drawer when it is narrow), and the screen's content on the
-//! window ground. Presses are routed through the targets the last paint
-//! recorded.
+//! The git client's window. `GitClientState` holds the in-memory [`RepoModel`], the
+//! diffs, the active screen and all transient selection and scroll state; the view
+//! shares it with its effect handler, and [`GitClientApp`] draws it. Durable
+//! preferences live in the CRDT via [`Settings`]. The widget paints no header row:
+//! the list column of the Changes and History screens sits on the sidebar region
+//! through a [`SidebarDrawer`], and the screen's content on the window ground.
+//! Presses are routed through the targets the last paint recorded.
 
 mod a11y;
 mod actions;
@@ -66,23 +59,18 @@ use crate::model::{ChangeArea, DiffKey, DiffMap, FileChange, RepoModel};
 use crate::panels::{self, BranchAction, PanelHit, RemoteAction};
 use crate::settings::{DiffLayout, Settings};
 
-/// Which embedded text field currently holds keyboard focus. Text editing is
-/// delegated to the toolkit's [`TextInput`] (cursor, selection, word-nav,
-/// clipboard); this tracks which one keys route to.
+/// Which embedded text field holds keyboard focus: text editing itself is the toolkit's
+/// [`TextInput`], and this only says which one keys route to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
-    /// The commit-message field.
     Commit,
     Branch,
-    /// The repository-path field on the "open a repository" screen.
     Open,
     WorktreeBranch,
     WorktreePath,
     WorktreeStart,
 }
 
-/// Host event resources retained while one event is routed through embedded
-/// text inputs and the app's own geometry handlers.
 struct InputEventCtx<'a> {
     event: &'a WindowEvent,
     scale_factor: f64,
@@ -92,7 +80,6 @@ struct InputEventCtx<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
-/// Which top-level screen is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Changes,
@@ -103,8 +90,7 @@ pub enum Screen {
 impl Screen {
     const ALL: [Self; 3] = [Self::Changes, Self::History, Self::Panels];
 
-    /// Whether the screen has a list column (on the sidebar region, a
-    /// drawer in a narrow window). Branches is one page with no list.
+    /// Whether the screen has a list column; Branches is one page with no list.
     fn has_list(self) -> bool {
         matches!(self, Screen::Changes | Screen::History)
     }
@@ -126,28 +112,23 @@ impl Screen {
     }
 }
 
-/// A destructive step waiting for the person to confirm it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Confirm {
-    /// Revert a file's worktree changes (or delete an untracked file).
     DiscardFile {
         area: ChangeArea,
         index: usize,
         name: String,
     },
-    /// Revert one hunk of the selected file's worktree changes.
     DiscardHunk(usize),
-    /// Delete a local branch.
     DeleteBranch(String),
-    /// Switch to a branch while the working tree holds uncommitted work:
-    /// the person chooses what becomes of it. A clean tree has nothing at
-    /// stake and switches without a question, so this only ever asks when
-    /// there is work to lose.
-    SwitchBranch { name: String },
+    /// Switch to a branch while the working tree holds uncommitted work: the person chooses what
+    /// becomes of it. A clean tree switches without a question, so this only asks when there is
+    /// work to lose.
+    SwitchBranch {
+        name: String,
+    },
 }
 
-/// Where the first-run screen puts its three controls: the path to type in,
-/// the system file chooser beside it, and the button that opens it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct OpenControls {
     field: Rect,
@@ -156,11 +137,8 @@ struct OpenControls {
 }
 
 impl OpenControls {
-    /// One row while the path keeps `path_room` beside the two buttons; under
-    /// that the buttons stand on their own row under it. A path field
-    /// squeezed to nothing is not a field: at a large text scale in a long
-    /// language the three controls do not fit side by side, and the row that
-    /// cannot hold them has to become two.
+    /// One row while the path keeps `path_room` beside the two buttons, two when it does not: at a
+    /// large text scale in a long language the three controls do not fit side by side.
     fn at(
         lane: Rect,
         y: f64,
@@ -195,7 +173,6 @@ impl OpenControls {
     }
 }
 
-/// One answer to a confirmation sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConfirmChoice {
     Discard,
@@ -206,7 +183,6 @@ enum ConfirmChoice {
     SwitchStashing,
 }
 
-/// How an answer reads: its label, and whether it destroys something.
 struct ChoiceFace {
     choice: ConfirmChoice,
     label: String,
@@ -253,8 +229,8 @@ impl Confirm {
                 label: t("git-delete-branch"),
                 danger: true,
             }],
-            // The work comes along or it is parked; there is no third answer
-            // that keeps it anywhere else.
+            // The work comes along or it is parked; there is no third answer that keeps it anywhere
+            // else.
             Confirm::SwitchBranch { .. } => vec![
                 ChoiceFace {
                     choice: ConfirmChoice::SwitchStashing,
@@ -271,7 +247,6 @@ impl Confirm {
     }
 }
 
-/// Something a press, a key or an assistive action can do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Hit {
     /// The scrim behind an open drawer: dismisses it.
@@ -279,46 +254,33 @@ enum Hit {
     DismissError,
     Change(ChangesHit),
     Diff(DiffHit),
-    /// A commit row, by index.
     Commit(usize),
-    /// A changed file of the selected commit, by index: opens its diff.
     CommitFile(usize),
-    /// The way back from a commit file's diff to the commit itself.
     BackToCommit,
-    /// Keep one side of a conflicted file.
     ResolveConflict(crate::repo::ConflictSide),
-    /// The conflicted file's own sentence: what keeping each side costs.
     ConflictNote,
-    /// The question a confirmation sheet asks, and the sentence under it
-    /// saying what answering costs.
     ConfirmQuestion,
-    /// One answer on that sheet, by index: Cancel first, then the choices in
-    /// the order the sheet offers them.
+    /// One answer on the sheet, by index: Cancel first, then the choices in the order the sheet
+    /// offers them.
     ConfirmAnswer(usize),
     Panel(PanelHit),
     OpenPath,
-    /// Choose the repository's folder with the system's file chooser.
     ChooseRepository,
     OpenRepository,
 }
 
-/// A target the last paint recorded: where, and what it does.
 #[derive(Clone, Debug)]
 struct Target {
     rect: Rect,
     hit: Hit,
 }
 
-/// View state a screenshot scenario asks for, applied once the window has
-/// the layout it needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Staged {
     Nothing,
-    /// Open the list drawer once the window is narrow.
     OpenDrawer,
 }
 
-/// What a wheel over a region scrolls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scroller {
     ChangesList,
@@ -328,7 +290,6 @@ enum Scroller {
     Panels,
 }
 
-/// One scrollable region of the last paint and how far it may scroll.
 #[derive(Clone, Copy, Debug)]
 struct ScrollRegion {
     rect: Rect,
@@ -339,29 +300,24 @@ struct ScrollRegion {
     ground: vello::peniko::Color,
 }
 
-/// One owned repository operation. Completion stays available until its action
-/// invocation consumes it, even when a normal UI sync receives it first.
+/// One owned repository operation. Its completion stays available until its action invocation
+/// consumes it, even when a normal UI sync receives it first.
 struct RemoteJob {
     receiver: Receiver<Result<(), String>>,
     reply: Option<EffectReply>,
-    /// Palette label while the transfer is in flight (a live row).
     label: String,
 }
 
-/// What the window shows and the view's effect handler answers with: the
-/// repository, where the user is, the fields, the question asked and the
-/// transfer running. The window draws it, presses and keys change it, and
-/// effects reach it through the view.
+/// What the window shows and the view's effect handler answers with: the repository, where the
+/// person is, the fields, the question asked and the transfer running.
 pub(crate) struct GitClientState {
     model: RepoModel,
     diffs: DiffMap,
     graph_layout: GraphLayout,
 
-    /// Framework-owned action dispatch: opening a repository and recording
-    /// what collaborators see of it go through this, as do the effects the
-    /// controls ask the host for.
+    /// Framework-owned action dispatch: opening a repository and recording what collaborators see
+    /// of it, as do the effects the controls ask the host for.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::GitClient>>,
-    /// The window bar's entries, each carrying what it does.
     bar: ui::framework::BarCommands<window_bar::BarCommand>,
     mode: RunMode,
     opened: Option<String>,
@@ -369,109 +325,80 @@ pub(crate) struct GitClientState {
     preferences: Option<ui::framework::Setting<Settings>>,
     control_actions: Option<ui::framework::Actions<crate::resource::GitClient>>,
 
-    /// No repository is bound: keep the "open a repository" empty state
-    /// until an explicit path or restored record selects a repository.
+    /// No repository is bound: keep the empty state until an explicit path or the restored record
+    /// selects one.
     awaiting_repo: bool,
     focus: Option<Field>,
-    /// Commit-message field (toolkit `TextInput`, local mode).
     commit_input: TextInput,
-    /// New-branch name field (toolkit `TextInput`, local mode).
     branch_input: TextInput,
     worktree_branch_input: TextInput,
     worktree_path_input: TextInput,
     worktree_start_input: TextInput,
-    /// Repository-path field on the empty-state screen (toolkit `TextInput`).
     open_input: TextInput,
 
-    /// Path the repository was opened from, when backed by a real on-disk
-    /// repo. `None` for the bundled sample (the `--shots` path), in which
-    /// case actions fall back to the in-memory model mutation so the
-    /// screenshot still demonstrates the flow. When `Some`, every action
-    /// drives `git2` against the real repo and re-reads the model.
+    /// The path the repository was opened from, `None` for the bundled sample (the screenshot
+    /// path), where actions fall back to the in-memory model so the capture still shows the flow.
     repo_path: Option<std::path::PathBuf>,
-    /// Last action error, shown in a banner over the content until dismissed.
     last_error: Option<String>,
     remote_job: Option<RemoteJob>,
 
     settings: Settings,
-    /// Fingerprint of the last shared-repo projection written to the document.
+    /// The fingerprint of the last shared-repo projection written to the document.
     shared_repo_fingerprint: Option<String>,
-    /// Set once after the first sync seeds the settings into the doc.
     screen: Screen,
     rect: Rect,
 
-    // --- Changes screen state ---
     selected_change: Option<(ChangeArea, usize)>,
     changes_scroll: f64,
     diff_scroll: f64,
     diff_hscroll: f64,
 
-    // --- History screen state ---
     selected_commit: usize,
     history_scroll: f64,
     detail_scroll: f64,
 
-    // --- Branches screen state ---
     panels_scroll: f64,
 
-    /// The changed files of the commits whose detail has been opened, by
-    /// commit id. Read on demand: walking the history for every commit's
-    /// tree diff up front costs a second on a real repository.
+    /// The changed files of the commits whose detail was opened, read on demand: walking every
+    /// commit's tree diff up front costs a second on a real repository.
     commit_files: HashMap<String, Vec<FileChange>>,
-    /// The commit diff on screen: the commit and the file whose changes the
-    /// detail column shows instead of the commit's own page.
+    /// The commit diff on screen: the commit and the file the detail column shows instead of the
+    /// commit's own page.
     commit_diff: Option<(String, String)>,
     /// The commit diffs shown so far, by commit and path.
     commit_diffs: HashMap<(String, String), crate::model::FileDiff>,
-    /// Which file of the selected commit is under the keyboard, and whether
-    /// the keyboard is in the file list or the commit list.
     file_selection: Option<usize>,
-    /// Which local branch of the branches page is under the keyboard.
     branch_selection: Option<usize>,
-    /// What keeping each side of the conflicted file under review would
-    /// discard, and which file it was read for. Read once per conflict: the
-    /// choice is worth naming, not re-reading every frame.
+    /// What keeping each side of the conflicted file would discard, and which file it was read for:
+    /// read once per conflict rather than every frame.
     conflict_cost: Option<(String, Option<crate::repo::ConflictCost>)>,
-    /// What the last action did, said once: a branch switched, a stash made,
-    /// a push sent. Only failures used to be reported, so work that
-    /// succeeded looked like work that had not happened.
+    /// What the last action did, said once: a branch switched, a stash made, a push sent.
     notice: Option<String>,
 
-    /// A question waiting for its answer: a destructive step, or a switch
-    /// that has to say what becomes of uncommitted work.
     confirm: Option<Confirm>,
-    /// The sheet asking it, which owns its own hover, keyboard focus and
-    /// activation, so the question answers to Tab and Enter like every other
-    /// question in the system rather than only to the pointer.
+    /// The sheet asking the question; it owns its own hover, focus and activation, so the question
+    /// answers to Tab and Enter like every other question in the system.
     confirm_sheet: ui::widget::ModalSheet,
 
-    /// The list column of the Changes and History screens: docked beside the
-    /// content when the window is wide, a floating drawer when it is narrow.
+    /// The list column of the Changes and History screens, docked beside the content when the
+    /// window is wide and a floating drawer when it is narrow.
     drawer: SidebarDrawer,
-    /// View state a screenshot scenario asks for once the window is laid out.
     staged: Staged,
 
-    /// The pointer, while it is over the window.
     pointer: Option<Point>,
-    /// The host's keyboard conventions (which modifier is the command key).
     conventions: ui::platform::PlatformConventions,
 
     /// Targets the last paint recorded, back to front.
     targets: Vec<Target>,
-    /// What assistive technology can reach: every control and row of the
-    /// last paint, including row actions that show only on hover.
+    /// What assistive technology can reach: every control and row of the last paint, including row
+    /// actions that show only on hover.
     semantic: Vec<Target>,
-    /// Scrollable regions of the last paint, back to front.
     scroll_regions: Vec<ScrollRegion>,
-    /// The scroll bar track of every region of the last paint whose content
-    /// overflows, with how its content stood.
     scroll_bars: Vec<(Scroller, Rect, ScrollMetrics)>,
-    /// The toolkit scroll bar of the region whose thumb is held or under
-    /// the pointer, and which region that is.
     scrollbar: Scrollbar,
     scrollbar_region: Option<Scroller>,
-    /// The bars show while a region scrolls or the pointer is on one, then
-    /// fade out like every toolkit scroll view's.
+    /// The bars show while a region scrolls or the pointer is on one, then fade out like every
+    /// toolkit scroll view's.
     bar_fade: BarFade,
 }
 
@@ -567,10 +494,9 @@ impl GitClientState {
             notice: None,
             confirm: None,
             confirm_sheet: ui::widget::ModalSheet::new(),
-            // Both lists are content the person reads: the overview width,
-            // docked or as a drawer, so a row reads the same in both.
-            // The diff beside them keeps the content minimum plus a rail's
-            // width for its line numbers before the list becomes a drawer.
+            // Both lists are content the person reads, so one width docked or as a drawer keeps a
+            // row the same in both; the content keeps the minimum plus a rail for its line numbers
+            // before the list becomes a drawer.
             drawer: SidebarDrawer::new()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.overview_width))
                 .overlay_width(f64::from(ui::tokens::Metrics::BASE.overview_width))
@@ -593,60 +519,52 @@ impl GitClientState {
     }
 }
 
-/// The window: the shared `GitClientState`, drawn as one leaf that paints
-/// itself, following the record the document holds.
+/// The window: the shared `GitClientState`, drawn as one leaf that paints itself and follows the
+/// record the document holds.
 pub struct GitClientApp {
     state: Rc<RefCell<GitClientState>>,
-    /// The record as the document holds it, shown as it changes; `None` for
-    /// a window outside the framework.
+    /// The record as the document holds it, shown as it changes; `None` for a window outside the
+    /// framework.
     document: Option<Live<crate::resource::GitClient>>,
     presented: Option<(u64, u64)>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
+    /// Input or a new document value changed what this widget paints: it repaints once and rests
+    /// after the frame draws it.
     dirty: bool,
 }
 
 impl Default for GitClientApp {
-    /// Equivalent to [`GitClientApp::new`].
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl GitClientApp {
-    /// The window with no repository bound: the "open a repository" state
-    /// until the record names one.
     pub fn new() -> Self {
         Self::open_empty()
     }
 
-    /// The window over the bundled sample repository: a populated,
-    /// deterministic state with no repository on disk (screenshots and
-    /// demos).
+    /// The window over the bundled sample repository: a deterministic state with no repository on
+    /// disk, for screenshots and demos.
     #[cfg(feature = "samples")]
     pub fn sample() -> Self {
         let (model, diffs) = crate::sample::model();
         Self::from_model(model, diffs)
     }
 
-    /// Open a real repository discovered from `path` and build the window
-    /// bound to it, so every action drives `git2` and re-reads. Returns
-    /// `None` when no repository is reachable. Used by integration tests
-    /// that drive the production actions against a temp repo.
+    /// Open the real repository discovered from `path`, so every action drives `git2` and re-reads;
+    /// `None` when no repository is reachable.
     pub fn open_at(path: &std::path::Path) -> Option<Self> {
         GitClientState::open_at(path).map(Self::showing)
     }
 
-    /// Build the honest empty "open a repository" state with no repo bound —
-    /// the same state the live app shows when no repository is reachable.
-    /// Exposed so integration tests can drive the open flow.
+    /// The empty "open a repository" state, the same one the live app shows when no repository is
+    /// reachable.
     #[doc(hidden)]
     pub fn open_empty() -> Self {
         Self::showing(GitClientState::open_empty())
     }
 
-    /// Construct from an explicit model — used by the sample path and tests.
     pub fn from_model(model: RepoModel, diffs: DiffMap) -> Self {
         Self::showing(GitClientState::from_model(model, diffs))
     }
@@ -660,12 +578,10 @@ impl GitClientApp {
         }
     }
 
-    /// What the window shows, shared with the view's effect handler.
     pub(crate) fn state(&self) -> RefMut<'_, GitClientState> {
         self.state.borrow_mut()
     }
 
-    /// Show the record the document holds now, when it changed since.
     fn follow_document(&mut self) {
         let Some(document) = &self.document else {
             return;
@@ -677,9 +593,8 @@ impl GitClientApp {
     }
 }
 
-/// Mount `window` as the view of the record: the view shares its state with
-/// the effect handler, and publishes the working tree, the history the
-/// window shows and an in-flight transfer as live rows.
+/// Mount `window` as the view of the record: the view shares its state with the effect handler and
+/// publishes the working tree, the history and an in-flight transfer as live rows.
 pub(crate) fn window(cx: &ViewCx<crate::resource::GitClient>, mut window: GitClientApp) -> Element {
     window.document = Some(cx.live().clone());
     let state = Rc::clone(&window.state);
@@ -734,15 +649,12 @@ impl Widget for GitClientApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The list column's breakpoint and widths grow with the text scale.
         self.state().drawer.scale_for(theme);
         // The app draws itself; a single full-size leaf node carries it.
         taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // Real fallback rather than a panic if `node` somehow doesn't
-        // belong to this tree, matching every `ui` widget's `apply_layout`.
         let layout = taffy.layout(node).copied().unwrap_or_default();
         self.state().place(ui::widget::placed(&layout, origin));
     }
@@ -845,7 +757,6 @@ fn change_list(model: &RepoModel, area: ChangeArea) -> &[FileChange] {
     }
 }
 
-/// The area a change's `area` parameter names.
 fn change_area(area: &str) -> Result<ChangeArea, String> {
     match area {
         "staged" => Ok(ChangeArea::Staged),
@@ -855,8 +766,8 @@ fn change_area(area: &str) -> Result<ChangeArea, String> {
     }
 }
 
-/// `diff` as unified diff text: each line behind its `+`, `-` or space
-/// marker, hunk headers and metadata as git prints them.
+/// `diff` as unified diff text: each line behind its `+`, `-` or space marker, hunk headers and
+/// metadata as git prints them.
 fn unified_text(diff: &crate::model::FileDiff) -> String {
     use crate::model::DiffLineKind;
     let mut text = String::new();
@@ -886,7 +797,6 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
     }
 }
 
-/// What the window does for the host, on the state it draws.
 impl GitClientState {
     fn sync(&mut self) {
         self.adopt_preferences();
@@ -900,8 +810,8 @@ impl GitClientState {
 
     fn place(&mut self, rect: Rect) {
         self.rect = rect;
-        // The drawer adopts the new width now, so the next press is tested
-        // against the layout the next paint shows.
+        // The drawer adopts the new width now, so the next press is tested against the layout the
+        // next paint shows.
         self.drawer.resolve(self.rect);
     }
 
@@ -941,9 +851,8 @@ impl GitClientState {
         let choices = confirm.choices();
         let cancel = t("git-cancel");
         let mut actions = vec![ModalAction::secondary(&cancel)];
-        // The answer the sheet recommends is its primary; a second answer
-        // that keeps the work another way is the alternate, which stands
-        // apart so the two are not read as the same act.
+        // The answer the sheet recommends is its primary; a second answer that keeps the work
+        // another way is the alternate, so the two do not read as the same act.
         let mut recommended = true;
         for face in &choices {
             actions.push(if face.danger {
@@ -959,10 +868,9 @@ impl GitClientState {
             .dismiss_on_scrim(true);
         self.confirm_sheet
             .paint_message(scene, transform, text, theme, window, &spec, &body);
-        // While the question is up it is the whole of what a person can act
-        // on: the picture under the scrim is context, and a press there only
-        // dismisses. So the accessibility tree holds the question and its
-        // answers, and not the page they were asked about.
+        // While the question is up it is the whole of what a person can act on: the picture under
+        // the scrim is context, so the accessibility tree holds the question and its answers, not
+        // the page they were asked about.
         let Some(layout) = self.confirm_sheet.layout() else {
             return;
         };
@@ -988,10 +896,9 @@ impl GitClientState {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // A question holds the window while it asks: it takes the pointer,
-        // the keyboard (Tab moves between its answers, Enter takes the one
-        // under focus) and the scrim's dismissal, and the page behind it
-        // takes nothing.
+        // A question holds the window while it asks: it takes the pointer, the keyboard (Tab
+        // between its answers, Enter for the one under focus) and the scrim's dismissal, and the
+        // page behind takes nothing.
         if self.confirm.is_some() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.pointer = Some(Point::new(
@@ -1018,7 +925,6 @@ impl GitClientState {
                 let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.pointer = Some(pos);
                 self.scroll_bar_move(pos);
-                // Keep an in-flight text-selection drag updating.
                 self.forward_to_inputs(&mut input);
             }
             WindowEvent::CursorLeft { .. } => {
@@ -1082,10 +988,9 @@ impl GitClientState {
             .into_iter()
             .enumerate()
             .map(|(index, (target, _, node))| {
-                // The ordinal is only the synthetic-tree geometry key. The
-                // action target is semantic and stable across responsive
-                // layouts, so assistive technology never activates a
-                // different control after a row appears or disappears.
+                // The ordinal is only the synthetic-tree geometry key: the action target is
+                // semantic and stable across responsive layouts, so assistive technology never
+                // activates a different control after a row appears or disappears.
                 node.with_key(index as u64).with_action_target(target)
             })
             .collect();
@@ -1159,23 +1064,19 @@ impl GitClientState {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Frames only while the list column slides or the bars fade. A
-        // transfer wakes the app when its worker replies, and the toolkit's
-        // caret is steady: neither needs frames.
+        // Frames only while the list column slides or the bars fade: a transfer wakes the app when
+        // its worker replies, and the toolkit's caret is steady.
         (self.screen.has_list() && self.drawer.is_animating())
             || self.bar_fade.fading_at(ui::time::now(), self.bars_held())
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        // The bars start to fade once a scroll has rested a moment.
         self.bar_fade
             .fade_deadline_at(ui::time::now(), self.bars_held())
     }
 }
 
 impl GitClientState {
-    /// Forward one event to a single embedded text field, returning whether
-    /// it consumed the event.
     fn fwd(
         widget: &mut dyn Widget,
         event: &WindowEvent,
@@ -1203,8 +1104,8 @@ impl GitClientState {
         handled
     }
 
-    /// Forward a pointer event to every text field, so an in-flight
-    /// drag-select keeps updating regardless of which field started it.
+    /// Forward a pointer event to every text field, so an in-flight drag-select keeps updating
+    /// whichever field started it.
     fn forward_to_inputs(&mut self, ctx: &mut InputEventCtx<'_>) {
         let widgets: [&mut dyn Widget; 6] = [
             &mut self.commit_input,
@@ -1227,9 +1128,8 @@ impl GitClientState {
         }
     }
 
-    /// Route a left press: the confirmation sheet when it is up, a text
-    /// field (focus and caret), then the target under the pointer. A press
-    /// anywhere else blurs the focused field.
+    /// Route a left press: the confirmation sheet when it is up, a text field (focus and caret),
+    /// then the target under the pointer; a press anywhere else blurs the focused field.
     fn handle_press(&mut self, ctx: &mut InputEventCtx<'_>) {
         let Some(pos) = self.pointer else {
             return;
@@ -1280,7 +1180,6 @@ impl GitClientState {
         }
     }
 
-    /// Submit the focused field's action (Enter).
     fn submit_focused(&mut self, field: Field) {
         match field {
             Field::Commit => self.do_commit(),
@@ -1321,12 +1220,8 @@ impl GitClientState {
             return;
         }
 
-        // A question holds the keyboard through the sheet it is asked on,
-        // which `handle_event` routes before any of this runs.
-
-        // A focused text field takes the keys, except Enter (submit) and Escape
-        // (blur) which the app intercepts. Text editing — cursor, selection,
-        // word-nav, clipboard — is all handled by the toolkit TextInput.
+        // A focused text field takes the keys, except Enter (submit) and Escape (blur) which the
+        // app intercepts; text editing itself is the toolkit's TextInput.
         if let Some(field) = self.focus {
             match &ev.logical_key {
                 Key::Named(NamedKey::Enter) => {
@@ -1354,7 +1249,6 @@ impl GitClientState {
             return;
         }
 
-        // The empty-state screen has no other keys.
         if self.awaiting_repo {
             return;
         }
@@ -1374,7 +1268,6 @@ impl GitClientState {
             return;
         }
 
-        // Escape dismisses an open drawer.
         if matches!(&ev.logical_key, Key::Named(NamedKey::Escape)) && self.drawer_is_modal() {
             self.drawer.close();
             *handled = true;
@@ -1421,7 +1314,6 @@ impl GitClientState {
         if all == 0 {
             return;
         }
-        // Flatten current selection to a global index.
         let cur = match self.selected_change {
             Some((ChangeArea::Staged, i)) => i,
             Some((ChangeArea::Unstaged, i)) => self.model.staged.len() + i,
@@ -1431,7 +1323,6 @@ impl GitClientState {
             None => 0,
         } as i32;
         let next = (cur + dir).clamp(0, all as i32 - 1) as usize;
-        // Map back to (area, idx).
         let s = self.model.staged.len();
         let u = self.model.unstaged.len();
         self.selected_change = Some(if next < s {
@@ -1507,7 +1398,6 @@ impl GitClientState {
 
 impl GitClientState {
     fn submit(&self, invoke: Result<Invoke<crate::resource::GitClient>, serde_json::Error>) {
-        // A path and the repository's projection always encode.
         if let (Some(dispatcher), Ok(invoke)) = (&self.dispatcher, invoke) {
             dispatcher.submit(invoke);
         }
@@ -1643,8 +1533,8 @@ impl GitClientState {
 }
 
 impl GitClientState {
-    /// What changed in the file at `path` in `area`, the changed file's
-    /// read: the change as the list shows it and its diff as unified text.
+    /// What changed in the file at `path` in `area`: the change as the list shows it and its diff
+    /// as unified text.
     fn read_change(&self, area: &str, path: &str) -> Result<serde_json::Value, String> {
         let area = change_area(area)?;
         let change = change_list(&self.model, area)
@@ -1664,7 +1554,6 @@ impl GitClientState {
         }))
     }
 
-    /// Resolve a navigation target against the current repository projection.
     fn open_effect_view(&mut self, effect: GitClientEffect) -> Result<(), String> {
         match effect {
             GitClientEffect::ShowChanges => self.switch_screen(Screen::Changes),
@@ -1696,7 +1585,6 @@ impl GitClientState {
         Ok(())
     }
 
-    /// Local diff preferences touch neither the repository nor the document.
     fn apply_diff_preference(&mut self, effect: &GitClientEffect) -> Option<Result<(), String>> {
         match effect {
             GitClientEffect::DiffLayout => Some(self.switch_diff_layout()),
@@ -1723,9 +1611,8 @@ impl GitClientState {
         Ok(())
     }
 
-    /// Do what `effect` asks, for any caller: the window's controls, the
-    /// palette, an agent. `shared` is this state as the view shares it, for
-    /// work that finishes after the answer.
+    /// Do what `effect` asks, for any caller: the window's controls, the palette, an agent.
+    /// `shared` is this state as the view shares it, for work that finishes after the answer.
     fn answer_effect(
         &mut self,
         effect: GitClientEffect,
@@ -1836,8 +1723,8 @@ impl GitClientState {
 }
 
 impl GitClientState {
-    /// Ask the system's file chooser for the repository's folder, then
-    /// open it; cancelling leaves the window as it was.
+    /// Ask the system's file chooser for the repository's folder, then open it; cancelling leaves
+    /// the window as it was.
     fn choose_repository(
         cx: &mut EffectCx<crate::resource::GitClient>,
         shared: Rc<RefCell<Self>>,
@@ -1946,8 +1833,8 @@ impl GitClientState {
         let Some((model, diffs)) = crate::repo::load(path) else {
             return false;
         };
-        // Anchor actions on the working directory so later opens are stable
-        // even if the CWD changes; fall back to the given path when bare.
+        // Anchor actions on the working directory so later opens are stable even if the CWD
+        // changes; fall back to the given path when bare.
         let anchor = crate::repo::workdir(path).unwrap_or_else(|| path.to_path_buf());
         self.show_model(model, diffs);
         self.repo_path = Some(anchor);
@@ -1968,13 +1855,11 @@ impl GitClientState {
             }
             Some("history") => self.switch_screen(Screen::History),
             Some("branches") => self.switch_screen(Screen::Panels),
-            // A typed commit summary, so the commit box and its primary
-            // action render enabled.
+            // A typed commit summary, so the commit box and its primary action render enabled.
             Some("commit") => self
                 .commit_input
                 .set_text("Flush the blur pass before presenting"),
-            // A changed file in the worktree, whose "Discard file" the
-            // scenario's input then presses.
+            // A changed file in the worktree, whose "Discard file" the scenario then presses.
             Some("discard") => {
                 if !self.model.unstaged.is_empty() {
                     self.selected_change = Some((ChangeArea::Unstaged, 0));
@@ -1983,18 +1868,17 @@ impl GitClientState {
                 }
                 self.diff_scroll = 0.0;
             }
-            // The file a merge left conflicted, open, so the capture shows
-            // the choice it waits on and what each side costs.
+            // The file a merge left conflicted, open, so the capture shows the choice it waits on
+            // and what each side costs.
             Some("conflict") => self.select_conflicted_file(),
-            // The question a dirty tree asks before it changes branch: the
-            // capture of the decision itself, not of what it is about.
+            // The question a dirty tree asks before it changes branch.
             Some("switch") => {
                 self.confirm = Some(Confirm::SwitchBranch {
                     name: "wgpu-pipeline".to_owned(),
                 });
             }
-            // The narrow window's list column, revealed over its scrim
-            // rather than the closed default a fresh narrow window opens to.
+            // The narrow window's list column, revealed over its scrim rather than the closed
+            // default a fresh narrow window opens to.
             Some("narrow") => self.drawer.snap(true),
             _ => {}
         }
@@ -2002,7 +1886,6 @@ impl GitClientState {
 }
 
 impl GitClientState {
-    /// Select the first conflicted file, as choosing its row does.
     fn select_conflicted_file(&mut self) {
         for area in [
             crate::model::ChangeArea::Unstaged,

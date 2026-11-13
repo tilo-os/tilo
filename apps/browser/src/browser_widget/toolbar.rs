@@ -217,13 +217,20 @@ impl BrowserWidget {
             "browser.page",
             if loading { "stop" } else { "reload" },
         );
-        let address = TextInput::from_state(&self.address)
-            .with_kind(TextInputKind::Url)
-            .with_id(URL_INPUT_ID)
-            .with_accessible_name(t("browser-address"))
-            .with_placeholder(t("browser-address-placeholder"))
-            // The go button: while the field is edited, it commits it as Enter does.
-            .with_trailing_accessory(Icon::ArrowRight, &t("browser-go"), AccessoryAction::Submit);
+        // While the bar hosts the window, its location is the address.
+        let address = ui::window_toolbar::exempt!(Fallback, {
+            TextInput::from_state(&self.address)
+                .with_kind(TextInputKind::Url)
+                .with_id(URL_INPUT_ID)
+                .with_accessible_name(t("browser-address"))
+                .with_placeholder(t("browser-address-placeholder"))
+                // The go button: while the field is edited, it commits it as Enter does.
+                .with_trailing_accessory(
+                    Icon::ArrowRight,
+                    &t("browser-go"),
+                    AccessoryAction::Submit,
+                )
+        });
 
         let mut row = Row::new()
             .no_wrap()

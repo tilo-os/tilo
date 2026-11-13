@@ -5,11 +5,8 @@
 //! unshare -m --propagation private target/debug/examples/code-refresh-mount-probe
 //! ```
 //!
-//! Only the development VM gate is bypassed and one bind can be made to
-//! fail; the lock, staging and transaction are the daemon's own, and
-//! `mount` and `umount` run for real. Missing privileges, mount support or
-//! isolation are failures, never skips. The hermetic transaction cases run
-//! in `tests/code_refresh.rs`.
+//! Only the development VM gate is bypassed and one bind can be made to fail.
+//! Missing privileges, mount support or isolation are failures, never skips.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

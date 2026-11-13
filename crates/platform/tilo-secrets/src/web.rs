@@ -1,9 +1,8 @@
 //! The browser backend: see `web/secrets.mjs`.
 //!
-//! Its storage answers only asynchronously. A host that loads the page's
-//! secrets first ([`mirror`]) gives apps synchronous access too: reads
-//! answer from page memory and writes update it, then reach `IndexedDB` in
-//! order ([`flush`] waits for them).
+//! Its storage answers only asynchronously. A host that loads the page's secrets first
+//! ([`mirror`]) gives apps synchronous access too: reads answer from page memory and
+//! writes update it, then reach `IndexedDB` in order.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -45,9 +44,9 @@ extern "C" {
     fn pending_acknowledgements() -> bool;
 }
 
-/// Read or durably initialize custody under the browser's app lock.
-/// `None` forbids creation (for an existing encrypted vault). Concurrent
-/// creators receive the same committed value, never their losing candidate.
+/// Read or durably initialize custody under the browser's app lock. `None` forbids
+/// creation, for an existing encrypted vault, and concurrent creators receive the same
+/// committed value.
 pub async fn get_or_create(
     app: &str,
     key: &str,
@@ -70,10 +69,8 @@ pub fn pending() -> bool {
     pending_acknowledgements()
 }
 
-/// Start an immutable credential write and acknowledge its id only after commit.
-/// None means pending: keep the credential local and retry on a later frame.
-/// Storage failures are returned without publishing a reference. A matching
-/// retry consumes the result once; calling again starts a new credential write.
+/// Start an immutable credential write and acknowledge its id only after commit; `None`
+/// means pending, so keep the credential local and retry on a later frame.
 pub fn seal_blocking(app: &str, bytes: &[u8]) -> Result<Option<String>, SecretError> {
     let value = acknowledged_secret(app, bytes).map_err(|e| failed(&e))?;
     let id = value.as_string();
@@ -99,12 +96,11 @@ pub(crate) fn seal_at_blocking(
 type Mirror = HashMap<(String, String), Secret>;
 
 thread_local! {
-    /// The page's secrets, once [`mirror`] loaded them.
     static MIRROR: RefCell<Option<Mirror>> = const { RefCell::new(None) };
 }
 
-/// Load every secret this page can decrypt into page memory, so the
-/// `*_blocking` methods work. Idempotent.
+/// Load every secret this page can decrypt into page memory, so the `*_blocking`
+/// methods work. Idempotent.
 ///
 /// # Errors
 ///
@@ -149,7 +145,6 @@ pub(crate) fn mirrored() -> bool {
     MIRROR.with(|m| m.borrow().is_some())
 }
 
-/// The synchronous store over the page's mirror.
 pub(crate) struct MirrorBackend;
 
 impl crate::SecretBackend for MirrorBackend {
@@ -183,7 +178,6 @@ fn not_mirrored() -> SecretError {
     SecretError::Unsupported(crate::Unsupported::of(crate::Feature::Blocking))
 }
 
-/// Keep the mirror, when there is one, in step with a write.
 fn remember(app: &str, key: &str, value: Option<&[u8]>) -> Result<(), SecretError> {
     MIRROR.with(|m| {
         let mut mirror = m.borrow_mut();

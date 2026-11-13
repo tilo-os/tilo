@@ -1,13 +1,10 @@
-//! Starting a job: `clone3` into its cgroup and namespaces, where the child
-//! at once runs the job's init as a new program (this one, again); the init
-//! reads the [`Plan`] the worker prepared and makes system calls only.
-//!
-//! The child shares the worker's memory until its `execve` (`CLONE_VM` and
-//! `CLONE_VFORK`, as `posix_spawn` does), so the init never holds a copy of
-//! the worker's heap: a fork of a worker of tens of GiB copies its page
-//! tables on every job start, and the init would keep the copy-on-write pages
-//! the worker goes on changing, charged to the worker, for as long as its job
-//! runs.
+//! Starting a job: `clone3` into its cgroup and namespaces, where the child at once runs the job's
+//! init as a new program (this one, again); the init reads the [`Plan`] the worker prepared and
+//! makes system calls only. The child shares the worker's memory until its `execve` (`CLONE_VM` and
+//! `CLONE_VFORK`, as `posix_spawn` does), so the init never holds a copy of the worker's heap: a
+//! fork of a worker of tens of GiB copies its page tables on every job start, and the init would
+//! keep the copy-on-write pages the worker goes on changing, charged to the worker, for as long as
+//! its job runs.
 
 #[cfg(target_env = "gnu")]
 use std::ffi::CStr;
@@ -23,8 +20,8 @@ use super::plan::{Op, Plan};
 use super::sys;
 use crate::job::{ExitStatus, SpawnError, Started};
 
-/// What the job's init reports a failed setup step as: the step, the index
-/// of the operation within it, and `errno`.
+/// What the job's init reports a failed setup step as: the step, the index of the operation within
+/// it, and `errno`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 enum Step {
@@ -80,12 +77,12 @@ impl Step {
 /// Exit status of the job's init when it could not report anything.
 const EXIT_UNREPORTED: i32 = 125;
 
-/// The init's first argument: a program started with it runs the job's init
-/// before its `main` (see [`RUN_INIT`]).
+/// The init's first argument: a program started with it runs the job's init before its `main` (see
+/// [`RUN_INIT`]).
 const INIT_ARG0: &str = "tilo-job-init";
 
-/// What the init writes on the report pipe as soon as it runs, so the worker
-/// knows the program it started is a job's init.
+/// What the init writes on the report pipe as soon as it runs, so the worker knows the program it
+/// started is a job's init.
 const HELLO: [u8; 12] = *b"tilo-job-run";
 
 fn errno() -> u32 {
@@ -94,24 +91,23 @@ fn errno() -> u32 {
     u32::try_from(e).unwrap_or(0)
 }
 
-/// Write a failed step's record on the report pipe and `_exit`.
 fn report_and_exit(report: RawFd, step: Step, index: usize, errno: u32) -> ! {
     let mut msg = [0_u8; 12];
     let words = [step as u32, u32::try_from(index).unwrap_or(u32::MAX), errno];
     for (chunk, w) in msg.chunks_exact_mut(4).zip(words) {
         chunk.copy_from_slice(&w.to_ne_bytes());
     }
-    // SAFETY: writes a stack buffer to a pipe; then `_exit`, which does
-    // not unwind or run destructors.
+    // SAFETY: writes a stack buffer to a pipe; then `_exit`, which does not unwind or run
+    // destructors.
     unsafe {
         libc::write(report, msg.as_ptr().cast(), msg.len());
         libc::_exit(EXIT_UNREPORTED)
     }
 }
 
-/// The child of `clone3` until its `execve`. It runs on the worker's memory
-/// and stack while the thread that made it waits (but the worker's other
-/// threads do not): it reads only this, takes no lock and allocates nothing.
+/// The child of `clone3` until its `execve`. It runs on the worker's memory and stack while the
+/// thread that made it waits (but the worker's other threads do not): it reads only this, takes no
+/// lock and allocates nothing.
 struct PreExec<'a> {
     /// (descriptor in the parent, descriptor number in the child).
     moves: &'a [(RawFd, RawFd)],
@@ -122,19 +118,15 @@ struct PreExec<'a> {
     /// Descriptors at or above this are closed.
     keep_below: RawFd,
     report: RawFd,
-    /// This program, at its number in the child.
     exe: RawFd,
     cap_last: u32,
     argv: &'a [*const libc::c_char],
 }
 
 impl PreExec<'_> {
-    /// Put every descriptor the job keeps at its number, and close the rest:
-    /// another job's pipe or the worker's server connection must not stay
-    /// open in this one.
-    ///
-    /// # Safety
-    /// Only in the child, before anything else.
+    /// Put every descriptor the job keeps at its number, and close the rest: another job's pipe or
+    /// the worker's server connection must not stay open in this one. # Safety Only in the child,
+    /// before anything else.
     unsafe fn arrange_fds(&mut self) {
         for (i, (src, _)) in self.moves.iter().enumerate() {
             // SAFETY: duplicating a descriptor this process holds.
@@ -163,21 +155,20 @@ impl PreExec<'_> {
         unsafe { libc::syscall(libc::SYS_close_range, first, u32::MAX, 0_u32) };
     }
 
-    /// Keep the namespace's capabilities across the `execve`: a process whose
-    /// uid isn't the namespace's root (it is not mapped yet) loses them all
-    /// there, unless they are ambient. The init drops every one of them
-    /// (ambient ones included) before the command runs. Only permitted ones
-    /// can be ambient: a container may be denied some (Talos strips
-    /// `CAP_SYS_MODULE` and `CAP_SYS_BOOT` from every container, privileged or
-    /// not), and a helper keeps the set it was started with.
+    /// Keep the namespace's capabilities across the `execve`: a process whose uid isn't the
+    /// namespace's root (it is not mapped yet) loses them all there, unless they are ambient. The
+    /// init drops every one of them (ambient ones included) before the command runs. Only permitted
+    /// ones can be ambient: a container may be denied some (a host strips `CAP_SYS_MODULE` and
+    /// `CAP_SYS_BOOT` from every container, privileged or not), and a helper keeps the set it was
+    /// started with.
     fn keep_capabilities(&self) {
         let header = sys::CapHeader {
             version: sys::LINUX_CAPABILITY_VERSION_3,
             pid: 0,
         };
         let mut data = [sys::CapData::default(); 2];
-        // SAFETY (this block): capget and capset on a stack header and data,
-        // prctl with integer arguments.
+        // SAFETY (this block): capget and capset on a stack header and data, prctl with integer
+        // arguments.
         unsafe {
             if libc::syscall(libc::SYS_capget, &raw const header, data.as_mut_ptr()) < 0 {
                 report_and_exit(self.report, Step::Init, 1, errno());
@@ -209,10 +200,7 @@ impl PreExec<'_> {
         }
     }
 
-    /// The child of `clone3`, until it runs the init.
-    ///
-    /// # Safety
-    /// Only in the child of `clone3`.
+    /// The child of `clone3`, until it runs the init. # Safety Only in the child of `clone3`.
     unsafe fn run(&mut self) -> ! {
         // SAFETY: the first thing the child does.
         unsafe { self.arrange_fds() };
@@ -220,8 +208,8 @@ impl PreExec<'_> {
         unsafe { libc::fcntl(self.exe, libc::F_SETFD, libc::FD_CLOEXEC) };
         self.keep_capabilities();
         let envp = [std::ptr::null::<libc::c_char>()];
-        // SAFETY: the program by descriptor, with NULL-terminated vectors;
-        // on success nothing of this process remains.
+        // SAFETY: the program by descriptor, with NULL-terminated vectors; on success nothing of
+        // this process remains.
         unsafe {
             libc::syscall(
                 libc::SYS_execveat,
@@ -236,13 +224,11 @@ impl PreExec<'_> {
     }
 }
 
-/// [`PreExec::run`], as [`sys::clone3_vfork`] calls it.
-///
-/// # Safety
-/// `arg` is the `PreExec` the parent passed; only in the child of `clone3`.
+/// [`PreExec::run`], as [`sys::clone3_vfork`] calls it. # Safety `arg` is the `PreExec` the parent
+/// passed; only in the child of `clone3`.
 unsafe extern "C" fn pre_exec(arg: *mut libc::c_void) -> ! {
-    // SAFETY: the parent passes its `PreExec` and waits until this child has
-    // called `execve` or exited (`CLONE_VFORK`).
+    // SAFETY: the parent passes its `PreExec` and waits until this child has called `execve` or
+    // exited (`CLONE_VFORK`).
     let pre = unsafe { &mut *arg.cast::<PreExec<'_>>() };
     // SAFETY: we are that child.
     unsafe { pre.run() }
@@ -255,17 +241,15 @@ struct Control {
     status: RawFd,
     report: RawFd,
     landlock: Option<RawFd>,
-    /// Where the plan's idmapped trees are, in order.
     trees_at: RawFd,
-    /// The descriptors the command gets (stdio and the caller's), which the
-    /// init closes once the command runs.
+    /// The descriptors the command gets (stdio and the caller's), which the init closes once the
+    /// command runs.
     kept: Vec<RawFd>,
-    /// The init outlives its starter: no parent-death signal, and the status
-    /// goes to a file at offset 0, synced, rather than to a pipe.
+    /// The init outlives its starter: no parent-death signal, and the status goes to a file at
+    /// offset 0, synced, rather than to a pipe.
     detached: bool,
 }
 
-/// Everything the init reads, sent by the worker.
 struct Child<'a> {
     plan: &'a Plan,
     argv: &'a [*const libc::c_char],
@@ -286,7 +270,6 @@ fn ioctl_request(code: libc::c_ulong) -> libc::Ioctl {
 }
 
 impl Child<'_> {
-    /// Report a failed step on the report pipe and end the init.
     fn fail(&self, step: Step, index: usize, errno: u32) -> ! {
         report_and_exit(self.control.report, step, index, errno)
     }
@@ -297,32 +280,29 @@ impl Child<'_> {
         }
     }
 
-    /// Wait for the worker to map the job's ids and run its setup hook.
     fn await_parent(&self) {
         let mut byte = 0_u8;
         // SAFETY: reads one byte into a stack variable.
         let n = unsafe { libc::read(self.control.sync, (&raw mut byte).cast(), 1) };
         if n != 1 {
-            // The worker gave up on this job (and closed the pipe).
-            // SAFETY: `_exit` does not unwind.
+            // The worker gave up on this job (and closed the pipe). SAFETY: `_exit` does not
+            // unwind.
             unsafe { libc::_exit(EXIT_UNREPORTED) };
         }
         // SAFETY: closing our own descriptor.
         unsafe { libc::close(self.control.sync) };
     }
 
-    /// Take on the job's ids, where it has host ids of its own: the init
-    /// starts as the worker's uid, which the job's namespace doesn't map.
-    /// It keeps its capabilities in the namespace (it was never its root),
-    /// and drops the worker's supplementary groups, which would otherwise
+    /// Take on the job's ids, where it has host ids of its own: the init starts as the worker's
+    /// uid, which the job's namespace doesn't map. It keeps its capabilities in the namespace (it
+    /// was never its root), and drops the worker's supplementary groups, which would otherwise
     /// still grant their access on the host.
     fn become_ids(&self) {
         let Some((uid, gid)) = self.plan.become_ids else {
             return;
         };
-        // SAFETY: raw system calls with integer arguments: libc's wrappers
-        // would try to change the ids of threads that exist only in the
-        // worker.
+        // SAFETY: raw system calls with integer arguments: libc's wrappers would try to change the
+        // ids of threads that exist only in the worker.
         unsafe {
             self.check(
                 libc::syscall(
@@ -351,8 +331,8 @@ impl Child<'_> {
             if sig == libc::SIGKILL || sig == libc::SIGSTOP {
                 continue;
             }
-            // SAFETY: a zeroed sigaction is SIG_DFL with no flags; failures
-            // (glibc's reserved signals) are harmless.
+            // SAFETY: a zeroed sigaction is SIG_DFL with no flags; failures (glibc's reserved
+            // signals) are harmless.
             unsafe {
                 let mut sa: libc::sigaction = std::mem::zeroed();
                 sa.sa_sigaction = libc::SIG_DFL;
@@ -367,15 +347,14 @@ impl Child<'_> {
         }
     }
 
-    /// Leave the job killable for memory. A worker the host shields from the
-    /// OOM killer (`oom_score_adj` -1000, as it may a runner or a daemon)
-    /// passes that on, and a job at its `memory.max` then never dies: the
-    /// kernel finds nothing in its cgroup it may kill, and the job hangs at
-    /// its limit. To the OOM killer a job is an ordinary process, or as
-    /// killable as the host made its worker.
+    /// Leave the job killable for memory. A worker the host shields from the OOM killer
+    /// (`oom_score_adj` -1000, as it may a runner or a daemon) passes that on, and a job at its
+    /// `memory.max` then never dies: the kernel finds nothing in its cgroup it may kill, and the
+    /// job hangs at its limit. To the OOM killer a job is an ordinary process, or as killable as
+    /// the host made its worker.
     fn killable_for_memory(&self) {
-        // SAFETY (this block): open, read and write on a C string and stack
-        // buffers, and closing the descriptor opened here.
+        // SAFETY (this block): open, read and write on a C string and stack buffers, and closing
+        // the descriptor opened here.
         unsafe {
             let fd = libc::open(
                 c"/proc/self/oom_score_adj".as_ptr(),
@@ -396,12 +375,10 @@ impl Child<'_> {
         }
     }
 
-    /// Make the staging root, run every mount operation, pivot into the new
-    /// root.
     fn build_root(&self) {
         let plan = self.plan;
-        // SAFETY (this block): mount and directory calls on C strings the
-        // plan owns or static literals.
+        // SAFETY (this block): mount and directory calls on C strings the plan owns or static
+        // literals.
         unsafe {
             self.check(
                 libc::c_long::from(libc::mount(
@@ -446,9 +423,8 @@ impl Child<'_> {
                 self.fail(Step::Op, i, errno());
             }
         }
-        // SAFETY: the new root is a mount point (bind or tmpfs above);
-        // `pivot_root(".", ".")` stacks the old root on it, and the detach
-        // removes it.
+        // SAFETY: the new root is a mount point (bind or tmpfs above); `pivot_root(".", ".")`
+        // stacks the old root on it, and the detach removes it.
         unsafe {
             self.check(
                 libc::c_long::from(libc::chdir(plan.new_root.as_ptr())),
@@ -489,12 +465,11 @@ impl Child<'_> {
         self.enter_cwd();
     }
 
-    /// Bring up `lo` in the job's own network namespace. A namespace the job
-    /// joins is its owner's to configure: the job holds no `CAP_NET_ADMIN`
-    /// over it.
+    /// Bring up `lo` in the job's own network namespace. A namespace the job joins is its owner's
+    /// to configure: the job holds no `CAP_NET_ADMIN` over it.
     fn loopback_up(&self) {
-        // SAFETY: an ioctl on a socket we open and close, with a structure of
-        // the layout SIOC[GS]IFFLAGS expect.
+        // SAFETY: an ioctl on a socket we open and close, with a structure of the layout
+        // SIOC[GS]IFFLAGS expect.
         unsafe {
             let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
             self.check(libc::c_long::from(s), Step::Loopback, 0);
@@ -537,8 +512,6 @@ impl Child<'_> {
         self.check(libc::c_long::from(rc), Step::Cwd, 0);
     }
 
-    /// Raise the open file limit to its hard limit, for a helper that holds a
-    /// descriptor per file it serves (virtiofsd, one per guest inode).
     fn raise_nofile(&self) {
         if !self.plan.nofile_max {
             return;
@@ -565,8 +538,7 @@ impl Child<'_> {
 
     /// Drop every capability for good: an `execve` as uid 0 regains none.
     fn drop_capabilities(&self) {
-        // SAFETY (this block): prctl and capset with constant arguments and a
-        // stack structure.
+        // SAFETY (this block): prctl and capset with constant arguments and a stack structure.
         unsafe {
             self.check(
                 libc::c_long::from(libc::prctl(
@@ -674,8 +646,8 @@ impl Child<'_> {
         }
     }
 
-    /// Keep the job from tracing its init or reading its `/proc` files: the
-    /// init holds the pipe the worker reads the command's status from.
+    /// Keep the job from tracing its init or reading its `/proc` files: the init holds the pipe the
+    /// worker reads the command's status from.
     fn hide_init() {
         // SAFETY: prctl with constants.
         unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
@@ -683,8 +655,8 @@ impl Child<'_> {
 
     /// The command: a session of its own, its stdio, `execve`.
     fn exec(&self) -> ! {
-        // SAFETY (this block): process calls on descriptors this process
-        // holds and argument vectors the parent built, NULL-terminated.
+        // SAFETY (this block): process calls on descriptors this process holds and argument vectors
+        // the parent built, NULL-terminated.
         unsafe {
             libc::setsid();
             libc::close(self.control.status);
@@ -701,13 +673,11 @@ impl Child<'_> {
         }
     }
 
-    /// The init's last job: reap until the command has exited, hand its
-    /// status to the worker, exit. The kernel then kills whatever is left in
-    /// the PID namespace.
+    /// The init's last job: reap until the command has exited, hand its status to the worker, exit.
+    /// The kernel then kills whatever is left in the PID namespace.
     fn reap(&self, command: libc::pid_t) -> ! {
-        // SAFETY (this block): closes descriptors the command keeps (so its
-        // pipes see EOF when it exits), waits on children, writes a stack
-        // buffer and exits.
+        // SAFETY (this block): closes descriptors the command keeps (so its pipes see EOF when it
+        // exits), waits on children, writes a stack buffer and exits.
         unsafe {
             libc::close(self.control.report);
             for fd in &self.control.kept {
@@ -726,9 +696,9 @@ impl Child<'_> {
                 }
             }
             if self.control.detached {
-                // At offset 0 and synced: a later reader takes a whole status
-                // file as the job's end, whoever started it. A pipe (a helper
-                // whose starter waits for it) takes a plain write.
+                // At offset 0 and synced: a later reader takes a whole status file as the job's
+                // end, whoever started it. A pipe (a helper whose starter waits for it) takes a
+                // plain write.
                 let n = libc::pwrite(self.control.status, (&raw const status).cast(), 4, 0);
                 if n < 0 && errno() == libc::ESPIPE.unsigned_abs() {
                     libc::write(self.control.status, (&raw const status).cast(), 4);
@@ -746,13 +716,12 @@ impl Child<'_> {
         }
     }
 
-    /// The job's init, from its start to `_exit`.
     fn run(&self) -> ! {
         self.await_parent();
         if !self.control.detached {
-            // SAFETY: tie the init to the worker: if the worker dies, so
-            // does the job. It follows the thread that started the job, so a
-            // job meant to outlive that thread is detached instead.
+            // SAFETY: tie the init to the worker: if the worker dies, so does the job. It follows
+            // the thread that started the job, so a job meant to outlive that thread is detached
+            // instead.
             unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) };
         }
         Self::reset_signals();
@@ -768,9 +737,6 @@ impl Child<'_> {
         self.seccomp();
         self.raise_nofile();
         Self::hide_init();
-        // SAFETY: a plain fork (no namespace flags) of this small,
-        // single-threaded program, as raw `clone` so no libc fork handler
-        // runs.
         let pid = unsafe { libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0) };
         self.check(pid, Step::Fork, 0);
         if pid == 0 {
@@ -780,10 +746,9 @@ impl Child<'_> {
     }
 }
 
-/// Runs before `main` in every program that can start a job: a job's init is
-/// that program again, started with [`INIT_ARG0`], the plan's descriptor and
-/// the report pipe's. [`spawn`] names it, so the linker keeps it wherever
-/// `spawn` is. Only glibc passes `main`'s arguments to `.init_array`
+/// Runs before `main` in every program that can start a job: a job's init is that program again,
+/// started with [`INIT_ARG0`], the plan's descriptor and the report pipe's. [`spawn`] names it, so
+/// the linker keeps it wherever `spawn` is. Only glibc passes `main`'s arguments to `.init_array`
 /// functions: elsewhere no init runs, and a job fails to start, saying so.
 #[cfg(target_env = "gnu")]
 #[used]
@@ -849,14 +814,11 @@ fn init(plan_fd: RawFd, report: RawFd) -> ! {
     .run()
 }
 
-/// One mount operation; the plan's idmapped trees are at `trees_at` on.
-///
-/// # Safety
-/// Takes the C strings `op` owns; for the child only.
+/// One mount operation; the plan's idmapped trees are at `trees_at` on. # Safety Takes the C
+/// strings `op` owns; for the child only.
 unsafe fn run_op(op: &Op, trees_at: RawFd) -> libc::c_long {
     let opt = |c: &Option<CString>| c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    // SAFETY: every pointer is a live C string or null where the call
-    // allows it.
+    // SAFETY: every pointer is a live C string or null where the call allows it.
     unsafe {
         match op {
             Op::Mkdir(p) => libc::c_long::from(libc::mkdir(p.as_ptr(), 0o755)),
@@ -923,8 +885,8 @@ unsafe fn run_op(op: &Op, trees_at: RawFd) -> libc::c_long {
                     };
                     rest = rest.get(n..).unwrap_or_default();
                 }
-                // Root's where the job's namespace maps root (a job with a
-                // block of ids); the job's own otherwise.
+                // Root's where the job's namespace maps root (a job with a block of ids); the job's
+                // own otherwise.
                 libc::fchown(fd, 0, 0);
                 libc::c_long::from(libc::close(fd))
             }
@@ -973,13 +935,12 @@ fn write_proc(pid: libc::pid_t, file: &str, content: &str) -> Result<(), SpawnEr
     })
 }
 
-/// A started job's init, until it is reaped.
 #[derive(Debug)]
 pub struct Job {
     pid: libc::pid_t,
     pidfd: OwnedFd,
-    /// The init writes the command's wait status here before it exits;
-    /// `None` for a detached job, whose status goes to the caller's file.
+    /// The init writes the command's wait status here before it exits; `None` for a detached job,
+    /// whose status goes to the caller's file.
     status: Option<std::fs::File>,
     exit: Option<ExitStatus>,
     unmapped: Vec<std::path::PathBuf>,
@@ -992,9 +953,6 @@ const P_PIDFD: libc::idtype_t = 3;
 pub type SetupFn<'a> = &'a mut dyn FnMut(&Started) -> Result<(), String>;
 
 impl Job {
-    /// Writable host paths bound without an idmap because their filesystem
-    /// can't take one, for a job with a block of host ids: it runs anyway, but
-    /// may not write their owner's files. Empty without a block.
     pub fn unmapped(&self) -> &[std::path::PathBuf] {
         &self.unmapped
     }
@@ -1004,18 +962,15 @@ impl Job {
         self.pid
     }
 
-    /// Becomes readable when the job has ended; then [`Job::try_wait`]
-    /// returns its status.
+    /// Becomes readable when the job has ended; then [`Job::try_wait`] returns its status.
     pub fn pidfd(&self) -> BorrowedFd<'_> {
         use std::os::fd::AsFd;
         self.pidfd.as_fd()
     }
 
-    /// Kill the job: its init, and with it every process in its PID
-    /// namespace.
+    /// Kill the job: its init, and with it every process in its PID namespace.
     pub fn kill(&self) {
-        // SAFETY: signals the process the pidfd names; harmless once it has
-        // exited.
+        // SAFETY: signals the process the pidfd names; harmless once it has exited.
         unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,
@@ -1027,19 +982,18 @@ impl Job {
         }
     }
 
-    /// Whether the job outlives this handle: its init is the caller's
-    /// parent's child, which reaps it.
+    /// Whether the job outlives this handle: its init is the caller's parent's child, which reaps
+    /// it.
     fn detached(&self) -> bool {
         self.status.is_none()
     }
 
-    /// Give up the job without killing it: its pid and pidfd. For a detached
-    /// job, which the caller's parent reaps; the job lives on, bounded by its
-    /// cgroup.
+    /// Give up the job without killing it: its pid and pidfd. For a detached job, which the
+    /// caller's parent reaps; the job lives on, bounded by its cgroup.
     pub fn into_detached(self) -> (libc::pid_t, OwnedFd) {
         let this = std::mem::ManuallyDrop::new(self);
-        // SAFETY: `this` is never dropped, so each field is read out once and
-        // owned by exactly one place from here on.
+        // SAFETY: `this` is never dropped, so each field is read out once and owned by exactly one
+        // place from here on.
         let (pidfd, status, unmapped) = unsafe {
             (
                 std::ptr::read(&raw const this.pidfd),
@@ -1111,8 +1065,7 @@ impl Job {
                 };
             }
         }
-        // The init itself was killed (an OOM, `kill`, `cgroup.kill`).
-        // SAFETY: waitid filled `info`.
+        // The init itself was killed (an OOM, `kill`, `cgroup.kill`). SAFETY: waitid filled `info`.
         let status = unsafe { info.si_status() };
         if info.si_code == libc::CLD_EXITED {
             ExitStatus {
@@ -1127,7 +1080,6 @@ impl Job {
         }
     }
 
-    /// The job's status if it has ended, without waiting.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.reap(libc::WNOHANG)
     }
@@ -1150,7 +1102,6 @@ impl Drop for Job {
     }
 }
 
-/// Descriptors the job gets.
 pub struct Fds {
     pub stdin: Option<OwnedFd>,
     pub stdout: Option<OwnedFd>,
@@ -1159,7 +1110,6 @@ pub struct Fds {
     pub extra: Vec<(OwnedFd, RawFd)>,
 }
 
-/// How a job is started besides its plan and descriptors.
 #[derive(Default)]
 pub struct Mode<'a> {
     /// Detached: the file (or, for a helper, the pipe) its status goes to.
@@ -1168,19 +1118,11 @@ pub struct Mode<'a> {
     pub netns: Option<BorrowedFd<'a>>,
 }
 
-/// How long the job's setup may wait for anything but a CPU before the worker
-/// gives up on it: a mount that hangs, a lock that is never released.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How often a setup that has not reported is looked at.
 const SETUP_CHECK_EVERY: Duration = Duration::from_secs(1);
 
-/// How long the job's setup has spent waiting for a CPU, so far: the time
-/// `pid` and its children spent ready to run (`/proc/<pid>/schedstat`), or,
-/// if longer, the time some task of their cgroup did (its `cpu.pressure`).
-/// A setup step can wait on a lock that a task of the same cgroup holds while
-/// it waits for a CPU: that wait is for a CPU too. Zero where the kernel keeps
-/// neither statistic.
 fn cpu_wait(pid: libc::pid_t, cgroup: Option<&std::path::Path>) -> Duration {
     let one = |p: &str| {
         std::fs::read_to_string(format!("/proc/{p}/schedstat"))
@@ -1207,12 +1149,9 @@ fn cpu_wait(pid: libc::pid_t, cgroup: Option<&std::path::Path>) -> Duration {
     Duration::from_nanos(ready).max(Duration::from_micros(pressure))
 }
 
-/// Read the report pipe until it closes (the command is running, or the
-/// init ended) or holds two records: the init's [`HELLO`], and the step that
-/// failed.
-///
-/// On a busy machine the job's setup waits for a CPU, at the share its cgroup
-/// gets: the time it spends ready to run doesn't count against
+/// Read the report pipe until it closes (the command is running, or the init ended) or holds two
+/// records: the init's [`HELLO`], and the step that failed. On a busy machine the job's setup waits
+/// for a CPU, at the share its cgroup gets: the time it spends ready to run doesn't count against
 /// `SETUP_TIMEOUT`, only the time it spends waiting for anything else.
 fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Vec<u8>, SpawnError> {
     let start = Instant::now();
@@ -1242,7 +1181,6 @@ fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Vec<u8>, Spawn
         let ms = libc::c_int::try_from(left.as_millis())
             .unwrap_or(libc::c_int::MAX)
             .max(1);
-        // SAFETY: one pollfd structure on the stack.
         let rc = unsafe { libc::poll(&raw mut pfd, 1, ms) };
         if rc < 0 {
             let e = io::Error::last_os_error();
@@ -1272,7 +1210,6 @@ fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Vec<u8>, Spawn
     Ok(buf.get(..got).unwrap_or_default().to_vec())
 }
 
-/// Turn a failed step into a message naming the step and its path.
 fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
     let word = |i: usize| {
         buf.get(i..i.saturating_add(4))
@@ -1353,9 +1290,7 @@ fn report_result(bytes: &[u8], plan: &Plan) -> Result<(), SpawnError> {
     }
 }
 
-/// Where each descriptor the job keeps goes, and the control fd numbers.
 struct Layout {
-    /// (descriptor in the parent, number in the child).
     moves: Vec<(RawFd, RawFd)>,
     sync: RawFd,
     status: RawFd,
@@ -1434,8 +1369,8 @@ fn plan_layout(
     })
 }
 
-/// The clone3 flags and arguments, plus where the pidfd is stored. The
-/// child shares this process's memory and stack until its `execve`.
+/// The clone3 flags and arguments, plus where the pidfd is stored. The child shares this process's
+/// memory and stack until its `execve`.
 fn clone_args(
     cgroup: Option<RawFd>,
     pidfd: &mut RawFd,
@@ -1444,8 +1379,8 @@ fn clone_args(
 ) -> sys::CloneArgs {
     let bits = |f: libc::c_int| u64::from(f.unsigned_abs());
     let mut flags = if plan.helper {
-        // A mount namespace of its own and nothing else: the helper acts in
-        // the caller's user namespace, with the caller's capabilities.
+        // A mount namespace of its own and nothing else: the helper acts in the caller's user
+        // namespace, with the caller's capabilities.
         bits(libc::CLONE_VM | libc::CLONE_VFORK | libc::CLONE_NEWNS | libc::CLONE_PIDFD)
     } else {
         bits(
@@ -1463,8 +1398,8 @@ fn clone_args(
     if plan.own_net && !plan.helper {
         flags |= bits(libc::CLONE_NEWNET);
     }
-    // The kernel refuses an exit signal with CLONE_PARENT: the child's parent
-    // is the caller's, and its exit signal theirs.
+    // The kernel refuses an exit signal with CLONE_PARENT: the child's parent is the caller's, and
+    // its exit signal theirs.
     let exit_signal = if detached {
         flags |= bits(libc::CLONE_PARENT);
         0
@@ -1484,7 +1419,6 @@ fn clone_args(
     args
 }
 
-/// The clone3 failure, with a hint at the usual cause.
 fn clone_error(e: &io::Error, has_cgroup: bool) -> SpawnError {
     let hint = match e.raw_os_error() {
         Some(libc::EPERM | libc::ENOSPC | libc::EUSERS) => {
@@ -1500,8 +1434,8 @@ fn clone_error(e: &io::Error, has_cgroup: bool) -> SpawnError {
     SpawnError::Setup(format!("clone3: {e}{hint}"))
 }
 
-/// Map the job's ids, run the caller's hook, release it, wait for the
-/// command to be running (or the step that failed).
+/// Map the job's ids, run the caller's hook, release it, wait for the command to be running (or the
+/// step that failed).
 fn finish(
     job: &Job,
     plan: &Plan,
@@ -1511,8 +1445,8 @@ fn finish(
     setup: Option<SetupFn<'_>>,
 ) -> Result<(), SpawnError> {
     if let Err(e) = release(job, plan, ids, sync_w, setup) {
-        // The child may have failed before the init ran (and so be gone):
-        // then the report says why, and the error here is only its echo.
+        // The child may have failed before the init ran (and so be gone): then the report says why,
+        // and the error here is only its echo.
         job.kill();
         let bytes = read_report_bytes(report_r, job.pid()).unwrap_or_default();
         return match report_result(&bytes, plan) {
@@ -1523,7 +1457,6 @@ fn finish(
     report_result(&read_report_bytes(report_r, job.pid())?, plan)
 }
 
-/// Map the job's ids, run the caller's hook, let the init go on.
 fn release(
     job: &Job,
     plan: &Plan,
@@ -1535,8 +1468,8 @@ fn release(
     if plan.helper {
         // No user namespace of its own: nothing to map.
     } else if let Some(block) = ids.block {
-        // The worker may map any ids (it holds CAP_SETUID and CAP_SETGID),
-        // so `setgroups` stays allowed: the init drops the worker's groups.
+        // The worker may map any ids (it holds CAP_SETUID and CAP_SETGID), so `setgroups` stays
+        // allowed: the init drops the worker's groups.
         write_proc(
             pid,
             "uid_map",
@@ -1568,11 +1501,6 @@ fn release(
         .map_err(|e| SpawnError::Setup(format!("releasing the job: {e}")))
 }
 
-/// Make the anonymous pipes the job is given its own user's, where it has a
-/// host user of its own: a pipe belongs to whoever made it (the worker),
-/// mode 0600, and opening it again by path (`/dev/stdout`, which QEMU and
-/// shell scripts do) checks that. Descriptors of anything else (a file, a
-/// terminal, a named FIFO) stay as they are.
 fn give_pipes<'a>(
     fds: impl Iterator<Item = &'a OwnedFd>,
     ids: &crate::job::spec::IdMap,
@@ -1587,7 +1515,6 @@ fn give_pipes<'a>(
         ));
     };
     for fd in fds {
-        // An anonymous pipe reads as `pipe:[<inode>]`, a named FIFO as its path.
         let pipe = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
             .is_ok_and(|to| to.as_os_str().as_encoded_bytes().starts_with(b"pipe:["));
         // SAFETY: fchown on a descriptor we hold.
@@ -1651,8 +1578,8 @@ pub fn spawn(
     let mut scratch = vec![-1; layout.moves.len()];
     let mut pidfd: RawFd = -1;
     let clone_cfg = clone_args(cgroup.map(|c| c.as_raw_fd()), &mut pidfd, plan, detached);
-    // The child is born in the calling thread's network namespace: enter the
-    // one to join for the clone, and come back right after.
+    // The child is born in the calling thread's network namespace: enter the one to join for the
+    // clone, and come back right after.
     let home_net = mode.netns.map(enter_netns).transpose()?;
     let mut child = PreExec {
         moves: &layout.moves,
@@ -1664,13 +1591,11 @@ pub fn spawn(
         cap_last: plan.cap_last,
         argv: &argv,
     };
-    // Keep the init in every program that starts a job.
     #[cfg(target_env = "gnu")]
     std::hint::black_box(&RUN_INIT);
-    // No signal handler of the worker's may run in the child, on its memory:
-    // every signal stays blocked until the init has reset them all.
-    // SAFETY (this block): a full set and the old mask, on the stack; then
-    // clone3 with CLONE_VM | CLONE_VFORK: the child runs `pre_exec`, reading
+    // No signal handler of the worker's may run in the child, on its memory: every signal stays
+    // blocked until the init has reset them all. SAFETY (this block): a full set and the old mask,
+    // on the stack; then clone3 with CLONE_VM | CLONE_VFORK: the child runs `pre_exec`, reading
     // `child`, and this thread waits until it has called `execve` or exited.
     let ret = unsafe {
         let mut all: libc::sigset_t = std::mem::zeroed();
@@ -1707,8 +1632,7 @@ pub fn spawn(
         unmapped: plan.unmapped.clone(),
     };
     if let Some(Err(e)) = back {
-        // This thread would go on in the job's network: refuse, which kills
-        // the job (dropped here).
+        // This thread would go on in the job's network: refuse, which kills the job (dropped here).
         return Err(SpawnError::Setup(format!(
             "returning to the caller's network namespace after starting the job: {e}"
         )));
@@ -1718,9 +1642,8 @@ pub fn spawn(
     Ok(job)
 }
 
-/// Where the init writes the command's wait status, and where the worker
-/// reads it: a pipe, or for a detached job the caller's file, read by
-/// nobody here.
+/// Where the init writes the command's wait status, and where the worker reads it: a pipe, or for a
+/// detached job the caller's file, read by nobody here.
 fn status_ends(detached: Option<OwnedFd>) -> io::Result<(Option<OwnedFd>, OwnedFd)> {
     if let Some(file) = detached {
         return Ok((None, file));
@@ -1729,7 +1652,6 @@ fn status_ends(detached: Option<OwnedFd>) -> io::Result<(Option<OwnedFd>, OwnedF
     Ok((Some(r), w))
 }
 
-/// This program, again, as the job's init.
 fn this_program() -> Result<OwnedFd, SpawnError> {
     Ok(std::fs::OpenOptions::new()
         .read(true)
@@ -1757,7 +1679,6 @@ fn setns(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-/// A memory file for the job's plan.
 fn memfd() -> io::Result<std::fs::File> {
     // SAFETY: a static name; the kernel returns a new descriptor or -1.
     let fd = unsafe { libc::memfd_create(c"tilo-job-plan".as_ptr(), libc::MFD_CLOEXEC) };
@@ -1768,8 +1689,8 @@ fn memfd() -> io::Result<std::fs::File> {
     Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
-/// Write what the init reads to `file`: `plan`, and where its descriptors
-/// are. Returns the init's arguments.
+/// Write what the init reads to `file`: `plan`, and where its descriptors are. Returns the init's
+/// arguments.
 fn write_plan(
     plan: &Plan,
     layout: &Layout,

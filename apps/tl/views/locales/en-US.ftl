@@ -52,8 +52,8 @@ d-uibilwji-filter-chosen = Chosen
 d-f6dcaezu = Views
     .doc = The person's views, and the types they show through one of them.
     .noun = { $count ->
-        [one] views
-       *[other] viewses
+        [one] view
+       *[other] views
     }
 
 d-bweal36x = Items

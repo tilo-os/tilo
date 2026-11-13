@@ -1,13 +1,6 @@
-//! Editable compositor shortcuts. The rows are the desktop's keyboard
-//! shortcut catalogue ([`settings_store::keyboard_shortcuts`]), the same one
-//! the shortcut guide shows. A chord is bound with the person's `shortcuts`
-//! section's `rebind` ([`ShortcutPrefs`]), which checks it against every
-//! other chord; a chord it refuses leaves the binding as it was and says
-//! why.
-//!
-//! "Paste in apps" is the other shortcut the person sets here: the chord
-//! the shell pastes with in an app (an image or files chosen from clipboard
-//! history). An app is chosen with the shell's app chooser, never typed.
+//! Editable compositor shortcuts. The rows are the desktop's keyboard shortcut
+//! catalogue ([`settings_store::keyboard_shortcuts`]), the same one the
+//! shortcut guide shows.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -37,10 +30,8 @@ use ui::shell_choosers::ChosenApp;
 
 crate::effects::effect_family!(ShortcutEffect => answer);
 
-/// The `shortcuts` section's verb that moves a shortcut to a chord.
 const REBIND: &str = "rebind";
 
-/// The keys that move around the desktop.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum ShortcutEffect {
@@ -50,7 +41,6 @@ pub enum ShortcutEffect {
     ChoosePasteApp,
 }
 
-/// Answer `effect`.
 #[allow(
     clippy::unnecessary_wraps,
     clippy::needless_pass_by_value,
@@ -68,7 +58,6 @@ pub(crate) fn answer(
                 cx,
                 move || choose_app(&purpose),
                 |app: &SettingsApp, chosen: Result<Option<ChosenApp>, String>, _| {
-                    // Chose none: nothing changes.
                     let Some(chosen) = chosen? else {
                         return Ok(Effected::done());
                     };
@@ -120,8 +109,6 @@ fn paste_app(input: &InputPrefs, app: &ChosenApp) -> Option<PasteShortcut> {
 }
 
 thread_local! {
-    /// The names of the apps chosen in the app chooser this session, by id:
-    /// what their rows are titled.
     static APP_NAMES: std::cell::RefCell<HashMap<String, String>> =
         std::cell::RefCell::new(HashMap::new());
 }
@@ -132,22 +119,17 @@ fn remember_app_name(app: &ChosenApp) {
     });
 }
 
-/// The name the person knows the app with id `id` by: the one the app
-/// chooser answered with, else what its id spells.
 fn app_name(id: &str) -> String {
     APP_NAMES
         .with(|names| names.borrow().get(id).cloned())
         .unwrap_or_else(|| package_store::display_name_for_package_id(id))
 }
 
-/// Every rebindable action, in catalogue order.
 #[cfg(any(test, feature = "tilo-os"))]
 fn rebindable() -> impl Iterator<Item = ShortcutAction> {
     ShortcutAction::ALL.into_iter()
 }
 
-/// Every shortcut the page lists, with its name, in page order — what a pen
-/// or pad button can be set to run.
 #[cfg(feature = "tilo-os")]
 pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, String)> {
     rebindable()
@@ -155,8 +137,6 @@ pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, String)> {
         .collect()
 }
 
-/// The legends printed on the keys of the layout the keyboard is typing
-/// with, which the page names keys and modifiers in.
 fn active_keycaps(document: &ui::storage::SettingsDocument) -> ui::Keycaps {
     let config =
         settings_store::hardware::RichInputConfig::from_section(&settings_store::merged_sections(
@@ -172,8 +152,6 @@ fn active_keycaps(document: &ui::storage::SettingsDocument) -> ui::Keycaps {
         })
 }
 
-/// `chord` as the active layout's keycaps spell it (`Strg+Umschalt+T` on a
-/// German layout). The stored chord stays canonical.
 fn chord_label(chord: &KeyChord) -> String {
     ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
 }
@@ -194,7 +172,6 @@ fn app_tab_chords_note() -> String {
     )
 }
 
-/// `chords` as drawn keycaps, side by side: the keys a person presses.
 fn chord_caps(chords: &[KeyChord]) -> Box<dyn Widget> {
     let caps = ui::keycaps::active();
     Box::new(ui::widget::KeyHints::new(
@@ -239,9 +216,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, _app: &Rc<SettingsApp>) -> Option<Elem
     Some(page_of(vec![catalogue, paste]))
 }
 
-/// One group per category of the catalogue `config` makes, the refusal of
-/// the last chord (`refusal`) opening the navigation group beside the
-/// switch that may have caused it; then the desktop's bound actions.
 fn shortcut_cards(
     cx: &ViewCx<ShortcutPrefs>,
     config: &ShortcutConfig,
@@ -281,8 +255,6 @@ fn shortcut_cards(
     cards
 }
 
-/// The row of `entry`: a recorder of its chord where it can be rebound,
-/// else the chords it has.
 fn entry_row(cx: &ViewCx<ShortcutPrefs>, config: &ShortcutConfig, entry: &ShortcutEntry) -> Item {
     let label = t(&entry.label_key);
     match entry.action.filter(|_| entry.rebindable) {
@@ -317,9 +289,6 @@ fn entry_row(cx: &ViewCx<ShortcutPrefs>, config: &ShortcutConfig, entry: &Shortc
     }
 }
 
-/// "Paste in apps": a row per app the person set, choosing Ctrl+V or
-/// Ctrl+Shift+V through the input section's `set-paste-shortcut`, and the
-/// app chooser to add one.
 fn paste_card(cx: &ViewCx<InputPrefs>, actions: &Actions<Settings>) -> SettingsSection {
     let shortcuts = [PasteShortcut::CtrlV, PasteShortcut::CtrlShiftV];
     let label = |shortcut: PasteShortcut| {
@@ -414,8 +383,6 @@ mod tests {
         .is_ok()
     }
 
-    /// Each chord recorder changes its chord through the `shortcuts`
-    /// section's `rebind`, as an agent does; none is left without it.
     #[test]
     fn the_recorders_rebind_through_the_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -465,9 +432,6 @@ mod tests {
         }
     }
 
-    /// A chord lands in the `shortcuts` section the compositor reads; a
-    /// chord another shortcut holds is refused with the reason and changes
-    /// nothing; Vim mode is the shell's desktop-controls preference.
     #[test]
     fn bindings_are_validated_and_stored() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -499,8 +463,6 @@ mod tests {
         assert!(app.settings::<DesktopControls>().get().vim_mode);
     }
 
-    /// The page shows the stored chords and follows a change made
-    /// elsewhere.
     #[test]
     fn the_page_follows_the_bindings() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -511,8 +473,6 @@ mod tests {
             ui::widget::find_test_id(app.harness().root_widget(), "shortcuts.search")
                 .and_then(Widget::accessibility)
                 .and_then(|node| node.value)
-                // Spoken as "Super + Space": compared without the spacing
-                // or case speech adds.
                 .map(|chord| chord.replace(' ', "").to_lowercase())
         };
         assert_eq!(

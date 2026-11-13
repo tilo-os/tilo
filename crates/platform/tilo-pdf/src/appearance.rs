@@ -1,10 +1,9 @@
 //! Appearance streams for the annotations pdfium does not draw itself.
 //!
-//! pdfium generates appearances for text markup, ink and notes, but a free
-//! text annotation or a stamp without an `/AP` is invisible in most readers
-//! (pdfium included). These are built here as form `XObject` content in the
-//! page's user space — strokes as paths, text shaped and set in embedded
-//! subset fonts ([`crate::font`]) — and attached by the export's patch pass.
+//! A free text annotation or a stamp without an `/AP` is invisible in most
+//! readers (pdfium included). This builds it as form `XObject` content in the
+//! page's user space, with text in embedded subset fonts, for the export's
+//! patch pass to attach.
 
 use pdf_writer::types::{LineCapStyle, LineJoinStyle};
 use pdf_writer::{Content, Name, Str};
@@ -14,8 +13,8 @@ use crate::font::{PlacedGlyph, ShapedLine, TextSetter};
 use crate::geom::{Point, Rect};
 use crate::model::Rgba;
 
-/// A built appearance: content in user space, clipped to `bbox`, and the
-/// fonts (by [`TextSetter`] index) its text uses.
+/// A built appearance: content in user space, clipped to `bbox`, with its
+/// fonts by [`TextSetter`] index.
 pub(crate) struct Appearance {
     pub bbox: Rect,
     pub content: Vec<u8>,
@@ -48,8 +47,6 @@ fn show_line(
     }
 }
 
-/// A stamp: `strokes` drawn with round caps and joins, then each text line
-/// from its baseline start, all in `color`, clipped to `rect`.
 pub(crate) fn stamp(
     setter: &mut TextSetter,
     rect: Rect,
@@ -103,11 +100,8 @@ pub(crate) fn stamp(
     }
 }
 
-/// Inner padding between a free text box's edge and its text.
 pub(crate) const FREE_TEXT_PADDING: f32 = 2.0;
 
-/// Free text: `text` wrapped to `rect`'s width and set from its top-left in
-/// `color` at `size`, clipped to `rect`.
 pub(crate) fn free_text(
     setter: &mut TextSetter,
     rect: Rect,

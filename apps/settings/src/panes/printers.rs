@@ -1,11 +1,5 @@
-//! Daily printer/scanner control: printers through the shared typed CUPS
-//! service, scanners through SANE.
-//!
-//! Settings owns discovery, adding a driverless queue, defaults, queue health
-//! and recovery. A future Print Centre may offer long job history, finishing
-//! workflows and diagnostics, but must consume the same `PrintService` rather
-//! than maintaining another printer database. Every change is a
-//! [`PrinterEffect`], offered on the queue, nearby printer or job it names.
+//! Printers: printers through the shared typed CUPS service, scanners through.
+//! SANE.
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
@@ -43,12 +37,10 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`PrintersArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PrintersArea> {
     app.areas().find()
 }
 
-/// Which of the last refresh's lists could not be read, and why.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PrinterReadErrors {
     printers: Option<String>,
@@ -56,8 +48,6 @@ struct PrinterReadErrors {
     scanners: Option<String>,
 }
 
-/// Keep a list that was read; answer why one was not, clearing what was
-/// shown so a stale list is not mistaken for the current one.
 fn adopt<T>(read: Result<Vec<T>, String>, shown: &mut Vec<T>) -> Option<String> {
     match read {
         Ok(value) => {
@@ -71,10 +61,8 @@ fn adopt<T>(read: Result<Vec<T>, String>, shown: &mut Vec<T>) -> Option<String> 
     }
 }
 
-/// The most queues, nearby printers and jobs published as rows.
 const MAX_ROWS: usize = 64;
 
-/// Changes to this device's printers and print jobs.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum PrinterEffect {
@@ -124,8 +112,6 @@ pub enum PrinterEffect {
     },
 }
 
-/// Answer `effect`: reads start on the model; changes run on a worker and
-/// then read the printers again.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PrinterEffect,
@@ -165,7 +151,6 @@ pub(crate) fn answer(
     }
 }
 
-/// Carry out a change on `service`. Never called on the UI thread.
 fn carry_out(
     service: &dyn PrintService,
     discovered: &[DiscoveredPrinter],
@@ -203,69 +188,26 @@ fn carry_out(
 }
 
 pub trait PrintService: Send + Sync {
-    /// # Errors
-    ///
-    /// Returns `Err` if the CUPS backend cannot be reached or reports a fault
-    /// while enumerating queues.
     fn queues(&self) -> Result<Vec<PrinterQueue>, String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if the CUPS backend cannot be reached or reports a fault
-    /// while enumerating the job list.
     fn jobs(&self) -> Result<Vec<PrintJob>, String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if the driverless discovery scan (DNS-SD/mDNS) fails to
-    /// start or is interrupted.
     fn discover(&self) -> Result<Vec<DiscoveredPrinter>, String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if the SANE backend cannot be reached or reports a fault
-    /// while enumerating scanners.
     fn scanners(&self) -> Result<Vec<Scanner>, String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if the discovered printer cannot be added as a
-    /// driverless queue (unreachable URI, or CUPS rejects the queue).
     fn add(&self, printer: &DiscoveredPrinter) -> Result<(), String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if `name` does not name an existing queue, or CUPS
-    /// refuses to change the system default.
     fn set_default(&self, name: &str) -> Result<(), String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if `name` does not name an existing queue, or CUPS
-    /// refuses to change its enabled/paused state.
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if `name` does not name an existing queue, or CUPS
-    /// refuses to delete it.
     fn remove(&self, name: &str) -> Result<(), String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if `id` does not name an active job, or CUPS refuses to
-    /// cancel it.
     fn cancel(&self, id: &str) -> Result<(), String>;
 
-    /// # Errors
-    ///
-    /// Returns `Err` if `id` does not name a stopped/canceled/aborted job, or
-    /// CUPS refuses to resubmit it.
     fn retry(&self, id: &str) -> Result<(), String>;
 
-    /// Follow the print service: `changed` is called, on another thread,
-    /// each time a queue or a job changes, for as long as the answer is
-    /// held. `None` when nothing can be followed.
     fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
         None
     }
@@ -314,13 +256,9 @@ impl PrintService for CupsService {
     }
 }
 
-/// What the printers area keeps for the window: the model, read when
-/// first needed.
 pub struct PrintersArea {
-    /// Whether the model reads this device's print service.
     devices: bool,
     model: OnceCell<Rc<RefCell<PrintersModel>>>,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
@@ -333,8 +271,6 @@ impl PrintersArea {
         }
     }
 
-    /// The model, created on first use over CUPS, or over sample printers
-    /// for a screenshot.
     pub fn model(&self) -> &Rc<RefCell<PrintersModel>> {
         self.model.get_or_init(|| {
             let sample = !self.devices;
@@ -349,10 +285,6 @@ impl PrintersArea {
         })
     }
 
-    /// Take in finished reads, if the model exists; while a page shows it,
-    /// read the queues again when the print service reports a change, and
-    /// move what the page is keyed by when what it shows changed. Only a
-    /// shown page keeps reading the queues again.
     pub(crate) fn poll(&self) {
         let Some(model) = self.model.get() else {
             return;
@@ -369,8 +301,6 @@ impl PrintersArea {
         }
     }
 
-    /// Whether a page shows the printers while a read runs: the window
-    /// keeps drawing until it lands.
     fn busy(&self) -> bool {
         self.model
             .get()
@@ -378,15 +308,10 @@ impl PrintersArea {
             .is_some_and(|model| model.shown() && model.busy())
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
 
-    /// One row per queue, nearby printer and job, offering what can be done
-    /// to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let printers = model.printers.iter().take(MAX_ROWS).map(printer_live_row);
@@ -397,8 +322,6 @@ impl PrintersArea {
     }
 }
 
-/// A queue as a row of the published surface, offering what can be done to
-/// it now; the pane's controls for it bind to it.
 fn printer_live_row(printer: &PrinterQueue) -> LiveRow {
     let name = printer.name.clone();
     let paused = printer.state == QueueState::Paused;
@@ -428,7 +351,6 @@ fn printer_live_row(printer: &PrinterQueue) -> LiveRow {
     row
 }
 
-/// A printer found nearby as a row of the published surface.
 fn nearby_live_row(printer: &DiscoveredPrinter) -> LiveRow {
     LiveRow::new(
         format!("settings.nearby-printer:{}", printer.uri),
@@ -443,7 +365,6 @@ fn nearby_live_row(printer: &DiscoveredPrinter) -> LiveRow {
     )
 }
 
-/// A print job as a row of the published surface.
 fn job_live_row(job: &PrintJob) -> LiveRow {
     let mut row = LiveRow::new(
         format!("settings.print-job:{}", job.id),
@@ -492,10 +413,7 @@ pub struct PrintersModel {
     scanners: Vec<Scanner>,
     refresh_rx: Option<channel::Receiver<PrinterSnapshot>>,
     discover_rx: Option<channel::Receiver<Result<Vec<DiscoveredPrinter>, String>>>,
-    /// What tells the model the queues or jobs changed while a pane shows
-    /// it.
     following: std::rc::Weak<crate::watch::Counted>,
-    /// The change count last read for.
     changes_seen: u64,
     error: Option<String>,
     /// Why each list could not be read in the last refresh. A list that
@@ -534,8 +452,6 @@ impl PrintersModel {
         if self.refresh_rx.is_some() {
             return;
         }
-        // Capture and test snapshots are already in memory. Publishing their
-        // rows must not depend on whether an OS worker has been scheduled.
         if self.sample {
             self.adopt_snapshot(PrinterSnapshot {
                 printers: self.service.queues(),
@@ -571,7 +487,6 @@ impl PrintersModel {
         if self.discover_rx.is_some() {
             return;
         }
-        // Capture and test samples are in memory, like their queues.
         if self.sample {
             self.discovered = self.service.discover().unwrap_or_default();
             self.changed = true;
@@ -625,13 +540,10 @@ impl PrintersModel {
         }
     }
 
-    /// The printers found nearby that no queue prints to yet: only those
-    /// can be added, so only those are offered.
     fn nearby(&self) -> Vec<DiscoveredPrinter> {
         os_actions::printing::not_added(&self.discovered, &self.printers)
     }
 
-    /// The page as the model shows the printers now.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         let dispatcher = cx.dispatcher();
         let mut sections: Vec<SettingsSection> = Vec::new();
@@ -642,8 +554,6 @@ impl PrintersModel {
             ));
         }
 
-        // The queues are read again whenever the print service reports a
-        // change: no refresh.
         let printers = if let Some(error) = &self.read_errors.printers {
             rows(vec![block(error_caption(&t_args(
                 "settings-printers-read-error",
@@ -741,8 +651,6 @@ impl PrintersModel {
         }
     }
 
-    /// A printer: its name and state, what it is doing and its supplies,
-    /// and its menu (make default, pause or resume, remove).
     fn printer_row(dispatcher: &Dispatcher<Settings>, printer: &PrinterQueue) -> Item {
         let name = printer.name.clone();
         let live = printer_live_row(printer).into_resource();
@@ -869,9 +777,6 @@ impl PrintersModel {
         ))
     }
 
-    /// A print job: what is printing, where and for whom, how far it got,
-    /// and the one thing to do with it (cancel, or retry a stopped one,
-    /// whose cancel is in its menu).
     fn job_row(dispatcher: &Dispatcher<Settings>, job: &PrintJob) -> Item {
         let live = job_live_row(job).into_resource();
         let size = ui::format::size(job.size_bytes);
@@ -962,18 +867,12 @@ impl PrintersModel {
 }
 
 impl PrintersModel {
-    /// Whether a page shows the model: it follows the print service while
-    /// it does.
     fn shown(&self) -> bool {
         self.following.strong_count() > 0
     }
 
-    /// Take in finished reads and read the queues again once the print
-    /// service reported a change; whether what the page shows changed.
     fn poll(&mut self) -> bool {
         self.poll_background();
-        // Read again once the print service reported a change; a read
-        // running takes in changes up to its start, and the next one after.
         if let Some(changes) = self
             .following
             .upgrade()
@@ -987,14 +886,10 @@ impl PrintersModel {
         std::mem::take(&mut self.changed)
     }
 
-    /// Follow the print service for a page that shows the model, for as
-    /// long as the answer is held; pages share one follow.
     fn follow(&mut self) -> Rc<crate::watch::Counted> {
         if let Some(held) = self.following.upgrade() {
             return held;
         }
-        // Nothing was followed while no pane showed the model: the queues
-        // are read again once.
         self.changes_seen = u64::MAX;
         let service = Arc::clone(&self.service);
         crate::watch::shared(&mut self.following, move || {
@@ -1002,37 +897,25 @@ impl PrintersModel {
         })
     }
 
-    /// Whether a read is running.
     fn busy(&self) -> bool {
         self.refresh_rx.is_some() || self.discover_rx.is_some()
     }
 }
 
-/// The Printers page as view code over what the area reads of the print
-/// service: built again whenever what it shows changes
-/// ([`PrintersArea::poll`]). The print service is followed while the page
-/// is shown, and showing it searches for printers nearby, so what can be
-/// added is there without asking.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
     let following = model.borrow_mut().follow();
     model.borrow_mut().request_discovery();
-    // What changed while no page showed the model is taken in before the
-    // page is built.
     model.borrow_mut().poll();
     Some(cx.switch(&held.shown, move |cx, _| {
-        // The part keeps the print service followed while it is shown.
         let _followed = &following;
         model.borrow().page(cx)
     }))
 }
 
-/// The printers a screenshot and the crate's tests show: one office queue
-/// printing a report, one more found nearby.
 struct SamplePrintService;
 
-/// The device the sample office queue prints to.
 const SAMPLE_OFFICE_URI: &str = "ipps://office.local/ipp/print";
 
 impl PrintService for SamplePrintService {
@@ -1062,8 +945,6 @@ impl PrintService for SamplePrintService {
         }])
     }
     fn discover(&self) -> Result<Vec<DiscoveredPrinter>, String> {
-        // The office printer answers the search too: it is already added,
-        // so it must not be offered again.
         Ok(vec![
             DiscoveredPrinter {
                 uri: "ipp://office.local/ipp/print".into(),
@@ -1244,7 +1125,6 @@ mod tests {
         }
     }
 
-    /// A print service whose changes are followed by hand.
     struct FollowedPrinters {
         recording: RecordingService,
         reads: std::sync::atomic::AtomicUsize,
@@ -1289,8 +1169,6 @@ mod tests {
         }
     }
 
-    /// The shown page reads the queues and jobs again when the print
-    /// service reports a change, and only then; a closed page reads nothing.
     #[test]
     fn the_shown_page_reads_the_queues_again_when_the_print_service_reports_a_change() {
         let service = Arc::new(FollowedPrinters {
@@ -1331,8 +1209,6 @@ mod tests {
         assert_eq!(reads(), 2);
     }
 
-    /// Each change reaches the one typed backend, for the printer or job it
-    /// names; a nearby printer is added by its address.
     #[test]
     fn changes_reach_one_typed_backend() {
         let service = RecordingService::new();
@@ -1433,8 +1309,6 @@ mod tests {
         );
     }
 
-    /// Queues and jobs are rows offering their changes; removing a queue
-    /// asks first.
     #[test]
     fn printers_and_jobs_are_rows() {
         use crate::resource::SettingsShell;
@@ -1467,8 +1341,6 @@ mod tests {
         .expect("the queue is paused");
     }
 
-    /// The shown page lists the queues, what is nearby and not added yet,
-    /// and the jobs.
     #[test]
     fn the_page_shows_the_queues_nearby_printers_and_jobs() {
         use crate::resource::SettingsShell;

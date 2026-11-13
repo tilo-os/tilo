@@ -1,14 +1,7 @@
-//! The library: the queue, recent videos and shared playlists and
-//! bookmarks, in the window's sidebar.
-//!
-//! The library is the toolkit's leading drawer. Wide, it docks beside the
-//! picture at its own width and the picture is laid out beside it. Narrower,
-//! the library takes the window's content area as a screen of its own
-//! ([`PlayerState::library_takes_the_window`]), with "Back to video" leading its
-//! tabs, so the picture is one press away and the sidebar toggle or `Escape`
-//! puts it away again. The window bar's sidebar toggle and `Escape` show and
-//! hide it, so it has no close of its own. Its rows are list rows: choosing a
-//! row plays it, and the actions a row offers show on hover and focus.
+//! The library: the queue, recent videos and shared playlists and bookmarks, in the
+//! window's drawer. Wide it docks beside the picture; narrower it takes the content area
+//! as a screen of its own, with "Back to video" leading its tabs. The bar's sidebar toggle
+//! and Escape show and hide it.
 
 use super::{
     Affine, Button, ButtonFace, Icon, LibraryRowHit, LibraryTab, LocalMediaEntry, PlayerState,
@@ -23,7 +16,6 @@ use ui::widget::{
 };
 
 impl LibraryTab {
-    /// The tabs, named by the catalogue as the window bar names them.
     fn labels() -> [String; 3] {
         ["video-queue", "video-recent", "video-shared"].map(crate::i18n::t)
     }
@@ -37,30 +29,23 @@ impl LibraryTab {
     }
 }
 
-/// A hover action of a row: its icon, and what it does in the person's
-/// language, read from the catalogue where the row is built.
 fn action(icon: Icon, label: &str) -> (Icon, String) {
     (icon, crate::i18n::t(label))
 }
 
-/// One row of a list in the sheet.
 struct RowSpec<'a> {
     title: &'a str,
     meta: Option<&'a str>,
     selected: bool,
     focused: bool,
-    /// What a hover offers, as [`action`] builds it.
     actions: Vec<(Icon, String)>,
 }
 
-/// Where a row and its actions landed.
 struct RowPlaced {
     row: Rect,
     actions: Vec<Rect>,
 }
 
-/// Paint `specs` as one list from `*y` down in `x0..x1`, clipped to `clip`,
-/// advancing `*y` past the last row.
 fn paint_rows(
     ctx: &mut PaintCtx<'_>,
     specs: &[RowSpec<'_>],
@@ -118,8 +103,8 @@ fn paint_rows(
 }
 
 impl PlayerState {
-    /// Follow `library_visible` with the sheet. The resource action is what
-    /// changes the flag; the drawer only animates it.
+    /// Follow `library_visible` with the drawer, which only animates the flag the
+    /// resource action changes.
     pub(super) fn sync_library_sheet(&mut self) {
         if self.library_visible != self.drawer.is_open() {
             if self.library_visible {
@@ -130,11 +115,9 @@ impl PlayerState {
         }
     }
 
-    /// Lay the library out for the window: docked beside the picture where
-    /// the picture keeps its minimum width, else taking the content area as
-    /// a screen of its own, else floating over the picture down to the
-    /// transport, which stays uncovered. A docked library that changed width
-    /// asks for the player to be laid out beside it again.
+    /// Lay the library out: docked beside the picture where the picture keeps its minimum
+    /// width, else a screen of its own, else floating down to the transport. A docked
+    /// library that changed width asks for the player to be laid out again.
     pub(super) fn resolve_library(&mut self) {
         let content = self.drawer.resolve(self.rect);
         if self.drawer.is_overlay()
@@ -160,11 +143,8 @@ impl PlayerState {
         }
     }
 
-    /// Too narrow to dock, the library takes the window's content area as a
-    /// screen of its own, as the window bar's sidebar toggle does in every
-    /// other app: the picture is reachable from it with "Back to video", and
-    /// the sidebar sets the library wide enough that it fits a list and a
-    /// library's rows.
+    /// Too narrow to dock, the library takes the content area as a screen of its own, as
+    /// the bar's sidebar toggle does in every other app.
     pub(super) fn library_takes_the_window(&self) -> bool {
         self.drawer.is_push()
     }
@@ -182,9 +162,6 @@ impl PlayerState {
         self.shared_bookmark_rect = Rect::ZERO;
     }
 
-    /// The library's views: tabs across the top of `inner`, each as wide as
-    /// its label, answering the pointer and the keyboard. Returns their
-    /// height.
     fn paint_library_tabs(
         &mut self,
         scene: &mut Scene,
@@ -231,8 +208,6 @@ impl PlayerState {
         tab_h
     }
 
-    /// Paint the scrim and the sheet, and record every rect the pointer,
-    /// keyboard and assistive technology act on.
     pub(super) fn paint_library_panel(
         &mut self,
         scene: &mut Scene,
@@ -253,8 +228,8 @@ impl PlayerState {
         let inner = Rect::new(sheet.x0 + s4, sheet.y0 + s4, sheet.x1 - s4, sheet.y1 - s4);
         let cursor = self.last_cursor;
 
-        // Filling a narrow window's content area, the library leads with the
-        // way back to the picture, as a pushed screen does.
+        // Filling a narrow window, the library leads with the way back to the picture, as
+        // a pushed screen does.
         let mut inner = inner;
         if self.library_takes_the_window() {
             let control = ButtonFace::height(ControlSize::Regular, theme);
@@ -281,8 +256,7 @@ impl PlayerState {
 
         let tab_h = self.paint_library_tabs(scene, transform, text, theme, inner, cursor);
 
-        // Clear, on Recent with something to clear, at the trailing end of
-        // its own row under the tabs.
+        // Clear, on Recent with something to clear, at the trailing end of its own row.
         let mut list_top = inner.y0 + tab_h + sibling;
         if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
             let control = ButtonFace::height(ControlSize::Regular, theme);
@@ -319,7 +293,6 @@ impl PlayerState {
         }
     }
 
-    /// The queue or the recent list.
     fn paint_local_library(
         &mut self,
         scene: &mut Scene,
@@ -392,8 +365,6 @@ impl PlayerState {
         }
     }
 
-    /// The shared tab: the two actions that add to the shared library, then
-    /// its playlists and bookmarks.
     #[allow(
         clippy::too_many_lines,
         reason = "one tab: its two actions, its two lists and the hit rects they publish"

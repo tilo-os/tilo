@@ -89,7 +89,6 @@ fn google_results_come_from_its_search_element_json() {
         results[1].title,
         "Wetter Berlin - 4 Tage Vorhersage - WetterOnline"
     );
-    // The answer's no-break space before the ellipsis is plain whitespace.
     assert!(
         results[0]
             .snippet

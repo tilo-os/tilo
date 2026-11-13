@@ -343,7 +343,7 @@ fn a_runs_link_parses_back_to_that_run() {
     // A run is read from the workspace's history, which the desktop's
     // session serves, so its link opens the desktop at the run.
     assert_eq!(link.mode, Mode::Desktop, "{url}");
-    assert_eq!(target.app, Some(AppId::new(App::ID).unwrap()), "{url}");
+    assert_eq!(target.app, Some(AppId::new(App::ID)), "{url}");
     assert_eq!(
         target.record,
         Some(RecordSegment::new(app.record().as_str()).unwrap()),

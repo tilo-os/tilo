@@ -193,8 +193,6 @@ fn a_daily_update_applies_by_component_scope_without_a_reboot() {
     );
     assert_eq!(session.user_units, ["tilo-app-host.service"]);
 
-    // Apps built for new interface versions wait for the desktop that
-    // speaks them.
     let interfaces = Plan::new(
         vec![
             written("/usr/share/tilo/system-interfaces.toml"),
@@ -215,7 +213,6 @@ fn a_daily_update_applies_by_component_scope_without_a_reboot() {
     assert!(!apps.desktop_pending());
     assert_eq!(apps.restarts(Phase::System, false), Restarts::default());
 
-    // A kernel waits for a restart of the machine; the rest still applies.
     let kernel = Plan::new(
         vec![
             written("/usr/lib/modules/6.18/vmlinuz"),
@@ -285,7 +282,6 @@ fn the_trees_differ_by_bytes_mode_links_and_removals() {
     );
 }
 
-/// The machine, as a test sees it.
 #[derive(Default)]
 struct Fake {
     roots: RefCell<BTreeMap<String, PathBuf>>,
@@ -476,12 +472,10 @@ fn the_staged_image_applies_live_first_the_system_then_the_desktop() {
     );
     assert_eq!(state.deferred, ["greetd.service"]);
 
-    // Asked again for the same image, nothing happens.
     fake.restarted.borrow_mut().clear();
     assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
     assert!(fake.restarted.borrow().is_empty());
 
-    // The desktop's natural moment: the rest, and the desktop restarts.
     assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
     let layer = fs::read_link(link(&layout)).unwrap();
     assert_eq!(
@@ -509,9 +503,6 @@ fn a_newer_image_over_an_applied_one_restarts_only_what_changed_since() {
     assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
     assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
 
-    // A newer image is staged before the machine restarts: the services and
-    // the compositor as the applied one has them, a new greeter, and the
-    // library the applied one dropped back as booted.
     let newer = dir.path().join("newer");
     tree(
         &newer,
@@ -594,7 +585,6 @@ fn a_unit_that_fails_after_the_update_rolls_it_back() {
         "it applies with the next restart of the machine"
     );
     assert!(state.detail.contains("fs.service"));
-    // A failed image is not retried live.
     assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
 }
 
@@ -630,7 +620,6 @@ fn an_image_that_cannot_be_opened_waits_for_a_restart_of_the_machine() {
         "the desktop asks for the restart that applies it"
     );
     assert!(state.detail.contains("mount failed"));
-    // A failed image is not retried live.
     assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
 }
 
@@ -716,8 +705,6 @@ impl fmt::Display for Fixture {
     }
 }
 
-/// What `pid` runs, what it was told to run, and where it waits: its name,
-/// its binary, its arguments, its state and the kernel function it sleeps in.
 fn process(pid: u32) -> String {
     let binary = fs::read_link(format!("/proc/{pid}/exe"))
         .map_or_else(|_| "unreadable".to_owned(), |exe| exe.display().to_string());
@@ -733,8 +720,6 @@ fn process(pid: u32) -> String {
     let state = fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()
         .and_then(|stat| {
-            // The state follows the name, which is parenthesised and may hold
-            // spaces of its own.
             stat.rsplit_once(')')
                 .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned))
         })
@@ -756,15 +741,10 @@ fn process(pid: u32) -> String {
 #[test]
 fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
     let dir = tempfile::tempdir().unwrap();
-    // The compositor: a binary of the wrapper's name.
     let binaries = dir.path().join("bin");
     fs::create_dir(&binaries).unwrap();
     let binary = binaries.join(COMPOSITOR);
     fs::copy("/bin/sleep", &binary).unwrap();
-    // The wrapper: a script of that name, running the compositor as a child
-    // of its own as the login's wrapper does. The compositor outlives the
-    // wait, so a failure reports what is running rather than what has just
-    // been reaped.
     let wrapper = dir.path().join(LOGIN_WRAPPER);
     fs::write(
         &wrapper,

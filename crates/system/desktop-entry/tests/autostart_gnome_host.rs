@@ -1,8 +1,7 @@
 //! The autostart entries of a Fedora/Bazzite GNOME laptop running a Tilo
 //! session. The fixture files are that machine's `/etc/xdg/autostart` and
-//! `~/.config/autostart`, translations stripped and user paths anonymised.
-//! Every one of them used to start at login, including the screen reader,
-//! GNOME's keyring and settings-daemon plugins and a second tray watcher.
+//! `~/.config/autostart`, translations stripped and user paths anonymised;
+//! every one of them starts at login on that machine.
 
 use std::path::{Path, PathBuf};
 
@@ -49,8 +48,8 @@ fn only_what_gnome_would_start_outside_its_own_session_starts() {
         vec![
             "Quadrant",
             "example-appimage",
-            // Desktop-neutral entries every desktop starts. The guest-tool
-            // wrappers decide for themselves and exit outside a VM.
+            // Desktop-neutral entries every desktop starts. The guest-tool wrappers
+            // decide for themselves and exit outside a VM.
             "bazzite-announcement",
             "geoclue-demo-agent",
             "input-remapper-autoload",

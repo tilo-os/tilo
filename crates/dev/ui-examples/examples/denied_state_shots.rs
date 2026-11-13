@@ -1,19 +1,6 @@
 //! Offscreen renders of the **permission-denied** state, so the scrim that
 //! signals "you cannot act on this" can be graded instead of assumed.
-//!
-//! Each row draws the same control twice — once through a permissive
-//! [`PermissionContext`] and once through one that grants nothing — via the
-//! real `draw` path, which is where the scrim is applied. What
-//! the PNG shows is therefore the production denied state, not a mock of it.
-//!
-//! Both a neutral control (primary text on the card) and an accent-filled one
-//! are included on purpose: a scrim that darkens body and label together
-//! preserves their ratio, so an accent chip can mute far less than a neutral
-//! one. Seeing them side by side is what tells you whether the signal holds.
-//!
 //! Run: `cargo run -p ui-examples --example ui-shots -- denied_state_shots`
-//! Out: `$DENIED_SHOTS_OUT` (default `/tmp/denied_shots`) — one PNG per theme in
-//! `$DENIED_SHOTS_THEMES` (default `Dark,Light,High Contrast`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

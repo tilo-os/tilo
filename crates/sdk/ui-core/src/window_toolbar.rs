@@ -20,6 +20,8 @@
 //! connection. While the desktop's bar shows the slots ([`is_hosted`]) the app draws no
 //! toolbar of its own; an app its host runs in the host's own process makes the same
 //! calls for the window the host shows it in ([`crate::hosted_window::HostedWindow`]).
+//! A control of the app's own where the bar has a slot stays only with its reason,
+//! named in code ([`Exemption`], [`exempt!`]) so no comment carries the rule.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -1581,6 +1583,57 @@ pub fn is_hosted() -> bool {
     }
     HOSTED.with(Cell::get)
 }
+
+/// Why a control of the app's own stays where it is although the bar has a
+/// slot for it: the closed set of reasons `tools/policy/check_app_toolbars.py`
+/// accepts.
+///
+/// An app wraps the control in [`exempt!`] and names one of these variants.
+/// The reason is code the compiler checks, so it stays with the control
+/// however the comments around it are tidied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Exemption {
+    /// Type-ahead inside a popover or dialog (emoji, keyboard layout, Open
+    /// with, a city lookup).
+    Picker,
+    /// A field that enters data.
+    Form,
+    /// No window bar exists (the on-screen keyboard).
+    Service,
+    /// Presenting or playing back with the window's chrome hidden.
+    Fullscreen,
+    /// Drawn only when no window bar hosts the window.
+    Fallback,
+    /// Step navigation inside a flow.
+    Wizard,
+    /// A list column's own New, heading the list it adds to, so the bar's one
+    /// "+" stays the strip's new tab.
+    ListNew,
+}
+
+/// `body` with the reason it keeps a control of its own although the bar has
+/// a slot for it ([`Exemption`]).
+///
+/// A reason outside [`Exemption`] does not compile, and the policy check
+/// reads this call rather than a comment, so tidying the comments around the
+/// control never takes the reason away from it. Wrap the expression that
+/// draws the control, not a statement that binds it: the body is a block.
+///
+/// ```
+/// use tilo_ui::window_toolbar::exempt;
+///
+/// let field = exempt!(Picker, { "type-ahead" });
+/// assert_eq!(field, "type-ahead");
+/// ```
+#[macro_export]
+macro_rules! window_bar_exempt {
+    ($reason:ident, $body:block) => {{
+        const _: $crate::window_toolbar::Exemption = $crate::window_toolbar::Exemption::$reason;
+        $body
+    }};
+}
+
+pub use crate::window_bar_exempt as exempt;
 
 /// Ask the bar to turn the window's editable location into a field, as a
 /// click on it does: the app's Ctrl+L (or F6) while the bar hosts its slots.

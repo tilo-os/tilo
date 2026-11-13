@@ -1,30 +1,24 @@
 //! An in-memory Dropbox API v2 on the shared test responder.
 //!
-//! Three listeners stand in for the three hosts (`api`, `content`,
-//! `notify`) and each answers only its own routes, so a call sent to the
-//! wrong host fails as it would against Dropbox. The store is
-//! case-insensitive and path-addressed with stable ids, like Dropbox:
+//! Three listeners stand in for the three hosts (`api`, `content`, `notify`) and each
+//! answers only its own routes, so a call sent to the wrong host fails as it would
+//! against Dropbox. The store is case-insensitive and path-addressed with stable ids.
 //!
-//! - `list_folder` / `continue` / `get_latest_cursor` with paging (`limit`),
-//!   coalesced deltas, `deleted` entries that carry only a path (a deleted
-//!   folder reports only itself; a move reports the old path deleted and
-//!   every moved item at its new path), and cursors that expire with
+//! - `list_folder` / `continue` / `get_latest_cursor` with paging (`limit`), coalesced
+//!   deltas, `deleted` entries that carry only a path, and cursors that expire with
 //!   `reset`;
-//! - `list_folder/longpoll` that holds the request until a change lands in
-//!   the cursor's scope or the timeout (30–480 s, scaled by
-//!   [`FakeDropbox::set_longpoll_unit`]) passes, refuses an
-//!   `Authorization` header, and can ask for a `backoff`;
-//! - uploads with `WriteMode` add/overwrite/update(rev),
-//!   `strict_conflict`, `content_hash` checks and parent auto-creation;
-//!   upload sessions with offsets, `incorrect_offset` + `correct_offset`,
-//!   closed and unknown sessions;
-//! - ranged downloads with `Dropbox-API-Result`, downloads by `rev:`,
-//!   revision history (surviving deletion), restore, shared links, space
-//!   usage, the current account's namespaces and `Dropbox-API-Path-Root`
-//!   validation.
+//! - `list_folder/longpoll` that holds the request until a change lands in the cursor's
+//!   scope or the timeout (30–480 s, scaled by [`FakeDropbox::set_longpoll_unit`])
+//!   passes, refuses an `Authorization` header, and can ask for a `backoff`;
+//! - uploads with `WriteMode` add/overwrite/update(rev), `strict_conflict`,
+//!   `content_hash` checks and parent auto-creation; upload sessions with offsets,
+//!   `incorrect_offset` + `correct_offset`, closed and unknown sessions;
+//! - ranged downloads with `Dropbox-API-Result`, downloads by `rev:`, revision history
+//!   (surviving deletion), restore, shared links, space usage, the account's namespaces
+//!   and `Dropbox-API-Path-Root` validation.
 //!
-//! Faults ([`FakeFault`]) apply to the next request they fit, and the
-//! server can go offline (connections are closed unanswered).
+//! Faults ([`FakeFault`]) apply to the next request they fit, and the server can go
+//! offline (connections are closed unanswered).
 //!
 //! Test support only (feature `fake-server`).
 
@@ -48,31 +42,23 @@ use crate::content_hash::content_hash;
 use crate::{DropboxConfig, Endpoints};
 
 pub const TOKEN: &str = "fake-dropbox-access-token";
-/// The account's own namespace.
 pub const HOME_NAMESPACE: &str = "2000";
-/// The team space's root namespace ([`FakeDropbox::team`] accounts).
 pub const TEAM_NAMESPACE: &str = "1000";
 
 const MAX_UPLOAD: usize = 150 * 1024 * 1024;
 
-/// A fault for the next request it fits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FakeFault {
-    /// Any request: 429 `too_many_requests` with `Retry-After: 1`.
     RateLimited,
-    /// Any request: 500.
     ServerError,
-    /// Any authenticated request: 401 `expired_access_token`, once.
     ExpiredCredential,
     /// Any request: it takes effect, but the connection closes before the
     /// response, as when a network drops mid-call.
     DropResponse,
-    /// The next download declares its full length but sends half the body.
     TruncatedBody,
     /// The next download sends half the body, declares no length and closes
     /// the connection.
     ClosedEarly,
-    /// The next download flips one byte of the body.
     CorruptBody,
     /// The next long-poll answer asks the client to back off this many
     /// seconds.
@@ -117,7 +103,6 @@ struct Session {
 
 struct State {
     nodes: BTreeMap<String, Node>,
-    /// Every version of every file id, oldest first; survives deletion.
     history: BTreeMap<String, Vec<Version>>,
     tombstones: BTreeMap<String, Tombstone>,
     seq: u64,
@@ -136,7 +121,6 @@ struct State {
 
 type Shared = Arc<(Mutex<State>, Condvar)>;
 
-/// A running fake Dropbox. Dropping it stops the server.
 pub struct FakeDropbox {
     api: Responder,
     content: Responder,
@@ -223,14 +207,12 @@ fn unhex_json(text: &str) -> Option<Value> {
     serde_json::from_slice(&hex::decode(text).ok()?).ok()
 }
 
-/// A decoded list cursor.
 #[derive(Clone, Debug)]
 struct ListCursor {
     epoch: u64,
     scope: String,
     recursive: bool,
     seq: u64,
-    /// Position in an initial enumeration that is still paging.
     skip: Option<usize>,
 }
 
@@ -301,8 +283,8 @@ impl State {
             .map(|(key, _)| key.clone())
     }
 
-    /// Resolve an id or `/path` argument to a store key. `Ok(None)`: no
-    /// such item. `Err`: the argument is malformed (400).
+    /// Resolve an id or `/path` argument to a store key. `Ok(None)`: no such item.
+    /// `Err`: the argument is malformed (400).
     fn resolve(&self, path: &str) -> Result<Option<String>, Reply> {
         if path.starts_with("id:") {
             return Ok(self.key_of_id(path));
@@ -399,7 +381,6 @@ impl State {
         key
     }
 
-    /// Write `bytes` to the file at `display` (existing or new).
     fn write_file(&mut self, display: &str, bytes: Vec<u8>) -> String {
         let key = lower(display);
         let version = self.new_version(bytes);
@@ -598,7 +579,6 @@ impl State {
 }
 
 impl FakeDropbox {
-    /// An individual account.
     pub fn start() -> Self {
         Self::launch(false)
     }
@@ -666,7 +646,6 @@ impl FakeDropbox {
         config
     }
 
-    /// Create or replace a file at `path` (`/a/b.txt`), creating parents.
     pub fn put(&self, path: &str, bytes: &[u8]) {
         {
             let mut state = self.lock();
@@ -678,7 +657,6 @@ impl FakeDropbox {
         self.changed();
     }
 
-    /// Create a folder and its parents.
     pub fn mkdir(&self, path: &str) {
         {
             let mut state = self.lock();
@@ -692,7 +670,6 @@ impl FakeDropbox {
         self.changed();
     }
 
-    /// Delete the item at `path` and everything below it.
     pub fn remove(&self, path: &str) {
         {
             let mut state = self.lock();
@@ -704,7 +681,6 @@ impl FakeDropbox {
         self.changed();
     }
 
-    /// A file's current bytes (case-insensitive path).
     pub fn get(&self, path: &str) -> Option<Vec<u8>> {
         let key = lower(&format!("/{}", path.trim_matches('/')));
         self.lock()
@@ -714,7 +690,6 @@ impl FakeDropbox {
             .map(|v| v.bytes.to_vec())
     }
 
-    /// Every `path_display` in the store, sorted by `path_lower`.
     pub fn paths(&self) -> Vec<String> {
         self.lock()
             .nodes
@@ -731,7 +706,6 @@ impl FakeDropbox {
         self.lock().faults.push(fault);
     }
 
-    /// Expire every cursor issued so far (`reset`).
     pub fn reset_cursors(&self) {
         self.lock().epoch += 1;
         self.changed();
@@ -746,12 +720,10 @@ impl FakeDropbox {
         self.lock().quota = allocated;
     }
 
-    /// How many requests `route` (e.g. `"files/list_folder"`) received.
     pub fn count(&self, route: &str) -> usize {
         self.lock().counts.get(route).copied().unwrap_or(0)
     }
 
-    /// Open upload sessions.
     pub fn open_sessions(&self) -> usize {
         self.lock().sessions.len()
     }
@@ -1391,7 +1363,6 @@ fn check_hash(arg: &Value, body: &[u8]) -> Result<(), Reply> {
     }
 }
 
-/// Commit `bytes` under a `CommitInfo`: path, `WriteMode`, `strict_conflict`.
 fn commit(state: &mut State, arg: &Value, bytes: Vec<u8>) -> Result<Value, Reply> {
     let path = str_arg(arg, "path")?;
     let (key, display) = if path.starts_with("id:") {

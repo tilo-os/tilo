@@ -41,7 +41,8 @@ pub use smooth::Smoother;
 /// A wave as a member's word and a surface both carry it.
 pub use collab_types::presence::ShownWave as Wave;
 
-/// Say `presence` as object `sequence` of the plane's presence track.
+/// Say `frames`, one burst of this device's presence, each as the object its number names, as one
+/// group of the plane's presence track ([`Plane::publish_burst`]).
 ///
 /// # Errors
 ///
@@ -49,9 +50,21 @@ pub use collab_types::presence::ShownWave as Wave;
 /// plane answers with: [`PlaneError::Ended`] when the session ended,
 /// [`PlaneError::Unavailable`] when the broadcast is gone,
 /// [`PlaneError::Refused`] when the scope's keys do not seal this device.
-pub fn say(plane: &Plane, sequence: u32, presence: &Presence) -> Result<(), PlaneError> {
-    let body = presence.encode().map_err(|_| PlaneError::Invalid)?;
-    plane.publish(Track::Presence, sequence, &body)
+pub fn say(plane: &Plane, frames: &[(u32, Presence)]) -> Result<(), PlaneError> {
+    let bodies = frames
+        .iter()
+        .map(|(sequence, presence)| {
+            presence
+                .encode()
+                .map(|body| (*sequence, body))
+                .map_err(|_| PlaneError::Invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let objects: Vec<(u32, &[u8])> = bodies
+        .iter()
+        .map(|(sequence, body)| (*sequence, body.as_slice()))
+        .collect();
+    plane.publish_burst(Track::Presence, &objects)
 }
 
 /// The frame `body` carries, or `None` when it is not one.

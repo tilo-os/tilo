@@ -1,8 +1,8 @@
-//! Admission policy for autostart entries imported by home migration.
-//!
-//! The required marker is published before the record and imported names. A
-//! required but unreadable policy refuses activation; an absent marker preserves
-//! normal XDG behavior. All traversal is relative to pinned directory handles.
+//! Admission policy for autostart entries imported by home migration. The
+//! required marker is published before the record and imported names; a
+//! required but unreadable policy refuses activation, and an absent marker
+//! preserves normal XDG behavior. All traversal is relative to pinned
+//! directory handles.
 
 use std::collections::BTreeSet;
 use std::ffi::CString;
@@ -25,7 +25,6 @@ const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ENTRY_BYTES: usize = 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
 
-/// Durable marker binding the required policy to one migration operation.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Required {
@@ -33,7 +32,6 @@ pub struct Required {
     pub operation: String,
 }
 
-/// The exact imported entries; collisions left in place are never included.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
@@ -42,15 +40,12 @@ pub struct Record {
     pub entries: Vec<Entry>,
 }
 
-/// Enforce the existing installed consumer's bounded startup policy while
-/// collecting, rather than materializing arbitrary imported startup entries.
 pub struct RecordBuilder {
     record: Record,
     bytes: usize,
     paths: BTreeSet<Vec<u8>>,
 }
 impl RecordBuilder {
-    /// Start a bounded policy record for one migration operation.
     pub fn new(operation: String) -> io::Result<Self> {
         if !valid_operation(&operation) {
             return Err(invalid("invalid migration startup operation"));
@@ -67,7 +62,6 @@ impl RecordBuilder {
             paths: BTreeSet::new(),
         })
     }
-    /// Add an imported identity within the consumer's count and byte limits.
     pub fn push(&mut self, entry: Entry) -> io::Result<()> {
         if self.record.entries.len() >= MAX_ENTRIES {
             return Err(invalid("migration startup entries exceed consumer policy"));
@@ -96,7 +90,6 @@ impl RecordBuilder {
     pub fn is_empty(&self) -> bool {
         self.record.entries.is_empty()
     }
-    /// Validate the collected imported identities.
     pub fn finish(self) -> io::Result<Record> {
         self.record.validate()?;
         Ok(self.record)
@@ -118,7 +111,8 @@ impl Write for EncodedSize {
     }
 }
 
-/// Stable identity survives rename and reboot. Links hash their literal target.
+/// Stable identity survives rename and reboot. Links hash their literal
+/// target.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
@@ -183,11 +177,9 @@ fn directory(parent: &File, name: &str) -> io::Result<File> {
 }
 
 impl Entry {
-    /// Capture one native immediate autostart name without following any links.
-    ///
-    /// # Errors
-    /// Refuses unsafe traversal, unsupported types, oversized content, or entries
-    /// that change during capture; also propagates filesystem errors.
+    /// Capture one native immediate autostart name without following any links;
+    /// refuses unsafe traversal, unsupported types, oversized content, or entries
+    /// that change during capture.
     pub fn capture(root: &File, relative: &Path) -> io::Result<Option<Self>> {
         if !entry_path(relative) && !boundary_path(relative) {
             return Ok(None);
@@ -389,7 +381,6 @@ fn read_root(root: &File) -> io::Result<Option<Record>> {
     Ok(Some(record))
 }
 
-/// Read the canonical target-user policy. A required policy must be complete.
 pub fn read(home: &Path) -> io::Result<Option<Record>> {
     read_root(&home_file(home)?)
 }

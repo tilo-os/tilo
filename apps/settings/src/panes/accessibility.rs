@@ -1,21 +1,4 @@
 //! Accessibility pane — the dedicated assistive-technology surface.
-//!
-//! This panel aggregates the OS accessibility controls the way a
-//! control-center's "Universal Access" panel does. It edits two sections of
-//! the person's settings:
-//!
-//! - the **vision comforts** a low-vision user reaches for first — high
-//!   contrast, reduced motion, and text size — which live in
-//!   [`crate::prefs::AppearancePrefs`] (the single source of truth the whole
-//!   system themes against). They are edited here and nowhere else: the
-//!   Appearance pane links to this pane rather than repeating them; and
-//! - the **pointer, typing, hearing, and screen-reader** assists in
-//!   [`AccessibilitySettings`], read by the compositor's input + accessibility
-//!   layer.
-//!
-//! The page is view code over both sections ([`view`]): every control is
-//! bound to its field, and the page shows what the sections hold, whoever
-//! changed them.
 
 use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
@@ -39,7 +22,6 @@ use provider_settings_ui::widgets::{
 
 crate::area::pane_area!(Software);
 
-/// The assistive software the window found installed.
 pub(crate) fn software(app: &crate::settings_app::SettingsApp) -> Software {
     app.areas()
         .find::<Software>()
@@ -63,8 +45,6 @@ pub(crate) fn tts_capability() -> Option<&'static str> {
     }
 }
 
-/// The offered text sizes as `(display label, scale factor)`. The factor is
-/// what [`AppearancePrefs::text_scale`] persists.
 pub const TEXT_SIZES: &[(&str, f64)] = &[
     ("Small", 0.85),
     ("Default", 1.0),
@@ -81,8 +61,6 @@ fn text_size_ftl(english: &str) -> &'static str {
     }
 }
 
-/// Map a text-scale factor to the closest offered label (defaults to
-/// "Default").
 pub fn text_size_label(scale: f64) -> String {
     // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited setting
     // could hold a non-finite scale, and this must degrade to Default
@@ -94,7 +72,6 @@ pub fn text_size_label(scale: f64) -> String {
     t(text_size_ftl(english))
 }
 
-/// The automatic scan intervals switch control offers, and their periods.
 pub const SWITCH_SCANS: [(&str, u16); 4] = [
     ("Manual", 0),
     ("1 second", 1000),
@@ -102,8 +79,6 @@ pub const SWITCH_SCANS: [(&str, u16); 4] = [
     ("3 seconds", 3000),
 ];
 
-/// The speech rates the screen reader offers, and their words per minute
-/// relative to the engine's default (100).
 pub const SPEECH_RATES: [(&str, u16); 4] = [
     ("Slow", 65),
     ("Default", 100),
@@ -131,30 +106,24 @@ fn values<T: Copy>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = 
     table.iter().map(|(_, value)| *value)
 }
 
-/// The assistive software installed on this device, looked up once per
-/// window: the speech engine the screen reader would speak through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Software {
     pub speech: Option<&'static str>,
 }
 
 impl Software {
-    /// What this device has installed.
     pub fn installed() -> Self {
         Self {
             speech: tts_capability(),
         }
     }
 
-    /// What a screenshot and the crate's tests show installed: everything.
     pub fn sample() -> Self {
         Self {
             speech: Some("Speech Dispatcher"),
         }
     }
 
-    /// This device's software where the areas reach it (`devices`), else
-    /// the sample.
     pub fn for_device(devices: bool) -> Self {
         if devices {
             Self::installed()
@@ -164,10 +133,6 @@ impl Software {
     }
 }
 
-/// The Accessibility page as view code over the person's accessibility
-/// section, with the vision comforts of their appearance section and this
-/// device's sign-in screens: each control bound to its field, the page
-/// following every change of them.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let speech = software(app).speech;
     let access = cx.settings::<AccessibilitySettings>();
@@ -194,8 +159,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     })
 }
 
-/// The row of the assist labelled by `label` and its `-desc` line, its
-/// control `id`.
 fn assist<'a>(
     cx: &'a ViewCx<AccessibilitySettings>,
     label: &str,
@@ -206,8 +169,6 @@ fn assist<'a>(
         .id(id)
 }
 
-/// Vision: high contrast, reduce motion, text size, the colour filter, the
-/// magnifier and, while it magnifies, how.
 fn vision_card(cx: &ViewCx<AccessibilitySettings>, magnifying: bool) -> SettingsSection {
     let appearance = cx.settings::<AppearancePrefs>();
     let mut content: Vec<Item> = [high_contrast, reduce_motion, text_size]
@@ -226,8 +187,6 @@ fn vision_card(cx: &ViewCx<AccessibilitySettings>, magnifying: bool) -> Settings
     section(&t("a11y-vision-title"), rows(content))
 }
 
-/// Pointer: mouse keys, a large cursor and, while it is on, its size; the
-/// pointer's theme; the guides and the caret.
 fn pointer_card(cx: &ViewCx<AccessibilitySettings>, large: bool) -> SettingsSection {
     let access = AccessibilitySettings::paths();
     let mut content = vec![mouse_keys(cx), large_cursor(cx)];
@@ -243,8 +202,6 @@ fn pointer_card(cx: &ViewCx<AccessibilitySettings>, large: bool) -> SettingsSect
     section(&t("a11y-pointer-title"), rows(content))
 }
 
-/// Typing: each key assist, with what tunes it shown under it while it is
-/// on (`bounce`, `switch`).
 fn typing_card(cx: &ViewCx<AccessibilitySettings>, bounce: bool, switch: bool) -> SettingsSection {
     let access = AccessibilitySettings::paths();
     let mut content = vec![sticky_keys(cx), slow_keys(cx), bounce_keys(cx)];
@@ -335,7 +292,6 @@ fn reader_card(
     )
 }
 
-/// Hearing and dictation: what replaces sound, and how speech becomes text.
 fn hearing_card(cx: &ViewCx<AccessibilitySettings>) -> SettingsSection {
     let access = AccessibilitySettings::paths();
     section(
@@ -351,7 +307,6 @@ fn hearing_card(cx: &ViewCx<AccessibilitySettings>) -> SettingsSection {
     )
 }
 
-/// Whether the person's comforts reach this device's sign-in screens.
 fn shared_card(cx: &ViewCx<AccessibilitySettings>) -> SettingsSection {
     let device = cx.settings::<AccessibilityDevicePrefs>();
     let sign_in = record_item(cx, &device, |cx| {
@@ -363,8 +318,6 @@ fn shared_card(cx: &ViewCx<AccessibilitySettings>) -> SettingsSection {
     section(&t("a11y-shared-title"), rows(sign_in.into_iter().collect()))
 }
 
-/// The dictation language, by its stable code, among every language
-/// dictation knows by name.
 fn dictation_language_row(cx: &ViewCx<AccessibilitySettings>) -> Item {
     cx.setting(t("a11y-dictation-language"))
         .id("a11y.dictation_language")
@@ -382,8 +335,6 @@ fn dictation_language_row(cx: &ViewCx<AccessibilitySettings>) -> Item {
         )
 }
 
-/// What the accessibility settings found by search that their page draws
-/// its own way are set to, as stored.
 pub(crate) mod values {
     use provider_settings_ui::bound::SettingRows as _;
     use ui::framework::ViewCx;
@@ -394,7 +345,6 @@ pub(crate) mod values {
     use crate::settings_app::SettingsApp;
     use provider_settings_ui::widgets::Item;
 
-    /// The screen reader, a switch where there is a speech engine for it.
     pub(crate) fn screen_reader(app: &SettingsApp, follows: &Follows) -> Read {
         let on = follows
             .get::<AccessibilitySettings>(app.storage())
@@ -498,9 +448,6 @@ pub(crate) fn cursor_size(cx: &ViewCx<AccessibilitySettings>) -> Item {
         )
 }
 
-/// The pointer's theme, by the name it is installed under. A control with
-/// no theme comes back as the one the desktop ships with, refused at the
-/// field exactly as a size out of range is.
 pub(crate) fn cursor_theme(cx: &ViewCx<AccessibilitySettings>) -> Item {
     cx.setting(t("a11y-cursor-theme"))
         .described(t("a11y-cursor-theme-desc"))
@@ -522,7 +469,6 @@ pub(crate) fn cursor_theme(cx: &ViewCx<AccessibilitySettings>) -> Item {
         )
 }
 
-/// `control` acting through `binding`, or shown unavailable without one.
 fn bound<I, C: ui::framework::ActionControl<I>>(
     control: C,
     binding: Option<ui::tilo_actions::ActionBinding<I>>,
@@ -623,10 +569,6 @@ mod tests {
         );
     }
 
-    /// The vision comforts are the appearance section's (one stored value,
-    /// shown in both panes); every other assist lands in the accessibility
-    /// section the compositor's input layer reads, keeping what the
-    /// compositor itself keeps there.
     #[test]
     fn accessibility_effects_write_their_sections() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -668,8 +610,6 @@ mod tests {
         assert_eq!(app.settings::<AccessibilitySettings>().get(), access);
     }
 
-    /// The magnifier's zoom and view land where the compositor's magnifier
-    /// reads them, beside the zoom it remembers itself.
     #[test]
     fn magnifier_effects_reach_the_compositor_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -693,7 +633,6 @@ mod tests {
         assert_eq!(section.get("magnifier_last_zoom"), Some(&3.into()));
     }
 
-    /// The control ids the window shows now.
     fn shown_ids(app: &mut TestApp<SettingsShell>) -> Vec<String> {
         fn ids(widget: &dyn Widget, out: &mut Vec<String>) {
             if let Some(id) = widget.test_id() {
@@ -810,8 +749,6 @@ mod tests {
         }
     }
 
-    /// The node a reader lands on by `name` for `role`, as the accessibility
-    /// bridge exports it to a screen reader this frame.
     fn exported(
         app: &mut TestApp<SettingsShell>,
         name: &str,
@@ -845,7 +782,6 @@ mod tests {
         let switch = exported(&mut app, &switch_name, Role::Switch);
         assert_eq!(switch.toggled(), Some(Toggled::False), "off as it stands");
         assert_eq!(switch.description(), Some(explains.as_str()));
-        // The row explains itself as a description; its value says nothing.
         let row = exported(&mut app, &switch_name, Role::ListItem);
         assert_eq!(row.description(), Some(explains.as_str()));
         assert_eq!(row.value(), None);
@@ -885,7 +821,6 @@ mod tests {
         click_and_check(TestApp::<SettingsShell>::for_person(&"ad".repeat(32)).unwrap());
     }
 
-    /// Where text size picture `index` is drawn, as its accessibility node says.
     fn segment_rect(app: &mut TestApp<SettingsShell>, index: usize) -> vello::kurbo::Rect {
         let target = format!("a11y.text_size.{index}");
         access_nodes(app)
@@ -897,8 +832,6 @@ mod tests {
             .to_rect()
     }
 
-    /// The window's language is chosen before `app` is made: a manager
-    /// installed under a live window replaces the catalogues it loaded.
     fn click_and_check(mut app: TestApp<SettingsShell>) {
         app.harness().resize((1400, 2400)).unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Accessibility);
@@ -911,7 +844,6 @@ mod tests {
             1.15,
             "a click on Large writes"
         );
-        // The click focused the choice: the next picture by key writes too.
         for key in [
             ui::winit::keyboard::NamedKey::ArrowRight,
             ui::winit::keyboard::NamedKey::Enter,
@@ -933,7 +865,6 @@ mod tests {
             app.settings::<AppearancePrefs>().get().high_contrast,
             "a click on the toggle writes"
         );
-        // And a tap on Small (last: a touch leaves the window without hover).
         let small = segment_rect(&mut app, 0);
         let (x, y) = (small.center().x, small.center().y);
         app.harness()

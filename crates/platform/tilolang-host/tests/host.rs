@@ -137,8 +137,6 @@ struct Window {
     root: Option<patch::Node>,
     /// The tree of the lane beside the root: the item the window shows.
     detail: Option<patch::Node>,
-    /// The resource the detail lane shows.
-    detail_target: Option<patch::ResourceRef>,
     /// The item the window shows beside its list: what a press showed in place, as the
     /// window heard it from the instance.
     in_place: Option<patch::ResourceRef>,
@@ -163,7 +161,6 @@ impl Window {
             transport,
             root: None,
             detail: None,
-            detail_target: None,
             in_place: None,
             activated: false,
             bound: BTreeMap::new(),
@@ -195,12 +192,10 @@ impl Window {
                     }
                     ToUi::Open {
                         lane: Lane::Detail,
-                        target,
                         tree,
                         ..
                     } => {
                         self.detail = Some(tree);
-                        self.detail_target = Some(target);
                     }
                     ToUi::Patch {
                         lane: Lane::Detail,
@@ -261,13 +256,14 @@ fn value_of(hosted: &Hosted) -> i64 {
     }
 }
 
-/// A host with one counter instance on a broker the test plays, and its window.
+/// Written when a host's wake is: work off the frame has something for its loop.
 static WOKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn wake() -> tilolang_tilo::background::Waker {
     Arc::new(|| WOKEN.store(true, std::sync::atomic::Ordering::SeqCst))
 }
 
+/// A host with one counter instance on a broker the test plays, and its window.
 fn running(person: &str) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     running_app(person, APP, counter())
 }
@@ -373,22 +369,50 @@ fn instance_on(
     (window, sent, inbox)
 }
 
-/// Run the host as its loop does: a frame whenever something woke it, until nothing has for a
-/// while (work off the frame, the record's publication, wakes it when it is ready).
-fn settle(host: &mut TilolangHost, window: &mut Window) {
-    let mut quiet_since = std::time::Instant::now();
+/// How long a host may take to be done with what it owes before the test says so: a failure, not
+/// a wait — nothing is settled by it.
+const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Run the host's loop without its wait: a frame whenever it owes one, until it owes nothing — no
+/// instance being opened, no change being applied, and no window with a frame coming. Every
+/// frame's patches are taken in `windows`, as a window that draws them does, and `carry` is what
+/// the test's broker does between frames.
+///
+/// Nothing is awaited by letting time pass: the host says whether it owes work, whether it is
+/// opening an instance, and what it reads off the frame wakes it when it is ready.
+fn settle_all(
+    host: &mut TilolangHost,
+    windows: &mut [&mut Window],
+    mut carry: impl FnMut(&mut TilolangHost) -> bool,
+) {
+    let began = std::time::Instant::now();
     loop {
+        let mut changed = host.turn();
+        for window in &mut *windows {
+            window.take();
+        }
+        changed |= carry(host);
         let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
-        let changed = host.turn();
-        window.take();
-        if changed || woken {
-            quiet_since = std::time::Instant::now();
-        } else if quiet_since.elapsed() > std::time::Duration::from_millis(300) {
+        if !changed && !woken && !host.owes_work() {
             return;
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            began.elapsed() < SETTLE_LIMIT,
+            "the host owes work after {}s: {} opening, {} running",
+            began.elapsed().as_secs(),
+            host.opening(),
+            host.instances().count()
+        );
+        if !changed {
+            // Nothing moved: what the host owes is work off its frame, which wakes it.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
+}
+
+/// [`settle_all`] of one window, with no broker of its own.
+fn settle(host: &mut TilolangHost, window: &mut Window) {
+    settle_all(host, &mut [window], |_| false);
 }
 
 fn documents_sent(sent: &Sent) -> usize {
@@ -1640,8 +1664,8 @@ fn press_new_note(window: &mut Window) {
 
 /// A notebook of `held` notes, the first of them open in the window as the person made it; what
 /// the instance did while the person typed `typed` into the open note's field whose placeholder
-/// is `field`, a key at a time, each followed by the host's frames until it is quiet, as its loop
-/// runs them.
+/// is `field`, a key at a time, each followed by the host's frames until it owes none, as its
+/// loop runs them.
 fn typing(held: usize, field: &str, typed: &str) -> Typed {
     let directory = Rc::new(RefCell::new(Directory::default()));
     let (mut host, mut window, sent, inbox, _route) =
@@ -2047,18 +2071,24 @@ fn apply(
     let mut line = serde_json::to_vec(change).unwrap();
     line.push(b'\n');
     (&*connection).write_all(&line).unwrap();
-    for _ in 0..200 {
+    let began = std::time::Instant::now();
+    while !applier.answered() {
         applier.turn();
-        if applier.answered() {
-            let mut answer = String::new();
-            std::io::BufReader::new(connection)
-                .read_line(&mut answer)
-                .unwrap();
-            return serde_json::from_str(&answer).unwrap();
+        assert!(
+            began.elapsed() < SETTLE_LIMIT,
+            "the change was never answered"
+        );
+        if !applier.owes() {
+            // The change's line is on its way, or the workspace it writes to: it arrives on the
+            // connection it comes on, which the applier reads on its own frames.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("the change was never answered");
+    let mut answer = String::new();
+    std::io::BufReader::new(connection)
+        .read_line(&mut answer)
+        .unwrap();
+    serde_json::from_str(&answer).unwrap()
 }
 
 /// An agent task acting for ada, as the broker admitted it.

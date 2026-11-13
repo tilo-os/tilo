@@ -367,7 +367,7 @@ mod tests {
             std::time::Duration::ZERO,
         ));
         let store: Rc<dyn DurableStore> = fs.clone();
-        let owner = StorageKey::package("so.tilo.test");
+        let owner = StorageKey::app("so.tilo.test");
         let earlier = PrivateAction {
             id: [1; 16],
             hashes: vec![],
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn colliding_actors_never_recover_each_others_intents_or_receipts() {
         let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-        let owner = StorageKey::package("so.tilo.test");
+        let owner = StorageKey::app("so.tilo.test");
         let first = b"original actor";
         let bucket = u64::from(blake3::hash(first).as_bytes()[0]) % SLOTS;
         let second = (0_u64..=u64::from(u16::MAX))
@@ -445,8 +445,8 @@ mod tests {
     #[test]
     fn successive_actors_reuse_bounded_owner_slots_without_touching_live_writers() {
         let directory = tempfile::tempdir().unwrap();
-        let owner = StorageKey::package("so.tilo.test");
-        let other = StorageKey::package("so.tilo.other");
+        let owner = StorageKey::app("so.tilo.test");
+        let other = StorageKey::app("so.tilo.other");
         let store: Rc<dyn DurableStore> = Rc::new(crate::FsStore::new(directory.path()));
         let mut live = PrivateHistory::open(store.clone(), &owner, b"live").unwrap();
         let evidence = PrivateAction {
@@ -549,7 +549,7 @@ mod tests {
         let backend = Rc::new(MemoryStore::queued());
         let store: Rc<dyn DurableStore> = backend.clone();
         let mut history =
-            PrivateHistory::open(store, &StorageKey::package("so.tilo.test"), b"actor").unwrap();
+            PrivateHistory::open(store, &StorageKey::app("so.tilo.test"), b"actor").unwrap();
         history
             .record(PrivateAction {
                 id: [1; 16],
@@ -578,7 +578,7 @@ mod tests {
     fn receipt_ahead_of_failed_document_is_hidden_until_checkpoint_retry_is_durable() {
         let backend = Rc::new(MemoryStore::queued());
         let store: Rc<dyn DurableStore> = backend.clone();
-        let key = StorageKey::package("so.tilo.test");
+        let key = StorageKey::app("so.tilo.test");
         let owner = Rc::new(crate::DocOwner::acquire(store, key.clone()).unwrap());
         let mut doc = owner.new_document();
         let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
@@ -622,7 +622,7 @@ mod tests {
     fn sustained_private_actions_batch_into_one_checkpoint_per_writer_tick() {
         let backend = Rc::new(MemoryStore::queued());
         let store: Rc<dyn DurableStore> = backend.clone();
-        let key = StorageKey::package("so.tilo.test");
+        let key = StorageKey::app("so.tilo.test");
         let owner = Rc::new(crate::DocOwner::acquire(store, key.clone()).unwrap());
         let mut doc = owner.new_document();
         let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn writer_tick_checkpoints_private_receipts_even_without_document_mutations() {
         let directory = tempfile::tempdir().unwrap();
-        let key = StorageKey::package("so.tilo.test");
+        let key = StorageKey::app("so.tilo.test");
         let store: Rc<dyn DurableStore> = Rc::new(crate::FsStore::new(directory.path()));
         let owner = Rc::new(crate::DocOwner::acquire(store.clone(), key.clone()).unwrap());
         let mut doc = owner.new_document();
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn checkpoint_restart_preserves_retry_and_rejects_orphaned_document_history() {
         let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-        let key = StorageKey::package("so.tilo.test");
+        let key = StorageKey::app("so.tilo.test");
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, "body", "edit").unwrap();
         let hashes = doc.get_heads().iter().map(|hash| hash.0).collect();

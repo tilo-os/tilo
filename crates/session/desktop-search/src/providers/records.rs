@@ -307,7 +307,7 @@ mod tests {
             "here",
             vec![held(
                 "file:/work/Quarterly plan.odt",
-                "document",
+                "tilo.rich-text",
                 false,
                 Some("Lounge"),
             )],
@@ -335,8 +335,8 @@ mod tests {
         );
         assert_eq!(
             target.arguments[KIND_PARAM], "tilo.rich-text",
-            "the row carries the kind as the index keeps it: a former name of \
-             a kind is the kind it names"
+            "the row carries the kind as the index keeps it: a kind is the name \
+             its app writes"
         );
         assert_eq!(target.arguments[PACKAGE_PARAM], "so.tilo.notes");
         assert_eq!(
