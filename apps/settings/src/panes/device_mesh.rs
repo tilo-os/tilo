@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
 
 use provider_settings_ui::bound::SettingRows as _;
-use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
+use tilo_relay_protocol::{RelayConfig, WorkFrom, WorkSetting};
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
@@ -69,63 +69,48 @@ const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
 const APPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(60);
-const ROLE_PERSONAL: &str = "Personal device";
-const ROLE_ACTIVE: &str = "Available while active";
-const ROLE_SERVER: &str = "Always-on server";
-const REPLICATION_ON_DEMAND: &str = "On demand";
-const REPLICATION_WORKSPACE: &str = "Workspace state";
-const REPLICATION_FULL: &str = "Full workspace copy";
+const WORK_NOTHING: &str = "Nothing";
+const WORK_OWN: &str = "My own devices' work";
+const WORK_ANYONE: &str = "Anyone's work in my workspaces";
 
-fn role_shown(role: DeviceRole) -> String {
-    t(match role {
-        DeviceRole::Interactive => "mesh-role-personal",
-        DeviceRole::Hybrid => "mesh-role-active",
-        DeviceRole::AlwaysOnServer => "mesh-role-server",
+/// The work this device takes, as a person states it.
+fn work_shown(work: &WorkSetting) -> String {
+    t(match &work.from {
+        WorkFrom::Nobody => "mesh-work-nothing",
+        WorkFrom::OwnDevices => "mesh-work-own",
+        WorkFrom::Anyone => "mesh-work-anyone",
+        WorkFrom::Workspaces(_) => "mesh-work-some",
     })
 }
 
-fn role_from_label(label: &str) -> Option<DeviceRole> {
-    if label == ROLE_PERSONAL || label == role_shown(DeviceRole::Interactive) {
-        Some(DeviceRole::Interactive)
-    } else if label == ROLE_ACTIVE || label == role_shown(DeviceRole::Hybrid) {
-        Some(DeviceRole::Hybrid)
-    } else if label == ROLE_SERVER || label == role_shown(DeviceRole::AlwaysOnServer) {
-        Some(DeviceRole::AlwaysOnServer)
+fn work_from_label(label: &str) -> Option<WorkFrom> {
+    if label == WORK_NOTHING || label == t("mesh-work-nothing") {
+        Some(WorkFrom::Nobody)
+    } else if label == WORK_OWN || label == t("mesh-work-own") {
+        Some(WorkFrom::OwnDevices)
+    } else if label == WORK_ANYONE || label == t("mesh-work-anyone") {
+        Some(WorkFrom::Anyone)
     } else {
         None
     }
 }
 
-fn replication_shown(intent: &ReplicationIntent) -> String {
-    t(match intent {
-        ReplicationIntent::WorkspaceOnly => "mesh-repl-workspace",
-        ReplicationIntent::FullWorkspace => "mesh-repl-full",
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "mesh-repl-demand",
-    })
-}
-
-fn replication_from_label(label: &str) -> Option<ReplicationIntent> {
-    if label == REPLICATION_ON_DEMAND || label == t("mesh-repl-demand") {
-        Some(ReplicationIntent::OnDemand)
-    } else if label == REPLICATION_WORKSPACE || label == t("mesh-repl-workspace") {
-        Some(ReplicationIntent::WorkspaceOnly)
-    } else if label == REPLICATION_FULL || label == t("mesh-repl-full") {
-        Some(ReplicationIntent::FullWorkspace)
-    } else {
-        None
+/// The work setting a person picked: every kind of work when it takes any, and none when it takes
+/// nobody's.
+fn work_from(from: WorkFrom) -> WorkSetting {
+    WorkSetting {
+        kinds: if from == WorkFrom::Nobody {
+            tilo_relay_protocol::WorkKinds::NONE
+        } else {
+            tilo_relay_protocol::WorkKinds::ALL
+        },
+        from,
+        ..WorkSetting::default()
     }
 }
 
-fn replication_description(intent: &ReplicationIntent) -> String {
-    t(match intent {
-        ReplicationIntent::WorkspaceOnly => "mesh-repl-workspace-desc",
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "mesh-repl-demand-desc",
-        ReplicationIntent::FullWorkspace => "mesh-repl-full-desc",
-    })
-}
-
-fn shows_advanced_services(role: DeviceRole) -> bool {
-    role.can_serve()
+fn takes_work(work: &WorkSetting) -> bool {
+    !work.takes_nothing()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -164,10 +149,7 @@ impl RelayRuntimeStatus {
             return Self::Offline;
         }
         match tilo_relay_protocol::metrics::load_metrics(&config.state_root) {
-            Ok(Some(_))
-                if config.device_role == DeviceRole::AlwaysOnServer
-                    && config.services.full_content_replication =>
-            {
+            Ok(Some(_)) if config.services.full_content_replication => {
                 let ready = std::fs::read(&config.full_replica_status)
                     .ok()
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -344,23 +326,17 @@ fn runtime_status_tone(status: RelayRuntimeStatus) -> StatusTone {
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DeviceMeshEffect {
-    /// How available this device is to the person's other devices. A
-    /// serving device takes on system services, so this asks first.
+    /// The work this device takes from the person's other devices. A device
+    /// that takes work runs services, so this asks first.
     #[effect(destructive, idempotent)]
-    SetDeviceRole {
-        #[param("Personal device, Available while active, or Always-on server", choices = DEVICE_ROLES)]
-        role: String,
+    SetWork {
+        #[param("Nothing, My own devices' work, or Anyone's work in my workspaces", choices = WORK_FROM)]
+        work: String,
     },
-    /// How much of each synced workspace this device keeps.
-    #[effect(idempotent)]
-    SetReplication {
-        #[param("On demand, Workspace state, or Full workspace copy", choices = REPLICATIONS)]
-        replication: String,
-    },
-    /// Offer or stop one service of a serving device.
+    /// Offer or stop one service of a device that takes work.
     #[effect(idempotent)]
     SetDeviceService {
-        #[param("inbound_relay, remote_control_relay, app_serving or compute", choices = SERVICES)]
+        #[param("full_content_replication, inbound_relay, remote_control_relay, app_serving or compute", choices = SERVICES)]
         service: String,
         on: bool,
     },
@@ -402,13 +378,9 @@ pub enum DeviceMeshEffect {
     CancelRemoval,
 }
 
-const DEVICE_ROLES: [&str; 3] = [ROLE_PERSONAL, ROLE_ACTIVE, ROLE_SERVER];
-const REPLICATIONS: [&str; 3] = [
-    REPLICATION_ON_DEMAND,
-    REPLICATION_WORKSPACE,
-    REPLICATION_FULL,
-];
-const SERVICES: [&str; 4] = [
+const WORK_FROM: [&str; 3] = [WORK_NOTHING, WORK_OWN, WORK_ANYONE];
+const SERVICES: [&str; 5] = [
+    "full_content_replication",
     "inbound_relay",
     "remote_control_relay",
     "app_serving",
@@ -973,7 +945,7 @@ impl MeshRead {
                     "this device's sync settings are not visible from here"
                 );
                 let config = RelayConfig {
-                    device_role: DeviceRole::Interactive,
+                    work: WorkSetting::none(),
                     services: tilo_relay_protocol::ServiceCapabilities::default(),
                     ..RelayConfig::default()
                 };
@@ -983,7 +955,7 @@ impl MeshRead {
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
                 let config = RelayConfig {
-                    device_role: DeviceRole::Interactive,
+                    work: WorkSetting::none(),
                     services: tilo_relay_protocol::ServiceCapabilities::default(),
                     ..RelayConfig::default()
                 };
@@ -1105,32 +1077,20 @@ impl DeviceMeshModel {
         pane
     }
 
-    fn common_replication(&self) -> ReplicationIntent {
-        if self.config.services.full_content_replication {
-            ReplicationIntent::FullWorkspace
-        } else {
-            ReplicationIntent::OnDemand
-        }
-    }
-
     fn apply(&mut self, effect: &DeviceMeshEffect) -> Result<(), String> {
         self.follow_removal(effect);
         let configured = match effect {
-            DeviceMeshEffect::SetDeviceRole { role } => {
-                let role =
-                    role_from_label(role).ok_or_else(|| "unsupported device role".to_string())?;
-                self.apply_role_change(role);
-                true
-            }
-            DeviceMeshEffect::SetReplication { replication } => {
-                let intent = replication_from_label(replication)
-                    .ok_or_else(|| "unsupported replication policy".to_string())?;
-                self.config.services.full_content_replication =
-                    intent == ReplicationIntent::FullWorkspace;
+            DeviceMeshEffect::SetWork { work } => {
+                let from =
+                    work_from_label(work).ok_or_else(|| "unsupported work setting".to_string())?;
+                self.apply_work(work_from(from));
                 true
             }
             DeviceMeshEffect::SetDeviceService { service, on } => {
                 match service.as_str() {
+                    "full_content_replication" => {
+                        self.config.services.full_content_replication = *on;
+                    }
                     "inbound_relay" => self.config.services.inbound_relay = *on,
                     "remote_control_relay" => self.config.services.remote_control_relay = *on,
                     "app_serving" => self.config.services.app_serving = *on,
@@ -1333,17 +1293,19 @@ impl DeviceMeshModel {
         self.changed = true;
     }
 
-    fn apply_role_change(&mut self, role: DeviceRole) -> bool {
-        if role == self.config.device_role {
+    fn apply_work(&mut self, work: WorkSetting) -> bool {
+        if work == self.config.work {
             return false;
         }
-        if shows_advanced_services(role) != shows_advanced_services(self.config.device_role) {
+        let takes = takes_work(&work);
+        if takes != takes_work(&self.config.work) {
             self.changed = true;
         }
-        self.config.device_role = role;
-        self.config.services.workspace_replication = role.can_serve();
-        self.config.services.inbound_relay = role.can_serve();
-        self.config.services.full_content_replication = role == DeviceRole::AlwaysOnServer;
+        self.config.work = work;
+        // A device that takes no work runs no service for others.
+        self.config.services.workspace_replication = takes;
+        self.config.services.inbound_relay = takes;
+        self.config.services.full_content_replication &= takes;
         self.next_status_refresh = ui::time::now();
         true
     }
@@ -1626,17 +1588,9 @@ impl DeviceMeshModel {
     fn spawn_apply(&self) -> Result<bounded_command::AsyncCommand, bounded_command::Error> {
         let request = serde_json::json!({
             "identity_root": identity_root(),
-            "role": match self.config.device_role {
-                DeviceRole::Interactive => "interactive",
-                DeviceRole::Hybrid => "hybrid",
-                DeviceRole::AlwaysOnServer => "always-on",
-            },
+            "work": self.config.work,
             "workspace_ids": Vec::<u64>::new(),
-            "replication": match self.common_replication() {
-                ReplicationIntent::WorkspaceOnly => "workspace-only",
-                ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "on-demand",
-                ReplicationIntent::FullWorkspace => "full",
-            },
+            "full_content_replication": self.config.services.full_content_replication,
             "inbound_relay": self.config.services.inbound_relay,
             "remote_control_relay": self.config.services.remote_control_relay,
             "app_serving": self.config.services.app_serving,
@@ -1999,7 +1953,7 @@ impl DeviceMeshModel {
     }
 
     fn next_wake(&self) -> Option<Instant> {
-        if !shows_advanced_services(self.config.device_role) {
+        if !takes_work(&self.config.work) {
             return None;
         }
         match self.following.upgrade() {
@@ -2012,7 +1966,7 @@ impl DeviceMeshModel {
     }
 
     fn follow(&mut self) -> Option<Rc<MeshFollow>> {
-        if !self.devices || !shows_advanced_services(self.config.device_role) {
+        if !self.devices || !takes_work(&self.config.work) {
             return None;
         }
         if let Some(follow) = self.following.upgrade() {
@@ -2167,7 +2121,7 @@ mod tests {
         let config = RelayConfig {
             full_replica_status: state_root.join("full-replica.json"),
             state_root,
-            device_role: DeviceRole::Hybrid,
+            work: WorkSetting::own_person(),
             ..RelayConfig::default()
         };
         let follow = MeshFollow::start_at(&config, &[], clock).expect("the status thread starts");
@@ -2205,7 +2159,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_IDENTITY_ROOT", dir.path());
         let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        pane.config.device_role = DeviceRole::Hybrid;
+        pane.config.work = WorkSetting::own_person();
         let follow = Rc::new(MeshFollow::by_hand());
         pane.following = Rc::downgrade(&follow);
         let _ = pane.poll();
@@ -2344,12 +2298,13 @@ mod tests {
 
             let mut pane = DeviceMeshModel::with_path(&path);
             let _ = pane.poll();
-            pane.apply(&DeviceMeshEffect::SetDeviceRole {
-                role: ROLE_ACTIVE.into(),
+            pane.apply(&DeviceMeshEffect::SetWork {
+                work: WORK_ANYONE.into(),
             })
             .unwrap();
-            pane.apply(&DeviceMeshEffect::SetReplication {
-                replication: REPLICATION_FULL.into(),
+            pane.apply(&DeviceMeshEffect::SetDeviceService {
+                service: "full_content_replication".into(),
+                on: true,
             })
             .unwrap();
             pane.apply(&DeviceMeshEffect::SetDeviceService {
@@ -2359,7 +2314,7 @@ mod tests {
             .unwrap();
 
             let saved = RelayConfig::load(&path).unwrap();
-            assert_eq!(saved.device_role, DeviceRole::Hybrid);
+            assert_eq!(saved.work.from, WorkFrom::Anyone);
             assert!(saved.services.full_content_replication);
             assert!(!saved.services.remote_control_relay);
         }
@@ -2369,41 +2324,27 @@ mod tests {
             let path = dir.path().join("relay.toml");
             let mut pane = DeviceMeshModel::with_path(&path);
             assert_eq!(pane.status, MeshStatus::NotConfigured);
-            assert_eq!(pane.config.device_role, DeviceRole::Interactive);
+            assert!(pane.config.work.takes_nothing());
             assert_eq!(
                 pane.config.services,
                 tilo_relay_protocol::ServiceCapabilities::default()
             );
             let _ = pane.poll();
             assert!(!path.exists());
-            pane.apply(&DeviceMeshEffect::SetDeviceRole {
-                role: ROLE_ACTIVE.into(),
+            pane.apply(&DeviceMeshEffect::SetWork {
+                work: WORK_OWN.into(),
             })
             .unwrap();
             assert!(path.exists());
         }
 
         {
-            assert_eq!(
-                replication_from_label(REPLICATION_WORKSPACE),
-                Some(ReplicationIntent::WorkspaceOnly)
-            );
-            assert_eq!(
-                replication_from_label(REPLICATION_ON_DEMAND),
-                Some(ReplicationIntent::OnDemand)
-            );
-            assert_eq!(
-                replication_from_label(REPLICATION_FULL),
-                Some(ReplicationIntent::FullWorkspace)
-            );
-            assert!(
-                replication_description(&ReplicationIntent::OnDemand)
-                    .contains("preview thumbnails")
-            );
-            assert!(
-                replication_description(&ReplicationIntent::FullWorkspace)
-                    .contains("full file copies")
-            );
+            assert_eq!(work_from_label(WORK_NOTHING), Some(WorkFrom::Nobody));
+            assert_eq!(work_from_label(WORK_OWN), Some(WorkFrom::OwnDevices));
+            assert_eq!(work_from_label(WORK_ANYONE), Some(WorkFrom::Anyone));
+            assert_eq!(work_from_label("Personal device"), None);
+            assert!(work_from(WorkFrom::Nobody).takes_nothing());
+            assert!(!work_from(WorkFrom::OwnDevices).takes_nothing());
         }
 
         {
@@ -2427,18 +2368,17 @@ mod tests {
     }
 
     #[test]
-    fn device_roles_and_availability_stay_local() {
+    fn the_work_a_device_takes_and_its_services_stay_local() {
         {
-            assert!(!shows_advanced_services(DeviceRole::Interactive));
-            assert!(shows_advanced_services(DeviceRole::Hybrid));
-            assert!(shows_advanced_services(DeviceRole::AlwaysOnServer));
+            assert!(!takes_work(&WorkSetting::none()));
+            assert!(takes_work(&WorkSetting::own_person()));
         }
 
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
             let config = RelayConfig {
-                device_role: DeviceRole::Interactive,
+                work: WorkSetting::none(),
                 ..RelayConfig::default()
             };
             config.save(&path).unwrap();
@@ -2446,20 +2386,20 @@ mod tests {
             let _ = pane.poll();
             assert!(!pane.poll());
 
-            pane.apply(&DeviceMeshEffect::SetDeviceRole {
-                role: ROLE_ACTIVE.into(),
+            pane.apply(&DeviceMeshEffect::SetWork {
+                work: WORK_OWN.into(),
             })
             .unwrap();
 
             assert!(pane.poll());
-            assert_eq!(pane.config.device_role, DeviceRole::Hybrid);
+            assert_eq!(pane.config.work.from, WorkFrom::OwnDevices);
         }
 
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
             let config = RelayConfig {
-                device_role: DeviceRole::Interactive,
+                work: WorkSetting::none(),
                 services: tilo_relay_protocol::ServiceCapabilities::default(),
                 ..RelayConfig::default()
             };
@@ -2467,13 +2407,18 @@ mod tests {
 
             let mut pane = DeviceMeshModel::with_path(&path);
             let _ = pane.poll();
-            pane.apply(&DeviceMeshEffect::SetDeviceRole {
-                role: ROLE_SERVER.into(),
+            pane.apply(&DeviceMeshEffect::SetWork {
+                work: WORK_ANYONE.into(),
+            })
+            .unwrap();
+            pane.apply(&DeviceMeshEffect::SetDeviceService {
+                service: "full_content_replication".into(),
+                on: true,
             })
             .unwrap();
 
             let saved = RelayConfig::load(&path).unwrap();
-            assert_eq!(saved.device_role, DeviceRole::AlwaysOnServer);
+            assert_eq!(saved.work.from, WorkFrom::Anyone);
             assert!(saved.services.workspace_replication);
             assert!(saved.services.full_content_replication);
             assert!(saved.services.inbound_relay);
@@ -2568,7 +2513,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let config = RelayConfig {
                 state_root: dir.path().to_path_buf(),
-                device_role: DeviceRole::Hybrid,
+                work: WorkSetting::own_person(),
                 ..RelayConfig::default()
             };
             let metrics = tilo_relay_protocol::metrics::MetricsSnapshot {
@@ -2604,7 +2549,7 @@ mod tests {
             let config = RelayConfig {
                 state_root: dir.path().to_path_buf(),
                 full_replica_status: proof.clone(),
-                device_role: DeviceRole::AlwaysOnServer,
+                work: WorkSetting::own_person(),
                 services: tilo_relay_protocol::ServiceCapabilities::personal_server(),
                 ..RelayConfig::default()
             };
@@ -3161,13 +3106,13 @@ mod tests {
     fn a_read_builds_the_model_reading_in_place_builds() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay.toml");
-        std::fs::write(&path, "device_role = \"interactive\"\n").unwrap();
+        std::fs::write(&path, "iroh_listen = \"0.0.0.0:1234\"\n").unwrap();
         let here = DeviceMeshModel::from_path(path.clone(), false);
         let read = MeshRead::of(path, false, ui::time::wall());
         let there = DeviceMeshModel::from_read(false, read);
         assert_eq!(here.config_path, there.config_path);
         assert_eq!(here.status, there.status);
-        assert_eq!(here.config.device_role, there.config.device_role);
+        assert_eq!(here.config.work, there.config.work);
         assert_eq!(here.runtime_status, there.runtime_status);
     }
 

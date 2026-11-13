@@ -8,7 +8,7 @@ use std::{
 
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, Pending, pending};
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId};
-use tilo_peer_state::placement::{Answer, Choice, Power, State, pick};
+use tilo_peer_state::placement::{Answer, Choice, Power, Rank, pick};
 use tilo_relay::offload::{BindError, MediaFuture};
 
 /// The workspace the fixtures invoke in.
@@ -154,21 +154,14 @@ impl OffloadPeers for Peers {
             .push((workspace.to_owned(), route.clone(), work.clone()));
         // The other device holds the workspace's content too: the same
         // content, synced, so nothing of the job moves to it.
-        let answer = Answer {
-            state: State {
-                requester: false,
-                online: true,
-                app_installed: true,
-                data_saving: false,
-                critical_battery: false,
-                priority: 0,
+        let answer = Answer::taking(
+            Rank {
                 power: Power::External,
                 load_permille: 0,
-                free_slots: Some(1),
                 latency_ms: 20,
             },
-            holds: work.inputs.iter().map(|(digest, _)| *digest).collect(),
-        };
+            work.inputs.iter().map(|(digest, _)| *digest).collect(),
+        );
         Pending::ready(pick([(SERVER, answer)], work))
     }
 

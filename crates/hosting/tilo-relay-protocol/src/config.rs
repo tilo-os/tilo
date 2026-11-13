@@ -33,8 +33,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::mesh::{DeviceRole, ServiceCapabilities};
+use crate::mesh::ServiceCapabilities;
 use crate::policy::TrustPolicy;
+use crate::work::WorkSetting;
 
 /// Top-level relay configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -86,11 +87,10 @@ pub struct RelayConfig {
     #[serde(default)]
     pub trust_policy: TrustPolicy,
 
-    /// How this certified device participates in the personal mesh. A relay
-    /// daemon defaults to an always-on server; its service claims are still
-    /// intersected with the signed device certificate at runtime.
-    #[serde(default = "default_device_role")]
-    pub device_role: DeviceRole,
+    /// The work this device takes from other devices. A host serves a workspace placed on it only
+    /// when the setting takes the placing person's work.
+    #[serde(default = "default_work")]
+    pub work: WorkSetting,
 
     /// Services requested by the operator. Runtime advertisement is clamped
     /// to the planes started by the composite home peer and its live residency
@@ -118,8 +118,8 @@ pub struct RelayConfig {
     pub max_workspace_grants: Option<usize>,
 }
 
-fn default_device_role() -> DeviceRole {
-    DeviceRole::AlwaysOnServer
+fn default_work() -> WorkSetting {
+    WorkSetting::own_person()
 }
 
 fn default_services() -> ServiceCapabilities {
@@ -159,7 +159,7 @@ impl Default for RelayConfig {
             packet_relay: None,
             packet_relay_url: None,
             trust_policy: TrustPolicy::default(),
-            device_role: default_device_role(),
+            work: default_work(),
             services: default_services(),
             web_entry: None,
             member_limits: None,
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
         assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-relay"));
         assert_eq!(cfg.iroh_listen.port(), 0);
-        assert_eq!(cfg.device_role, DeviceRole::AlwaysOnServer);
+        assert_eq!(cfg.work, WorkSetting::own_person());
         assert!(cfg.services.workspace_replication);
         assert!(cfg.services.inbound_relay);
         assert!(!cfg.services.full_content_replication);

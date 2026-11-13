@@ -1182,7 +1182,8 @@ impl Workspaces {
         // renamed since serves with the record's own, verified.
         let host = host_serving(host, &dir);
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
-        let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
+        let (plane, jobs) =
+            device_plane::plane(Arc::clone(&workspaces), host.key.clone(), host.work.clone());
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         let this = Self {

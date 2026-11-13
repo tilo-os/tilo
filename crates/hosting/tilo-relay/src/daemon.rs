@@ -5,7 +5,7 @@
 //! Also exposes the `Relay` struct so integration tests can spin up
 //! two relays in the same process and let them merge.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -499,9 +499,9 @@ impl Relay {
         validate_additional_protocols(&additional_protocols)?;
         import_home_peer(&mut cfg)?;
         validate_relay_identity(&identity)?;
-        if !cfg.device_role.can_serve() {
+        if cfg.work.takes_nothing() {
             return Err(RelayError::Identity(
-                "tilo-relay requires an always-on-server or hybrid device role".into(),
+                "a device that takes no work serves no workspace".into(),
             ));
         }
         // A certificate authorises a service, but it cannot make a service
@@ -519,9 +519,7 @@ impl Relay {
         // capabilities or starting background tasks.
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
-            role: cfg.device_role,
             services: cfg.services.clone(),
-            replication: BTreeMap::new(),
             filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
@@ -587,7 +585,7 @@ impl Relay {
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
-                work: tilo_relay_protocol::WorkSetting::own_person(),
+                work: cfg.work.clone(),
                 trust_policy: cfg.trust_policy.clone(),
                 member_limits: cfg.member_limits,
                 max_workspace_grants: cfg.max_workspace_grants,
@@ -1745,7 +1743,6 @@ mod tests {
                 RelayConfig {
                     state_root: temp.path().join("relay-state"),
                     full_replica_status: status_path.clone(),
-                    device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
                     ..RelayConfig::default()
                 },
@@ -1836,7 +1833,6 @@ mod tests {
                     state_root: temp.path().join("relay"),
                     full_replica_status: status_path.clone(),
                     home_peer_bundle: bundle_path,
-                    device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
                     // The relay runs its own packet relay on this machine's loopback, as the
                     // tests' hosts do: nothing here reaches number 0.

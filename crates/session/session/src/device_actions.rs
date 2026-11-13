@@ -29,6 +29,7 @@ use tilo_peer_state::actions::{
 };
 use tilo_power_mgmt::InhibitToken;
 use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
+use tilo_relay_protocol::WorkSetting;
 use tilo_runtime::offload::{PlanePeers, offer_offload, own_offering};
 
 use crate::engine::Engine;
@@ -414,13 +415,24 @@ impl Workspaces for HeldWorkspaces {
     }
 }
 
-/// What this session says of itself when another of the person's devices offers it work: whether it
-/// has the app, how it is powered, how much work it already has in hand, and which of the job's
-/// inputs it keeps — a device that has them is not weighed as receiving them, and one that keeps no
-/// content weighs every input as moving here.
-#[derive(Clone, Default)]
+/// What this session says of itself when another of the person's devices offers it work: what the
+/// device's work setting takes, and which of the job's inputs it keeps — a device that has them is
+/// not weighed as receiving them, and one that keeps no content weighs every input as moving here.
+#[derive(Clone)]
 struct SessionOffering {
+    /// The work this device takes. A session runs on a machine someone is at, so it takes its own
+    /// person's work where the setting says the machine has room for it.
+    work: WorkSetting,
     content: Arc<Mutex<Option<Arc<crate::content::Plane>>>>,
+}
+
+impl Default for SessionOffering {
+    fn default() -> Self {
+        Self {
+            work: WorkSetting::own_person(),
+            content: Arc::default(),
+        }
+    }
 }
 
 impl SessionOffering {
@@ -442,7 +454,7 @@ impl Offering for SessionOffering {
                 .filter(|digest| content.holds(&offer.workspace, &offer.route.app, *digest))
                 .collect()
         });
-        own_offering(&offer.route.app, holds)
+        own_offering(&self.work, &offer.route.app, holds)
     }
 }
 
@@ -464,7 +476,7 @@ mod tests {
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode, SecretKey};
-    use neighbour_wire::offer::{Decline, Power, Route, Work};
+    use neighbour_wire::offer::{Decline, Power, Rank, Route, Work};
     use tilo_action_broker::record_content::ContentState;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
     use tilo_actions::remote::{
@@ -878,12 +890,15 @@ mod tests {
 
     impl Offering for Willing {
         fn report(&self, from: [u8; 32], offer: &Query) -> Answer {
-            let mut answer = self.0.report(from, offer);
-            answer.state.app_installed = true;
-            answer.state.critical_battery = false;
-            answer.state.power = Power::External;
-            answer.state.load_permille = 0;
-            answer
+            let answer = self.0.report(from, offer);
+            Answer::taking(
+                Rank {
+                    power: Power::External,
+                    load_permille: 0,
+                    latency_ms: 0,
+                },
+                answer.holds,
+            )
         }
     }
 

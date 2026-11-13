@@ -7,13 +7,11 @@
 //! authority: the device that is picked still decides the request through its
 //! own dispatcher, against the caller it authenticated.
 //!
-//! Ranking, best first: the operator [`priority`](State::priority) (higher
-//! wins, as a person's preference precedes load balancing), then power
-//! (external, charging, unknown, battery), then load as a fraction of
-//! capacity, then the measured round trip, then the device key so equal
-//! candidates always resolve the same way. A device that would rather not
-//! says why instead ([`Decline`]), and the requester keeps what it knows
-//! about every device it asked.
+//! Ranking, best first: power (external, charging, unknown, battery), then
+//! load as a fraction of capacity, then the measured round trip, then the
+//! device key so equal candidates always resolve the same way. A device that
+//! does not take the work says why instead ([`Decline`]), and the requester
+//! keeps what it knows about every device it asked.
 //!
 //! Before rank decides, the job's inputs do: a device is picked only when
 //! moving what it does not already hold there beats running the job where it
@@ -21,7 +19,7 @@
 //! relay. Measured rank order decides between the devices that pass, so the
 //! cheapest transfer is not a preference of its own.
 
-pub use neighbour_wire::offer::{Answer, Decline, Power, Rank, State, Work};
+pub use neighbour_wire::offer::{Answer, Decline, Power, Rank, Work};
 use serde::Serialize;
 
 /// How fast a byte moves between two devices while nothing has measured
@@ -71,7 +69,7 @@ pub fn transfer(answer: &Answer, work: &Work, latency_ms: u32) -> Transfer {
 pub struct Candidate {
     /// The device's public key.
     pub device: [u8; 32],
-    /// Its rank when it offered, or why it declined.
+    /// What it answered: what it is ranked by, or why it declines.
     pub verdict: Result<Rank, Decline>,
     /// What moving the job's inputs to it costs, for a device that offered.
     pub transfer: Option<Transfer>,
@@ -139,9 +137,8 @@ impl std::fmt::Display for Choice {
             .count();
         write!(
             formatter,
-            "{} (priority {}, power {:?}, load {}‰, latency {} ms) of {offered} that offered among {} asked",
+            "{} (power {:?}, load {}‰, latency {} ms) of {offered} that offered among {} asked",
             short(&worker),
-            rank.priority,
             rank.power,
             rank.load_permille,
             rank.latency_ms,
@@ -164,21 +161,15 @@ fn short(device: &[u8; 32]) -> String {
 }
 
 /// Sort key: smaller is better.
-fn key(rank: &Rank, device: [u8; 32]) -> (std::cmp::Reverse<i32>, Power, u32, u32, [u8; 32]) {
-    (
-        std::cmp::Reverse(rank.priority),
-        rank.power,
-        rank.load_permille,
-        rank.latency_ms,
-        device,
-    )
+fn key(rank: &Rank, device: [u8; 32]) -> (Power, u32, u32, [u8; 32]) {
+    (rank.power, rank.load_permille, rank.latency_ms, device)
 }
 
-/// Whether moving `work`'s inputs to a device that answered `answer` is
-/// quicker than running it where it was asked. A job never run there has no
-/// run to beat, so nothing is quicker than it.
-fn worthwhile(answer: &Answer, work: &Work) -> (Transfer, bool) {
-    let transfer = transfer(answer, work, answer.state.latency_ms);
+/// Whether moving `work`'s inputs to a willing device that answered
+/// `answer` is quicker than running it where it was asked. A job never run
+/// there has no run to beat, so nothing is quicker than it.
+fn worthwhile(answer: &Answer, rank: &Rank, work: &Work) -> (Transfer, bool) {
+    let transfer = transfer(answer, work, rank.latency_ms);
     let faster = work
         .local_wall_ms
         .is_some_and(|local_ms| transfer.moving_ms < local_ms);
@@ -192,13 +183,18 @@ pub fn pick(answers: impl IntoIterator<Item = ([u8; 32], Answer)>, work: &Work) 
     let mut considered = answers
         .into_iter()
         .map(|(device, answer)| {
-            let verdict = answer.state.verdict();
-            let (transfer, worthwhile) = worthwhile(&answer, work);
+            // A device that does not take the work is weighed by its reason alone
+            // ([`Candidate::verdict`]).
+            let ranked = answer
+                .verdict
+                .as_ref()
+                .ok()
+                .map(|rank| worthwhile(&answer, rank, work));
             Candidate {
                 device,
-                verdict,
-                transfer: verdict.is_ok().then_some(transfer),
-                worthwhile: verdict.is_ok() && worthwhile,
+                verdict: answer.verdict,
+                transfer: ranked.map(|(transfer, _)| transfer),
+                worthwhile: ranked.is_some_and(|(_, faster)| faster),
             }
         })
         .collect::<Vec<_>>();
@@ -227,33 +223,26 @@ mod tests {
 
     const REQUESTER: [u8; 32] = [9; 32];
 
-    fn worker() -> State {
-        State {
-            requester: false,
-            online: true,
-            app_installed: true,
-            data_saving: false,
-            critical_battery: false,
-            priority: 0,
+    fn rank() -> Rank {
+        Rank {
             power: Power::External,
             load_permille: 0,
-            free_slots: Some(1),
             latency_ms: 20,
         }
     }
 
     fn answer() -> Answer {
-        Answer {
-            state: worker(),
-            holds: Vec::new(),
-        }
+        Answer::taking(rank(), Vec::new())
     }
 
     fn holding(digests: Vec<[u8; 32]>) -> Answer {
-        Answer {
-            state: worker(),
-            holds: digests,
-        }
+        Answer::taking(rank(), digests)
+    }
+
+    fn with_rank(change: impl FnOnce(&mut Rank)) -> Answer {
+        let mut rank = rank();
+        change(&mut rank);
+        Answer::taking(rank, Vec::new())
     }
 
     /// A job with one named input and a local run to beat.
@@ -276,27 +265,28 @@ mod tests {
         .worker
     }
 
-    /// A device with no power left, or one whose person asked it to save
-    /// energy, is passed over whatever its rank would have been.
+    /// A device that says it does not take the work is passed over whatever
+    /// its rank would have been, and the reason it gave is kept.
     #[test]
-    fn a_worker_that_would_rather_not_is_never_chosen() {
-        let mut drained = answer();
-        drained.state.critical_battery = true;
-        drained.state.priority = 100;
-        let mut saving = answer();
-        saving.state.data_saving = true;
-        saving.state.priority = 100;
-        let mut desktop = answer();
-        desktop.state.load_permille = 750;
-        desktop.state.latency_ms = 400;
+    fn a_device_that_declines_is_never_chosen() {
+        let on_battery = Answer::declining(Decline::OnBattery);
+        let busy = Answer::declining(Decline::LowResources);
+        let desktop = with_rank(|rank| {
+            rank.load_permille = 750;
+            rank.latency_ms = 400;
+        });
 
-        assert_eq!(chosen(&[(1, drained.clone()), (2, saving.clone())]), None);
         assert_eq!(
-            chosen(&[(1, drained.clone()), (2, saving.clone()), (3, desktop)]),
+            chosen(&[(1, on_battery.clone()), (2, busy.clone())]),
+            None,
+            "nobody who was asked takes the work"
+        );
+        assert_eq!(
+            chosen(&[(1, on_battery.clone()), (2, busy.clone()), (3, desktop)]),
             Some([3; 32])
         );
 
-        let asked = pick([([1; 32], drained), ([2; 32], saving)], &work());
+        let asked = pick([([1; 32], on_battery), ([2; 32], busy)], &work());
         assert_eq!(
             asked
                 .considered
@@ -304,38 +294,27 @@ mod tests {
                 .map(|candidate| (candidate.device[0], candidate.verdict))
                 .collect::<Vec<_>>(),
             vec![
-                (1, Err(Decline::CriticalBattery)),
-                (2, Err(Decline::DataSaving)),
+                (1, Err(Decline::OnBattery)),
+                (2, Err(Decline::LowResources)),
             ]
         );
         assert!(asked.is_local());
         assert_eq!(
             asked.to_string(),
-            "no device offered to run it; 01010101: critical_battery; 02020202: data_saving"
+            "no device offered to run it; 01010101: on_battery; 02020202: low_resources"
         );
     }
 
-    /// The cheapest healthy device wins: power, then load, then latency, and
-    /// a person's preference before all of them.
+    /// The cheapest willing device wins: power, then load, then latency.
     #[test]
     fn the_lowest_cost_healthy_device_is_chosen() {
-        let bust = {
-            let mut bust = answer();
-            bust.state.load_permille = 750;
-            bust
-        };
-        let idle_far = {
-            let mut far = answer();
-            far.state.latency_ms = 90;
-            far
-        };
+        let bust = with_rank(|rank| rank.load_permille = 750);
+        let idle_far = with_rank(|rank| rank.latency_ms = 90);
         let idle_near = answer();
-        let on_battery = {
-            let mut battery = answer();
-            battery.state.power = Power::Battery;
-            battery.state.latency_ms = 1;
-            battery
-        };
+        let on_battery = with_rank(|rank| {
+            rank.power = Power::Battery;
+            rank.latency_ms = 1;
+        });
         let choice = pick(
             [
                 ([1; 32], bust),
@@ -357,17 +336,7 @@ mod tests {
         );
         assert_eq!(
             choice.to_string(),
-            "03030303 (priority 0, power External, load 0‰, latency 20 ms) of 4 that offered among 4 asked, moving 1000 bytes in 21 ms"
-        );
-
-        let mut preferred = answer();
-        preferred.state.priority = 1;
-        preferred.state.power = Power::Charging;
-        preferred.state.load_permille = 500;
-        assert_eq!(
-            chosen(&[(3, answer()), (5, preferred)]),
-            Some([5; 32]),
-            "a person's preference comes before everything else"
+            "03030303 (power External, load 0‰, latency 20 ms) of 4 that offered among 4 asked, moving 1000 bytes in 21 ms"
         );
     }
 
@@ -389,9 +358,13 @@ mod tests {
         heavy.local_wall_ms = Some(500);
 
         let mut far = holding(vec![[3; 32]]);
-        far.state.latency_ms = 400;
+        if let Ok(rank) = &mut far.verdict {
+            rank.latency_ms = 400;
+        }
         let mut near = answer();
-        near.state.latency_ms = 1;
+        if let Ok(rank) = &mut near.verdict {
+            rank.latency_ms = 1;
+        }
         let choice = pick([([1; 32], far), ([2; 32], near)], &heavy);
         assert_eq!(
             choice.worker,
@@ -439,38 +412,17 @@ mod tests {
         );
     }
 
-    /// Each rule passes a device over with its own reason, in the order a
-    /// person would state them.
+    /// Every device that was asked with no answer to give is recorded as
+    /// what a device that is away is taken to have said.
     #[test]
-    fn each_rule_passes_a_device_over_with_its_reason() {
-        type Change = fn(&mut State);
-        let cases: [(Change, Decline); 4] = [
-            (|w| w.requester = true, Decline::Requester),
-            (|w| w.online = false, Decline::Offline),
-            (|w| w.app_installed = false, Decline::AppNotInstalled),
-            (|w| w.data_saving = true, Decline::DataSaving),
-        ];
-        for (change, reason) in cases {
-            let mut state = worker();
-            change(&mut state);
-            assert_eq!(state.verdict(), Err(reason), "{reason:?}");
-        }
-        let mut asked = worker();
-        asked.requester = true;
-        assert!(
-            pick(
-                [(
-                    REQUESTER,
-                    Answer {
-                        state: asked,
-                        holds: Vec::new()
-                    }
-                )],
-                &work()
-            )
-            .is_local(),
-            "the device that asked never offers to itself"
+    fn a_device_that_did_not_answer_is_offline() {
+        let choice = pick([(REQUESTER, Answer::away())], &work());
+        assert_eq!(
+            choice.considered[0].verdict,
+            Err(Decline::Offline),
+            "a device that never answered is not there"
         );
+        assert!(choice.is_local());
     }
 
     /// Nothing asked means nothing offers, and the request stays where it

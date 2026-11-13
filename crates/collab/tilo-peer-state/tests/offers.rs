@@ -15,7 +15,7 @@ use crate::common::{addr, device, localhost_endpoint, workspace};
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr};
-use neighbour_wire::offer::{Answer, Decline, Power, Query, Route, State, Work};
+use neighbour_wire::offer::{Answer, Decline, Power, Query, Rank, Route, Work};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_actions::InvocationId;
@@ -117,41 +117,33 @@ impl Engine {
     }
 }
 
-/// What a device says of itself when it would run the route: `load` and
-/// `latency` are the test's to vary.
-fn willing(load_permille: u32) -> State {
-    State {
-        requester: false,
-        online: true,
-        app_installed: true,
-        data_saving: false,
-        critical_battery: false,
-        priority: 0,
-        power: Power::External,
-        load_permille,
-        free_slots: Some(1),
-        latency_ms: 0,
-    }
+/// What a device that takes the route is ranked by: `load` is the test's to
+/// vary.
+fn willing(load_permille: u32) -> Answer {
+    Answer::taking(
+        Rank {
+            power: Power::External,
+            load_permille,
+            latency_ms: 0,
+        },
+        Vec::new(),
+    )
 }
 
 fn route() -> Route {
     Route::new(APP, "notes.root", "insert")
 }
 
-/// `state` as the answer a device sends, holding none of the job's inputs.
-fn answer(state: State) -> Answer {
-    Answer {
-        state,
-        holds: Vec::new(),
-    }
-}
-
-/// `state` as the answer of a device that already holds `idle`'s inputs.
-fn holding(state: State, inputs: &[([u8; 32], u64)]) -> Answer {
-    Answer {
-        state,
-        holds: inputs.iter().map(|(digest, _)| *digest).collect(),
-    }
+/// `answer` as the answer of a device that already holds `inputs`.
+fn holding(load_permille: u32, inputs: &[([u8; 32], u64)]) -> Answer {
+    Answer::taking(
+        Rank {
+            power: Power::External,
+            load_permille,
+            latency_ms: 0,
+        },
+        inputs.iter().map(|(digest, _)| *digest).collect(),
+    )
 }
 
 /// The work an offer is about: one small input, and a run here it could
@@ -177,8 +169,8 @@ async fn the_device_that_reports_the_lowest_cost_wins_and_the_rest_say_why() {
 
     // The busy device holds the workspace but reports a full pipeline; the
     // idle one holds nothing to do.
-    let busy = Engine::serving(replica.clone(), busy.0.clone(), Some(answer(willing(750)))).await;
-    let idle = Engine::serving(replica.clone(), idle.0.clone(), Some(answer(willing(0)))).await;
+    let busy = Engine::serving(replica.clone(), busy.0.clone(), Some(willing(750))).await;
+    let idle = Engine::serving(replica.clone(), idle.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
     plane.hold(replica.clone());
@@ -225,9 +217,8 @@ async fn nobody_offering_leaves_the_run_where_it_was_asked() {
 
     // The only other device of the workspace does not have the app the route
     // names, so it says it cannot run the request.
-    let mut without_app = willing(0);
-    without_app.app_installed = false;
-    let other = Engine::serving(replica.clone(), other.0.clone(), Some(answer(without_app))).await;
+    let without_app = Answer::declining(Decline::AppNotInstalled);
+    let other = Engine::serving(replica.clone(), other.0.clone(), Some(without_app)).await;
     let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
 
@@ -307,7 +298,7 @@ async fn a_device_asked_from_outside_the_workspace_answers_nothing() {
     let peer = workspace(WORKSPACE, &member, &roster);
     let replica = Replica::new(peer);
 
-    let answering = Engine::serving(replica, member.0.clone(), Some(answer(willing(0)))).await;
+    let answering = Engine::serving(replica, member.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&stranger.0).await;
     let plane = ActionPlane::new(stranger.0.clone(), Arc::new(TestHost::new()));
 
@@ -408,11 +399,11 @@ async fn the_jobs_inputs_decide_before_rank_does() {
     heavy.input_bytes = 32_000_000;
     heavy.local_wall_ms = Some(1_000);
 
-    let near = Engine::serving(replica.clone(), near.0.clone(), Some(answer(willing(0)))).await;
+    let near = Engine::serving(replica.clone(), near.0.clone(), Some(willing(0))).await;
     let far = Engine::serving(
         replica.clone(),
         far.0.clone(),
-        Some(holding(willing(500), &heavy.inputs)),
+        Some(holding(500, &heavy.inputs)),
     )
     .await;
     let asker = localhost_endpoint(&here.0).await;
@@ -466,7 +457,7 @@ async fn a_job_whose_inputs_move_slower_than_it_runs_stays_here() {
     heavy.input_bytes = 64_000_000;
     heavy.local_wall_ms = Some(1_000);
 
-    let other = Engine::serving(replica, other.0.clone(), Some(answer(willing(0)))).await;
+    let other = Engine::serving(replica, other.0.clone(), Some(willing(0))).await;
     let asker = localhost_endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
 

@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 
 use package_store::InstalledPackage;
 use tilo_relay::{
-    ComputePackageCatalogue, DeviceRole, PowerAvailability, ServerAdvertisement,
-    ServiceCapabilities, WorkspaceId,
+    ComputePackageCatalogue, PowerAvailability, ServerAdvertisement, ServiceCapabilities,
+    WorkspaceId,
 };
 
 /// The catalogue of a device with exactly one installed package.
@@ -245,7 +245,6 @@ pub fn worker_advertisement(
 ) -> ServerAdvertisement {
     ServerAdvertisement {
         device: worker,
-        role: DeviceRole::AlwaysOnServer,
         services: ServiceCapabilities {
             compute: true,
             ..ServiceCapabilities::default()

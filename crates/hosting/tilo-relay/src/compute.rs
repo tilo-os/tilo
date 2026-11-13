@@ -1315,7 +1315,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{ComputeAccelerator, DeviceRole, PowerAvailability, ServiceCapabilities};
+    use crate::{ComputeAccelerator, PowerAvailability, ServiceCapabilities};
     use ed25519_dalek::{Signer, SigningKey};
     use tilo_app_package::blobs::{BlobHash, Collection};
     use tilo_app_package::signed::SignedRoot;
@@ -1346,7 +1346,6 @@ mod tests {
     fn worker() -> ServerAdvertisement {
         ServerAdvertisement {
             device: [3; 32],
-            role: DeviceRole::AlwaysOnServer,
             services: ServiceCapabilities::personal_server(),
             workspaces: BTreeSet::from([WorkspaceId::from_u128(7)]),
             apps: BTreeSet::from(["so.tilo.video-editor".into()]),

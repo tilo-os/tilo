@@ -2,14 +2,13 @@
 //! settings open under it, renaming a home server in place, and removing a
 //! device after asking.
 
-use tilo_relay_protocol::{DeviceRole, ReplicationIntent};
+use tilo_relay_protocol::WorkFrom;
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, RelayRuntimeStatus, home_server_row,
-    last_seen_label, peer_health_badge, peer_health_detail, peer_key, personal_device_key,
-    replication_description, replication_shown, role_shown, runtime_status_tone,
-    shows_advanced_services,
+    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, RelayRuntimeStatus, WORK_ANYONE,
+    WORK_NOTHING, WORK_OWN, home_server_row, last_seen_label, peer_health_badge,
+    peer_health_detail, peer_key, personal_device_key, runtime_status_tone, takes_work, work_shown,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -240,28 +239,31 @@ impl Page<'_> {
     }
 
     fn this_device_rows(&self) -> Vec<provider_settings_ui::widgets::Item> {
-        let role_shown_value = role_shown(self.config.device_role);
-        let role_state = ui::LocalState::new(role_shown_value.clone());
-        let role = Dropdown::from_state(
-            [
-                DeviceRole::Interactive,
-                DeviceRole::Hybrid,
-                DeviceRole::AlwaysOnServer,
-            ]
-            .into_iter()
-            .map(role_shown)
-            .collect(),
-            &role_state,
+        let work_shown_value = work_shown(&self.config.work);
+        let work_state = ui::LocalState::new(work_shown_value.clone());
+        let work = Dropdown::from_state(
+            [WORK_NOTHING, WORK_OWN, WORK_ANYONE]
+                .into_iter()
+                .map(|label| {
+                    t(match label {
+                        WORK_NOTHING => "mesh-work-nothing",
+                        WORK_OWN => "mesh-work-own",
+                        _ => "mesh-work-anyone",
+                    })
+                })
+                .collect(),
+            &work_state,
         )
-        .with_id("device_mesh.role")
-        .with_placeholder(&role_shown_value);
-        let role = self.bind(role, effect(DeviceMeshEffect::SET_DEVICE_ROLE));
+        .with_id("device_mesh.work")
+        .with_placeholder(&work_shown_value);
+        let work = self.bind(work, effect(DeviceMeshEffect::SET_WORK));
         let mut out = vec![setting_row_described(
             &t("mesh-this-device"),
             &t("mesh-this-device-desc"),
-            Box::new(role),
+            Box::new(work),
         )];
-        if shows_advanced_services(self.config.device_role) {
+        let taking = takes_work(&self.config.work);
+        if taking {
             let home_desc = t(match self.runtime_status {
                 RelayRuntimeStatus::Ready => "mesh-home-ready",
                 RelayRuntimeStatus::Online => "mesh-home-online",
@@ -276,53 +278,26 @@ impl Page<'_> {
                 semantic_status_pill(&runtime, runtime_status_tone(self.runtime_status)),
             ));
         }
-        out.push(self.files_row());
-        if shows_advanced_services(self.config.device_role) {
+        if taking {
             out.extend(self.service_rows());
         }
-        out.push(note(&t(match self.config.device_role {
-            DeviceRole::Interactive => "mesh-role-hint-personal",
-            DeviceRole::Hybrid => "mesh-role-hint-hybrid",
-            DeviceRole::AlwaysOnServer
-                if self.common_replication() == ReplicationIntent::FullWorkspace =>
-            {
-                "mesh-role-hint-server-full"
-            }
-            DeviceRole::AlwaysOnServer => "mesh-role-hint-server",
+        out.push(note(&t(match self.config.work.from {
+            WorkFrom::Nobody => "mesh-work-hint-nothing",
+            WorkFrom::OwnDevices => "mesh-work-hint-own",
+            WorkFrom::Anyone | WorkFrom::Workspaces(_) => "mesh-work-hint-anyone",
         })));
         out
     }
 
-    fn files_row(&self) -> provider_settings_ui::widgets::Item {
-        let files = t("mesh-files");
-        if !self.config.device_role.can_serve() {
-            return value_row(&files, &t("mesh-download-opened"));
-        }
-        let repl_shown = replication_shown(&self.common_replication());
-        let replication_state = ui::LocalState::new(repl_shown.clone());
-        let replication = Dropdown::from_state(
-            [
-                ReplicationIntent::OnDemand,
-                ReplicationIntent::WorkspaceOnly,
-                ReplicationIntent::FullWorkspace,
-            ]
-            .into_iter()
-            .map(|intent| replication_shown(&intent))
-            .collect(),
-            &replication_state,
-        )
-        .with_id("device_mesh.replication")
-        .with_placeholder(&repl_shown);
-        let replication = self.bind(replication, effect(DeviceMeshEffect::SET_REPLICATION));
-        setting_row_described(
-            &files,
-            &replication_description(&self.common_replication()),
-            Box::new(replication),
-        )
-    }
-
-    fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 4] {
+    fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 5] {
         [
+            self.service_row(
+                "mesh-svc-files",
+                "mesh-svc-files-desc",
+                "full_content_replication",
+                "device_mesh.full_content_replication",
+                self.config.services.full_content_replication,
+            ),
             self.service_row(
                 "mesh-svc-relay",
                 "mesh-svc-relay-desc",

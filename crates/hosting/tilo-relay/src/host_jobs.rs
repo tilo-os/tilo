@@ -35,7 +35,7 @@ use crate::compute::{
     ComputePackageCatalogue, ComputeResourceLimits, ComputeSandbox, ComputeWorker,
     MAX_COMPUTE_JOB_LIFETIME_MS,
 };
-use crate::mesh::{DeviceRole, PowerAvailability, ServerAdvertisement, ServiceCapabilities};
+use crate::mesh::{PowerAvailability, ServerAdvertisement, ServiceCapabilities};
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::WorkspaceId;
 
@@ -140,7 +140,6 @@ impl ComputeJobs {
     fn advertisement(&self, workspace: WorkspaceId, app: &str) -> ServerAdvertisement {
         ServerAdvertisement {
             device: self.shared.device,
-            role: DeviceRole::AlwaysOnServer,
             services: ServiceCapabilities {
                 compute: true,
                 ..ServiceCapabilities::default()

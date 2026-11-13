@@ -10,14 +10,14 @@
 //!   path; and
 //! - hosts continue to authenticate as ordinary certified devices.
 //!
-//! It therefore does not define another sync protocol.  It describes which
-//! existing replication streams a device requests, which services a device
-//! offers, and the advertisement a compute worker is admitted against. Hosts
-//! are chosen by configuration (workspace bindings, home-peer registration);
-//! the worker a compute job runs on is chosen among advertisements by
+//! It therefore does not define another sync protocol. It describes which
+//! services a device offers, and the advertisement a compute worker is
+//! admitted against. Which device serves a workspace is the workspace's
+//! governance and the device's own [`crate::WorkSetting`]; the worker a
+//! compute job runs on is chosen among advertisements by
 //! [`crate::placement`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::WorkspaceId;
 use iroh_base::EndpointAddr;
@@ -32,12 +32,8 @@ pub type DeviceKey = [u8; 32];
 pub struct DeviceMeshProfile {
     /// Certified device public key.
     pub device: DeviceKey,
-    /// Interactive/server/hybrid role.
-    pub role: DeviceRole,
     /// Service claims after intersection with the device certificate.
     pub services: ServiceCapabilities,
-    /// Per-workspace residency requests consumed by collaboration and fs.
-    pub replication: BTreeMap<u64, ReplicationIntent>,
     /// Direct endpoints for the authenticated filesystem/blob protocols. This
     /// is intentionally distinct from the relay endpoint: a client selected
     /// for content replication must dial one of these addresses.
@@ -53,191 +49,6 @@ impl DeviceMeshProfile {
             .full_content_replication
             .then(|| self.filesystem_endpoints.first().cloned())
             .flatten()
-    }
-}
-
-/// How a device participates in the personal mesh.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceRole {
-    /// A normal client: it renders workspaces and may be remotely controlled
-    /// while the local user has granted a control session.
-    #[default]
-    Interactive,
-    /// An unattended peer expected to remain reachable and retain requested
-    /// replicas. It is still a certified device, not a privileged identity.
-    AlwaysOnServer,
-    /// A desktop that is both actively used and available as a host while on.
-    Hybrid,
-}
-
-impl DeviceRole {
-    /// Whether this role may advertise durable serving capacity.
-    pub const fn can_serve(self) -> bool {
-        matches!(self, Self::AlwaysOnServer | Self::Hybrid)
-    }
-}
-
-/// Existing data plane used for a replicated resource.
-///
-/// Human-readable formats (the JSON of published mesh profiles, `relay.toml`)
-/// carry it adjacently tagged, `{"kind": "app_records", "id": "…"}`. Serde's
-/// adjacent tagging cannot be decoded by a format that is not
-/// self-describing, so binary formats such as postcard carry the ordinary
-/// variant-index form instead — the same bytes the tagged encoder already
-/// produced there. See the `Serialize` / `Deserialize` impls below.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ReplicationResource {
-    /// Workspace topology, windows, strips and shared app records.
-    Workspace,
-    /// Filesystem names, metadata, versions and ACL records.
-    FileTree,
-    /// Bounded previews used by Files and open-workspace cards. This is
-    /// deliberately separate from [`Self::FileBlobs`]: an ordinary device may
-    /// show a useful workspace before the user opens a file without silently
-    /// downloading the file itself.
-    FileThumbnails,
-    /// File bytes addressed by their existing content hash.
-    FileBlobs,
-    /// Ebook records and reading state; book bytes resolve through `FileBlobs`.
-    EbookLibrary,
-    /// Music/video library records; media bytes resolve through `FileBlobs`.
-    MediaLibrary,
-    /// An app-defined record family carried by the collaboration runtime.
-    AppRecords(String),
-}
-
-/// The serialized shape of [`ReplicationResource`]; `S` is `&str` when
-/// encoding and `String` when decoding. Both representations below expand
-/// from this one definition so their variants cannot drift apart.
-macro_rules! replication_resource_repr {
-    ($(#[$attr:meta])* $name:ident) => {
-        #[derive(Serialize, Deserialize)]
-        $(#[$attr])*
-        enum $name<S> {
-            Workspace,
-            FileTree,
-            FileThumbnails,
-            FileBlobs,
-            EbookLibrary,
-            MediaLibrary,
-            AppRecords(S),
-        }
-
-        impl<'a> From<&'a ReplicationResource> for $name<&'a str> {
-            fn from(resource: &'a ReplicationResource) -> Self {
-                match resource {
-                    ReplicationResource::Workspace => Self::Workspace,
-                    ReplicationResource::FileTree => Self::FileTree,
-                    ReplicationResource::FileThumbnails => Self::FileThumbnails,
-                    ReplicationResource::FileBlobs => Self::FileBlobs,
-                    ReplicationResource::EbookLibrary => Self::EbookLibrary,
-                    ReplicationResource::MediaLibrary => Self::MediaLibrary,
-                    ReplicationResource::AppRecords(id) => Self::AppRecords(id),
-                }
-            }
-        }
-
-        impl From<$name<String>> for ReplicationResource {
-            fn from(repr: $name<String>) -> Self {
-                match repr {
-                    $name::Workspace => Self::Workspace,
-                    $name::FileTree => Self::FileTree,
-                    $name::FileThumbnails => Self::FileThumbnails,
-                    $name::FileBlobs => Self::FileBlobs,
-                    $name::EbookLibrary => Self::EbookLibrary,
-                    $name::MediaLibrary => Self::MediaLibrary,
-                    $name::AppRecords(id) => Self::AppRecords(id),
-                }
-            }
-        }
-    };
-}
-
-replication_resource_repr!(
-    /// Adjacently tagged form for human-readable formats.
-    #[serde(
-        rename = "ReplicationResource",
-        rename_all = "snake_case",
-        tag = "kind",
-        content = "id"
-    )]
-    TaggedReplicationResource
-);
-replication_resource_repr!(
-    /// Variant-index form for binary formats.
-    #[serde(rename = "ReplicationResource")]
-    IndexedReplicationResource
-);
-
-impl Serialize for ReplicationResource {
-    fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
-        if serializer.is_human_readable() {
-            TaggedReplicationResource::from(self).serialize(serializer)
-        } else {
-            IndexedReplicationResource::from(self).serialize(serializer)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ReplicationResource {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        if deserializer.is_human_readable() {
-            TaggedReplicationResource::<String>::deserialize(deserializer).map(Self::from)
-        } else {
-            IndexedReplicationResource::<String>::deserialize(deserializer).map(Self::from)
-        }
-    }
-}
-
-/// Replication residency requested by a device for one workspace.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReplicationIntent {
-    /// Keep the small workspace collaboration graph available.
-    WorkspaceOnly,
-    /// Hydrate selected data when opened, retaining the ordinary cache policy.
-    #[default]
-    OnDemand,
-    /// Retain all user-visible workspace records and content bytes.
-    FullWorkspace,
-    /// Explicit app/resource selection. This still uses the same collaboration
-    /// and blob transports; it is not an app-owned sync implementation.
-    Resources(BTreeSet<ReplicationResource>),
-}
-
-impl ReplicationIntent {
-    /// Resolve an intent to the concrete existing replication streams that
-    /// consumers should subscribe to.
-    pub fn resources(&self) -> BTreeSet<ReplicationResource> {
-        match self {
-            Self::WorkspaceOnly => BTreeSet::from([ReplicationResource::Workspace]),
-            Self::OnDemand => BTreeSet::from([
-                ReplicationResource::Workspace,
-                ReplicationResource::FileTree,
-                ReplicationResource::FileThumbnails,
-            ]),
-            Self::FullWorkspace => BTreeSet::from([
-                ReplicationResource::Workspace,
-                ReplicationResource::FileTree,
-                ReplicationResource::FileThumbnails,
-                ReplicationResource::FileBlobs,
-                ReplicationResource::EbookLibrary,
-                ReplicationResource::MediaLibrary,
-            ]),
-            Self::Resources(resources) => {
-                let mut resolved = resources.clone();
-                resolved.insert(ReplicationResource::Workspace);
-                if resolved.contains(&ReplicationResource::EbookLibrary)
-                    || resolved.contains(&ReplicationResource::MediaLibrary)
-                {
-                    resolved.insert(ReplicationResource::FileTree);
-                    resolved.insert(ReplicationResource::FileThumbnails);
-                    resolved.insert(ReplicationResource::FileBlobs);
-                }
-                resolved
-            }
-        }
     }
 }
 
@@ -352,8 +163,6 @@ impl ServiceCapabilities {
 pub struct ServerAdvertisement {
     /// Certified device public key.
     pub device: DeviceKey,
-    /// Human-oriented device role.
-    pub role: DeviceRole,
     /// Services this peer advertises. Callers must intersect these with the
     /// immutable capabilities from its verified device certificate.
     pub services: ServiceCapabilities,
@@ -423,47 +232,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replication_intents_and_service_profiles_select_their_substrates() {
-        use ReplicationResource::{
-            EbookLibrary, FileBlobs, FileThumbnails, FileTree, MediaLibrary, Workspace,
-        };
-        let cases = [
-            (
-                "full workspace uses collaboration and blob substrates",
-                ReplicationIntent::FullWorkspace,
-                vec![
-                    Workspace,
-                    FileTree,
-                    FileThumbnails,
-                    FileBlobs,
-                    EbookLibrary,
-                    MediaLibrary,
-                ],
-                vec![],
-            ),
-            (
-                "on demand syncs previews without file bytes",
-                ReplicationIntent::OnDemand,
-                vec![Workspace, FileTree, FileThumbnails],
-                vec![FileBlobs, EbookLibrary, MediaLibrary],
-            ),
-            (
-                "selecting media also hydrates its file bytes",
-                ReplicationIntent::Resources(BTreeSet::from([MediaLibrary])),
-                vec![Workspace, FileTree, FileThumbnails, FileBlobs],
-                vec![],
-            ),
-        ];
-        for (name, intent, present, absent) in cases {
-            let resources = intent.resources();
-            for r in present {
-                assert!(resources.contains(&r), "case {name}: {r:?} missing");
-            }
-            for r in absent {
-                assert!(!resources.contains(&r), "case {name}: {r:?} present");
-            }
-        }
-
+    fn service_profiles_are_limited_to_the_planes_a_process_starts() {
         // A relay-only device claims only its running workspace planes.
         let services = ServiceCapabilities::relay_only();
         assert!(services.workspace_replication);

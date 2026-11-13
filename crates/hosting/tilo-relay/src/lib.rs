@@ -159,8 +159,8 @@ pub use home_peer::{
     valid_home_peer_label, write_home_peers,
 };
 pub use mesh::{
-    ComputeAccelerator, DeviceMeshProfile, DeviceRole, PowerAvailability, ReplicationIntent,
-    ReplicationResource, ServerAdvertisement, ServiceCapabilities,
+    ComputeAccelerator, DeviceMeshProfile, PowerAvailability, ServerAdvertisement,
+    ServiceCapabilities,
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;

@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use neighbour_wire::offer::{Answer, Power, Query, Route, State, Work};
+use neighbour_wire::offer::{Answer, Power, Query, Route, Work};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, Reservation,
@@ -32,6 +32,7 @@ use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ActionPlane, Offering, ReadFuture, Workspaces};
+use tilo_relay_protocol::{Machine, WorkSetting};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::GovernedWorkspace;
@@ -211,6 +212,7 @@ impl HostWork {
 pub(crate) fn plane(
     workspaces: Arc<WorkspacesMap>,
     device: SigningKey,
+    setting: WorkSetting,
 ) -> (ActionPlane, Arc<HostWork>) {
     let work = HostWork::new(Arc::clone(&workspaces));
     let plane = ActionPlane::over(
@@ -218,7 +220,10 @@ pub(crate) fn plane(
         Arc::new(HostActions(Arc::clone(&work))),
         Arc::new(GovernedWorkspaces(workspaces)),
     );
-    plane.offering(HostOffering(Arc::clone(&work)));
+    plane.offering(HostOffering {
+        work: Arc::clone(&work),
+        setting,
+    });
     (plane, work)
 }
 
@@ -249,73 +254,39 @@ impl Workspaces for GovernedWorkspaces {
 /// What a host says of itself when another device of one of its workspaces
 /// offers it work.
 ///
-/// It holds the workspace, is there to answer, and runs on external power as
-/// the always-on server it is. It takes the work only when the route's action
-/// declares a transform and it has the package that performs it
-/// ([`HostJobs::runs`]); having taken it, it says which of the inputs it
-/// already keeps, so the device that asks weighs moving them against the run
-/// where the job was asked.
-struct HostOffering(Arc<HostWork>);
+/// It holds the workspace and is there to answer, and takes the work only when
+/// its person's work setting does and the route's action declares a transform
+/// it has the package for ([`HostJobs::runs`]); having taken it, it says which
+/// of the inputs it already keeps, so the device that asks weighs moving them
+/// against the run where the job was asked.
+struct HostOffering {
+    work: Arc<HostWork>,
+    setting: WorkSetting,
+}
 
 impl Offering for HostOffering {
     fn report(&self, from: [u8; 32], offer: &Query) -> Answer {
-        let jobs = self.0.jobs.read_recover().clone();
+        let jobs = self.work.jobs.read_recover().clone();
         let takes = jobs
             .as_ref()
             .is_some_and(|jobs| jobs.runs(&offer.workspace, &offer.work));
         let holds = match (&jobs, takes) {
             (Some(jobs), true) => {
-                self.0.remember(from, offer);
+                self.work.remember(from, offer);
                 jobs.holds(&offer.workspace, &offer.work)
             }
             _ => Vec::new(),
         };
-        Answer {
-            state: State {
-                requester: false,
-                online: true,
-                app_installed: takes,
-                data_saving: false,
-                critical_battery: false,
-                priority: 0,
-                power: Power::External,
-                load_permille: load_permille(),
-                // A host that is running as much as it takes on answers so
-                // now, rather than winning a round it would refuse at run.
-                free_slots: jobs.as_ref().and_then(|jobs| jobs.free_slots()),
-                latency_ms: 0,
-            },
+        self.setting.answer(
+            // A host is the machine that stays on: its power is external.
+            Machine::here(Power::External),
+            takes,
+            // A host that is running as much as it takes on answers so now,
+            // rather than winning a round it would refuse at run.
+            jobs.as_ref().and_then(|jobs| jobs.free_slots()),
             holds,
-        }
+        )
     }
-}
-
-/// What share of this machine is already busy, per thousand: the load the
-/// kernel reports against the processors it has. A machine that reports no
-/// load says none is in hand.
-fn load_permille() -> u32 {
-    let cores =
-        u32::try_from(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
-            .unwrap_or(u32::MAX);
-    let Ok(report) = std::fs::read_to_string("/proc/loadavg") else {
-        return 0;
-    };
-    let Some(one) = report.split_whitespace().next() else {
-        return 0;
-    };
-    let Ok(load) = tilo_failure::ignored!(
-        "a load this machine cannot read is none in hand",
-        one.parse::<f32>()
-    ) else {
-        return 0;
-    };
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a load is a small non-negative figure, clamped to whole thousandths"
-    )]
-    let thousandths = (load.clamp(0.0, 4_000_000.0) * 1_000.0) as u32;
-    thousandths.checked_div(cores.max(1)).unwrap_or(0)
 }
 
 /// The host's answers on the device plane: the work it was offered, run as a

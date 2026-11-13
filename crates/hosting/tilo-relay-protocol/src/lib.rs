@@ -22,8 +22,8 @@
 //!   so a link carries a handle and a key instead of an invitation;
 //! - [`operator`] — the JSON-lines protocol between the public-workspace
 //!   service and each `tilo-relay room` child it runs;
-//! - [`mesh`] — device roles, service capabilities, replication intents and
-//!   the server advertisements devices offer work with;
+//! - [`mesh`] — service capabilities and the server advertisements devices
+//!   offer work with;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
@@ -78,14 +78,14 @@ pub use home_peer::{
     read_home_peers, remember_personal_device, valid_home_peer_label, write_home_peers,
 };
 pub use mesh::{
-    ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,
-    ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities,
+    ComputeAccelerator, DeviceKey, DeviceMeshProfile, PowerAvailability, ServerAdvertisement,
+    ServiceCapabilities,
 };
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};
-pub use work::{WorkFrom, WorkKinds, WorkSetting, WorkWhen};
+pub use work::{Machine, WorkFrom, WorkKinds, WorkSetting, WorkWhen};
 
 /// Domain-separated secret the relay binds, derived from the device secret.
 ///

@@ -11,7 +11,8 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use tilo_relay::{DeviceRole, RelayConfig};
+use tilo_relay::RelayConfig;
+use tilo_relay_protocol::WorkSetting;
 
 const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
 const HOME_PEER_CONFIG: &str = "/etc/tilo/home-peer.toml";
@@ -63,9 +64,11 @@ enum BrokerCommand {
 )]
 struct ApplyRequest {
     identity_root: PathBuf,
-    role: String,
+    /// The work this device takes from other devices.
+    work: WorkSetting,
     workspace_ids: Vec<tilo_relay_protocol::WorkspaceId>,
-    replication: String,
+    /// Whether it keeps full copies of its workspaces' files.
+    full_content_replication: bool,
     inbound_relay: bool,
     remote_control_relay: bool,
     app_serving: bool,
@@ -99,24 +102,12 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
     } else {
         RelayConfig::default()
     };
-    config.device_role = match request.role.as_str() {
-        "interactive" => DeviceRole::Interactive,
-        "hybrid" => DeviceRole::Hybrid,
-        "always-on" => DeviceRole::AlwaysOnServer,
-        _ => bail!("unknown device role"),
-    };
-    let serving = config.device_role.can_serve();
-    let full = config.device_role == DeviceRole::AlwaysOnServer;
+    config.work = request.work.clone();
+    let serving = !config.work.takes_nothing();
     // Which workspaces this device holds, and how much of each, is the workspaces'
     // own hosting membership, not this file's.
-    if !matches!(
-        request.replication.as_str(),
-        "workspace-only" | "on-demand" | "full"
-    ) {
-        bail!("unknown replication intent");
-    }
     config.services.workspace_replication = serving;
-    config.services.full_content_replication = full;
+    config.services.full_content_replication = serving && request.full_content_replication;
     config.services.inbound_relay = serving && request.inbound_relay;
     config.services.remote_control_relay = serving && request.remote_control_relay;
     config.services.app_serving = serving && request.app_serving;
@@ -197,8 +188,12 @@ fn export_local_home_peer(
     Ok(bytes)
 }
 
+fn takes_work(config: &RelayConfig) -> bool {
+    !config.work.takes_nothing()
+}
+
 fn needs_local_home_peer_export(config: &RelayConfig, home_peer_exists: bool) -> bool {
-    config.device_role == DeviceRole::AlwaysOnServer && !home_peer_exists
+    config.services.full_content_replication && !home_peer_exists
 }
 
 fn project_home_peer_workspaces(
@@ -261,14 +256,14 @@ const fn service_state_actions(state: ServiceState) -> (&'static str, &'static s
 }
 
 fn apply_services(config: &RelayConfig) -> anyhow::Result<()> {
-    if config.device_role.can_serve() {
+    if takes_work(config) {
         service("enable", "tilo-relay.service")?;
         service("restart", "tilo-relay.service")?;
     } else {
         service("disable", "tilo-relay.service")?;
         service("stop", "tilo-relay.service")?;
     }
-    if config.device_role == DeviceRole::AlwaysOnServer {
+    if config.services.full_content_replication {
         service("enable", "tilo-fs-replica.service")?;
         service("restart", "tilo-fs-replica.service")?;
     } else {
@@ -754,20 +749,20 @@ mod tests {
         {
             let request = ApplyRequest {
                 identity_root: PathBuf::from("/var/lib/tilo"),
-                role: "always-on".into(),
+                work: WorkSetting::own_person(),
                 workspace_ids: vec![
                     tilo_relay_protocol::WorkspaceId::from_u128(9),
                     tilo_relay_protocol::WorkspaceId::from_u128(2),
                     tilo_relay_protocol::WorkspaceId::from_u128(9),
                 ],
-                replication: "full".into(),
+                full_content_replication: true,
                 inbound_relay: true,
                 remote_control_relay: false,
                 app_serving: false,
                 compute: false,
             };
             let config = desired_config(&request).unwrap();
-            assert_eq!(config.device_role, DeviceRole::AlwaysOnServer);
+            assert!(!config.work.takes_nothing());
             assert!(config.services.full_content_replication);
         }
         {
@@ -833,9 +828,9 @@ mod tests {
         {
             let config = desired_config(&ApplyRequest {
                 identity_root: PathBuf::from("/var/lib/tilo"),
-                role: "always-on".into(),
+                work: WorkSetting::own_person(),
                 workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(12)],
-                replication: "on-demand".into(),
+                full_content_replication: true,
                 inbound_relay: true,
                 remote_control_relay: false,
                 app_serving: false,

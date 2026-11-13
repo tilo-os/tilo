@@ -25,7 +25,7 @@ mod cases {
     use tilo_relay::compute::COMPUTE_JOB_SCHEMA_VERSION;
     use tilo_relay::{
         ComputeContentStore, ComputeJobLifecycle, ComputeJobPhase, ComputeJobResult,
-        ComputeJobSpec, ComputeOutputSource, ComputeResourceLimits, ComputeWorker, DeviceRole,
+        ComputeJobSpec, ComputeOutputSource, ComputeResourceLimits, ComputeWorker,
         InstalledComputeCatalogue, LauncherComputeSandbox, PowerAvailability, ServerAdvertisement,
         ServiceCapabilities,
     };
@@ -184,7 +184,6 @@ mod cases {
     fn advertisement() -> ServerAdvertisement {
         ServerAdvertisement {
             device: WORKER,
-            role: DeviceRole::AlwaysOnServer,
             services: ServiceCapabilities {
                 compute: true,
                 ..ServiceCapabilities::default()

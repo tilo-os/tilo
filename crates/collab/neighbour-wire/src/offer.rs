@@ -4,7 +4,7 @@
 //! A request this device holds runs here. One it does not hold — an app it
 //! has not installed, a record outside what it keeps, a job better run
 //! elsewhere — is offered to the devices that may run work for the person,
-//! and each answers with what it knows of itself ([`State`]). The answer is
+//! and each answers with what it knows of itself ([`Answer`]). The answer is
 //! a routing preference and nothing more: the device that is picked still
 //! decides the real request through its own dispatcher, against the caller
 //! it authenticated. So nothing here is signed, and an answer that names
@@ -14,11 +14,12 @@
 //! keeps it under the device that asked and that id, and the invocation that
 //! follows names it, so work is run for the device whose work it is.
 //!
-//! [`State::verdict`] is the one place a decline is decided, in the order a
-//! person would state the rules; the requester weighs and ranks the willing
-//! answers (`tilo_peer_state::placement`), and the work travels in the
-//! question ([`Work`]) and the answer ([`Answer`]) so that moving a job's
-//! inputs is weighed against running it where it was asked.
+//! The device asked decides whether it takes the work ([`Answer::verdict`]):
+//! it is the one that knows its person's work setting, its battery and what
+//! its machine has free. The requester weighs and ranks the willing answers
+//! (`tilo_peer_state::placement`), and the work travels in the question
+//! ([`Work`]) and the answer so that moving a job's inputs is weighed
+//! against running it where it was asked.
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::Offload;
@@ -33,25 +34,24 @@ pub enum Power {
     Charging,
     /// No reliable observation.
     Unknown,
-    /// Running from a battery above the critical threshold.
+    /// Running from a battery.
     Battery,
 }
 
-/// Why a device will not run the request it was offered.
+/// Why a device will not run the work it was offered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decline {
-    /// The device that asked. It is never its own remote worker: work with
-    /// no other willing device runs where it was asked, or not at all.
-    Requester,
     /// Not connected, so the offer never came back.
     Offline,
-    /// It cannot run the app the request's action belongs to.
+    /// It cannot run the app the work's action belongs to.
     AppNotInstalled,
-    /// Its person asked the device to avoid discretionary work.
-    DataSaving,
-    /// Its battery is critically low.
-    CriticalBattery,
+    /// Its person's work setting does not take this work.
+    NotTakingWork,
+    /// Its setting takes work only while charging, and it runs on battery.
+    OnBattery,
+    /// Its setting takes work only with more of the machine free than it has.
+    LowResources,
     /// It is running as many jobs as it takes on at once: an offer it cannot
     /// admit now is answered not here, rather than won and refused later.
     AtCapacity,
@@ -62,112 +62,64 @@ impl Decline {
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {
-            Self::Requester => "requester",
             Self::Offline => "offline",
             Self::AppNotInstalled => "app_not_installed",
-            Self::DataSaving => "data_saving",
-            Self::CriticalBattery => "critical_battery",
+            Self::NotTakingWork => "not_taking_work",
+            Self::OnBattery => "on_battery",
+            Self::LowResources => "low_resources",
             Self::AtCapacity => "at_capacity",
         }
     }
 }
 
-/// What a device says of itself when it is offered work: the answer to one
-/// offer, from its own state.
-///
-/// The answerer fills the facts it knows of itself; the device that asked
-/// overrides the ones it knows better — that the device answered at all
-/// (`online`), whether it is the one asking (`requester`), and the round trip
-/// it measured (`latency_ms`).
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag is a separate fact the device reports, not a mode"
-)]
+/// What a willing device is ranked by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct State {
-    /// Whether this is the device that asked.
-    pub requester: bool,
-    /// Whether it is connected right now.
-    pub online: bool,
-    /// Whether it can run the request's app.
-    pub app_installed: bool,
-    /// Its person asked it to avoid discretionary work.
-    pub data_saving: bool,
-    /// Bumped-out-of-shape low battery: not while there is anything else.
-    pub critical_battery: bool,
-    /// Operator preference; higher wins.
-    pub priority: i32,
+pub struct Rank {
+    /// Power standing; better wins.
     pub power: Power,
     /// Work already in hand per thousand slots; lower wins.
     pub load_permille: u32,
-    /// How many more jobs it can start right now, when it keeps count: zero
-    /// says it is at its limit and takes nothing more, never that it is
-    /// slow. `None` for a device that runs what it is handed.
-    pub free_slots: Option<u32>,
-    /// Measured round trip to the requester; lower wins.
+    /// Measured round trip to the requester; lower wins. The requester sets
+    /// it: it is the round trip it saw, not the device's own figure.
     pub latency_ms: u32,
 }
 
-impl State {
-    /// What a device that never answered is taken to have said: it is not
-    /// there.
+/// One device's answer to an offer: what it is ranked by, or why it does not
+/// take the work.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Answer {
+    /// What it said of the offer.
+    pub verdict: Result<Rank, Decline>,
+    /// The digest of each of the job's inputs it already holds, so moving
+    /// them is no part of the choice ([`Work::inputs`]).
+    pub holds: Vec<[u8; 32]>,
+}
+
+impl Answer {
+    /// A device that takes the work, ranked by what it reported.
     #[must_use]
-    pub const fn unreachable() -> Self {
+    pub fn taking(rank: Rank, holds: Vec<[u8; 32]>) -> Self {
         Self {
-            requester: false,
-            online: false,
-            app_installed: false,
-            data_saving: false,
-            critical_battery: false,
-            priority: 0,
-            power: Power::Unknown,
-            load_permille: 0,
-            free_slots: None,
-            latency_ms: 0,
+            verdict: Ok(rank),
+            holds,
         }
     }
 
-    /// What this device ranks by, or why it declines.
-    ///
-    /// # Errors
-    ///
-    /// The first rule it fails, in the order a person would state them.
-    pub fn verdict(&self) -> Result<Rank, Decline> {
-        let decline = if self.requester {
-            Decline::Requester
-        } else if !self.online {
-            Decline::Offline
-        } else if !self.app_installed {
-            Decline::AppNotInstalled
-        } else if self.free_slots == Some(0) {
-            Decline::AtCapacity
-        } else if self.data_saving {
-            Decline::DataSaving
-        } else if self.critical_battery {
-            Decline::CriticalBattery
-        } else {
-            return Ok(Rank {
-                priority: self.priority,
-                power: self.power,
-                load_permille: self.load_permille,
-                latency_ms: self.latency_ms,
-            });
-        };
-        Err(decline)
+    /// A device that does not take the work, `decline` being why.
+    #[must_use]
+    pub fn declining(decline: Decline) -> Self {
+        Self {
+            verdict: Err(decline),
+            holds: Vec::new(),
+        }
     }
-}
 
-/// What a willing device was ranked by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Rank {
-    /// Operator preference; higher wins.
-    pub priority: i32,
-    /// Power standing; better wins.
-    pub power: Power,
-    /// Work in hand per thousand slots; lower wins.
-    pub load_permille: u32,
-    /// Measured round trip; lower wins.
-    pub latency_ms: u32,
+    /// What a device that never answered is taken to have said: it is not
+    /// there, and it holds none of the job's inputs.
+    #[must_use]
+    pub fn away() -> Self {
+        Self::declining(Decline::Offline)
+    }
 }
 
 /// What would run on the device that is offered it: an app's action on one
@@ -202,7 +154,7 @@ impl Route {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Query {
     /// The workspace the route would run in: a device that does not hold it
-    /// says so.
+    /// never answers.
     pub workspace: String,
     /// Names the offer: the invocation the work would run. A device that
     /// answers keeps the offer under this id and the device that asked, and
@@ -256,63 +208,45 @@ impl Work {
     }
 }
 
-/// One device's answer to an offer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Answer {
-    /// What it says of itself.
-    pub state: State,
-    /// The digest of each of the job's inputs it already holds, so moving
-    /// them is no part of the choice ([`Work::inputs`]).
-    pub holds: Vec<[u8; 32]>,
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Answer, Decline, Power, Query, Route, State, Work};
+    use super::{Answer, Decline, Power, Query, Rank, Route, Work};
 
-    fn worker() -> State {
-        State {
-            requester: false,
-            online: true,
-            app_installed: true,
-            data_saving: false,
-            critical_battery: false,
-            priority: 0,
+    fn rank() -> Rank {
+        Rank {
             power: Power::External,
             load_permille: 0,
-            free_slots: Some(1),
             latency_ms: 20,
         }
     }
 
-    /// Each rule passes a device over with its own reason, in the order a
-    /// person would state them, and a healthy device ranks by what it
-    /// reported.
+    /// A device that answered without a reason to decline takes the work and
+    /// ranks by what it reported; one that never answered is not there.
     #[test]
-    fn each_rule_passes_a_device_over_with_its_reason() {
-        type Change = fn(&mut State);
-        let cases: [(Change, Decline); 5] = [
-            (|w| w.requester = true, Decline::Requester),
-            (|w| w.online = false, Decline::Offline),
-            (|w| w.app_installed = false, Decline::AppNotInstalled),
-            (|w| w.data_saving = true, Decline::DataSaving),
-            (|w| w.free_slots = Some(0), Decline::AtCapacity),
-        ];
-        for (change, reason) in cases {
-            let mut state = worker();
-            change(&mut state);
-            assert_eq!(state.verdict(), Err(reason), "{reason:?}");
-        }
+    fn an_answer_says_either_what_a_device_is_ranked_by_or_why_it_declines() {
         assert_eq!(
-            worker().verdict().map(|rank| rank.load_permille),
-            Ok(0),
-            "a healthy device ranks by what it reported"
+            Answer::taking(rank(), vec![[3; 32]]).verdict,
+            Ok(rank()),
+            "a device with no reason to decline takes the work"
         );
         assert_eq!(
-            State::unreachable().verdict(),
+            Answer::away().verdict,
             Err(Decline::Offline),
             "a device that never answered is not there"
         );
+        for (decline, token) in [
+            (Decline::Offline, "offline"),
+            (Decline::AppNotInstalled, "app_not_installed"),
+            (Decline::NotTakingWork, "not_taking_work"),
+            (Decline::OnBattery, "on_battery"),
+            (Decline::LowResources, "low_resources"),
+            (Decline::AtCapacity, "at_capacity"),
+        ] {
+            let answer = Answer::declining(decline);
+            assert_eq!(answer.verdict, Err(decline));
+            assert!(answer.holds.is_empty(), "a decline holds nothing");
+            assert_eq!(decline.token(), token);
+        }
     }
 
     /// A question and its shape survive a trip through the wire, and a
@@ -339,10 +273,7 @@ mod tests {
         };
         let bytes = postcard::to_allocvec(&query).unwrap();
         assert_eq!(postcard::from_bytes::<Query>(&bytes).unwrap(), query);
-        let answer = Answer {
-            state: worker(),
-            holds: vec![[3; 32]],
-        };
+        let answer = Answer::taking(rank(), vec![[3; 32]]);
         let bytes = postcard::to_allocvec(&answer).unwrap();
         assert_eq!(postcard::from_bytes::<Answer>(&bytes).unwrap(), answer);
     }

@@ -32,7 +32,7 @@ if [ ! -s /etc/tilo/relay.toml ]; then
         'home_peer_bundle = "/etc/tilo/home-peer.toml"' \
         'iroh_listen = "0.0.0.0:4433"' \
         'trust_policy = { kind = "allow_matching_user" }' \
-        'device_role = "always_on_server"' \
+        'work = { kinds = { actions = true, indexing = true, model_calls = true, builds = true }, from = "own_devices", when = { charging_only = false, free_cpu_percent = 0, free_memory_percent = 0 } }' \
         > /etc/tilo/relay.toml
 fi
 

@@ -27,7 +27,7 @@ use std::{
 };
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use neighbour_wire::offer::{Answer, MAX_WORK_INPUTS, Power, Route, State, Work};
+use neighbour_wire::offer::{Answer, MAX_WORK_INPUTS, Power, Route, Work};
 use tilo_action_broker::record_content::{ContentState, RouteContent};
 use tilo_action_broker::route::CrdtRoute;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
@@ -37,6 +37,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionPlane, FOLLOW_DEADLINE, OFFER_DEADLINE, RemoteDevice};
 use tilo_peer_state::offload::{OffloadPeers, RanAway};
 use tilo_peer_state::placement::Choice;
+use tilo_relay_protocol::{Machine, WorkSetting};
 
 // A host that keeps the workspaces' content itself implements the media a
 // route binds its inputs from in the same scope the apps' own content is
@@ -238,51 +239,25 @@ impl WorkspaceMedia for RouteMedia {
 }
 
 /// What this device says of itself when another device of one of its
-/// workspaces offers it work: whether it runs `app`, how it is powered, how
-/// much it has in hand, and which of the job's inputs it holds already — a
-/// device that has them is not weighed as receiving them.
+/// workspaces offers it work: what its person's work setting `work` takes in
+/// the state this machine is in, and which of the job's inputs it holds
+/// already — a device that has them is not weighed as receiving them.
+///
+/// The setting is the whole of the decision ([`WorkSetting::answer`]): no
+/// other path here asks the battery or the load what to take.
 #[must_use]
-pub fn own_offering(app: &str, holds: Vec<[u8; 32]>) -> Answer {
-    let (critical_battery, power) = power();
-    Answer {
-        state: State {
-            requester: false,
-            online: true,
-            app_installed: app_catalogue::apps::read_one_from_env(app)
-                .is_ok_and(|row| row.is_some()),
-            // Nothing here asks a device to keep off its discretionary work.
-            data_saving: false,
-            critical_battery,
-            priority: 0,
-            power,
-            load_permille: load_permille(),
-            // A session runs the work it is handed, one action at a time in
-            // the app that asked: it keeps no queue to be full of.
-            free_slots: None,
-            latency_ms: 0,
-        },
-        holds,
-    }
+pub fn own_offering(work: &WorkSetting, app: &str, holds: Vec<[u8; 32]>) -> Answer {
+    let installed = app_catalogue::apps::read_one_from_env(app).is_ok_and(|row| row.is_some());
+    work.answer(Machine::here(power()), installed, None, holds)
 }
 
-/// Battery share at or below which a device takes on nobody else's work while
-/// it drains.
-const CRITICAL_BATTERY_PERCENT: u8 = 10;
-
-/// How this device is powered, and whether its battery is too low to take on
-/// anyone else's work.
-fn power() -> (bool, Power) {
+/// How this device is powered, for the round to weigh it by.
+fn power() -> Power {
     let snapshot = tilo_power_mgmt::sysfs::battery_snapshot();
     if !snapshot.present {
-        return (false, Power::External);
+        return Power::External;
     }
-    let draining = matches!(
-        snapshot.state,
-        tilo_power_mgmt::BatteryState::Discharging
-            | tilo_power_mgmt::BatteryState::PendingDischarge
-    );
-    let critical = draining && snapshot.percent <= CRITICAL_BATTERY_PERCENT;
-    let power = match snapshot.state {
+    match snapshot.state {
         tilo_power_mgmt::BatteryState::Charging | tilo_power_mgmt::BatteryState::PendingCharge => {
             Power::Charging
         }
@@ -292,33 +267,7 @@ fn power() -> (bool, Power) {
         tilo_power_mgmt::BatteryState::Empty | tilo_power_mgmt::BatteryState::Unknown => {
             Power::Unknown
         }
-    };
-    (critical, power)
-}
-
-/// What share of this device is already busy, per thousand, from the load the
-/// machine reports against the processors it has.
-fn load_permille() -> u32 {
-    let cores =
-        u32::try_from(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
-            .unwrap_or(u32::MAX);
-    let Some(load) = std::fs::read_to_string("/proc/loadavg").ok() else {
-        return 0;
-    };
-    let Some(one) = load.split_whitespace().next() else {
-        return 0;
-    };
-    // The kernel reports the one-minute load in hundredths; read it as
-    // thousandths so that dividing by the processors stays whole numbers.
-    let (whole, fraction) = one.split_once('.').unwrap_or((one, ""));
-    let whole: u32 = whole.parse().unwrap_or(0);
-    let mut fraction = fraction.chars().take(3).collect::<String>();
-    while fraction.len() < 3 {
-        fraction.push('0');
     }
-    let fraction: u32 = fraction.parse().unwrap_or(0);
-    let thousandths = whole.saturating_mul(1_000).saturating_add(fraction);
-    thousandths.checked_div(cores.max(1)).unwrap_or(0)
 }
 
 /// Whether a device of a workspace is connected here now, as the round asks

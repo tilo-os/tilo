@@ -10,7 +10,7 @@
     reason = "in a test an unwrap is the assertion, not a hazard"
 )]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -18,9 +18,8 @@ use collab_types::WorkspaceId;
 use tilo_relay_protocol::metrics::WorkspaceEgress;
 use tilo_relay_protocol::sealed_invitations as SealedInvitations;
 use tilo_relay_protocol::{
-    ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
-    PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent, ReplicationResource,
-    ServiceCapabilities, TrustPolicy,
+    ComputeAccelerator, DeviceMeshProfile, HomePeerRegistration, MetricsSnapshot,
+    PowerAvailability, ProcessLease, RelayConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
 };
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
@@ -29,13 +28,6 @@ fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
 
 fn from_postcard_hex<T: serde::de::DeserializeOwned>(encoded: &str) -> T {
     postcard::from_bytes(&hex::decode(encoded).unwrap()).unwrap()
-}
-
-fn selected_resources() -> ReplicationIntent {
-    ReplicationIntent::Resources(BTreeSet::from([
-        ReplicationResource::MediaLibrary,
-        ReplicationResource::AppRecords("so.tilo.notes".to_string()),
-    ]))
 }
 
 /// Pins `encoded` as the exact JSON of `value`, and decodes it back.
@@ -62,23 +54,15 @@ fn json_encodings_are_pinned() {
     // Device mesh profile.
     let profile = DeviceMeshProfile {
         device: [1; 32],
-        role: DeviceRole::Hybrid,
         services: ServiceCapabilities::home_peer(),
-        replication: BTreeMap::from([
-            (7, ReplicationIntent::FullWorkspace),
-            (9, selected_resources()),
-        ]),
         filesystem_endpoints: Vec::new(),
     };
     assert_json(
         &profile,
         concat!(
             r#"{"device":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"#,
-            r#""role":"hybrid","#,
             r#""services":{"workspace_replication":true,"full_content_replication":true,"#,
             r#""inbound_relay":true,"remote_control_relay":true,"app_serving":false,"compute":false},"#,
-            r#""replication":{"7":"full_workspace","#,
-            r#""9":{"resources":[{"kind":"media_library"},{"kind":"app_records","id":"so.tilo.notes"}]}},"#,
             r#""filesystem_endpoints":[]}"#,
         ),
     );
@@ -89,17 +73,13 @@ fn json_encodings_are_pinned() {
         r#"["gpu",{"battery":15}]"#
     );
 
-    // Replication intents.
+    // The work a device takes.
     assert_json(
-        &vec![
-            ReplicationIntent::WorkspaceOnly,
-            ReplicationIntent::OnDemand,
-            ReplicationIntent::FullWorkspace,
-            selected_resources(),
-        ],
+        &WorkSetting::own_person(),
         concat!(
-            r#"["workspace_only","on_demand","full_workspace","#,
-            r#"{"resources":[{"kind":"media_library"},{"kind":"app_records","id":"so.tilo.notes"}]}]"#,
+            r#"{"kinds":{"actions":true,"indexing":true,"model_calls":true,"builds":true},"#,
+            r#""from":"own_devices","#,
+            r#""when":{"charging_only":false,"free_cpu_percent":20,"free_memory_percent":20}}"#,
         ),
     );
 
@@ -250,31 +230,11 @@ fn json_encodings_are_pinned() {
     assert!(serde_json::from_str::<SealedInvitations::Stored>(r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl","extra":1}"#).is_err());
 }
 
-// Same variants, in the same order, as `ReplicationResource`.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
-#[allow(dead_code, reason = "only some variants are built")]
-enum TaggedAll {
-    Workspace,
-    FileTree,
-    FileThumbnails,
-    FileBlobs,
-    EbookLibrary,
-    MediaLibrary,
-    AppRecords(String),
-}
-
 #[test]
 fn postcard_wire_encodings_and_shard_ids_are_pinned() {
     // Management responses and compute worker adverts carry these fields in
     // postcard frames.
-    assert_postcard(
-        &(
-            DeviceRole::AlwaysOnServer,
-            ServiceCapabilities::personal_server(),
-        ),
-        "01010101010101",
-    );
+    assert_postcard(&ServiceCapabilities::personal_server(), "0101010101");
 
     // Mesh enums.
     assert_postcard(
@@ -288,23 +248,10 @@ fn postcard_wire_encodings_and_shard_ids_are_pinned() {
     );
     assert_eq!(postcard_hex(&ComputeAccelerator::Gpu), "00");
 
-    // Mesh profiles may travel in postcard frames as well as JSON. Postcard is
-    // not self-describing, so the adjacently tagged JSON shape of
-    // `ReplicationResource` could be encoded but never decoded there.
-    assert_postcard(
-        &vec![
-            ReplicationIntent::WorkspaceOnly,
-            ReplicationIntent::OnDemand,
-            ReplicationIntent::FullWorkspace,
-            selected_resources(),
-        ],
-        "04000102030205060d736f2e74696c6f2e6e6f746573",
-    );
+    // Mesh profiles may travel in postcard frames as well as JSON.
     let profile = DeviceMeshProfile {
         device: [1; 32],
-        role: DeviceRole::Hybrid,
         services: ServiceCapabilities::home_peer(),
-        replication: BTreeMap::from([(9, selected_resources())]),
         filesystem_endpoints: Vec::new(),
     };
     let bytes = postcard::to_stdvec(&profile).unwrap();
@@ -312,26 +259,6 @@ fn postcard_wire_encodings_and_shard_ids_are_pinned() {
         postcard::from_bytes::<DeviceMeshProfile>(&bytes).unwrap(),
         profile
     );
-
-    // Before binary formats got their own representation, the adjacently
-    // tagged derive was used for every format. Anything it encoded into
-    // postcard must still decode.
-    for (tagged, resource) in [
-        (TaggedAll::Workspace, ReplicationResource::Workspace),
-        (TaggedAll::FileBlobs, ReplicationResource::FileBlobs),
-        (TaggedAll::MediaLibrary, ReplicationResource::MediaLibrary),
-        (
-            TaggedAll::AppRecords("so.tilo.notes".to_string()),
-            ReplicationResource::AppRecords("so.tilo.notes".to_string()),
-        ),
-    ] {
-        let legacy = postcard::to_stdvec(&tagged).unwrap();
-        assert_eq!(postcard::to_stdvec(&resource).unwrap(), legacy);
-        assert_eq!(
-            postcard::from_bytes::<ReplicationResource>(&legacy).unwrap(),
-            resource
-        );
-    }
 }
 
 #[test]
@@ -347,7 +274,7 @@ fn toml_encodings_are_pinned() {
         trust_policy: TrustPolicy::AllowList {
             users: vec!["ab".repeat(32)],
         },
-        device_role: DeviceRole::AlwaysOnServer,
+        work: WorkSetting::own_person(),
         services: ServiceCapabilities::home_peer(),
         web_entry: None,
         member_limits: None,
@@ -358,7 +285,20 @@ state_root = "/var/lib/tilo-relay"
 full_replica_status = "/var/lib/tilo/full-replica/status.json"
 home_peer_bundle = "/etc/tilo/home-peer.toml"
 iroh_listen = "0.0.0.0:4919"
-device_role = "always_on_server"
+
+[work]
+from = "own_devices"
+
+[work.kinds]
+actions = true
+indexing = true
+model_calls = true
+builds = true
+
+[work.when]
+charging_only = false
+free_cpu_percent = 20
+free_memory_percent = 20
 
 [trust_policy]
 kind = "allow_list"

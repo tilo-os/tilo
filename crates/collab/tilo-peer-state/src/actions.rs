@@ -40,7 +40,7 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{ActionReplayWindow, DeviceAction, PlaneFrame, SignedDeviceAction};
-use neighbour_wire::offer::{Answer, Query, Route, State, Work};
+use neighbour_wire::offer::{Answer, Decline, Query, Route, Work};
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
@@ -566,19 +566,9 @@ impl ActionPlane {
             return None;
         }
         let Some(offering) = self.0.offering.lock_recover().clone() else {
-            return Some(Answer {
-                state: State {
-                    online: true,
-                    ..State::unreachable()
-                },
-                holds: Vec::new(),
-            });
+            return Some(Answer::declining(Decline::AppNotInstalled));
         };
         let mut answer = offering.report(remote, query);
-        // What the plane knows better than the device's own report.
-        answer.state.requester = false;
-        answer.state.online = true;
-        answer.state.latency_ms = 0;
         // Only the inputs the job named, so no answer carries more than the
         // question did.
         answer
@@ -963,13 +953,9 @@ async fn await_answer<T: Send + 'static>(
     }
 }
 
-/// What a device that never answered is taken to have said: it is not
-/// there, and it holds none of the job's inputs.
+/// What a device that never answered is taken to have said.
 fn away() -> Answer {
-    Answer {
-        state: State::unreachable(),
-        holds: Vec::new(),
-    }
+    Answer::away()
 }
 
 /// One other device, as an [`ActionHost`]: its actions through the same
@@ -1137,7 +1123,10 @@ impl Device {
         let Some(mut heard) = heard.await else {
             return away();
         };
-        heard.state.latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+        // The round trip is the requester's own measurement, not the device's.
+        if let Ok(rank) = &mut heard.verdict {
+            rank.latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+        }
         heard
     }
 

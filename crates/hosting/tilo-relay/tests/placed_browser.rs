@@ -135,7 +135,7 @@ async fn placed() -> Placed {
     let operator = TestUser::fresh("operator");
     let desk = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &desk, WorkSetting::none()).await;
+    let hosted = host_on(&operator, &desk, WorkSetting::own_person_always()).await;
     let workspace = hosted
         .host
         .workspaces()
