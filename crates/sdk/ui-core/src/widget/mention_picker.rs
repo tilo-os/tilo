@@ -452,71 +452,75 @@ mod tests {
         ]
     }
 
-    /// A face in the `@` list wears the hue the workspace announced for that person, never one
-    /// derived from their id here.
-    #[test]
-    fn a_candidate_wears_the_hue_the_member_list_announced() {
-        let mut presence = PresenceCtx::empty();
-        presence.set_display_name(UserId("u_ada".into()), "Ada");
-        presence.set_presence_hue(UserId("u_ada".into()), PresenceHue::Violet);
-        let announced = presence.hue_of("u_ada");
-        assert_ne!(
-            announced,
-            PresenceHue::of_identity("u_ada"),
-            "the test needs a hue her id does not derive"
-        );
-        let ada = presence
-            .roster()
-            .into_iter()
-            .find(|member| member.id == MemberId::person("u_ada"))
-            .expect("Ada is in the roster");
-        assert_eq!(MentionCandidate::of(&presence, ada).hue, announced);
-    }
+    tilo_test_env::scenario! {
+        fn the_mention_picker_queries_ranks_and_follows_the_caret;
 
-    #[test]
-    fn an_at_opening_a_word_starts_a_query_and_one_inside_a_word_does_not() {
-        let _settled = crate::motion::testing::settled();
-        assert_eq!(
-            query_at_caret("hi @ad", 6),
-            Some(MentionQuery {
-                start: 3,
-                query: "ad".into()
-            })
-        );
-        assert_eq!(query_at_caret("mail me@ad", 10), None);
-        assert_eq!(query_at_caret("@a\nb", 4), None);
-    }
+        phase a_candidate_wears_the_hue_the_member_list_announced;
+        // A face in the `@` list wears the hue the workspace announced for that person, never one
+        // derived from their id here.
+        {
+            let mut presence = PresenceCtx::empty();
+            presence.set_display_name(UserId("u_ada".into()), "Ada");
+            presence.set_presence_hue(UserId("u_ada".into()), PresenceHue::Violet);
+            let announced = presence.hue_of("u_ada");
+            assert_ne!(
+                announced,
+                PresenceHue::of_identity("u_ada"),
+                "the test needs a hue her id does not derive"
+            );
+            let ada = presence
+                .roster()
+                .into_iter()
+                .find(|member| member.id == MemberId::person("u_ada"))
+                .expect("Ada is in the roster");
+            assert_eq!(MentionCandidate::of(&presence, ada).hue, announced);
+        }
 
-    #[test]
-    fn ranking_prefers_a_whole_name_prefix_then_a_word_prefix() {
-        let _settled = crate::motion::testing::settled();
-        let workspace = workspace();
-        let names: Vec<_> = rank(&workspace, "t")
-            .into_iter()
-            .map(|c| c.name.as_str())
-            .collect();
-        assert_eq!(names, ["Tide", "Alan Turing"]);
-        assert_eq!(rank(&workspace, "").len(), 3);
-        assert!(rank(&workspace, "zz").is_empty());
-    }
+        phase an_at_opening_a_word_starts_a_query_and_one_inside_a_word_does_not;
+        {
+            let _settled = crate::motion::testing::settled();
+            assert_eq!(
+                query_at_caret("hi @ad", 6),
+                Some(MentionQuery {
+                    start: 3,
+                    query: "ad".into()
+                })
+            );
+            assert_eq!(query_at_caret("mail me@ad", 10), None);
+            assert_eq!(query_at_caret("@a\nb", 4), None);
+        }
 
-    #[test]
-    fn the_picker_follows_the_caret_and_stays_closed_after_escape() {
-        let _settled = crate::motion::testing::settled();
-        let workspace = workspace();
-        let mut picker = MentionPicker::default();
-        assert!(picker.follow(0, "hello @a", |_| false, &workspace));
-        assert!(picker.is_open());
-        assert_eq!(picker.typed(), 2);
-        let escape = crate::synthetic_input::key_press(Key::Named(NamedKey::Escape), None);
-        assert_eq!(picker.handle_key(&escape), PickerKey::Handled);
-        assert!(!picker.is_open());
-        picker.follow(0, "hello @al", |_| false, &workspace);
-        assert!(!picker.is_open(), "the dismissed @ stays closed");
-        picker.follow(0, "hello @al @t", |_| false, &workspace);
-        assert!(picker.is_open(), "a new @ opens it again");
-        picker.follow(0, "hello @Tide", |at| at == 6, &workspace);
-        assert!(!picker.is_open(), "a finished mention offers nothing");
+        phase ranking_prefers_a_whole_name_prefix_then_a_word_prefix;
+        {
+            let _settled = crate::motion::testing::settled();
+            let workspace = workspace();
+            let names: Vec<_> = rank(&workspace, "t")
+                .into_iter()
+                .map(|c| c.name.as_str())
+                .collect();
+            assert_eq!(names, ["Tide", "Alan Turing"]);
+            assert_eq!(rank(&workspace, "").len(), 3);
+            assert!(rank(&workspace, "zz").is_empty());
+        }
+
+        phase the_picker_follows_the_caret_and_stays_closed_after_escape;
+        {
+            let _settled = crate::motion::testing::settled();
+            let workspace = workspace();
+            let mut picker = MentionPicker::default();
+            assert!(picker.follow(0, "hello @a", |_| false, &workspace));
+            assert!(picker.is_open());
+            assert_eq!(picker.typed(), 2);
+            let escape = crate::synthetic_input::key_press(Key::Named(NamedKey::Escape), None);
+            assert_eq!(picker.handle_key(&escape), PickerKey::Handled);
+            assert!(!picker.is_open());
+            picker.follow(0, "hello @al", |_| false, &workspace);
+            assert!(!picker.is_open(), "the dismissed @ stays closed");
+            picker.follow(0, "hello @al @t", |_| false, &workspace);
+            assert!(picker.is_open(), "a new @ opens it again");
+            picker.follow(0, "hello @Tide", |at| at == 6, &workspace);
+            assert!(!picker.is_open(), "a finished mention offers nothing");
+        }
     }
 }
 

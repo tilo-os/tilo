@@ -238,47 +238,142 @@ mod tests {
         }
     }
 
-    /// On a canvas a window is carried by its title, and the carry owns the
-    /// pointer until it is let go: the deck lays every strip's row over the
-    /// canvas, and another row must not take the motion or the release. A
-    /// drag on empty canvas is never a strip pan.
-    #[test]
-    fn a_window_is_carried_by_its_title_and_owns_the_pointer_until_let_go() {
-        let mut row = GroupRow::new(vec![make_group(1, &[10]), make_group(2, &[20])]);
-        row.set_canvas(Some(view(
-            Point::ORIGIN,
-            1.0,
-            &[
-                (1, Rect::new(40.0, 40.0, 640.0, 440.0)),
-                (2, Rect::new(700.0, 40.0, 1200.0, 440.0)),
-            ],
-        )));
-        let (mut row, taffy, root) = relayout_row_owned(row, 1920.0);
-        let title = row.groups[0].tab_rects()[0].center();
-        assert!(
-            row.groups[0].carry_grab_hit(title),
-            "the title carries the window"
-        );
-        press_at(&mut row, &taffy, root, title);
-        for step in 1..=6 {
-            let at = title + Vec2::new(0.0, 30.0 * f64::from(step));
-            dispatch_at(&mut row, &taffy, root, &moved_to(at));
-        }
-        assert!(row.wants_pointer_capture(), "the carry owns the pointer");
-        dispatch_at(&mut row, &taffy, root, &released());
-        assert!(!row.wants_pointer_capture());
-        let (group, place) = row.take_pending_canvas_move().expect("the carry is kept");
-        assert_eq!(group, 1);
-        assert!((place.y0 - 220.0).abs() < 1.0, "{place:?}");
+    tilo_test_env::scenario! {
+        fn windows_stand_pan_and_zoom_on_the_canvas;
 
-        let empty = Point::new(1500.0, 800.0);
-        press_at(&mut row, &taffy, root, empty);
-        for step in 1..=6 {
-            let at = empty + Vec2::new(-40.0 * f64::from(step), 0.0);
-            dispatch_at(&mut row, &taffy, root, &moved_to(at));
+        phase a_window_is_carried_by_its_title_and_owns_the_pointer_until_let_go;
+        // On a canvas a window is carried by its title, and the carry owns the
+        // pointer until it is let go: the deck lays every strip's row over the
+        // canvas, and another row must not take the motion or the release. A
+        // drag on empty canvas is never a strip pan.
+        {
+            let mut row = GroupRow::new(vec![make_group(1, &[10]), make_group(2, &[20])]);
+            row.set_canvas(Some(view(
+                Point::ORIGIN,
+                1.0,
+                &[
+                    (1, Rect::new(40.0, 40.0, 640.0, 440.0)),
+                    (2, Rect::new(700.0, 40.0, 1200.0, 440.0)),
+                ],
+            )));
+            let (mut row, taffy, root) = relayout_row_owned(row, 1920.0);
+            let title = row.groups[0].tab_rects()[0].center();
+            assert!(
+                row.groups[0].carry_grab_hit(title),
+                "the title carries the window"
+            );
+            press_at(&mut row, &taffy, root, title);
+            for step in 1..=6 {
+                let at = title + Vec2::new(0.0, 30.0 * f64::from(step));
+                dispatch_at(&mut row, &taffy, root, &moved_to(at));
+            }
+            assert!(row.wants_pointer_capture(), "the carry owns the pointer");
+            dispatch_at(&mut row, &taffy, root, &released());
+            assert!(!row.wants_pointer_capture());
+            let (group, place) = row.take_pending_canvas_move().expect("the carry is kept");
+            assert_eq!(group, 1);
+            assert!((place.y0 - 220.0).abs() < 1.0, "{place:?}");
+
+            let empty = Point::new(1500.0, 800.0);
+            press_at(&mut row, &taffy, root, empty);
+            for step in 1..=6 {
+                let at = empty + Vec2::new(-40.0 * f64::from(step), 0.0);
+                dispatch_at(&mut row, &taffy, root, &moved_to(at));
+            }
+            assert!(!row.wants_pointer_capture(), "a canvas has no strip to pan");
+            dispatch_at(&mut row, &taffy, root, &released());
         }
-        assert!(!row.wants_pointer_capture(), "a canvas has no strip to pan");
-        dispatch_at(&mut row, &taffy, root, &released());
+
+        phase windows_stand_where_the_canvas_places_them;
+        {
+            let mut row = GroupRow::new(vec![make_group(1, &[10]), make_group(2, &[20])]);
+            row.set_canvas(Some(view(
+                Point::ORIGIN,
+                1.0,
+                &[
+                    (1, Rect::new(100.0, 50.0, 740.0, 530.0)),
+                    (2, Rect::new(800.0, 400.0, 1200.0, 700.0)),
+                ],
+            )));
+            relayout_strip(&mut row, 1920.0);
+            let first = row.groups[0].get_rect();
+            let second = row.groups[1].get_rect();
+            assert!(
+                (first.x0 - 100.0).abs() < 0.5 && (first.y0 - 50.0).abs() < 0.5,
+                "{first:?}"
+            );
+            assert!((first.width() - 640.0).abs() < 0.5, "{first:?}");
+            assert!(
+                (second.x0 - 800.0).abs() < 0.5 && (second.y0 - 400.0).abs() < 0.5,
+                "{second:?}"
+            );
+            assert_eq!(row.canvas_group_at(Point::new(900.0, 500.0)), Some(2));
+            assert_eq!(
+                row.canvas_group_at(Point::new(760.0, 100.0)),
+                None,
+                "between windows"
+            );
+        }
+
+        phase panning_and_zooming_move_every_window_together;
+        {
+            let mut row = GroupRow::new(vec![make_group(1, &[10])]);
+            let place = Rect::new(100.0, 100.0, 500.0, 400.0);
+            row.set_canvas(Some(view(Point::new(50.0, -20.0), 0.5, &[(1, place)])));
+            relayout_strip(&mut row, 1920.0);
+            let rect = row.groups[0].get_rect();
+            assert!(
+                (rect.x0 - 25.0).abs() < 0.5 && (rect.y0 - 60.0).abs() < 0.5,
+                "{rect:?}"
+            );
+            assert!((rect.width() - 200.0).abs() < 0.5, "{rect:?}");
+        }
+
+        phase a_window_with_no_place_yet_is_not_shown;
+        {
+            let mut row = GroupRow::new(vec![make_group(1, &[10]), make_group(2, &[20])]);
+            row.set_canvas(Some(view(
+                Point::ORIGIN,
+                1.0,
+                &[(2, Rect::new(0.0, 0.0, 300.0, 200.0))],
+            )));
+            relayout_strip(&mut row, 1920.0);
+            assert_eq!(row.canvas_group_at(Point::new(10.0, 10.0)), Some(2));
+        }
+
+        phase zooming_keeps_the_point_under_the_pointer;
+        {
+            let mut camera = view(Point::new(10.0, 10.0), 1.0, &[]);
+            let corner = Point::new(0.0, 32.0);
+            let about = Point::new(400.0, 300.0);
+            let before = camera.to_canvas(corner, about);
+            camera.zoom_about(corner, about, 1.5);
+            let after = camera.to_canvas(corner, about);
+            assert!((before - after).hypot() < 1e-9);
+            camera.zoom_about(corner, about, 100.0);
+            assert!((camera.zoom - CANVAS_ZOOM_MAX).abs() < f64::EPSILON);
+            let mut panned = camera.clone();
+            panned.pan_by(Vec2::new(20.0, 0.0));
+            assert!(
+                panned.origin.x < camera.origin.x,
+                "the canvas follows the hand"
+            );
+        }
+
+        phase leaving_the_canvas_lays_the_strip_out_again;
+        {
+            let mut row = GroupRow::new(vec![make_group(1, &[10])]);
+            row.set_canvas(Some(view(
+                Point::ORIGIN,
+                1.0,
+                &[(1, Rect::new(500.0, 300.0, 900.0, 600.0))],
+            )));
+            relayout_strip(&mut row, 1920.0);
+            row.set_canvas(None);
+            relayout_strip(&mut row, 1920.0);
+            let rect = row.groups[0].get_rect();
+            assert!(rect.y0 < 1.0, "back in its strip: {rect:?}");
+        }
     }
 
     fn view(origin: Point, zoom: f64, places: &[(u64, Rect)]) -> CanvasView {
@@ -287,96 +382,5 @@ mod tests {
             zoom,
             places: places.iter().copied().collect(),
         }
-    }
-
-    #[test]
-    fn windows_stand_where_the_canvas_places_them() {
-        let mut row = GroupRow::new(vec![make_group(1, &[10]), make_group(2, &[20])]);
-        row.set_canvas(Some(view(
-            Point::ORIGIN,
-            1.0,
-            &[
-                (1, Rect::new(100.0, 50.0, 740.0, 530.0)),
-                (2, Rect::new(800.0, 400.0, 1200.0, 700.0)),
-            ],
-        )));
-        relayout_strip(&mut row, 1920.0);
-        let first = row.groups[0].get_rect();
-        let second = row.groups[1].get_rect();
-        assert!(
-            (first.x0 - 100.0).abs() < 0.5 && (first.y0 - 50.0).abs() < 0.5,
-            "{first:?}"
-        );
-        assert!((first.width() - 640.0).abs() < 0.5, "{first:?}");
-        assert!(
-            (second.x0 - 800.0).abs() < 0.5 && (second.y0 - 400.0).abs() < 0.5,
-            "{second:?}"
-        );
-        assert_eq!(row.canvas_group_at(Point::new(900.0, 500.0)), Some(2));
-        assert_eq!(
-            row.canvas_group_at(Point::new(760.0, 100.0)),
-            None,
-            "between windows"
-        );
-    }
-
-    #[test]
-    fn panning_and_zooming_move_every_window_together() {
-        let mut row = GroupRow::new(vec![make_group(1, &[10])]);
-        let place = Rect::new(100.0, 100.0, 500.0, 400.0);
-        row.set_canvas(Some(view(Point::new(50.0, -20.0), 0.5, &[(1, place)])));
-        relayout_strip(&mut row, 1920.0);
-        let rect = row.groups[0].get_rect();
-        assert!(
-            (rect.x0 - 25.0).abs() < 0.5 && (rect.y0 - 60.0).abs() < 0.5,
-            "{rect:?}"
-        );
-        assert!((rect.width() - 200.0).abs() < 0.5, "{rect:?}");
-    }
-
-    #[test]
-    fn a_window_with_no_place_yet_is_not_shown() {
-        let mut row = GroupRow::new(vec![make_group(1, &[10]), make_group(2, &[20])]);
-        row.set_canvas(Some(view(
-            Point::ORIGIN,
-            1.0,
-            &[(2, Rect::new(0.0, 0.0, 300.0, 200.0))],
-        )));
-        relayout_strip(&mut row, 1920.0);
-        assert_eq!(row.canvas_group_at(Point::new(10.0, 10.0)), Some(2));
-    }
-
-    #[test]
-    fn zooming_keeps_the_point_under_the_pointer() {
-        let mut camera = view(Point::new(10.0, 10.0), 1.0, &[]);
-        let corner = Point::new(0.0, 32.0);
-        let about = Point::new(400.0, 300.0);
-        let before = camera.to_canvas(corner, about);
-        camera.zoom_about(corner, about, 1.5);
-        let after = camera.to_canvas(corner, about);
-        assert!((before - after).hypot() < 1e-9);
-        camera.zoom_about(corner, about, 100.0);
-        assert!((camera.zoom - CANVAS_ZOOM_MAX).abs() < f64::EPSILON);
-        let mut panned = camera.clone();
-        panned.pan_by(Vec2::new(20.0, 0.0));
-        assert!(
-            panned.origin.x < camera.origin.x,
-            "the canvas follows the hand"
-        );
-    }
-
-    #[test]
-    fn leaving_the_canvas_lays_the_strip_out_again() {
-        let mut row = GroupRow::new(vec![make_group(1, &[10])]);
-        row.set_canvas(Some(view(
-            Point::ORIGIN,
-            1.0,
-            &[(1, Rect::new(500.0, 300.0, 900.0, 600.0))],
-        )));
-        relayout_strip(&mut row, 1920.0);
-        row.set_canvas(None);
-        relayout_strip(&mut row, 1920.0);
-        let rect = row.groups[0].get_rect();
-        assert!(rect.y0 < 1.0, "back in its strip: {rect:?}");
     }
 }

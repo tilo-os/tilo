@@ -223,174 +223,178 @@ mod tests {
         EffectiveMotion::new(Motion::default(), false)
     }
 
-    #[test]
-    fn a_choice_is_remembered_per_size_class() {
-        let mut flap = FlapState::open_when_docked();
-        flap.reconcile(SplitLayout::Docked);
-        assert!(flap.is_open(SplitLayout::Docked));
-        flap.toggle(SplitLayout::Docked);
-        assert!(!flap.is_open(SplitLayout::Docked));
+    tilo_test_env::scenario! {
+        fn a_flap_slides_between_its_endpoints_and_remembers_its_choice;
 
-        flap.reconcile(SplitLayout::Overlay);
-        assert!(!flap.is_open(SplitLayout::Overlay));
-        flap.open();
-        assert!(flap.is_open(SplitLayout::Overlay));
+        phase a_choice_is_remembered_per_size_class;
+        {
+            let mut flap = FlapState::open_when_docked();
+            flap.reconcile(SplitLayout::Docked);
+            assert!(flap.is_open(SplitLayout::Docked));
+            flap.toggle(SplitLayout::Docked);
+            assert!(!flap.is_open(SplitLayout::Docked));
 
-        flap.reconcile(SplitLayout::Docked);
-        assert!(!flap.is_open(SplitLayout::Docked));
-        assert_eq!(flap.reveal(), 0.0, "a resize jumps, it does not slide");
+            flap.reconcile(SplitLayout::Overlay);
+            assert!(!flap.is_open(SplitLayout::Overlay));
+            flap.open();
+            assert!(flap.is_open(SplitLayout::Overlay));
 
-        flap.reconcile(SplitLayout::Overlay);
-        assert!(!flap.is_open(SplitLayout::Overlay));
-    }
+            flap.reconcile(SplitLayout::Docked);
+            assert!(!flap.is_open(SplitLayout::Docked));
+            assert_eq!(flap.reveal(), 0.0, "a resize jumps, it does not slide");
 
-    #[test]
-    fn the_first_frame_after_idle_advances_from_the_toggle() {
-        let layout = SplitLayout::Docked;
-        let mut flap = FlapState::closed_by_default();
-        flap.reconcile(layout);
-        let idle_frame = crate::time::now();
-        assert!(!flap.advance(layout, idle_frame, motion()), "at rest");
-        flap.open();
-        let (toggled, _) = flap.asked.expect("a choice starts the slide");
-        let first_frame = toggled + Duration::from_millis(11);
-        assert!(flap.advance(layout, first_frame, motion()));
-        let first = flap.reveal();
-        assert!(
-            first > 0.0 && first < 0.2,
-            "one frame of progress, got {first}"
-        );
-        assert!(!flap.advance(layout, first_frame + Duration::from_secs(1), motion()));
-        assert_eq!(flap.reveal(), 1.0);
-        assert!(!flap.is_animating(layout));
-    }
+            flap.reconcile(SplitLayout::Overlay);
+            assert!(!flap.is_open(SplitLayout::Overlay));
+        }
 
-    /// Reduced motion turned on mid-slide lands the slide on the next frame:
-    /// a panel never keeps moving after the person asked for nothing to
-    /// move, and what is laid out over it (a drawer's rows) is where it is
-    /// drawn.
-    #[test]
-    fn a_slide_under_way_lands_when_motion_is_reduced() {
-        let layout = SplitLayout::Docked;
-        let mut flap = FlapState::closed_by_default();
-        flap.reconcile(layout);
-        flap.open();
-        let (toggled, _) = flap.asked.expect("a choice starts the slide");
-        let first_frame = toggled + Duration::from_millis(11);
-        assert!(flap.advance(layout, first_frame, motion()), "sliding");
-        assert!(flap.reveal() < 1.0);
-        let reduced = EffectiveMotion::new(Motion::default(), true);
-        assert!(
-            !flap.advance(layout, first_frame + Duration::from_millis(11), reduced),
-            "the next frame under reduced motion is at rest"
-        );
-        assert_eq!(flap.reveal(), 1.0);
-        assert!(!flap.is_animating(layout));
-    }
+        phase the_first_frame_after_idle_advances_from_the_toggle;
+        {
+            let layout = SplitLayout::Docked;
+            let mut flap = FlapState::closed_by_default();
+            flap.reconcile(layout);
+            let idle_frame = crate::time::now();
+            assert!(!flap.advance(layout, idle_frame, motion()), "at rest");
+            flap.open();
+            let (toggled, _) = flap.asked.expect("a choice starts the slide");
+            let first_frame = toggled + Duration::from_millis(11);
+            assert!(flap.advance(layout, first_frame, motion()));
+            let first = flap.reveal();
+            assert!(
+                first > 0.0 && first < 0.2,
+                "one frame of progress, got {first}"
+            );
+            assert!(!flap.advance(layout, first_frame + Duration::from_secs(1), motion()));
+            assert_eq!(flap.reveal(), 1.0);
+            assert!(!flap.is_animating(layout));
+        }
 
-    #[test]
-    fn a_layout_the_flap_has_not_reconciled_to_does_not_move() {
-        let docked = SplitLayout::Docked;
-        let mut flap = FlapState::open_when_docked();
-        flap.reconcile(docked);
-        flap.close();
-        let (asked, _) = flap.asked.expect("asked");
-        flap.advance(docked, asked + Duration::from_millis(11), motion());
-        let drawn = flap.reveal();
-        assert!(drawn > 0.0 && drawn < 1.0, "sliding, got {drawn}");
-
-        assert_eq!(flap.reveal_in(SplitLayout::Overlay), 0.0);
-        assert!(
-            !flap.is_animating(SplitLayout::Overlay),
-            "a layout it has not reconciled to stands at its resolved reveal"
-        );
-
-        let overlay = SplitLayout::Overlay;
-        let mut flap = FlapState::open_when_docked();
-        flap.reconcile(overlay);
-        flap.open();
-        let (asked, _) = flap.asked.expect("asked");
-        flap.advance(overlay, asked + Duration::from_millis(11), motion());
-        assert!(flap.reveal_in(overlay) > 0.0 && flap.reveal_in(overlay) < 1.0);
-        assert_eq!(flap.reveal_in(docked), 1.0);
-        assert!(!flap.is_animating(docked));
-    }
-
-    #[test]
-    fn closing_mirrors_opening() {
-        let layout = SplitLayout::Docked;
-        let mut flap = FlapState::closed_by_default();
-        flap.reconcile(layout);
-        flap.open();
-        let (t0, _) = flap.asked.expect("asked");
-        flap.advance(layout, t0 + Duration::from_millis(40), motion());
-        let opened = flap.reveal();
-        let t1 = t0 + Duration::from_secs(1);
-        flap.advance(layout, t1, motion());
-        flap.close();
-        flap.asked = Some((t1, MotionSource::Pointer));
-        flap.advance(layout, t1 + Duration::from_millis(40), motion());
-        let closed = 1.0 - flap.reveal();
-        assert!((opened - closed).abs() < 1e-6, "{opened} vs {closed}");
-        assert!(opened > 0.3, "it gets going at once: {opened}");
-    }
-
-    #[test]
-    fn a_reversal_mid_slide_continues_from_where_it_is() {
-        let layout = SplitLayout::Docked;
-        let mut flap = FlapState::closed_by_default();
-        flap.reconcile(layout);
-        flap.open();
-        let (t0, _) = flap.asked.expect("asked");
-        let mid = t0 + Duration::from_millis(50);
-        flap.advance(layout, mid, motion());
-        let drawn = flap.reveal();
-        flap.close();
-        flap.asked = Some((mid, MotionSource::Pointer));
-        flap.advance(layout, mid, motion());
-        assert!((flap.reveal() - drawn).abs() < 1e-9, "no jump");
-        flap.advance(layout, mid + Duration::from_millis(8), motion());
-        assert!(
-            flap.reveal() >= drawn - 1e-3,
-            "it brakes before turning back"
-        );
-    }
-
-    #[test]
-    fn settled_reveal_reaches_both_endpoints_before_frames_stop() {
-        for layout in [SplitLayout::Docked, SplitLayout::Overlay] {
+        phase a_slide_under_way_lands_when_motion_is_reduced;
+        // Reduced motion turned on mid-slide lands the slide on the next frame:
+        // a panel never keeps moving after the person asked for nothing to
+        // move, and what is laid out over it (a drawer's rows) is where it is
+        // drawn.
+        {
+            let layout = SplitLayout::Docked;
             let mut flap = FlapState::closed_by_default();
             flap.reconcile(layout);
             flap.open();
-            let later = crate::time::now() + Duration::from_secs(2);
+            let (toggled, _) = flap.asked.expect("a choice starts the slide");
+            let first_frame = toggled + Duration::from_millis(11);
+            assert!(flap.advance(layout, first_frame, motion()), "sliding");
+            assert!(flap.reveal() < 1.0);
+            let reduced = EffectiveMotion::new(Motion::default(), true);
             assert!(
-                flap.is_animating(layout),
-                "asks for the frame that moves it"
+                !flap.advance(layout, first_frame + Duration::from_millis(11), reduced),
+                "the next frame under reduced motion is at rest"
             );
-            assert!(!flap.advance(layout, later, motion()));
+            assert_eq!(flap.reveal(), 1.0);
             assert!(!flap.is_animating(layout));
-            assert_eq!(flap.reveal_in(layout), 1.0);
-            flap.close();
-            flap.asked = Some((later, MotionSource::Pointer));
-            assert!(!flap.advance(layout, later + Duration::from_secs(2), motion()));
-            assert!(!flap.is_animating(layout));
-            assert_eq!(flap.reveal_in(layout), 0.0);
         }
-    }
 
-    #[test]
-    fn a_shortcut_and_reduced_motion_land_at_once() {
-        let layout = SplitLayout::Docked;
-        let now = crate::time::now();
-        let mut flap = FlapState::closed_by_default();
-        flap.reconcile(layout);
-        flap.from_input(MotionSource::Keyboard);
-        flap.open();
-        assert!(!flap.advance(layout, now, motion()));
-        assert_eq!(flap.reveal(), 1.0);
-        flap.close();
-        let reduced = EffectiveMotion::new(Motion::default(), true);
-        assert!(!flap.advance(layout, now, reduced));
-        assert_eq!(flap.reveal(), 0.0);
+        phase a_layout_the_flap_has_not_reconciled_to_does_not_move;
+        {
+            let docked = SplitLayout::Docked;
+            let mut flap = FlapState::open_when_docked();
+            flap.reconcile(docked);
+            flap.close();
+            let (asked, _) = flap.asked.expect("asked");
+            flap.advance(docked, asked + Duration::from_millis(11), motion());
+            let drawn = flap.reveal();
+            assert!(drawn > 0.0 && drawn < 1.0, "sliding, got {drawn}");
+
+            assert_eq!(flap.reveal_in(SplitLayout::Overlay), 0.0);
+            assert!(
+                !flap.is_animating(SplitLayout::Overlay),
+                "a layout it has not reconciled to stands at its resolved reveal"
+            );
+
+            let overlay = SplitLayout::Overlay;
+            let mut flap = FlapState::open_when_docked();
+            flap.reconcile(overlay);
+            flap.open();
+            let (asked, _) = flap.asked.expect("asked");
+            flap.advance(overlay, asked + Duration::from_millis(11), motion());
+            assert!(flap.reveal_in(overlay) > 0.0 && flap.reveal_in(overlay) < 1.0);
+            assert_eq!(flap.reveal_in(docked), 1.0);
+            assert!(!flap.is_animating(docked));
+        }
+
+        phase closing_mirrors_opening;
+        {
+            let layout = SplitLayout::Docked;
+            let mut flap = FlapState::closed_by_default();
+            flap.reconcile(layout);
+            flap.open();
+            let (t0, _) = flap.asked.expect("asked");
+            flap.advance(layout, t0 + Duration::from_millis(40), motion());
+            let opened = flap.reveal();
+            let t1 = t0 + Duration::from_secs(1);
+            flap.advance(layout, t1, motion());
+            flap.close();
+            flap.asked = Some((t1, MotionSource::Pointer));
+            flap.advance(layout, t1 + Duration::from_millis(40), motion());
+            let closed = 1.0 - flap.reveal();
+            assert!((opened - closed).abs() < 1e-6, "{opened} vs {closed}");
+            assert!(opened > 0.3, "it gets going at once: {opened}");
+        }
+
+        phase a_reversal_mid_slide_continues_from_where_it_is;
+        {
+            let layout = SplitLayout::Docked;
+            let mut flap = FlapState::closed_by_default();
+            flap.reconcile(layout);
+            flap.open();
+            let (t0, _) = flap.asked.expect("asked");
+            let mid = t0 + Duration::from_millis(50);
+            flap.advance(layout, mid, motion());
+            let drawn = flap.reveal();
+            flap.close();
+            flap.asked = Some((mid, MotionSource::Pointer));
+            flap.advance(layout, mid, motion());
+            assert!((flap.reveal() - drawn).abs() < 1e-9, "no jump");
+            flap.advance(layout, mid + Duration::from_millis(8), motion());
+            assert!(
+                flap.reveal() >= drawn - 1e-3,
+                "it brakes before turning back"
+            );
+        }
+
+        phase settled_reveal_reaches_both_endpoints_before_frames_stop;
+        {
+            for layout in [SplitLayout::Docked, SplitLayout::Overlay] {
+                let mut flap = FlapState::closed_by_default();
+                flap.reconcile(layout);
+                flap.open();
+                let later = crate::time::now() + Duration::from_secs(2);
+                assert!(
+                    flap.is_animating(layout),
+                    "asks for the frame that moves it"
+                );
+                assert!(!flap.advance(layout, later, motion()));
+                assert!(!flap.is_animating(layout));
+                assert_eq!(flap.reveal_in(layout), 1.0);
+                flap.close();
+                flap.asked = Some((later, MotionSource::Pointer));
+                assert!(!flap.advance(layout, later + Duration::from_secs(2), motion()));
+                assert!(!flap.is_animating(layout));
+                assert_eq!(flap.reveal_in(layout), 0.0);
+            }
+        }
+
+        phase a_shortcut_and_reduced_motion_land_at_once;
+        {
+            let layout = SplitLayout::Docked;
+            let now = crate::time::now();
+            let mut flap = FlapState::closed_by_default();
+            flap.reconcile(layout);
+            flap.from_input(MotionSource::Keyboard);
+            flap.open();
+            assert!(!flap.advance(layout, now, motion()));
+            assert_eq!(flap.reveal(), 1.0);
+            flap.close();
+            let reduced = EffectiveMotion::new(Motion::default(), true);
+            assert!(!flap.advance(layout, now, reduced));
+            assert_eq!(flap.reveal(), 0.0);
+        }
     }
 }

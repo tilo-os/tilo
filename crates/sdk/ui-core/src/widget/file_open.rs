@@ -113,160 +113,164 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::Affine;
 
-    #[test]
-    fn a_drop_opens_without_a_hover_and_a_cancelled_hover_ends() {
-        let mut surface = FileOpenSurface::default();
-        let path = PathBuf::from("/workspace/book.epub");
-        assert_eq!(
-            surface.handle_event(&WindowEvent::DroppedFile(path.clone())),
-            Some(FileOpenEvent::Open(path.clone()))
-        );
-        assert!(!surface.is_hovering());
-        assert_eq!(
-            surface.handle_event(&WindowEvent::HoveredFile(path.clone())),
-            Some(FileOpenEvent::HoverChanged)
-        );
-        assert_eq!(
-            surface.handle_event(&WindowEvent::HoveredFile(path.clone())),
-            None
-        );
-        assert!(surface.is_hovering());
-        assert_eq!(
-            surface.handle_event(&WindowEvent::HoveredFileCancelled),
-            Some(FileOpenEvent::HoverChanged)
-        );
-        assert!(!surface.is_hovering());
-        surface.handle_event(&WindowEvent::HoveredFile(path.clone()));
-        assert_eq!(
-            surface.handle_event(&WindowEvent::DroppedFile(path.clone())),
-            Some(FileOpenEvent::Open(path))
-        );
-        assert!(!surface.is_hovering());
-        assert_eq!(surface.handle_event(&WindowEvent::RedrawRequested), None);
-    }
+    tilo_test_env::scenario! {
+        fn the_open_action_takes_a_drop_and_says_so;
 
-    /// A failed open says what went wrong on its one bounded line; the drop
-    /// hint is the other way in, so it stands under the action rather than
-    /// between the explanation and the button.
-    #[test]
-    fn the_drop_hint_stands_under_the_action() {
-        let bounds = Rect::new(0.0, 0.0, 480.0, 640.0);
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let content = EmptyStateContent {
-            message: Some("Check the file and try again."),
-            action_label: Some("Open another file"),
-            error: true,
-            ..EmptyStateContent::new("Couldn't open this document")
-        };
-        let alone = EmptyState::paint_focused(&mut ctx, bounds, &content, Point::ZERO, false)
-            .expect("the action");
-        let hinted = FileOpenSurface::default()
-            .paint(
-                &mut ctx,
-                bounds,
-                &content,
-                Point::ZERO,
-                false,
-                InteractionEnvironment::default(),
-            )
-            .action
-            .expect("the action");
-        let moved = alone.y0 - hinted.y0;
-        assert!(
-            moved > 4.0,
-            "the hint's line stands under the action: {alone:?} -> {hinted:?}"
-        );
-        assert!(
-            hinted.y1 <= bounds.y1,
-            "the hint keeps the button on screen: {hinted:?}"
-        );
-    }
+        phase a_drop_opens_without_a_hover_and_a_cancelled_hover_ends;
+        {
+            let mut surface = FileOpenSurface::default();
+            let path = PathBuf::from("/workspace/book.epub");
+            assert_eq!(
+                surface.handle_event(&WindowEvent::DroppedFile(path.clone())),
+                Some(FileOpenEvent::Open(path.clone()))
+            );
+            assert!(!surface.is_hovering());
+            assert_eq!(
+                surface.handle_event(&WindowEvent::HoveredFile(path.clone())),
+                Some(FileOpenEvent::HoverChanged)
+            );
+            assert_eq!(
+                surface.handle_event(&WindowEvent::HoveredFile(path.clone())),
+                None
+            );
+            assert!(surface.is_hovering());
+            assert_eq!(
+                surface.handle_event(&WindowEvent::HoveredFileCancelled),
+                Some(FileOpenEvent::HoverChanged)
+            );
+            assert!(!surface.is_hovering());
+            surface.handle_event(&WindowEvent::HoveredFile(path.clone()));
+            assert_eq!(
+                surface.handle_event(&WindowEvent::DroppedFile(path.clone())),
+                Some(FileOpenEvent::Open(path))
+            );
+            assert!(!surface.is_hovering());
+            assert_eq!(surface.handle_event(&WindowEvent::RedrawRequested), None);
+        }
 
-    /// A phone has no pointer to drag a file in with, so its empty state
-    /// invites the one way in it has and never names a gesture it cannot make.
-    #[test]
-    fn a_touch_only_device_is_not_told_to_drop_a_file() {
-        let bounds = Rect::new(0.0, 0.0, 390.0, 700.0);
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let content = EmptyStateContent {
-            action_label: Some("Open a file"),
-            ..EmptyStateContent::new("No file open")
-        };
-        let alone = EmptyState::paint_focused(&mut ctx, bounds, &content, Point::ZERO, false)
-            .expect("the action");
-        let phone = FileOpenSurface::default()
-            .paint(
-                &mut ctx,
-                bounds,
-                &content,
-                Point::ZERO,
-                false,
-                InteractionEnvironment::TOUCH,
-            )
-            .action
-            .expect("the action");
-        assert_eq!(phone, alone, "the phone keeps the button where it was");
-    }
-
-    #[test]
-    fn the_open_action_stays_reachable_and_returns_after_a_cancelled_drag() {
-        let bounds = Rect::new(0.0, 0.0, 320.0, 240.0);
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        phase the_drop_hint_stands_under_the_action;
+        // A failed open says what went wrong on its one bounded line; the drop
+        // hint is the other way in, so it stands under the action rather than
+        // between the explanation and the button.
+        {
+            let bounds = Rect::new(0.0, 0.0, 480.0, 640.0);
+            let theme = Theme::dark();
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-            let mut surface = FileOpenSurface::default();
             let content = EmptyStateContent {
-                action_label: Some("Open file"),
-                ..EmptyStateContent::new("No file open")
+                message: Some("Check the file and try again."),
+                action_label: Some("Open another file"),
+                error: true,
+                ..EmptyStateContent::new("Couldn't open this document")
             };
-            let button = surface
+            let alone = EmptyState::paint_focused(&mut ctx, bounds, &content, Point::ZERO, false)
+                .expect("the action");
+            let hinted = FileOpenSurface::default()
                 .paint(
                     &mut ctx,
                     bounds,
                     &content,
                     Point::ZERO,
-                    true,
+                    false,
                     InteractionEnvironment::default(),
                 )
                 .action
-                .expect("the open action");
-            assert_eq!(button.intersect(bounds), button);
-            assert!(button.width() > 0.0 && button.height() > 0.0);
-            surface.handle_event(&WindowEvent::HoveredFile(PathBuf::from("/workspace/file")));
+                .expect("the action");
+            let moved = alone.y0 - hinted.y0;
             assert!(
-                surface
+                moved > 4.0,
+                "the hint's line stands under the action: {alone:?} -> {hinted:?}"
+            );
+            assert!(
+                hinted.y1 <= bounds.y1,
+                "the hint keeps the button on screen: {hinted:?}"
+            );
+        }
+
+        phase a_touch_only_device_is_not_told_to_drop_a_file;
+        // A phone has no pointer to drag a file in with, so its empty state
+        // invites the one way in it has and never names a gesture it cannot make.
+        {
+            let bounds = Rect::new(0.0, 0.0, 390.0, 700.0);
+            let theme = Theme::dark();
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            let content = EmptyStateContent {
+                action_label: Some("Open a file"),
+                ..EmptyStateContent::new("No file open")
+            };
+            let alone = EmptyState::paint_focused(&mut ctx, bounds, &content, Point::ZERO, false)
+                .expect("the action");
+            let phone = FileOpenSurface::default()
+                .paint(
+                    &mut ctx,
+                    bounds,
+                    &content,
+                    Point::ZERO,
+                    false,
+                    InteractionEnvironment::TOUCH,
+                )
+                .action
+                .expect("the action");
+            assert_eq!(phone, alone, "the phone keeps the button where it was");
+        }
+
+        phase the_open_action_stays_reachable_and_returns_after_a_cancelled_drag;
+        {
+            let bounds = Rect::new(0.0, 0.0, 320.0, 240.0);
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+                let mut surface = FileOpenSurface::default();
+                let content = EmptyStateContent {
+                    action_label: Some("Open file"),
+                    ..EmptyStateContent::new("No file open")
+                };
+                let button = surface
                     .paint(
                         &mut ctx,
                         bounds,
                         &content,
                         Point::ZERO,
-                        false,
-                        InteractionEnvironment::default()
+                        true,
+                        InteractionEnvironment::default(),
                     )
                     .action
-                    .is_none()
-            );
-            surface.handle_event(&WindowEvent::HoveredFileCancelled);
-            assert_eq!(
-                surface
-                    .paint(
-                        &mut ctx,
-                        bounds,
-                        &content,
-                        Point::ZERO,
-                        false,
-                        InteractionEnvironment::default()
-                    )
-                    .action,
-                Some(button)
-            );
+                    .expect("the open action");
+                assert_eq!(button.intersect(bounds), button);
+                assert!(button.width() > 0.0 && button.height() > 0.0);
+                surface.handle_event(&WindowEvent::HoveredFile(PathBuf::from("/workspace/file")));
+                assert!(
+                    surface
+                        .paint(
+                            &mut ctx,
+                            bounds,
+                            &content,
+                            Point::ZERO,
+                            false,
+                            InteractionEnvironment::default()
+                        )
+                        .action
+                        .is_none()
+                );
+                surface.handle_event(&WindowEvent::HoveredFileCancelled);
+                assert_eq!(
+                    surface
+                        .paint(
+                            &mut ctx,
+                            bounds,
+                            &content,
+                            Point::ZERO,
+                            false,
+                            InteractionEnvironment::default()
+                        )
+                        .action,
+                    Some(button)
+                );
+            }
         }
     }
 }

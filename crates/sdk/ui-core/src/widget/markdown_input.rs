@@ -160,89 +160,93 @@ mod tests {
         Some((found.kind, text[found.content].to_string(), stripped))
     }
 
-    #[test]
-    fn completed_spans_are_recognised() {
-        for (typed, kind, content, stripped) in [
-            ("**bold**", InlineKind::Bold, "bold", "bold"),
-            ("__bold__", InlineKind::Bold, "bold", "bold"),
-            ("*i*", InlineKind::Italic, "i", "i"),
-            ("_i_", InlineKind::Italic, "i", "i"),
-            (" _x_", InlineKind::Italic, "x", " x"),
-            ("`code`", InlineKind::Code, "code", "code"),
-            ("`a*b*`", InlineKind::Code, "a*b*", "a*b*"),
-            ("~~gone~~", InlineKind::Strikethrough, "gone", "gone"),
-            ("a *b*", InlineKind::Italic, "b", "a b"),
-            ("**two words**", InlineKind::Bold, "two words", "two words"),
-            ("*café*", InlineKind::Italic, "café", "café"),
-        ] {
+    tilo_test_env::scenario! {
+        fn typed_markdown_becomes_marks_only_when_complete;
+
+        phase completed_spans_are_recognised;
+        {
+            for (typed, kind, content, stripped) in [
+                ("**bold**", InlineKind::Bold, "bold", "bold"),
+                ("__bold__", InlineKind::Bold, "bold", "bold"),
+                ("*i*", InlineKind::Italic, "i", "i"),
+                ("_i_", InlineKind::Italic, "i", "i"),
+                (" _x_", InlineKind::Italic, "x", " x"),
+                ("`code`", InlineKind::Code, "code", "code"),
+                ("`a*b*`", InlineKind::Code, "a*b*", "a*b*"),
+                ("~~gone~~", InlineKind::Strikethrough, "gone", "gone"),
+                ("a *b*", InlineKind::Italic, "b", "a b"),
+                ("**two words**", InlineKind::Bold, "two words", "two words"),
+                ("*café*", InlineKind::Italic, "café", "café"),
+            ] {
+                assert_eq!(
+                    applied(typed),
+                    Some((kind, content.to_string(), stripped.to_string())),
+                    "{typed:?}"
+                );
+            }
+        }
+
+        phase links_and_typed_addresses_become_links;
+        {
+            let link = detect_inline("see [the plan](https://tilo.so/plan)").expect("a link");
+            assert_eq!(link.kind, InlineKind::Link);
+            assert_eq!(link.target.as_deref(), Some("https://tilo.so/plan"));
             assert_eq!(
-                applied(typed),
-                Some((kind, content.to_string(), stripped.to_string())),
-                "{typed:?}"
+                applied("see [the plan](https://tilo.so/plan)")
+                    .map(|(_, content, text)| (content, text)),
+                Some(("the plan".to_owned(), "see the plan".to_owned()))
             );
+            let resource = detect_inline("[Standup](tilo://open#/me/so.tilo.calendar/-/e:1)");
+            assert_eq!(
+                resource.and_then(|found| found.target),
+                Some("tilo://open#/me/so.tilo.calendar/-/e:1".to_owned())
+            );
+            let typed = detect_inline("read https://tilo.so/docs. ").expect("an autolink");
+            assert_eq!(typed.target.as_deref(), Some("https://tilo.so/docs"));
+            assert_eq!(
+                applied("read https://tilo.so/docs. ").map(|(_, content, text)| (content, text)),
+                Some((
+                    "https://tilo.so/docs".to_owned(),
+                    "read https://tilo.so/docs. ".to_owned()
+                ))
+            );
+            for typed in [
+                "[x](not a url)",
+                "[](https://tilo.so)",
+                "[x](javascript:alert(1))",
+                "(https://tilo.so)",
+                "https:// ",
+                "ftp://host ",
+                "word ",
+                " ",
+            ] {
+                assert_eq!(detect_inline(typed), None, "{typed:?}");
+            }
         }
-    }
 
-    #[test]
-    fn links_and_typed_addresses_become_links() {
-        let link = detect_inline("see [the plan](https://tilo.so/plan)").expect("a link");
-        assert_eq!(link.kind, InlineKind::Link);
-        assert_eq!(link.target.as_deref(), Some("https://tilo.so/plan"));
-        assert_eq!(
-            applied("see [the plan](https://tilo.so/plan)")
-                .map(|(_, content, text)| (content, text)),
-            Some(("the plan".to_owned(), "see the plan".to_owned()))
-        );
-        let resource = detect_inline("[Standup](tilo://open#/me/so.tilo.calendar/-/e:1)");
-        assert_eq!(
-            resource.and_then(|found| found.target),
-            Some("tilo://open#/me/so.tilo.calendar/-/e:1".to_owned())
-        );
-        let typed = detect_inline("read https://tilo.so/docs. ").expect("an autolink");
-        assert_eq!(typed.target.as_deref(), Some("https://tilo.so/docs"));
-        assert_eq!(
-            applied("read https://tilo.so/docs. ").map(|(_, content, text)| (content, text)),
-            Some((
-                "https://tilo.so/docs".to_owned(),
-                "read https://tilo.so/docs. ".to_owned()
-            ))
-        );
-        for typed in [
-            "[x](not a url)",
-            "[](https://tilo.so)",
-            "[x](javascript:alert(1))",
-            "(https://tilo.so)",
-            "https:// ",
-            "ftp://host ",
-            "word ",
-            " ",
-        ] {
-            assert_eq!(detect_inline(typed), None, "{typed:?}");
-        }
-    }
-
-    #[test]
-    fn incomplete_or_ambiguous_input_is_left_alone() {
-        for typed in [
-            "**bold*",
-            "~s~",
-            "```",
-            "``",
-            "****",
-            "**",
-            "*",
-            "* not bold *",
-            "*trailing *",
-            "* leading*",
-            "2 * 3 *",
-            "foo_bar_",
-            "snake_case_",
-            "***x***",
-            "plain text",
-            "# heading",
-            "",
-        ] {
-            assert_eq!(detect_inline(typed), None, "{typed:?}");
+        phase incomplete_or_ambiguous_input_is_left_alone;
+        {
+            for typed in [
+                "**bold*",
+                "~s~",
+                "```",
+                "``",
+                "****",
+                "**",
+                "*",
+                "* not bold *",
+                "*trailing *",
+                "* leading*",
+                "2 * 3 *",
+                "foo_bar_",
+                "snake_case_",
+                "***x***",
+                "plain text",
+                "# heading",
+                "",
+            ] {
+                assert_eq!(detect_inline(typed), None, "{typed:?}");
+            }
         }
     }
 }

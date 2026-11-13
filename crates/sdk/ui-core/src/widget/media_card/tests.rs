@@ -8,38 +8,150 @@ fn rect(node: &InspectionNode) -> Rect {
     Rect::new(x, y, x + w, y + h)
 }
 
-#[test]
-fn justified_rows_span_the_width_and_keep_aspect() {
-    let aspects = [1.5, 0.66, 1.0, 1.78, 1.33, 0.75, 1.5];
-    let rects = justified_rows(&aspects, 900.0, 200.0, 4.0);
-    assert_eq!(rects.len(), aspects.len());
-    for (r, a) in rects.iter().zip(aspects) {
-        assert!((r.width() / r.height() - a).abs() < 0.01, "aspect kept");
-    }
-    let mut rows: Vec<Vec<Rect>> = Vec::new();
-    for r in &rects {
-        match rows.last_mut() {
-            Some(row) if (row[0].y0 - r.y0).abs() < 0.01 => row.push(*r),
-            _ => rows.push(vec![*r]),
+tilo_test_env::scenario! {
+    fn cards_justify_their_rows_and_paint_their_badges;
+
+    phase justified_rows_span_the_width_and_keep_aspect;
+    {
+        let aspects = [1.5, 0.66, 1.0, 1.78, 1.33, 0.75, 1.5];
+        let rects = justified_rows(&aspects, 900.0, 200.0, 4.0);
+        assert_eq!(rects.len(), aspects.len());
+        for (r, a) in rects.iter().zip(aspects) {
+            assert!((r.width() / r.height() - a).abs() < 0.01, "aspect kept");
+        }
+        let mut rows: Vec<Vec<Rect>> = Vec::new();
+        for r in &rects {
+            match rows.last_mut() {
+                Some(row) if (row[0].y0 - r.y0).abs() < 0.01 => row.push(*r),
+                _ => rows.push(vec![*r]),
+            }
+        }
+        for row in &rows[..rows.len() - 1] {
+            assert!((row.last().unwrap().x1 - 900.0).abs() < 0.5);
+            for pair in row.windows(2) {
+                assert!(
+                    (pair[1].x0 - pair[0].x1 - 4.0).abs() < 0.01,
+                    "one gap apart"
+                );
+            }
+        }
+        let last = rows.last().unwrap();
+        let above = rows[rows.len() - 2][0].height();
+        assert!(
+            (last[0].height() - 200.0_f64.min(above)).abs() < 0.01 || last.last().unwrap().x1 >= 899.5,
+            "a short last row is no taller than the row above it"
+        );
+        for pair in rows.windows(2) {
+            assert!(pair[1][0].y0 >= pair[0][0].y1 + 3.99);
         }
     }
-    for row in &rows[..rows.len() - 1] {
-        assert!((row.last().unwrap().x1 - 900.0).abs() < 0.5);
-        for pair in row.windows(2) {
-            assert!(
-                (pair[1].x0 - pair[0].x1 - 4.0).abs() < 0.01,
-                "one gap apart"
-            );
-        }
+
+    phase placeholders_and_badges_paint_without_seams;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let badges = [
+            MediaBadge::Duration("12:04"),
+            MediaBadge::Progress(0.4),
+            MediaBadge::Live,
+            MediaBadge::Downloaded,
+        ];
+        let face = MediaCardFace::new(MediaArt::Placeholder)
+            .aspect(MediaAspect::Wide)
+            .title("Building a compositor in Rust")
+            .meta("Tilo Engineering")
+            .meta("3 days ago")
+            .badges(&badges);
+        let width = 320.0;
+        let height = face.height(&mut text, &theme, width);
+        assert!(height > width / (16.0 / 9.0));
+        let mut scene = Scene::new();
+        face.paint(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, width, height),
+        );
+        let gradients = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == vello_encoding::DrawTag::LINEAR_GRADIENT)
+            .count();
+        assert_eq!(gradients, 1);
+        let node = face.accessibility(Rect::new(0.0, 0.0, width, height));
+        assert_eq!(node.name.as_deref(), Some("Building a compositor in Rust"));
+        assert!(node.value.as_deref().unwrap().contains("40% played"));
     }
-    let last = rows.last().unwrap();
-    let above = rows[rows.len() - 2][0].height();
-    assert!(
-        (last[0].height() - 200.0_f64.min(above)).abs() < 0.01 || last.last().unwrap().x1 >= 899.5,
-        "a short last row is no taller than the row above it"
-    );
-    for pair in rows.windows(2) {
-        assert!(pair[1][0].y0 >= pair[0][0].y1 + 3.99);
+
+    phase overlay_badges_paint_legible_ink_in_every_theme;
+    {
+        use crate::color::contrast_ratio;
+        use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+
+        let mut text = TextRenderer::new();
+        let art = Rect::new(0.0, 0.0, 320.0, 180.0);
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("every shipped theme resolves");
+            for reduce_transparency in [false, true] {
+                let theme = theme.clone().with_reduce_transparency(reduce_transparency);
+                let metrics = MediaMetrics::new(&theme);
+                let live_fill = theme.tokens.colors.semantic.danger;
+                let live_ink =
+                    theme
+                        .tokens
+                        .colors
+                        .ink_on(live_fill, theme.text_primary, ON_FILL_MIN_CONTRAST);
+                let duration_fill = crate::chrome::panel_ground(&theme);
+                for (badge, fill, ink) in [
+                    (MediaBadge::Live, live_fill, live_ink),
+                    (
+                        MediaBadge::Duration("12:04"),
+                        duration_fill,
+                        theme.text_primary,
+                    ),
+                ] {
+                    let mut scene = Scene::new();
+                    paint_badge(
+                        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                        &metrics,
+                        art,
+                        badge,
+                    );
+                    for color in [fill, ink] {
+                        assert!(
+                            scene
+                                .encoding()
+                                .draw_data
+                                .contains(&color.premultiply().to_rgba8().to_u32()),
+                            "{name}, transparency reduced {reduce_transparency}: {badge:?} paints its fill and ink"
+                        );
+                    }
+                    assert!(
+                        contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
+                        "{name}: {badge:?} ink is legible on its actual plate"
+                    );
+                }
+                let mut progress = Scene::new();
+                paint_badge(
+                    &mut PaintCtx::new(&mut progress, Affine::IDENTITY, &mut text, &theme),
+                    &metrics,
+                    art,
+                    MediaBadge::Progress(0.5),
+                );
+                assert!(
+                    progress.encoding().draw_data.contains(
+                        &theme
+                            .tokens
+                            .colors
+                            .intent
+                            .value_fill
+                            .premultiply()
+                            .to_rgba8()
+                            .to_u32()
+                    ),
+                    "{name}: playback progress is the neutral fill, not the accent"
+                );
+            }
+        }
     }
 }
 
@@ -170,114 +282,6 @@ fn a_card_activates_and_its_hover_action_is_its_own() {
     assert_eq!(opened.get(), 1);
     harness.click_at(art_centre.x, art_centre.y);
     assert_eq!((opened.get(), played.get()), (1, 1));
-}
-
-#[test]
-fn placeholders_and_badges_paint_without_seams() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let badges = [
-        MediaBadge::Duration("12:04"),
-        MediaBadge::Progress(0.4),
-        MediaBadge::Live,
-        MediaBadge::Downloaded,
-    ];
-    let face = MediaCardFace::new(MediaArt::Placeholder)
-        .aspect(MediaAspect::Wide)
-        .title("Building a compositor in Rust")
-        .meta("Tilo Engineering")
-        .meta("3 days ago")
-        .badges(&badges);
-    let width = 320.0;
-    let height = face.height(&mut text, &theme, width);
-    assert!(height > width / (16.0 / 9.0));
-    let mut scene = Scene::new();
-    face.paint(
-        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-        Rect::new(0.0, 0.0, width, height),
-    );
-    let gradients = scene
-        .encoding()
-        .draw_tags
-        .iter()
-        .filter(|t| **t == vello_encoding::DrawTag::LINEAR_GRADIENT)
-        .count();
-    assert_eq!(gradients, 1);
-    let node = face.accessibility(Rect::new(0.0, 0.0, width, height));
-    assert_eq!(node.name.as_deref(), Some("Building a compositor in Rust"));
-    assert!(node.value.as_deref().unwrap().contains("40% played"));
-}
-
-#[test]
-fn overlay_badges_paint_legible_ink_in_every_theme() {
-    use crate::color::contrast_ratio;
-    use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
-
-    let mut text = TextRenderer::new();
-    let art = Rect::new(0.0, 0.0, 320.0, 180.0);
-    for name in Theme::ALL {
-        let theme = Theme::named(name).expect("every shipped theme resolves");
-        for reduce_transparency in [false, true] {
-            let theme = theme.clone().with_reduce_transparency(reduce_transparency);
-            let metrics = MediaMetrics::new(&theme);
-            let live_fill = theme.tokens.colors.semantic.danger;
-            let live_ink =
-                theme
-                    .tokens
-                    .colors
-                    .ink_on(live_fill, theme.text_primary, ON_FILL_MIN_CONTRAST);
-            let duration_fill = crate::chrome::panel_ground(&theme);
-            for (badge, fill, ink) in [
-                (MediaBadge::Live, live_fill, live_ink),
-                (
-                    MediaBadge::Duration("12:04"),
-                    duration_fill,
-                    theme.text_primary,
-                ),
-            ] {
-                let mut scene = Scene::new();
-                paint_badge(
-                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-                    &metrics,
-                    art,
-                    badge,
-                );
-                for color in [fill, ink] {
-                    assert!(
-                        scene
-                            .encoding()
-                            .draw_data
-                            .contains(&color.premultiply().to_rgba8().to_u32()),
-                        "{name}, transparency reduced {reduce_transparency}: {badge:?} paints its fill and ink"
-                    );
-                }
-                assert!(
-                    contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
-                    "{name}: {badge:?} ink is legible on its actual plate"
-                );
-            }
-            let mut progress = Scene::new();
-            paint_badge(
-                &mut PaintCtx::new(&mut progress, Affine::IDENTITY, &mut text, &theme),
-                &metrics,
-                art,
-                MediaBadge::Progress(0.5),
-            );
-            assert!(
-                progress.encoding().draw_data.contains(
-                    &theme
-                        .tokens
-                        .colors
-                        .intent
-                        .value_fill
-                        .premultiply()
-                        .to_rgba8()
-                        .to_u32()
-                ),
-                "{name}: playback progress is the neutral fill, not the accent"
-            );
-        }
-    }
 }
 
 #[test]

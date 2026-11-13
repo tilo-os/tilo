@@ -1447,151 +1447,516 @@ mod tests {
         deterministic_handoff_progress_does_not_drift_with_wall_time();
     }
 
-    #[test]
-    fn pip_chrome_placement_and_title_bar_geometry() {
-        fn overlay_chrome_preserves_the_complete_pip_payload_area() {
-            let mut window = FloatingWindow::new("2 live areas", Probe::default())
-                .overlay_chrome(true)
-                .open(true);
-            window.rect = Rect::new(900.0, 540.0, 1320.0, 740.0);
+    tilo_test_env::scenario! {
+        fn a_floating_window_is_placed_moved_resized_and_routes_input;
 
-            assert_eq!(window.content_area(), window.rect);
-            assert_eq!(window.title_bar_rect().height(), TITLE_BAR_HEIGHT);
-            assert!(
-                window.title_bar_rect().contains(Point::new(1100.0, 550.0)),
-                "edge-to-edge content must retain a generous invisible drag target"
-            );
+        phase pip_chrome_placement_and_title_bar_geometry;
+        {
+            fn overlay_chrome_preserves_the_complete_pip_payload_area() {
+                let mut window = FloatingWindow::new("2 live areas", Probe::default())
+                    .overlay_chrome(true)
+                    .open(true);
+                window.rect = Rect::new(900.0, 540.0, 1320.0, 740.0);
+
+                assert_eq!(window.content_area(), window.rect);
+                assert_eq!(window.title_bar_rect().height(), TITLE_BAR_HEIGHT);
+                assert!(
+                    window.title_bar_rect().contains(Point::new(1100.0, 550.0)),
+                    "edge-to-edge content must retain a generous invisible drag target"
+                );
+            }
+
+            fn title_bar_is_the_bar_height_token_and_scales_with_ui_scale() {
+                let (w, _e) = laid_out(true);
+                let base = Theme::dark();
+                assert_eq!(w.title_bar_height(), TITLE_BAR_HEIGHT);
+                assert_eq!(
+                    w.title_bar_height(),
+                    f64::from(base.tokens.metrics.bar_height)
+                );
+                let bar = w.title_bar_rect();
+                let close = w.close_rect();
+                assert!(
+                    (close.center().y - bar.center().y).abs() < 1e-6,
+                    "{close:?} in {bar:?}"
+                );
+                assert_eq!(
+                    close.width(),
+                    f64::from(base.tokens.metrics.bar_control_height)
+                );
+                assert!(
+                    ((bar.x1 - close.x1) - (close.y0 - bar.y0)).abs() < 1e-6,
+                    "trailing inset equals the vertical inset: {close:?} in {bar:?}"
+                );
+
+                let theme = Theme::dark().with_ui_scale(1.5);
+                let probe = Probe {
+                    events: std::rc::Rc::new(std::cell::Cell::new(0)),
+                    rect: Rect::ZERO,
+                };
+                let mut scaled = FloatingWindow::new("Compose", probe).open(true);
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = scaled.build_layout(&mut taffy, &theme, &mut node_map);
+                taffy
+                    .compute_layout(
+                        node,
+                        Size {
+                            width: taffy::AvailableSpace::Definite(1000.0),
+                            height: taffy::AvailableSpace::Definite(800.0),
+                        },
+                    )
+                    .unwrap();
+                scaled.apply_layout(&taffy, node, Point::ZERO);
+                assert!(
+                    (scaled.title_bar_height() - TITLE_BAR_HEIGHT * 1.5).abs() < 1e-6,
+                    "ui_scale 1.5 → {}",
+                    scaled.title_bar_height()
+                );
+                assert_eq!(
+                    scaled.content_area().y0,
+                    scaled.window_rect().y0 + scaled.title_bar_height()
+                );
+            }
+
+            fn shell_can_place_a_spawned_pip_without_recentering_it() {
+                let source = Rect::new(100.0, 100.0, 500.0, 400.0);
+                let mut window = FloatingWindow::new("PiP", Probe::default())
+                    .open(true)
+                    .with_initial_size(420.0, 260.0)
+                    .spawn_from(Some(source));
+                window.place_at_within(
+                    Rect::new(0.0, 0.0, 1600.0, 900.0),
+                    Point::new(1164.0, 624.0),
+                );
+                assert_eq!(
+                    window.window_rect(),
+                    Rect::new(1164.0, 624.0, 1584.0, 884.0)
+                );
+                assert!(Widget::needs_animation_frame(&window));
+            }
+
+            fn opens_centred_within_bounds() {
+                let (w, _e) = laid_out(true);
+                let r = w.window_rect();
+                assert!(
+                    (r.center().x - 500.0).abs() < 2.0,
+                    "centred horizontally: {r:?}"
+                );
+                assert!(r.x0 >= 0.0 && r.x1 <= 1000.0, "within bounds: {r:?}");
+            }
+
+            fn pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover() {
+                let (mut w, _e) = laid_out(true);
+                w.overlay_chrome = true;
+                let now = crate::time::now();
+                w.opened_at = Some(now - OVERLAY_CHROME_HOLD - overlay_chrome_fade());
+                assert_eq!(w.overlay_chrome_alpha_at(now, false), 0.0);
+
+                w.update_pointer_position(w.window_rect().center());
+                assert!(w.overlay_chrome_alpha_at(crate::motion::frame_now(), false) < 0.05);
+                w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade());
+                assert!(w.overlay_chrome_alpha_at(crate::motion::frame_now(), false) > 0.99);
+
+                w.update_pointer_position(Point::new(-20.0, -20.0));
+                w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade() / 4);
+                let leaving = w.overlay_chrome_alpha_at(crate::motion::frame_now(), false);
+                assert!(leaving > 0.05 && leaving < 0.95, "partly faded: {leaving}");
+                w.update_pointer_position(w.window_rect().center());
+                let interrupted = w.overlay_chrome_alpha_at(crate::motion::frame_now(), false);
+                assert!(
+                    (interrupted - leaving).abs() < 0.05,
+                    "re-entering must continue from the current alpha, not jump"
+                );
+            }
+
+            fn draws_chrome_when_open() {
+                let (mut w, _e) = laid_out(true);
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                let fills = scene
+                    .encoding()
+                    .draw_tags
+                    .iter()
+                    .filter(|t| **t == DrawTag::COLOR)
+                    .count();
+                assert!(
+                    fills >= 3,
+                    "open window draws shadow+body+title chrome, got {fills}"
+                );
+            }
+
+            overlay_chrome_preserves_the_complete_pip_payload_area();
+            title_bar_is_the_bar_height_token_and_scales_with_ui_scale();
+            shell_can_place_a_spawned_pip_without_recentering_it();
+            opens_centred_within_bounds();
+            pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover();
+            draws_chrome_when_open();
         }
 
-        fn title_bar_is_the_bar_height_token_and_scales_with_ui_scale() {
-            let (w, _e) = laid_out(true);
-            let base = Theme::dark();
-            assert_eq!(w.title_bar_height(), TITLE_BAR_HEIGHT);
-            assert_eq!(
-                w.title_bar_height(),
-                f64::from(base.tokens.metrics.bar_height)
-            );
-            let bar = w.title_bar_rect();
-            let close = w.close_rect();
-            assert!(
-                (close.center().y - bar.center().y).abs() < 1e-6,
-                "{close:?} in {bar:?}"
-            );
-            assert_eq!(
-                close.width(),
-                f64::from(base.tokens.metrics.bar_control_height)
-            );
-            assert!(
-                ((bar.x1 - close.x1) - (close.y0 - bar.y0)).abs() < 1e-6,
-                "trailing inset equals the vertical inset: {close:?} in {bar:?}"
-            );
+        phase window_moves_by_pointer_touch_and_keyboard_within_reach;
+        {
+            fn title_bar_drag_moves_window() {
+                let (mut w, _e) = laid_out(true);
+                let start = w.window_rect();
+                let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
+                dispatch(&mut w, &cursor_at(grab));
+                assert!(dispatch(&mut w, &mouse_press()), "title press consumed");
+                dispatch(
+                    &mut w,
+                    &cursor_at(Point::new(grab.x + 120.0, grab.y + 40.0)),
+                );
+                dispatch(&mut w, &mouse_release());
+                let moved = w.window_rect();
+                assert!(
+                    (moved.x0 - (start.x0 + 120.0)).abs() < 2.0,
+                    "moved right by 120: {moved:?}"
+                );
+                assert!(
+                    (moved.y0 - (start.y0 + 40.0)).abs() < 2.0,
+                    "moved down by 40: {moved:?}"
+                );
+                assert!(w.squish > 0.0, "drag velocity should deform the soft shell");
+                assert!(w.last_motion_at.is_some(), "settle animation is armed");
+            }
 
-            let theme = Theme::dark().with_ui_scale(1.5);
-            let probe = Probe {
-                events: std::rc::Rc::new(std::cell::Cell::new(0)),
-                rect: Rect::ZERO,
-            };
-            let mut scaled = FloatingWindow::new("Compose", probe).open(true);
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = scaled.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout(
-                    node,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(1000.0),
-                        height: taffy::AvailableSpace::Definite(800.0),
-                    },
-                )
-                .unwrap();
-            scaled.apply_layout(&taffy, node, Point::ZERO);
-            assert!(
-                (scaled.title_bar_height() - TITLE_BAR_HEIGHT * 1.5).abs() < 1e-6,
-                "ui_scale 1.5 → {}",
-                scaled.title_bar_height()
-            );
-            assert_eq!(
-                scaled.content_area().y0,
-                scaled.window_rect().y0 + scaled.title_bar_height()
-            );
+            fn touch_title_drag_moves_window_and_keeps_gesture_ownership() {
+                let (mut w, _e) = laid_out(true);
+                let start = w.window_rect();
+                let grab = Point::new(start.x0 + 48.0, start.y0 + 18.0);
+                assert!(dispatch(
+                    &mut w,
+                    &touch(winit::event::TouchPhase::Started, 7, grab)
+                ));
+                // A second finger cannot steal or terminate the active gesture.
+                assert!(!dispatch(
+                    &mut w,
+                    &touch(
+                        winit::event::TouchPhase::Moved,
+                        8,
+                        Point::new(grab.x - 200.0, grab.y)
+                    )
+                ));
+                assert!(dispatch(
+                    &mut w,
+                    &touch(
+                        winit::event::TouchPhase::Moved,
+                        7,
+                        Point::new(grab.x + 96.0, grab.y + 52.0)
+                    )
+                ));
+                assert!(dispatch(
+                    &mut w,
+                    &touch(
+                        winit::event::TouchPhase::Ended,
+                        7,
+                        Point::new(grab.x + 96.0, grab.y + 52.0)
+                    )
+                ));
+                let moved = w.window_rect();
+                assert!((moved.x0 - start.x0 - 96.0).abs() < 2.0);
+                assert!((moved.y0 - start.y0 - 52.0).abs() < 2.0);
+                assert!(w.touch_drag_id.is_none());
+                assert!(w.drag.is_none());
+            }
+
+            fn touch_close_activates_on_release_inside_and_can_be_cancelled() {
+                let (mut w, _e) = laid_out(true);
+                w.closable = true;
+                let close = w.close_rect().center();
+                assert!(dispatch(
+                    &mut w,
+                    &touch(winit::event::TouchPhase::Started, 3, close)
+                ));
+                let cancel_at = Point::new(w.rect.x0 + 100.0, w.rect.y1 - 40.0);
+                assert!(dispatch(
+                    &mut w,
+                    &touch(winit::event::TouchPhase::Ended, 3, cancel_at)
+                ));
+                assert!(w.is_open(), "sliding away cancels an accidental close");
+
+                assert!(dispatch(
+                    &mut w,
+                    &touch(winit::event::TouchPhase::Started, 4, close)
+                ));
+                assert!(dispatch(
+                    &mut w,
+                    &touch(winit::event::TouchPhase::Ended, 4, close)
+                ));
+                assert!(!w.is_open());
+            }
+
+            fn keyboard_nudge_moves_in_precise_and_coarse_steps_and_clamps() {
+                let (mut w, _e) = laid_out(true);
+                let start = w.window_rect();
+                assert!(w.nudge_with_keyboard(NamedKey::ArrowRight, false));
+                assert!((w.window_rect().x0 - start.x0 - 8.0).abs() < 0.1);
+                assert!(w.nudge_with_keyboard(NamedKey::ArrowDown, true));
+                assert!((w.window_rect().y0 - start.y0 - 32.0).abs() < 0.1);
+                w.rect = Rect::from_origin_size(
+                    Point::new(w.bounds.x0 + 1.0, w.bounds.y0 + 1.0),
+                    w.rect.size(),
+                );
+                w.nudge_with_keyboard(NamedKey::ArrowLeft, true);
+                w.nudge_with_keyboard(NamedKey::ArrowUp, true);
+                assert!(w.window_rect().x0 >= w.bounds.x0);
+                assert!(w.window_rect().y0 >= w.bounds.y0);
+            }
+
+            fn off_screen_drag_is_clamped_to_stay_reachable() {
+                let (mut w, _e) = laid_out(true);
+                let start = w.window_rect();
+
+                let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
+                dispatch(&mut w, &cursor_at(grab));
+                dispatch(&mut w, &mouse_press());
+                dispatch(
+                    &mut w,
+                    &cursor_at(Point::new(grab.x + 5000.0, grab.y + 5000.0)),
+                );
+                dispatch(&mut w, &mouse_release());
+                let r = w.window_rect();
+                assert!(
+                    r.x0 >= 0.0 && r.y0 >= 0.0,
+                    "origin stays on screen after a huge fling: {r:?}"
+                );
+                assert!(
+                    r.x0 <= 1000.0 - 80.0,
+                    "at least 80px of the window's left stays horizontally reachable: {r:?}"
+                );
+                assert!(
+                    r.y0 <= 800.0,
+                    "the title bar stays within the viewport: {r:?}"
+                );
+                assert!(
+                    r.x1 <= 1000.0 + 0.5 && r.y1 <= 800.0 + 0.5,
+                    "the window is clamped inside the viewport, not off the bottom-right: {r:?}"
+                );
+
+                let grab2 = Point::new(r.x0 + 40.0, r.y0 + 10.0);
+                dispatch(&mut w, &cursor_at(grab2));
+                dispatch(&mut w, &mouse_press());
+                dispatch(
+                    &mut w,
+                    &cursor_at(Point::new(grab2.x - 5000.0, grab2.y - 5000.0)),
+                );
+                dispatch(&mut w, &mouse_release());
+                let r2 = w.window_rect();
+                assert!(
+                    r2.x0 >= -0.5 && r2.y0 >= -0.5,
+                    "clamped to the top-left corner, not off screen: {r2:?}"
+                );
+            }
+
+            fn accessibility_exposes_surface_and_operable_close_button() {
+                use crate::a11y::{Action, Role};
+                let (mut w, _e) = laid_out(true);
+                w.closable = true;
+                Widget::set_focus(&mut w, true);
+                let node = Widget::accessibility(&w).expect("open surface has semantics");
+                assert_eq!(node.role, Role::Dialog);
+                assert_eq!(node.name.as_deref(), Some("Compose"));
+                assert!(node.state.focusable && node.state.focused);
+                assert_eq!(node.children.len(), 1);
+                assert_eq!(node.children[0].role, Role::Button);
+                assert_eq!(node.children[0].name.as_deref(), Some("Close Compose"));
+
+                let mut state = automerge::AutoCommit::new();
+                assert!(Widget::perform_semantic_action(
+                    &mut w,
+                    "floating-window.close",
+                    &Action::Activate,
+                    &mut crate::widget::Edits::lend(&mut state),
+                    &automerge::ROOT,
+                ));
+                assert!(!w.is_open());
+                assert!(Widget::accessibility(&w).is_none());
+            }
+
+            title_bar_drag_moves_window();
+            touch_title_drag_moves_window_and_keeps_gesture_ownership();
+            touch_close_activates_on_release_inside_and_can_be_cancelled();
+            keyboard_nudge_moves_in_precise_and_coarse_steps_and_clamps();
+            off_screen_drag_is_clamped_to_stay_reachable();
+            accessibility_exposes_surface_and_operable_close_button();
         }
 
-        fn shell_can_place_a_spawned_pip_without_recentering_it() {
-            let source = Rect::new(100.0, 100.0, 500.0, 400.0);
-            let mut window = FloatingWindow::new("PiP", Probe::default())
-                .open(true)
-                .with_initial_size(420.0, 260.0)
-                .spawn_from(Some(source));
-            window.place_at_within(
-                Rect::new(0.0, 0.0, 1600.0, 900.0),
-                Point::new(1164.0, 624.0),
-            );
-            assert_eq!(
-                window.window_rect(),
-                Rect::new(1164.0, 624.0, 1584.0, 884.0)
-            );
-            assert!(Widget::needs_animation_frame(&window));
+        phase window_resize_respects_targets_aspect_and_minimum;
+        {
+            fn touch_resize_uses_a_finger_sized_edge_target() {
+                let (mut w, _e) = laid_out(true);
+                let start = w.window_rect();
+                let grab = Point::new(start.x1 - 14.0, start.y1 - 14.0);
+                assert_eq!(w.edge_at(grab, RESIZE_GRIP), None);
+                assert!(dispatch(
+                    &mut w,
+                    &touch(winit::event::TouchPhase::Started, 5, grab)
+                ));
+                assert!(dispatch(
+                    &mut w,
+                    &touch(
+                        winit::event::TouchPhase::Moved,
+                        5,
+                        Point::new(grab.x + 70.0, grab.y + 50.0)
+                    )
+                ));
+                dispatch(
+                    &mut w,
+                    &touch(
+                        winit::event::TouchPhase::Ended,
+                        5,
+                        Point::new(grab.x + 70.0, grab.y + 50.0),
+                    ),
+                );
+                assert!(w.window_rect().width() > start.width() + 45.0);
+                assert!(w.window_rect().height() > start.height() + 25.0);
+            }
+
+            fn bottom_right_resize_grows_window() {
+                let (mut w, _e) = laid_out(true);
+                let start = w.window_rect();
+                let corner = Point::new(start.x1, start.y1);
+                dispatch(&mut w, &cursor_at(corner));
+                assert!(dispatch(&mut w, &mouse_press()), "corner press consumed");
+                dispatch(
+                    &mut w,
+                    &cursor_at(Point::new(corner.x + 60.0, corner.y + 50.0)),
+                );
+                dispatch(&mut w, &mouse_release());
+                let grown = w.window_rect();
+                assert!(
+                    grown.width() > start.width() + 50.0,
+                    "wider: {} -> {}",
+                    start.width(),
+                    grown.width()
+                );
+                assert!(grown.height() > start.height() + 40.0, "taller");
+            }
+
+            fn pip_resize_preserves_its_source_aspect_ratio() {
+                let (mut w, _e) = laid_out(true);
+                w.aspect_ratio = Some(16.0 / 9.0);
+                let start = w.window_rect();
+                let corner = Point::new(start.x1, start.y1);
+                dispatch(&mut w, &cursor_at(corner));
+                dispatch(&mut w, &mouse_press());
+                dispatch(
+                    &mut w,
+                    &cursor_at(Point::new(corner.x + 80.0, corner.y + 12.0)),
+                );
+                dispatch(&mut w, &mouse_release());
+
+                let resized = w.window_rect();
+                assert!((resized.width() / resized.height() - 16.0 / 9.0).abs() < 0.001);
+                assert!(resized.width() > start.width());
+            }
+
+            fn resize_respects_min_size() {
+                let (mut w, _e) = laid_out(true);
+                let start = w.window_rect();
+                let corner = Point::new(start.x1, start.y1);
+                dispatch(&mut w, &cursor_at(corner));
+                dispatch(&mut w, &mouse_press());
+                dispatch(
+                    &mut w,
+                    &cursor_at(Point::new(start.x0 + 10.0, start.y0 + 10.0)),
+                );
+                dispatch(&mut w, &mouse_release());
+                let r = w.window_rect();
+                assert!(
+                    r.width() >= MIN_WIDTH - 0.5,
+                    "clamped to MIN_WIDTH: {}",
+                    r.width()
+                );
+                assert!(
+                    r.height() >= MIN_HEIGHT - 0.5,
+                    "clamped to MIN_HEIGHT: {}",
+                    r.height()
+                );
+            }
+
+            touch_resize_uses_a_finger_sized_edge_target();
+            bottom_right_resize_grows_window();
+            pip_resize_preserves_its_source_aspect_ratio();
+            resize_respects_min_size();
         }
 
-        fn opens_centred_within_bounds() {
-            let (w, _e) = laid_out(true);
-            let r = w.window_rect();
-            assert!(
-                (r.center().x - 500.0).abs() < 2.0,
-                "centred horizontally: {r:?}"
-            );
-            assert!(r.x0 >= 0.0 && r.x1 <= 1000.0, "within bounds: {r:?}");
+        phase cursor_shapes_and_modal_input_routing;
+        {
+            fn cursor_shape_hints_move_and_resize() {
+                use winit::window::CursorIcon;
+                let (w, _e) = laid_out(true);
+                let r = w.window_rect();
+                let title = Point::new(r.center().x, r.y0 + TITLE_BAR_HEIGHT / 2.0);
+                assert_eq!(Widget::cursor_shape(&w, title), Some(CursorIcon::Grab));
+                assert_eq!(
+                    Widget::cursor_shape(&w, Point::new(r.x1, r.center().y)),
+                    Some(CursorIcon::EwResize)
+                );
+                assert_eq!(
+                    Widget::cursor_shape(&w, Point::new(r.center().x, r.y1)),
+                    Some(CursorIcon::NsResize)
+                );
+                assert_eq!(
+                    Widget::cursor_shape(&w, Point::new(r.x1, r.y1)),
+                    Some(CursorIcon::NwseResize)
+                );
+                assert_eq!(Widget::cursor_shape(&w, w.content_area().center()), None);
+            }
+
+            fn cursor_shape_follows_an_active_drag() {
+                use winit::window::CursorIcon;
+                let (mut w, _e) = laid_out(true);
+                let start = w.window_rect();
+                let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
+                dispatch(&mut w, &cursor_at(grab));
+                dispatch(&mut w, &mouse_press());
+                dispatch(&mut w, &cursor_at(Point::new(grab.x + 30.0, grab.y + 30.0)));
+                assert_eq!(
+                    Widget::cursor_shape(&w, Point::new(5.0, 5.0)),
+                    Some(CursorIcon::Grabbing),
+                    "a move drag keeps the grabbing cursor even off the title bar"
+                );
+            }
+
+            fn outside_click_is_swallowed_not_passed_through() {
+                let (mut w, events) = laid_out(true);
+                dispatch(&mut w, &cursor_at(Point::new(5.0, 5.0)));
+                let handled = dispatch(&mut w, &mouse_press());
+                assert!(handled, "outside click must be swallowed");
+                assert!(w.is_open(), "outside click must NOT close the window");
+                assert_eq!(events.get(), 0, "outside click must not forward to content");
+            }
+
+            fn inbox_content_press_forwards_to_content() {
+                let (mut w, events) = laid_out(true);
+                let c = w.content_area().center();
+                dispatch(&mut w, &cursor_at(c));
+                let before = events.get();
+                let handled = dispatch(&mut w, &mouse_press());
+                assert!(handled, "in-box press consumed");
+                assert!(
+                    events.get() > before,
+                    "in-box content press forwarded to content"
+                );
+            }
+
+            fn modal_capture_reflects_open() {
+                let (w, _e) = laid_out(true);
+                assert!(Widget::modal_capture(&w).is_some());
+                let (closed, _e) = laid_out(false);
+                assert!(Widget::modal_capture(&closed).is_none());
+            }
+
+            cursor_shape_hints_move_and_resize();
+            cursor_shape_follows_an_active_drag();
+            outside_click_is_swallowed_not_passed_through();
+            inbox_content_press_forwards_to_content();
+            modal_capture_reflects_open();
         }
-
-        fn pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover() {
-            let (mut w, _e) = laid_out(true);
-            w.overlay_chrome = true;
-            let now = crate::time::now();
-            w.opened_at = Some(now - OVERLAY_CHROME_HOLD - overlay_chrome_fade());
-            assert_eq!(w.overlay_chrome_alpha_at(now, false), 0.0);
-
-            w.update_pointer_position(w.window_rect().center());
-            assert!(w.overlay_chrome_alpha_at(crate::motion::frame_now(), false) < 0.05);
-            w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade());
-            assert!(w.overlay_chrome_alpha_at(crate::motion::frame_now(), false) > 0.99);
-
-            w.update_pointer_position(Point::new(-20.0, -20.0));
-            w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade() / 4);
-            let leaving = w.overlay_chrome_alpha_at(crate::motion::frame_now(), false);
-            assert!(leaving > 0.05 && leaving < 0.95, "partly faded: {leaving}");
-            w.update_pointer_position(w.window_rect().center());
-            let interrupted = w.overlay_chrome_alpha_at(crate::motion::frame_now(), false);
-            assert!(
-                (interrupted - leaving).abs() < 0.05,
-                "re-entering must continue from the current alpha, not jump"
-            );
-        }
-
-        fn draws_chrome_when_open() {
-            let (mut w, _e) = laid_out(true);
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(
-                fills >= 3,
-                "open window draws shadow+body+title chrome, got {fills}"
-            );
-        }
-
-        overlay_chrome_preserves_the_complete_pip_payload_area();
-        title_bar_is_the_bar_height_token_and_scales_with_ui_scale();
-        shell_can_place_a_spawned_pip_without_recentering_it();
-        opens_centred_within_bounds();
-        pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover();
-        draws_chrome_when_open();
     }
 
     #[derive(Default)]
@@ -1667,367 +2032,6 @@ mod tests {
         })
     }
     use crate::testing::dispatch;
-
-    #[test]
-    fn window_moves_by_pointer_touch_and_keyboard_within_reach() {
-        fn title_bar_drag_moves_window() {
-            let (mut w, _e) = laid_out(true);
-            let start = w.window_rect();
-            let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
-            dispatch(&mut w, &cursor_at(grab));
-            assert!(dispatch(&mut w, &mouse_press()), "title press consumed");
-            dispatch(
-                &mut w,
-                &cursor_at(Point::new(grab.x + 120.0, grab.y + 40.0)),
-            );
-            dispatch(&mut w, &mouse_release());
-            let moved = w.window_rect();
-            assert!(
-                (moved.x0 - (start.x0 + 120.0)).abs() < 2.0,
-                "moved right by 120: {moved:?}"
-            );
-            assert!(
-                (moved.y0 - (start.y0 + 40.0)).abs() < 2.0,
-                "moved down by 40: {moved:?}"
-            );
-            assert!(w.squish > 0.0, "drag velocity should deform the soft shell");
-            assert!(w.last_motion_at.is_some(), "settle animation is armed");
-        }
-
-        fn touch_title_drag_moves_window_and_keeps_gesture_ownership() {
-            let (mut w, _e) = laid_out(true);
-            let start = w.window_rect();
-            let grab = Point::new(start.x0 + 48.0, start.y0 + 18.0);
-            assert!(dispatch(
-                &mut w,
-                &touch(winit::event::TouchPhase::Started, 7, grab)
-            ));
-            // A second finger cannot steal or terminate the active gesture.
-            assert!(!dispatch(
-                &mut w,
-                &touch(
-                    winit::event::TouchPhase::Moved,
-                    8,
-                    Point::new(grab.x - 200.0, grab.y)
-                )
-            ));
-            assert!(dispatch(
-                &mut w,
-                &touch(
-                    winit::event::TouchPhase::Moved,
-                    7,
-                    Point::new(grab.x + 96.0, grab.y + 52.0)
-                )
-            ));
-            assert!(dispatch(
-                &mut w,
-                &touch(
-                    winit::event::TouchPhase::Ended,
-                    7,
-                    Point::new(grab.x + 96.0, grab.y + 52.0)
-                )
-            ));
-            let moved = w.window_rect();
-            assert!((moved.x0 - start.x0 - 96.0).abs() < 2.0);
-            assert!((moved.y0 - start.y0 - 52.0).abs() < 2.0);
-            assert!(w.touch_drag_id.is_none());
-            assert!(w.drag.is_none());
-        }
-
-        fn touch_close_activates_on_release_inside_and_can_be_cancelled() {
-            let (mut w, _e) = laid_out(true);
-            w.closable = true;
-            let close = w.close_rect().center();
-            assert!(dispatch(
-                &mut w,
-                &touch(winit::event::TouchPhase::Started, 3, close)
-            ));
-            let cancel_at = Point::new(w.rect.x0 + 100.0, w.rect.y1 - 40.0);
-            assert!(dispatch(
-                &mut w,
-                &touch(winit::event::TouchPhase::Ended, 3, cancel_at)
-            ));
-            assert!(w.is_open(), "sliding away cancels an accidental close");
-
-            assert!(dispatch(
-                &mut w,
-                &touch(winit::event::TouchPhase::Started, 4, close)
-            ));
-            assert!(dispatch(
-                &mut w,
-                &touch(winit::event::TouchPhase::Ended, 4, close)
-            ));
-            assert!(!w.is_open());
-        }
-
-        fn keyboard_nudge_moves_in_precise_and_coarse_steps_and_clamps() {
-            let (mut w, _e) = laid_out(true);
-            let start = w.window_rect();
-            assert!(w.nudge_with_keyboard(NamedKey::ArrowRight, false));
-            assert!((w.window_rect().x0 - start.x0 - 8.0).abs() < 0.1);
-            assert!(w.nudge_with_keyboard(NamedKey::ArrowDown, true));
-            assert!((w.window_rect().y0 - start.y0 - 32.0).abs() < 0.1);
-            w.rect = Rect::from_origin_size(
-                Point::new(w.bounds.x0 + 1.0, w.bounds.y0 + 1.0),
-                w.rect.size(),
-            );
-            w.nudge_with_keyboard(NamedKey::ArrowLeft, true);
-            w.nudge_with_keyboard(NamedKey::ArrowUp, true);
-            assert!(w.window_rect().x0 >= w.bounds.x0);
-            assert!(w.window_rect().y0 >= w.bounds.y0);
-        }
-
-        fn off_screen_drag_is_clamped_to_stay_reachable() {
-            let (mut w, _e) = laid_out(true);
-            let start = w.window_rect();
-
-            let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
-            dispatch(&mut w, &cursor_at(grab));
-            dispatch(&mut w, &mouse_press());
-            dispatch(
-                &mut w,
-                &cursor_at(Point::new(grab.x + 5000.0, grab.y + 5000.0)),
-            );
-            dispatch(&mut w, &mouse_release());
-            let r = w.window_rect();
-            assert!(
-                r.x0 >= 0.0 && r.y0 >= 0.0,
-                "origin stays on screen after a huge fling: {r:?}"
-            );
-            assert!(
-                r.x0 <= 1000.0 - 80.0,
-                "at least 80px of the window's left stays horizontally reachable: {r:?}"
-            );
-            assert!(
-                r.y0 <= 800.0,
-                "the title bar stays within the viewport: {r:?}"
-            );
-            assert!(
-                r.x1 <= 1000.0 + 0.5 && r.y1 <= 800.0 + 0.5,
-                "the window is clamped inside the viewport, not off the bottom-right: {r:?}"
-            );
-
-            let grab2 = Point::new(r.x0 + 40.0, r.y0 + 10.0);
-            dispatch(&mut w, &cursor_at(grab2));
-            dispatch(&mut w, &mouse_press());
-            dispatch(
-                &mut w,
-                &cursor_at(Point::new(grab2.x - 5000.0, grab2.y - 5000.0)),
-            );
-            dispatch(&mut w, &mouse_release());
-            let r2 = w.window_rect();
-            assert!(
-                r2.x0 >= -0.5 && r2.y0 >= -0.5,
-                "clamped to the top-left corner, not off screen: {r2:?}"
-            );
-        }
-
-        fn accessibility_exposes_surface_and_operable_close_button() {
-            use crate::a11y::{Action, Role};
-            let (mut w, _e) = laid_out(true);
-            w.closable = true;
-            Widget::set_focus(&mut w, true);
-            let node = Widget::accessibility(&w).expect("open surface has semantics");
-            assert_eq!(node.role, Role::Dialog);
-            assert_eq!(node.name.as_deref(), Some("Compose"));
-            assert!(node.state.focusable && node.state.focused);
-            assert_eq!(node.children.len(), 1);
-            assert_eq!(node.children[0].role, Role::Button);
-            assert_eq!(node.children[0].name.as_deref(), Some("Close Compose"));
-
-            let mut state = automerge::AutoCommit::new();
-            assert!(Widget::perform_semantic_action(
-                &mut w,
-                "floating-window.close",
-                &Action::Activate,
-                &mut crate::widget::Edits::lend(&mut state),
-                &automerge::ROOT,
-            ));
-            assert!(!w.is_open());
-            assert!(Widget::accessibility(&w).is_none());
-        }
-
-        title_bar_drag_moves_window();
-        touch_title_drag_moves_window_and_keeps_gesture_ownership();
-        touch_close_activates_on_release_inside_and_can_be_cancelled();
-        keyboard_nudge_moves_in_precise_and_coarse_steps_and_clamps();
-        off_screen_drag_is_clamped_to_stay_reachable();
-        accessibility_exposes_surface_and_operable_close_button();
-    }
-
-    #[test]
-    fn window_resize_respects_targets_aspect_and_minimum() {
-        fn touch_resize_uses_a_finger_sized_edge_target() {
-            let (mut w, _e) = laid_out(true);
-            let start = w.window_rect();
-            let grab = Point::new(start.x1 - 14.0, start.y1 - 14.0);
-            assert_eq!(w.edge_at(grab, RESIZE_GRIP), None);
-            assert!(dispatch(
-                &mut w,
-                &touch(winit::event::TouchPhase::Started, 5, grab)
-            ));
-            assert!(dispatch(
-                &mut w,
-                &touch(
-                    winit::event::TouchPhase::Moved,
-                    5,
-                    Point::new(grab.x + 70.0, grab.y + 50.0)
-                )
-            ));
-            dispatch(
-                &mut w,
-                &touch(
-                    winit::event::TouchPhase::Ended,
-                    5,
-                    Point::new(grab.x + 70.0, grab.y + 50.0),
-                ),
-            );
-            assert!(w.window_rect().width() > start.width() + 45.0);
-            assert!(w.window_rect().height() > start.height() + 25.0);
-        }
-
-        fn bottom_right_resize_grows_window() {
-            let (mut w, _e) = laid_out(true);
-            let start = w.window_rect();
-            let corner = Point::new(start.x1, start.y1);
-            dispatch(&mut w, &cursor_at(corner));
-            assert!(dispatch(&mut w, &mouse_press()), "corner press consumed");
-            dispatch(
-                &mut w,
-                &cursor_at(Point::new(corner.x + 60.0, corner.y + 50.0)),
-            );
-            dispatch(&mut w, &mouse_release());
-            let grown = w.window_rect();
-            assert!(
-                grown.width() > start.width() + 50.0,
-                "wider: {} -> {}",
-                start.width(),
-                grown.width()
-            );
-            assert!(grown.height() > start.height() + 40.0, "taller");
-        }
-
-        fn pip_resize_preserves_its_source_aspect_ratio() {
-            let (mut w, _e) = laid_out(true);
-            w.aspect_ratio = Some(16.0 / 9.0);
-            let start = w.window_rect();
-            let corner = Point::new(start.x1, start.y1);
-            dispatch(&mut w, &cursor_at(corner));
-            dispatch(&mut w, &mouse_press());
-            dispatch(
-                &mut w,
-                &cursor_at(Point::new(corner.x + 80.0, corner.y + 12.0)),
-            );
-            dispatch(&mut w, &mouse_release());
-
-            let resized = w.window_rect();
-            assert!((resized.width() / resized.height() - 16.0 / 9.0).abs() < 0.001);
-            assert!(resized.width() > start.width());
-        }
-
-        fn resize_respects_min_size() {
-            let (mut w, _e) = laid_out(true);
-            let start = w.window_rect();
-            let corner = Point::new(start.x1, start.y1);
-            dispatch(&mut w, &cursor_at(corner));
-            dispatch(&mut w, &mouse_press());
-            dispatch(
-                &mut w,
-                &cursor_at(Point::new(start.x0 + 10.0, start.y0 + 10.0)),
-            );
-            dispatch(&mut w, &mouse_release());
-            let r = w.window_rect();
-            assert!(
-                r.width() >= MIN_WIDTH - 0.5,
-                "clamped to MIN_WIDTH: {}",
-                r.width()
-            );
-            assert!(
-                r.height() >= MIN_HEIGHT - 0.5,
-                "clamped to MIN_HEIGHT: {}",
-                r.height()
-            );
-        }
-
-        touch_resize_uses_a_finger_sized_edge_target();
-        bottom_right_resize_grows_window();
-        pip_resize_preserves_its_source_aspect_ratio();
-        resize_respects_min_size();
-    }
-
-    #[test]
-    fn cursor_shapes_and_modal_input_routing() {
-        fn cursor_shape_hints_move_and_resize() {
-            use winit::window::CursorIcon;
-            let (w, _e) = laid_out(true);
-            let r = w.window_rect();
-            let title = Point::new(r.center().x, r.y0 + TITLE_BAR_HEIGHT / 2.0);
-            assert_eq!(Widget::cursor_shape(&w, title), Some(CursorIcon::Grab));
-            assert_eq!(
-                Widget::cursor_shape(&w, Point::new(r.x1, r.center().y)),
-                Some(CursorIcon::EwResize)
-            );
-            assert_eq!(
-                Widget::cursor_shape(&w, Point::new(r.center().x, r.y1)),
-                Some(CursorIcon::NsResize)
-            );
-            assert_eq!(
-                Widget::cursor_shape(&w, Point::new(r.x1, r.y1)),
-                Some(CursorIcon::NwseResize)
-            );
-            assert_eq!(Widget::cursor_shape(&w, w.content_area().center()), None);
-        }
-
-        fn cursor_shape_follows_an_active_drag() {
-            use winit::window::CursorIcon;
-            let (mut w, _e) = laid_out(true);
-            let start = w.window_rect();
-            let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
-            dispatch(&mut w, &cursor_at(grab));
-            dispatch(&mut w, &mouse_press());
-            dispatch(&mut w, &cursor_at(Point::new(grab.x + 30.0, grab.y + 30.0)));
-            assert_eq!(
-                Widget::cursor_shape(&w, Point::new(5.0, 5.0)),
-                Some(CursorIcon::Grabbing),
-                "a move drag keeps the grabbing cursor even off the title bar"
-            );
-        }
-
-        fn outside_click_is_swallowed_not_passed_through() {
-            let (mut w, events) = laid_out(true);
-            dispatch(&mut w, &cursor_at(Point::new(5.0, 5.0)));
-            let handled = dispatch(&mut w, &mouse_press());
-            assert!(handled, "outside click must be swallowed");
-            assert!(w.is_open(), "outside click must NOT close the window");
-            assert_eq!(events.get(), 0, "outside click must not forward to content");
-        }
-
-        fn inbox_content_press_forwards_to_content() {
-            let (mut w, events) = laid_out(true);
-            let c = w.content_area().center();
-            dispatch(&mut w, &cursor_at(c));
-            let before = events.get();
-            let handled = dispatch(&mut w, &mouse_press());
-            assert!(handled, "in-box press consumed");
-            assert!(
-                events.get() > before,
-                "in-box content press forwarded to content"
-            );
-        }
-
-        fn modal_capture_reflects_open() {
-            let (w, _e) = laid_out(true);
-            assert!(Widget::modal_capture(&w).is_some());
-            let (closed, _e) = laid_out(false);
-            assert!(Widget::modal_capture(&closed).is_none());
-        }
-
-        cursor_shape_hints_move_and_resize();
-        cursor_shape_follows_an_active_drag();
-        outside_click_is_swallowed_not_passed_through();
-        inbox_content_press_forwards_to_content();
-        modal_capture_reflects_open();
-    }
 
     #[test]
     fn a_german_desktop_names_the_close_and_the_move_hint_in_german() {

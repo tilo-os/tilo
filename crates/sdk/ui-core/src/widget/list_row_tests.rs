@@ -87,58 +87,359 @@ fn hovered() -> Interaction {
     }
 }
 
-#[test]
-fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
-    let single = ListRowFace::new("Inbox");
-    let two = ListRowFace::new("Ada Lovelace").secondary("ada@example.org");
-    let three = ListRowFace::new("Ada Lovelace")
-        .secondary("The analytical engine weaves algebraic patterns")
-        .two_line_secondary();
-    let message = ListRowFace::new("Ada Lovelace")
-        .subtitle("Notes on the engine")
-        .secondary("The analytical engine weaves algebraic patterns")
-        .two_line_secondary();
-    let theme = Theme::dark();
-    let single_row = f64::from(theme.tokens.metrics.row_single);
-    assert!(
-        (face_height(&single, 1.0) - single_row).abs() < 0.5,
-        "a one-line row is the single-row height, {single_row}"
-    );
-    assert!(face_height(&two, 1.0) > face_height(&single, 1.0));
-    assert!(face_height(&three, 1.0) > face_height(&two, 1.0));
-    assert!(
-        face_height(&message, 1.0) > face_height(&three, 1.0),
-        "a subtitle is its own line"
-    );
-    assert!(
-        face_height(&ListRowFace::new("A long name").two_line_title(), 1.0)
-            > face_height(&single, 1.0) - 0.5
-    );
-    assert!(face_height(&single, 2.0) > face_height(&single, 1.0));
-    for face in [&two, &three] {
+tilo_test_env::scenario! {
+    fn a_row_lays_out_its_text_facts_and_columns;
+
+    phase row_height_comes_from_measured_line_boxes_and_grows_with_text;
+    {
+        let single = ListRowFace::new("Inbox");
+        let two = ListRowFace::new("Ada Lovelace").secondary("ada@example.org");
+        let three = ListRowFace::new("Ada Lovelace")
+            .secondary("The analytical engine weaves algebraic patterns")
+            .two_line_secondary();
+        let message = ListRowFace::new("Ada Lovelace")
+            .subtitle("Notes on the engine")
+            .secondary("The analytical engine weaves algebraic patterns")
+            .two_line_secondary();
+        let theme = Theme::dark();
+        let single_row = f64::from(theme.tokens.metrics.row_single);
         assert!(
-            face_height(face, 2.0) > face_height(face, 1.0) * 1.5,
-            "rows grow with the text scale"
+            (face_height(&single, 1.0) - single_row).abs() < 0.5,
+            "a one-line row is the single-row height, {single_row}"
+        );
+        assert!(face_height(&two, 1.0) > face_height(&single, 1.0));
+        assert!(face_height(&three, 1.0) > face_height(&two, 1.0));
+        assert!(
+            face_height(&message, 1.0) > face_height(&three, 1.0),
+            "a subtitle is its own line"
+        );
+        assert!(
+            face_height(&ListRowFace::new("A long name").two_line_title(), 1.0)
+                > face_height(&single, 1.0) - 0.5
+        );
+        assert!(face_height(&single, 2.0) > face_height(&single, 1.0));
+        for face in [&two, &three] {
+            assert!(
+                face_height(face, 2.0) > face_height(face, 1.0) * 1.5,
+                "rows grow with the text scale"
+            );
+        }
+    }
+
+    phase a_rows_note_is_a_line_of_its_own_under_its_text;
+    {
+        let row = ListRow::new("note-row", "Claude")
+            .secondary("Kept by you")
+            .note("$0.42 of $5 today");
+        assert_eq!(
+            row.with_face(|face| face.note.map(str::to_owned)),
+            Some("$0.42 of $5 today".to_owned()),
+            "the builder's note is the face's"
+        );
+        let plain = ListRowFace::new("Claude").secondary("Kept by you");
+        let noted = plain.clone().note("$0.42 of $5 today");
+        assert!(
+            face_height(&noted, 1.0) > face_height(&plain, 1.0),
+            "the note is a line under the row's text, not on it"
         );
     }
-}
 
-#[test]
-fn a_rows_note_is_a_line_of_its_own_under_its_text() {
-    let row = ListRow::new("note-row", "Claude")
-        .secondary("Kept by you")
-        .note("$0.42 of $5 today");
-    assert_eq!(
-        row.with_face(|face| face.note.map(str::to_owned)),
-        Some("$0.42 of $5 today".to_owned()),
-        "the builder's note is the face's"
-    );
-    let plain = ListRowFace::new("Claude").secondary("Kept by you");
-    let noted = plain.clone().note("$0.42 of $5 today");
-    assert!(
-        face_height(&noted, 1.0) > face_height(&plain, 1.0),
-        "the note is a line under the row's text, not on it"
-    );
+    phase a_quiet_word_before_the_title_shares_its_line_and_takes_its_room;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rect = Rect::new(0.0, 0.0, 200.0, 36.0);
+        let plain = ListRowFace::new("Book the van");
+        assert!(!plain.title_elided(rect, &mut text, &theme), "it fits");
+        assert!(
+            (face_height(&plain, 1.0) - face_height(&plain.clone().prefix("From"), 1.0)).abs() < 0.5,
+            "the word shares the title's line"
+        );
+        let long = ListRowFace::new("Book the van")
+            .prefix("From the message Bo sent about the move flat on Saturday morning");
+        assert!(
+            long.title_elided(rect, &mut text, &theme),
+            "the title keeps only the room the word leaves it"
+        );
+    }
+
+    phase a_row_without_its_avatar_leaves_no_room_for_one;
+    {
+        let outer = Rect::new(0.0, 0.0, 400.0, 56.0);
+        let with = ListRowFace::new("Design")
+            .secondary("See you there")
+            .meta("Thursday")
+            .avatar(AvatarFace::new("Ada", "ada"));
+        let without = ListRowFace::new("Empty")
+            .secondary("No messages yet")
+            .meta("Thursday");
+        let with = geometry(&with, outer);
+        let without = geometry(&without, outer);
+        let avatar = with.avatar.expect("the row shows the face");
+        assert!(without.avatar.is_none());
+        assert!(
+            with.meta_right < avatar.x0,
+            "the day stands before the face: {with:?}"
+        );
+        assert!(
+            (without.meta_right - avatar.x1).abs() < 0.01,
+            "with no avatar the day ends on the facts' shared edge: {without:?} beside {with:?}"
+        );
+    }
+
+    phase a_cards_facts_run_on_without_the_room_of_those_it_has_not;
+    {
+        let theme = Theme::dark();
+        let m = RowMetrics::card(&theme);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let outer = Rect::new(0.0, 0.0, 320.0, 57.0);
+        let face = ListRowFace::new("Measure the new bedroom")
+            .card()
+            .meta("Saturday")
+            .mark(Icon::Flag);
+        let geo = face.geometry(outer, &m, &mut text, &theme);
+        assert!(geo.avatar.is_none(), "{geo:?}");
+        let marks = geo.marks_right.expect("the flag");
+        assert!(
+            (marks - m.mark - (geo.meta_right + m.tag_gap)).abs() < 0.01,
+            "the flag follows the day one spacing token on: {geo:?}"
+        );
+    }
+
+    phase a_card_without_facts_has_no_facts_line;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let m = RowMetrics::card(&theme);
+        let bare = ListRowFace::new("Measure the new bedroom").card();
+        let with_facts = ListRowFace::new("Measure the new bedroom")
+            .card()
+            .meta("Saturday");
+        let facts = RowMetrics::line(&mut text, &m.meta);
+        let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+        let difference = with_facts.height(&mut text, &theme) - bare.height(&mut text, &theme);
+        assert!(
+            (difference - facts - tight).abs() < 0.5,
+            "a card grows by its facts line and nothing when it has none: it grew {difference} \
+         (facts {facts}, gap {tight}, bare {}, with {})",
+            bare.height(&mut text, &theme),
+            with_facts.height(&mut text, &theme)
+        );
+    }
+
+    phase a_card_wraps_its_title_up_to_three_lines_and_cuts_only_past_what_fits;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let width = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
+        let lines = |text: &mut TextRenderer, title: &str| {
+            ListRowFace::new(title)
+                .card()
+                .meta("Thursday")
+                .card_title_lines(width, text, &theme)
+        };
+        let height = |text: &mut TextRenderer, title: &str, lines: u8| {
+            ListRowFace::new(title)
+                .card()
+                .title_lines(lines)
+                .meta("Thursday")
+                .height(text, &theme)
+        };
+        // A title that fits keeps one line: a card never cuts what it can show.
+        assert_eq!(lines(&mut text, "Book the van"), 1);
+        let long = "Order boxes, tape and bubble wrap for the kitchen, the bedroom and the hallway";
+        let wrapped = lines(&mut text, long);
+        assert!(
+            (2..=CARD_TITLE_LINES).contains(&wrapped),
+            "a long title takes {wrapped} lines"
+        );
+        let one = height(&mut text, "Book the van", 1);
+        let several = height(&mut text, long, wrapped);
+        assert!(
+            (44.0..=56.0).contains(&one),
+            "a card of one title line and its facts is {one} tall"
+        );
+        assert!(
+            several > one,
+            "a card as tall as its title's lines: {several} for {wrapped}, {one} for one"
+        );
+        let endless = "Words ".repeat(80);
+        assert_eq!(lines(&mut text, &endless), CARD_TITLE_LINES);
+        assert!(
+            (height(&mut text, &endless, CARD_TITLE_LINES) - height(&mut text, long, 3)).abs() < 0.01,
+            "a title past three lines stands in the room three take"
+        );
+    }
+
+    phase a_rows_facts_stand_in_one_column_in_a_fixed_order;
+    {
+        let theme = Theme::dark();
+        let m = RowMetrics::new(&theme);
+        let mut text = TextRenderer::new();
+        let outer = Rect::new(0.0, 0.0, 560.0, 44.0);
+        let face = ListRowFace::new("Call the landlord about the boiler")
+            .meta("Today 09:00")
+            .avatar(AvatarFace::new("Ada", "ada"))
+            .value("2/5")
+            .count(3)
+            .mark(Icon::Flag)
+            .mark_tone(Tone::Warning);
+        let geo = face.geometry(outer, &m, &mut text, &theme);
+        let avatar = geo.avatar.expect("who is on it, in the facts");
+        assert!(
+            geo.meta_right <= avatar.x0,
+            "the due fact stands left of the face: {geo:?}"
+        );
+        assert!(geo.text_right < geo.meta_right, "{geo:?}");
+        let count = geo.count_right.expect("the count's pill");
+        assert!(avatar.x1 <= count, "{geo:?}");
+        let marks = geo.marks_right.expect("the priority mark");
+        assert!(count <= marks, "{geo:?}");
+        assert!(
+            (geo.value_right - (outer.x1 - m.bleed)).abs() < 0.01,
+            "the last fact ends on the row's content edge"
+        );
+        assert!(marks <= geo.value_right, "a value keeps the edge: {geo:?}");
+        let other = ListRowFace::new("Water the plants")
+            .meta("Jun 30")
+            .avatar(AvatarFace::new("Grace", "grace"))
+            .value("12/5")
+            .mark(Icon::Star);
+        let other = other.geometry(outer, &m, &mut text, &theme);
+        assert!((other.value_right - geo.value_right).abs() < 0.01);
+        let bare = ListRowFace::new("Water the plants").meta("Jun 30");
+        let bare = bare.geometry(outer, &m, &mut text, &theme);
+        assert!((bare.meta_right - geo.value_right).abs() < 0.01, "{bare:?}");
+    }
+
+    phase the_text_ends_before_the_rows_facts;
+    {
+        let rect = Rect::new(0.0, 0.0, 400.0, 64.0);
+        let bare =
+            ListRowFace::new("Ada Lovelace").secondary("A preview that runs the full width of the row");
+        let geo = geometry(&bare, rect);
+        let bare_right = geo.text_right;
+        assert!(
+            (geo.title_right - geo.text_right).abs() < 0.01
+                && (geo.second_right - geo.text_right).abs() < 0.01,
+            "a row with no facts keeps the row's width"
+        );
+        let facts = bare.clone().meta("Yesterday").count(4);
+        let geo = geometry(&facts, rect);
+        assert!(geo.title_right < bare_right, "the facts narrow the title");
+        assert!(
+            (geo.second_right - geo.title_right).abs() < 0.01,
+            "the preview ends where the title does, before the column"
+        );
+        assert!(
+            geo.title_right <= geo.meta_left + 0.01,
+            "no line runs into the facts' room"
+        );
+    }
+
+    phase the_status_dot_sits_on_the_title_line_of_a_two_line_row;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let face = ListRowFace::new("Ada")
+            .secondary("Online")
+            .status(RowStatus::Active);
+        let h = face.height(&mut text, &theme);
+        let rect = Rect::new(0.0, 0.0, 300.0, h);
+        let mut scene = Scene::new();
+        face.paint(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            rect,
+        );
+        let m = RowMetrics::new(&theme);
+        let block = face.text_block(&mut text, &m);
+        let title_cy = rect.center().y - block / 2.0 + RowMetrics::line(&mut text, &m.title) / 2.0;
+        assert!(title_cy < rect.center().y - 1.0, "fixture: two lines");
+        let dot = face.dot_centre(rect, &mut text, &theme).unwrap();
+        assert!(
+            (dot.y - title_cy).abs() < 0.5,
+            "the dot is on the title's line"
+        );
+
+        let face = face.disclosure();
+        let dot = face.dot_centre(rect, &mut text, &theme).unwrap();
+        assert!(
+            (dot.y - rect.center().y).abs() < 0.5,
+            "the dot centres with the chevron"
+        );
+    }
+
+    phase a_nested_row_indents_its_content_a_gutter_a_step_and_keeps_its_trailing_column;
+    {
+        let theme = Theme::dark();
+        let step = crate::chrome::disclosure_gutter(&theme);
+        let rect = Rect::new(0.0, 0.0, 300.0, 40.0);
+        let top = geometry(&ListRowFace::new("Top"), rect);
+        let nested = geometry(&ListRowFace::new("Under").depth(2), rect);
+        assert!(
+            (nested.leading.x0 - (top.leading.x0 + 2.0 * step)).abs() < 0.5,
+            "the nested row's content stands two gutters in: {} from {}",
+            nested.leading.x0,
+            top.leading.x0
+        );
+        assert!(
+            (nested.text_x - (top.text_x + 2.0 * step)).abs() < 0.5,
+            "its title moves with its content"
+        );
+        assert!(
+            (nested.value_right - top.value_right).abs() < 0.5,
+            "depth never moves the row's trailing facts: {} and {}",
+            nested.value_right,
+            top.value_right
+        );
+    }
+
+    phase a_row_given_its_own_height_stands_at_it;
+    {
+        let list_row = face_height(&ListRowFace::new("Project"), 1.0);
+        let tree_row = face_height(&ListRowFace::new("Project").row_height(28.0), 1.0);
+        assert!(
+            (tree_row - 28.0).abs() < 0.5,
+            "the tree's own row token: {tree_row}"
+        );
+        assert!(
+            tree_row < list_row,
+            "a tree's row stands under the list's row of the same theme"
+        );
+    }
+
+    phase a_face_leads_a_row_in_the_icon_slot_a_glyph_leads_in;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rect = Rect::new(20.0, 0.0, 340.0, 52.0);
+        let colour = crate::presence::identity_colour("g1");
+        let face = crate::presence::Face::new("Claude Code", "g1", colour);
+        let with_face = ListRowFace::new("Claude Code").leading(RowLeading::Face(face));
+        let with_glyph = ListRowFace::new("Claude Code").leading(RowLeading::Icon(Icon::User));
+        let face_x = with_face.text_column(rect, &mut text, &theme);
+        let glyph_x = with_glyph.text_column(rect, &mut text, &theme);
+        assert!(
+            (face_x - glyph_x).abs() < 0.01,
+            "a face and a glyph lead in one slot: {face_x} and {glyph_x}"
+        );
+        assert!(
+            (face_x - (rect.x0 + mark_text_inset(&theme))).abs() < 0.01,
+            "the title starts past the content edge, the mark's slot and the gap: {face_x}"
+        );
+        assert!(
+            (with_face.height(&mut text, &theme) - with_glyph.height(&mut text, &theme)).abs() < 0.01,
+            "a face asks no more height than a glyph"
+        );
+        assert_eq!(
+            with_face.shape().leading,
+            RowLeadingShape::Mark,
+            "a face is a mark of icon size, not an avatar's column"
+        );
+    }
 }
 
 #[test]
@@ -194,136 +495,6 @@ fn a_dense_row_is_its_caption_line_not_a_list_row() {
             "a dense row is {want} tall as {name} shows it, not {height}"
         );
     }
-}
-
-#[test]
-fn a_quiet_word_before_the_title_shares_its_line_and_takes_its_room() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let rect = Rect::new(0.0, 0.0, 200.0, 36.0);
-    let plain = ListRowFace::new("Book the van");
-    assert!(!plain.title_elided(rect, &mut text, &theme), "it fits");
-    assert!(
-        (face_height(&plain, 1.0) - face_height(&plain.clone().prefix("From"), 1.0)).abs() < 0.5,
-        "the word shares the title's line"
-    );
-    let long = ListRowFace::new("Book the van")
-        .prefix("From the message Bo sent about the move flat on Saturday morning");
-    assert!(
-        long.title_elided(rect, &mut text, &theme),
-        "the title keeps only the room the word leaves it"
-    );
-}
-
-#[test]
-fn a_row_without_its_avatar_leaves_no_room_for_one() {
-    let outer = Rect::new(0.0, 0.0, 400.0, 56.0);
-    let with = ListRowFace::new("Design")
-        .secondary("See you there")
-        .meta("Thursday")
-        .avatar(AvatarFace::new("Ada", "ada"));
-    let without = ListRowFace::new("Empty")
-        .secondary("No messages yet")
-        .meta("Thursday");
-    let with = geometry(&with, outer);
-    let without = geometry(&without, outer);
-    let avatar = with.avatar.expect("the row shows the face");
-    assert!(without.avatar.is_none());
-    assert!(
-        with.meta_right < avatar.x0,
-        "the day stands before the face: {with:?}"
-    );
-    assert!(
-        (without.meta_right - avatar.x1).abs() < 0.01,
-        "with no avatar the day ends on the facts' shared edge: {without:?} beside {with:?}"
-    );
-}
-
-#[test]
-fn a_cards_facts_run_on_without_the_room_of_those_it_has_not() {
-    let theme = Theme::dark();
-    let m = RowMetrics::card(&theme);
-    let mut text = TextRenderer::new();
-    text.set_text_scale(theme.text_scale);
-    let outer = Rect::new(0.0, 0.0, 320.0, 57.0);
-    let face = ListRowFace::new("Measure the new bedroom")
-        .card()
-        .meta("Saturday")
-        .mark(Icon::Flag);
-    let geo = face.geometry(outer, &m, &mut text, &theme);
-    assert!(geo.avatar.is_none(), "{geo:?}");
-    let marks = geo.marks_right.expect("the flag");
-    assert!(
-        (marks - m.mark - (geo.meta_right + m.tag_gap)).abs() < 0.01,
-        "the flag follows the day one spacing token on: {geo:?}"
-    );
-}
-
-#[test]
-fn a_card_without_facts_has_no_facts_line() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    text.set_text_scale(theme.text_scale);
-    let m = RowMetrics::card(&theme);
-    let bare = ListRowFace::new("Measure the new bedroom").card();
-    let with_facts = ListRowFace::new("Measure the new bedroom")
-        .card()
-        .meta("Saturday");
-    let facts = RowMetrics::line(&mut text, &m.meta);
-    let tight = f64::from(theme.tokens.spacing.rhythm.tight);
-    let difference = with_facts.height(&mut text, &theme) - bare.height(&mut text, &theme);
-    assert!(
-        (difference - facts - tight).abs() < 0.5,
-        "a card grows by its facts line and nothing when it has none: it grew {difference} \
-         (facts {facts}, gap {tight}, bare {}, with {})",
-        bare.height(&mut text, &theme),
-        with_facts.height(&mut text, &theme)
-    );
-}
-
-#[test]
-fn a_card_wraps_its_title_up_to_three_lines_and_cuts_only_past_what_fits() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    text.set_text_scale(theme.text_scale);
-    let width = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
-    let lines = |text: &mut TextRenderer, title: &str| {
-        ListRowFace::new(title)
-            .card()
-            .meta("Thursday")
-            .card_title_lines(width, text, &theme)
-    };
-    let height = |text: &mut TextRenderer, title: &str, lines: u8| {
-        ListRowFace::new(title)
-            .card()
-            .title_lines(lines)
-            .meta("Thursday")
-            .height(text, &theme)
-    };
-    // A title that fits keeps one line: a card never cuts what it can show.
-    assert_eq!(lines(&mut text, "Book the van"), 1);
-    let long = "Order boxes, tape and bubble wrap for the kitchen, the bedroom and the hallway";
-    let wrapped = lines(&mut text, long);
-    assert!(
-        (2..=CARD_TITLE_LINES).contains(&wrapped),
-        "a long title takes {wrapped} lines"
-    );
-    let one = height(&mut text, "Book the van", 1);
-    let several = height(&mut text, long, wrapped);
-    assert!(
-        (44.0..=56.0).contains(&one),
-        "a card of one title line and its facts is {one} tall"
-    );
-    assert!(
-        several > one,
-        "a card as tall as its title's lines: {several} for {wrapped}, {one} for one"
-    );
-    let endless = "Words ".repeat(80);
-    assert_eq!(lines(&mut text, &endless), CARD_TITLE_LINES);
-    assert!(
-        (height(&mut text, &endless, CARD_TITLE_LINES) - height(&mut text, long, 3)).abs() < 0.01,
-        "a title past three lines stands in the room three take"
-    );
 }
 
 #[test]
@@ -413,47 +584,6 @@ fn a_card_grown_to_a_fingers_target_centres_its_single_line() {
 }
 
 #[test]
-fn a_rows_facts_stand_in_one_column_in_a_fixed_order() {
-    let theme = Theme::dark();
-    let m = RowMetrics::new(&theme);
-    let mut text = TextRenderer::new();
-    let outer = Rect::new(0.0, 0.0, 560.0, 44.0);
-    let face = ListRowFace::new("Call the landlord about the boiler")
-        .meta("Today 09:00")
-        .avatar(AvatarFace::new("Ada", "ada"))
-        .value("2/5")
-        .count(3)
-        .mark(Icon::Flag)
-        .mark_tone(Tone::Warning);
-    let geo = face.geometry(outer, &m, &mut text, &theme);
-    let avatar = geo.avatar.expect("who is on it, in the facts");
-    assert!(
-        geo.meta_right <= avatar.x0,
-        "the due fact stands left of the face: {geo:?}"
-    );
-    assert!(geo.text_right < geo.meta_right, "{geo:?}");
-    let count = geo.count_right.expect("the count's pill");
-    assert!(avatar.x1 <= count, "{geo:?}");
-    let marks = geo.marks_right.expect("the priority mark");
-    assert!(count <= marks, "{geo:?}");
-    assert!(
-        (geo.value_right - (outer.x1 - m.bleed)).abs() < 0.01,
-        "the last fact ends on the row's content edge"
-    );
-    assert!(marks <= geo.value_right, "a value keeps the edge: {geo:?}");
-    let other = ListRowFace::new("Water the plants")
-        .meta("Jun 30")
-        .avatar(AvatarFace::new("Grace", "grace"))
-        .value("12/5")
-        .mark(Icon::Star);
-    let other = other.geometry(outer, &m, &mut text, &theme);
-    assert!((other.value_right - geo.value_right).abs() < 0.01);
-    let bare = ListRowFace::new("Water the plants").meta("Jun 30");
-    let bare = bare.geometry(outer, &m, &mut text, &theme);
-    assert!((bare.meta_right - geo.value_right).abs() < 0.01, "{bare:?}");
-}
-
-#[test]
 fn text_sits_on_the_content_edge_and_the_lift_bleeds_past_it() {
     let theme = Theme::dark();
     let bleed = crate::chrome::row_bleed(&theme);
@@ -491,149 +621,261 @@ fn text_sits_on_the_content_edge_and_the_lift_bleeds_past_it() {
     assert!(list_row.outer().x0 < row.x0, "the lift bleeds outward");
 }
 
-#[test]
-fn hover_actions_replace_the_meta_but_not_the_value() {
-    let theme = Theme::dark();
-    let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
-    let actions = [
-        RowAction {
-            icon: Icon::Reply,
-            label: "Reply",
-        },
-        RowAction {
-            icon: Icon::Trash,
-            label: "Delete message",
-        },
-    ];
-    let idle = ListRowFace::new("Ada").meta("09:41").actions(&actions);
-    assert!(idle.action_rects(rect, &theme).is_empty(), "hidden at rest");
-    let hover = idle.clone().interaction(hovered());
-    let rects = hover.action_rects(rect, &theme);
-    assert_eq!(rects.len(), 2);
-    assert!(rects[0].x1 < rects[1].x0, "in order, not touching");
-    for r in &rects {
-        assert!(rect.contains(r.origin()) && r.x1 <= rect.x1);
+tilo_test_env::scenario! {
+    fn a_rows_actions_are_shown_and_run;
+
+    phase hover_actions_replace_the_meta_but_not_the_value;
+    {
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
+        let actions = [
+            RowAction {
+                icon: Icon::Reply,
+                label: "Reply",
+            },
+            RowAction {
+                icon: Icon::Trash,
+                label: "Delete message",
+            },
+        ];
+        let idle = ListRowFace::new("Ada").meta("09:41").actions(&actions);
+        assert!(idle.action_rects(rect, &theme).is_empty(), "hidden at rest");
+        let hover = idle.clone().interaction(hovered());
+        let rects = hover.action_rects(rect, &theme);
+        assert_eq!(rects.len(), 2);
+        assert!(rects[0].x1 < rects[1].x0, "in order, not touching");
+        for r in &rects {
+            assert!(rect.contains(r.origin()) && r.x1 <= rect.x1);
+            assert!(
+                (r.center().y - rect.center().y).abs() < 0.01,
+                "centred on the row"
+            );
+        }
+        let valued = ListRowFace::new("Tokyo")
+            .title_value("09:41")
+            .actions(&actions)
+            .interaction(hovered());
+        let geo = geometry(&valued, rect);
+        let rects = valued.action_rects(rect, &theme);
+        let value_left = geo.value_right
+            - f64::from(
+                TextRenderer::new()
+                    .measure_style("09:41", None, &RowMetrics::new(&theme).value_title)
+                    .0,
+            );
+        assert!(rects.last().unwrap().x1 <= value_left + 0.01);
+        let touch = ListRowFace::new("Ada")
+            .actions(&actions)
+            .reveal_actions(true);
+        assert_eq!(touch.action_rects(rect, &theme).len(), 2);
         assert!(
-            (r.center().y - rect.center().y).abs() < 0.01,
-            "centred on the row"
+            hover
+                .clone()
+                .enabled(false)
+                .action_rects(rect, &theme)
+                .is_empty()
         );
     }
-    let valued = ListRowFace::new("Tokyo")
-        .title_value("09:41")
-        .actions(&actions)
-        .interaction(hovered());
-    let geo = geometry(&valued, rect);
-    let rects = valued.action_rects(rect, &theme);
-    let value_left = geo.value_right
-        - f64::from(
-            TextRenderer::new()
-                .measure_style("09:41", None, &RowMetrics::new(&theme).value_title)
-                .0,
-        );
-    assert!(rects.last().unwrap().x1 <= value_left + 0.01);
-    let touch = ListRowFace::new("Ada")
-        .actions(&actions)
-        .reveal_actions(true);
-    assert_eq!(touch.action_rects(rect, &theme).len(), 2);
-    assert!(
-        hover
-            .clone()
-            .enabled(false)
-            .action_rects(rect, &theme)
-            .is_empty()
-    );
-}
 
-#[test]
-fn a_rows_actions_say_where_they_stand_without_a_hover() {
-    let theme = Theme::dark();
-    let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
-    let mut row = ListRow::new("note-1", "Ada")
-        .action(Icon::Plus, "New note under Ada", || {})
-        .action(Icon::MoreHorizontal, "More actions for Ada", || {});
-    row.metrics = Some(RowMetrics::new(&theme));
-    row.theme = Some(theme.clone());
-    row.rect = rect;
-    let node = Widget::accessibility(&row).unwrap();
-    let buttons: Vec<_> = node
-        .children
-        .iter()
-        .filter(|child| {
-            child
-                .action_target
-                .as_deref()
-                .is_some_and(|target| target.contains("/action/"))
-        })
-        .collect();
-    assert_eq!(buttons.len(), 2, "one button per action");
-    assert!(
-        row.action_rects().is_empty(),
-        "the row is at rest: it shows no action"
-    );
-    let band = row.text_band();
-    let slots = row.with_face(|face| {
-        face.clone()
-            .interaction(hovered())
-            .action_rects(band, &theme)
-    });
-    let bounds: Vec<Rect> = buttons
-        .iter()
-        .map(|button| match button.bounds {
-            Some(bounds) => bounds.to_rect(),
-            None => panic!("an action a reader can press says where it stands"),
-        })
-        .collect();
-    assert_eq!(bounds.len(), slots.len());
-    for (bounds, slot) in bounds.iter().zip(&slots) {
+    phase a_rows_actions_say_where_they_stand_without_a_hover;
+    {
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
+        let mut row = ListRow::new("note-1", "Ada")
+            .action(Icon::Plus, "New note under Ada", || {})
+            .action(Icon::MoreHorizontal, "More actions for Ada", || {});
+        row.metrics = Some(RowMetrics::new(&theme));
+        row.theme = Some(theme.clone());
+        row.rect = rect;
+        let node = Widget::accessibility(&row).unwrap();
+        let buttons: Vec<_> = node
+            .children
+            .iter()
+            .filter(|child| {
+                child
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.contains("/action/"))
+            })
+            .collect();
+        assert_eq!(buttons.len(), 2, "one button per action");
         assert!(
-            (bounds.x0 - slot.x0).abs() < 0.01 && (bounds.x1 - slot.x1).abs() < 0.01,
-            "the hovered row shows the action where its button stands: {bounds:?} vs {slot:?}"
+            row.action_rects().is_empty(),
+            "the row is at rest: it shows no action"
+        );
+        let band = row.text_band();
+        let slots = row.with_face(|face| {
+            face.clone()
+                .interaction(hovered())
+                .action_rects(band, &theme)
+        });
+        let bounds: Vec<Rect> = buttons
+            .iter()
+            .map(|button| match button.bounds {
+                Some(bounds) => bounds.to_rect(),
+                None => panic!("an action a reader can press says where it stands"),
+            })
+            .collect();
+        assert_eq!(bounds.len(), slots.len());
+        for (bounds, slot) in bounds.iter().zip(&slots) {
+            assert!(
+                (bounds.x0 - slot.x0).abs() < 0.01 && (bounds.x1 - slot.x1).abs() < 0.01,
+                "the hovered row shows the action where its button stands: {bounds:?} vs {slot:?}"
+            );
+        }
+    }
+
+    phase a_row_says_where_its_actions_stand;
+    {
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
+        let mut row = ListRow::new("note-1", "Ada")
+            .selected(true)
+            .action(Icon::Trash, "Delete", || {});
+        row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+        row.metrics = Some(RowMetrics::new(&theme));
+        row.theme = Some(theme.clone());
+        row.rect = rect;
+        let rects = crate::widget::capability::capability::<dyn crate::widget::RowActionRects>(&row)
+            .expect("the row answers where its actions stand")
+            .row_action_rects();
+        assert_eq!(rects.len(), 1, "one action, where the row shows it");
+        assert!(rect.contains(rects[0].center()), "{rect:?} vs {rects:?}");
+        assert_eq!(rects, row.action_rects(), "the same place it paints");
+    }
+
+    phase hover_actions_run_from_assistive_technology_and_the_keyboard;
+    {
+        let replied = Rc::new(Cell::new(0));
+        let deleted = Rc::new(Cell::new(0));
+        let (r, d) = (Rc::clone(&replied), Rc::clone(&deleted));
+        let mut row = ListRow::new("m", "Ada")
+            .on_view(|| {})
+            .action(Icon::Reply, "Reply", move || r.set(r.get() + 1))
+            .action(Icon::Trash, "Delete message", move || d.set(d.get() + 1));
+        let mut doc = automerge::AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut row,
+            &crate::a11y::Action::Activate,
+            &[1],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!((replied.get(), deleted.get()), (0, 1));
+        row.set_focus(true);
+        row.armed_action = Some(0);
+        assert!(Widget::perform_action(
+            &mut row,
+            &crate::a11y::Action::Activate,
+            &[],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(replied.get(), 1);
+        row.set_focus(false);
+        assert_eq!(row.armed_action, None, "leaving the row disarms");
+        // A hover action that is only a callback is not a published action, so
+        // the inventory reports nothing for it; the row's own activation and
+        // binding the row's action are what make it visible to a native audit.
+        let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
+        assert!(
+            bindings
+                .iter()
+                .all(|binding| !matches!(binding.control_id.as_str(), "Reply" | "Delete message")),
+            "the row's hover actions are callbacks, not published actions: {bindings:?}"
         );
     }
-}
 
-#[test]
-fn a_row_says_where_its_actions_stand() {
-    let theme = Theme::dark();
-    let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
-    let mut row = ListRow::new("note-1", "Ada")
-        .selected(true)
-        .action(Icon::Trash, "Delete", || {});
-    row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
-    row.metrics = Some(RowMetrics::new(&theme));
-    row.theme = Some(theme.clone());
-    row.rect = rect;
-    let rects = crate::widget::capability::capability::<dyn crate::widget::RowActionRects>(&row)
-        .expect("the row answers where its actions stand")
-        .row_action_rects();
-    assert_eq!(rects.len(), 1, "one action, where the row shows it");
-    assert!(rect.contains(rects[0].center()), "{rect:?} vs {rects:?}");
-    assert_eq!(rects, row.action_rects(), "the same place it paints");
-}
+    phase on_view_publishes_the_row_as_an_action_instead_of_a_callback;
+    {
+        let opened = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&opened);
+        let mut row = ListRow::new("contact-ada", "Ada Lovelace").on_view(move || {
+            counter.set(counter.get() + 1);
+        });
+        let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
+        assert_eq!(bindings.len(), 1);
+        let doc = automerge::AutoCommit::new();
+        let resources = crate::resources::PublishesResources::resources(&row, &doc);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].label, "Ada Lovelace");
+        assert!(
+            crate::widget::resource_operation_handlers(&row)
+                .contains(crate::widget::activation::NATIVE_INVOKE)
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec("contact-ada").unwrap();
+        let started = crate::widget::ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::View,
+            crate::widget::activation::NATIVE_INVOKE,
+            &payload,
+        )
+        .start(
+            &mut row,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+        .unwrap();
+        assert!(started.is_some());
+        assert_eq!(opened.get(), 1);
+    }
 
-#[test]
-fn the_text_ends_before_the_rows_facts() {
-    let rect = Rect::new(0.0, 0.0, 400.0, 64.0);
-    let bare =
-        ListRowFace::new("Ada Lovelace").secondary("A preview that runs the full width of the row");
-    let geo = geometry(&bare, rect);
-    let bare_right = geo.text_right;
-    assert!(
-        (geo.title_right - geo.text_right).abs() < 0.01
-            && (geo.second_right - geo.text_right).abs() < 0.01,
-        "a row with no facts keeps the row's width"
-    );
-    let facts = bare.clone().meta("Yesterday").count(4);
-    let geo = geometry(&facts, rect);
-    assert!(geo.title_right < bare_right, "the facts narrow the title");
-    assert!(
-        (geo.second_right - geo.title_right).abs() < 0.01,
-        "the preview ends where the title does, before the column"
-    );
-    assert!(
-        geo.title_right <= geo.meta_left + 0.01,
-        "no line runs into the facts' room"
-    );
+    phase a_disabled_row_is_inert_and_skipped_by_focus;
+    {
+        let mut row = ListRow::new("r", "Row").on_view(|| {}).with_enabled(false);
+        assert!(!row.is_focusable());
+        assert!(!Widget::is_enabled(&row));
+        let mut doc = automerge::AutoCommit::new();
+        assert!(!Widget::perform_action(
+            &mut row,
+            &crate::a11y::Action::Activate,
+            &[],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+    }
+
+    phase a_touch_pointer_shows_a_selected_rows_actions;
+    {
+        let mut row = ListRow::new("m", "Ada")
+            .selected(true)
+            .action(Icon::Trash, "Delete", || {});
+        assert!(!row.reveal_actions());
+        row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+        assert!(row.reveal_actions());
+    }
+
+    phase a_swipe_bound_to_an_action_runs_it_once_as_the_person_swipes_to_it;
+    {
+        let mut spec = tilo_actions::ResourceSpec::new("res-milk", "test.errand", "Errand");
+        spec = spec.with_action(
+            tilo_actions::ActionSpec::operation(
+                "delete",
+                "Delete",
+                tilo_actions::OperationKind::Effect,
+                "test.errand.effect",
+                &(),
+            )
+            .expect("a test action"),
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&spec, "delete").expect("published");
+        let address = binding.address().clone();
+        let mut row =
+            ListRow::new("milk", "Buy milk").swipe_binding(Icon::Trash, "Delete", true, binding);
+        row.swipe.as_mut().expect("a swipe").run();
+        let taken = crate::widget::controls::take_control_invocation(&mut row);
+        assert_eq!(
+            taken.as_ref().map(|taken| taken.address.clone()),
+            Some(address),
+            "one swipe runs the action once"
+        );
+        assert!(
+            crate::widget::controls::take_control_invocation(&mut row).is_none(),
+            "the swipe is taken once"
+        );
+    }
 }
 
 #[test]
@@ -660,139 +902,187 @@ fn trailing_columns_stack_from_the_edge_and_reserve_a_control() {
     assert_eq!(face.trailing_rect(rect, &mut text, &theme), Some(slot));
 }
 
-#[test]
-fn the_status_dot_sits_on_the_title_line_of_a_two_line_row() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let face = ListRowFace::new("Ada")
-        .secondary("Online")
-        .status(RowStatus::Active);
-    let h = face.height(&mut text, &theme);
-    let rect = Rect::new(0.0, 0.0, 300.0, h);
-    let mut scene = Scene::new();
-    face.paint(
-        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-        rect,
-    );
-    let m = RowMetrics::new(&theme);
-    let block = face.text_block(&mut text, &m);
-    let title_cy = rect.center().y - block / 2.0 + RowMetrics::line(&mut text, &m.title) / 2.0;
-    assert!(title_cy < rect.center().y - 1.0, "fixture: two lines");
-    let dot = face.dot_centre(rect, &mut text, &theme).unwrap();
-    assert!(
-        (dot.y - title_cy).abs() < 0.5,
-        "the dot is on the title's line"
-    );
+tilo_test_env::scenario! {
+    fn a_row_paints_and_speaks_its_selection_tones_and_marks;
 
-    let face = face.disclosure();
-    let dot = face.dot_centre(rect, &mut text, &theme).unwrap();
-    assert!(
-        (dot.y - rect.center().y).abs() < 0.5,
-        "the dot centres with the chevron"
-    );
-}
-
-#[test]
-fn separators_hide_around_the_selection() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let count = |face: ListRowFace<'_>, text: &mut TextRenderer| {
-        let mut scene = Scene::new();
-        face.paint(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, text, &theme),
-            Rect::new(0.0, 0.0, 300.0, 40.0),
-        );
-        scene.encoding().draw_tags.len()
-    };
-    let plain = count(ListRowFace::new("a"), &mut text);
-    let separated = count(ListRowFace::new("a").separator(false), &mut text);
-    let above_selection = count(ListRowFace::new("a").separator(true), &mut text);
-    let selected_plain = count(ListRowFace::new("a").selected(true), &mut text);
-    let selected = count(
-        ListRowFace::new("a").selected(true).separator(false),
-        &mut text,
-    );
-    assert_eq!(separated, plain + 1);
-    assert_eq!(above_selection, plain);
-    assert_eq!(selected, selected_plain);
-}
-
-#[test]
-fn a_selected_row_is_the_lift_on_every_preset() {
-    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let ground = theme.tokens.colors.surfaces.content;
-        let fill = row_fill(&theme, true, false).unwrap();
-        let moved = crate::surface::edge_delta(fill, ground);
-        assert!(
-            moved >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-            "{}: selection moved the ground only {moved:.4}",
-            theme.name
-        );
-        assert!(
-            row_fill(&theme, false, false).is_none(),
-            "idle is transparent"
-        );
-    }
-}
-
-#[test]
-fn toned_meta_spans_stay_legible_on_the_ground_and_the_lift() {
-    for theme in [Theme::dark(), Theme::light()] {
-        let ground = theme.tokens.colors.surfaces.content;
-        let lift = crate::tokens::colors::composite(row_fill(&theme, true, false).unwrap(), ground);
-        for tone in [Tone::Success, Tone::Danger, Tone::Warning] {
-            let ink = theme.tokens.colors.ink_on_any(
-                &[ground, lift],
-                tone.colour(&theme),
-                SMALL_TEXT_MIN_CONTRAST,
+    phase separators_hide_around_the_selection;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let count = |face: ListRowFace<'_>, text: &mut TextRenderer| {
+            let mut scene = Scene::new();
+            face.paint(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, text, &theme),
+                Rect::new(0.0, 0.0, 300.0, 40.0),
             );
-            for under in [ground, lift] {
-                assert!(crate::a11y::contrast_ratio(ink, under) >= SMALL_TEXT_MIN_CONTRAST);
-            }
+            scene.encoding().draw_tags.len()
+        };
+        let plain = count(ListRowFace::new("a"), &mut text);
+        let separated = count(ListRowFace::new("a").separator(false), &mut text);
+        let above_selection = count(ListRowFace::new("a").separator(true), &mut text);
+        let selected_plain = count(ListRowFace::new("a").selected(true), &mut text);
+        let selected = count(
+            ListRowFace::new("a").selected(true).separator(false),
+            &mut text,
+        );
+        assert_eq!(separated, plain + 1);
+        assert_eq!(above_selection, plain);
+        assert_eq!(selected, selected_plain);
+    }
+
+    phase a_selected_row_is_the_lift_on_every_preset;
+    {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.content;
+            let fill = row_fill(&theme, true, false).unwrap();
+            let moved = crate::surface::edge_delta(fill, ground);
+            assert!(
+                moved >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{}: selection moved the ground only {moved:.4}",
+                theme.name
+            );
+            assert!(
+                row_fill(&theme, false, false).is_none(),
+                "idle is transparent"
+            );
         }
     }
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let mut scene = Scene::new();
-    ListRowFace::new("AAPL")
-        .meta_spans(&[("+2.4%", Tone::Success), ("182.10", Tone::Neutral)])
-        .selected(true)
-        .paint(
+
+    phase toned_meta_spans_stay_legible_on_the_ground_and_the_lift;
+    {
+        for theme in [Theme::dark(), Theme::light()] {
+            let ground = theme.tokens.colors.surfaces.content;
+            let lift = crate::tokens::colors::composite(row_fill(&theme, true, false).unwrap(), ground);
+            for tone in [Tone::Success, Tone::Danger, Tone::Warning] {
+                let ink = theme.tokens.colors.ink_on_any(
+                    &[ground, lift],
+                    tone.colour(&theme),
+                    SMALL_TEXT_MIN_CONTRAST,
+                );
+                for under in [ground, lift] {
+                    assert!(crate::a11y::contrast_ratio(ink, under) >= SMALL_TEXT_MIN_CONTRAST);
+                }
+            }
+        }
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        ListRowFace::new("AAPL")
+            .meta_spans(&[("+2.4%", Tone::Success), ("182.10", Tone::Neutral)])
+            .selected(true)
+            .paint(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(0.0, 0.0, 320.0, 40.0),
+            );
+        assert!(scene.encoding().resources.glyph_runs.len() >= 3);
+    }
+
+    phase a_priority_tones_the_mark_and_the_trailing_fact;
+    {
+        let props = ListRowProps {
+            key: "plants".to_owned(),
+            title: "Water the plants".to_owned(),
+            mark: Some(crate::icons::Icon::Flag),
+            tone: Tone::Danger,
+            meta: Some("Jul 2".to_owned()),
+            meta_tone: Tone::Warning,
+            ..ListRowProps::default()
+        };
+        let row = <ListRow as Described>::from_props("plants", props);
+        assert_eq!(row.mark, Some(crate::icons::Icon::Flag));
+        assert_eq!(row.mark_tone, Tone::Danger, "the mark and the box's ring");
+        assert_eq!(
+            row.meta_spans,
+            vec![("Jul 2".to_owned(), Tone::Warning)],
+            "the trailing fact reads in the tone it was given"
+        );
+        let props = ListRowProps {
+            key: "plain".to_owned(),
+            title: "Water the plants".to_owned(),
+            mark: Some(crate::icons::Icon::Flag),
+            meta: Some("Jul 2".to_owned()),
+            ..ListRowProps::default()
+        };
+        let row = <ListRow as Described>::from_props("plain", props);
+        assert_eq!(row.mark_tone, Tone::Neutral);
+        assert!(row.meta_spans.is_empty());
+    }
+
+    phase an_item_nobody_has_named_shows_a_muted_placeholder_and_is_spoken_by_it;
+    {
+        let untitled = crate::i18n::I18nManager::lookup_plain("list-row-untitled");
+        assert_ne!(untitled, "list-row-untitled", "the placeholder is a phrase");
+        assert!(
+            !untitled.is_empty(),
+            "a row of an item nobody has named yet shows words"
+        );
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        let row = ListRow::new("r", "");
+        ListRowFace::new("").paint(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
             Rect::new(0.0, 0.0, 320.0, 40.0),
         );
-    assert!(scene.encoding().resources.glyph_runs.len() >= 3);
-}
+        assert!(
+            !scene.encoding().resources.glyph_runs.is_empty(),
+            "an empty title paints its placeholder"
+        );
+        let node = Widget::accessibility(&row).unwrap();
+        assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
 
-#[test]
-fn a_priority_tones_the_mark_and_the_trailing_fact() {
-    let props = ListRowProps {
-        key: "plants".to_owned(),
-        title: "Water the plants".to_owned(),
-        mark: Some(crate::icons::Icon::Flag),
-        tone: Tone::Danger,
-        meta: Some("Jul 2".to_owned()),
-        meta_tone: Tone::Warning,
-        ..ListRowProps::default()
-    };
-    let row = <ListRow as Described>::from_props("plants", props);
-    assert_eq!(row.mark, Some(crate::icons::Icon::Flag));
-    assert_eq!(row.mark_tone, Tone::Danger, "the mark and the box's ring");
-    assert_eq!(
-        row.meta_spans,
-        vec![("Jul 2".to_owned(), Tone::Warning)],
-        "the trailing fact reads in the tone it was given"
-    );
-    let props = ListRowProps {
-        key: "plain".to_owned(),
-        title: "Water the plants".to_owned(),
-        mark: Some(crate::icons::Icon::Flag),
-        meta: Some("Jul 2".to_owned()),
-        ..ListRowProps::default()
-    };
-    let row = <ListRow as Described>::from_props("plain", props);
-    assert_eq!(row.mark_tone, Tone::Neutral);
-    assert!(row.meta_spans.is_empty());
+        let node = Widget::accessibility(&ListRow::new("r", "  ")).unwrap();
+        assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
+        let node = Widget::accessibility(&ListRow::new("r", "Groceries")).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Groceries"));
+    }
+
+    phase the_words_a_search_found_are_marked_at_word_starts_whatever_their_case;
+    {
+        let line = "The glass rattled; Glassworks and fibreglass.";
+        let spans = found_spans(line, &["glass"]);
+        let marked: Vec<&str> = spans
+            .iter()
+            .filter_map(|span| line.get(span.clone()))
+            .collect();
+        assert_eq!(marked, ["glass", "Glass"]);
+        assert!(found_spans(line, &[]).is_empty());
+        assert!(found_spans(line, &[""]).is_empty());
+        let spans = found_spans("Tideglass letters", &["tide", "tideglass"]);
+        assert_eq!(spans, [std::ops::Range { start: 0, end: 9 }]);
+        assert_eq!(
+            found_spans("İstanbul", &["i̇stan"]),
+            [std::ops::Range { start: 0, end: 6 }]
+        );
+    }
+
+    phase a_toned_meta_is_spoken_once;
+    {
+        let node = ListRowFace::new("Ring the letting agent")
+            .meta("Overdue since Jun 29")
+            .meta_spans(&[("Overdue since Jun 29", Tone::Danger)])
+            .accessibility(Rect::new(0.0, 0.0, 320.0, 40.0), "late");
+        assert_eq!(node.value.as_deref(), Some("Overdue since Jun 29"));
+    }
+
+    phase a_described_rows_explanation_is_its_description_and_not_its_value;
+    {
+        let row = ListRow::new("bounce-alert", "Flash when a key is ignored")
+            .secondary("Show the visual alert each time bounce keys drops a press")
+            .description("Show the visual alert each time bounce keys drops a press");
+        let node = Widget::accessibility(&row).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Flash when a key is ignored"));
+        assert_eq!(
+            node.description.as_deref(),
+            Some("Show the visual alert each time bounce keys drops a press")
+        );
+        assert_eq!(node.value, None, "the explanation is said once");
+
+        let read = ListRow::new("path", "Home").secondary("/home/quinten");
+        let node = Widget::accessibility(&read).unwrap();
+        assert_eq!(node.value.as_deref(), Some("/home/quinten"));
+        assert_eq!(node.description, None);
+    }
 }
 
 #[test]
@@ -1007,35 +1297,6 @@ fn accessibility_names_the_badge_and_reads_parts_and_actions() {
 }
 
 #[test]
-fn an_item_nobody_has_named_shows_a_muted_placeholder_and_is_spoken_by_it() {
-    let untitled = crate::i18n::I18nManager::lookup_plain("list-row-untitled");
-    assert_ne!(untitled, "list-row-untitled", "the placeholder is a phrase");
-    assert!(
-        !untitled.is_empty(),
-        "a row of an item nobody has named yet shows words"
-    );
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let mut scene = Scene::new();
-    let row = ListRow::new("r", "");
-    ListRowFace::new("").paint(
-        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-        Rect::new(0.0, 0.0, 320.0, 40.0),
-    );
-    assert!(
-        !scene.encoding().resources.glyph_runs.is_empty(),
-        "an empty title paints its placeholder"
-    );
-    let node = Widget::accessibility(&row).unwrap();
-    assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
-
-    let node = Widget::accessibility(&ListRow::new("r", "  ")).unwrap();
-    assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
-    let node = Widget::accessibility(&ListRow::new("r", "Groceries")).unwrap();
-    assert_eq!(node.name.as_deref(), Some("Groceries"));
-}
-
-#[test]
 fn retained_row_activates_by_pointer_and_accessibility() {
     let hits = Rc::new(Cell::new(0));
     let counter = Rc::clone(&hits);
@@ -1067,84 +1328,6 @@ fn retained_row_activates_by_pointer_and_accessibility() {
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
-}
-
-#[test]
-fn hover_actions_run_from_assistive_technology_and_the_keyboard() {
-    let replied = Rc::new(Cell::new(0));
-    let deleted = Rc::new(Cell::new(0));
-    let (r, d) = (Rc::clone(&replied), Rc::clone(&deleted));
-    let mut row = ListRow::new("m", "Ada")
-        .on_view(|| {})
-        .action(Icon::Reply, "Reply", move || r.set(r.get() + 1))
-        .action(Icon::Trash, "Delete message", move || d.set(d.get() + 1));
-    let mut doc = automerge::AutoCommit::new();
-    assert!(Widget::perform_action(
-        &mut row,
-        &crate::a11y::Action::Activate,
-        &[1],
-        &mut crate::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    assert_eq!((replied.get(), deleted.get()), (0, 1));
-    row.set_focus(true);
-    row.armed_action = Some(0);
-    assert!(Widget::perform_action(
-        &mut row,
-        &crate::a11y::Action::Activate,
-        &[],
-        &mut crate::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    assert_eq!(replied.get(), 1);
-    row.set_focus(false);
-    assert_eq!(row.armed_action, None, "leaving the row disarms");
-    // A hover action that is only a callback is not a published action, so
-    // the inventory reports nothing for it; the row's own activation and
-    // binding the row's action are what make it visible to a native audit.
-    let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
-    assert!(
-        bindings
-            .iter()
-            .all(|binding| !matches!(binding.control_id.as_str(), "Reply" | "Delete message")),
-        "the row's hover actions are callbacks, not published actions: {bindings:?}"
-    );
-}
-
-#[test]
-fn on_view_publishes_the_row_as_an_action_instead_of_a_callback() {
-    let opened = Rc::new(Cell::new(0));
-    let counter = Rc::clone(&opened);
-    let mut row = ListRow::new("contact-ada", "Ada Lovelace").on_view(move || {
-        counter.set(counter.get() + 1);
-    });
-    let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
-    assert_eq!(bindings.len(), 1);
-    let doc = automerge::AutoCommit::new();
-    let resources = crate::resources::PublishesResources::resources(&row, &doc);
-    assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0].label, "Ada Lovelace");
-    assert!(
-        crate::widget::resource_operation_handlers(&row)
-            .contains(crate::widget::activation::NATIVE_INVOKE)
-    );
-    let mut doc = automerge::AutoCommit::new();
-    let invocation = tilo_actions::InvocationId::new();
-    let payload = serde_json::to_vec("contact-ada").unwrap();
-    let started = crate::widget::ResourceOperation::local(
-        invocation,
-        tilo_actions::OperationKind::View,
-        crate::widget::activation::NATIVE_INVOKE,
-        &payload,
-    )
-    .start(
-        &mut row,
-        &mut crate::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    )
-    .unwrap();
-    assert!(started.is_some());
-    assert_eq!(opened.get(), 1);
 }
 
 #[test]
@@ -1294,31 +1477,6 @@ fn a_leading_checkbox_toggles_apart_from_activation() {
 }
 
 #[test]
-fn a_disabled_row_is_inert_and_skipped_by_focus() {
-    let mut row = ListRow::new("r", "Row").on_view(|| {}).with_enabled(false);
-    assert!(!row.is_focusable());
-    assert!(!Widget::is_enabled(&row));
-    let mut doc = automerge::AutoCommit::new();
-    assert!(!Widget::perform_action(
-        &mut row,
-        &crate::a11y::Action::Activate,
-        &[],
-        &mut crate::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-}
-
-#[test]
-fn a_touch_pointer_shows_a_selected_rows_actions() {
-    let mut row = ListRow::new("m", "Ada")
-        .selected(true)
-        .action(Icon::Trash, "Delete", || {});
-    assert!(!row.reveal_actions());
-    row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
-    assert!(row.reveal_actions());
-}
-
-#[test]
 fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
     let calls = Rc::new(Cell::new(0));
     let invoked = Rc::clone(&calls);
@@ -1342,25 +1500,6 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
     let [x, y, w, h] = find(&driver.inspection().root, "ListRow").unwrap().rect;
     driver.click_at(x + w / 2.0, y + h / 2.0);
     assert_eq!(calls.get(), 2, "a click runs the same action");
-}
-
-#[test]
-fn the_words_a_search_found_are_marked_at_word_starts_whatever_their_case() {
-    let line = "The glass rattled; Glassworks and fibreglass.";
-    let spans = found_spans(line, &["glass"]);
-    let marked: Vec<&str> = spans
-        .iter()
-        .filter_map(|span| line.get(span.clone()))
-        .collect();
-    assert_eq!(marked, ["glass", "Glass"]);
-    assert!(found_spans(line, &[]).is_empty());
-    assert!(found_spans(line, &[""]).is_empty());
-    let spans = found_spans("Tideglass letters", &["tide", "tideglass"]);
-    assert_eq!(spans, [std::ops::Range { start: 0, end: 9 }]);
-    assert_eq!(
-        found_spans("İstanbul", &["i̇stan"]),
-        [std::ops::Range { start: 0, end: 6 }]
-    );
 }
 
 #[test]
@@ -1553,36 +1692,6 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
     let mut harness = FrameHarness::for_root(crate::State::new(), kept, (420, 80), Theme::dark());
     harness.key("Delete");
     assert_eq!(ran.get(), 0, "a plain row action is not destructive");
-}
-
-#[test]
-fn a_swipe_bound_to_an_action_runs_it_once_as_the_person_swipes_to_it() {
-    let mut spec = tilo_actions::ResourceSpec::new("res-milk", "test.errand", "Errand");
-    spec = spec.with_action(
-        tilo_actions::ActionSpec::operation(
-            "delete",
-            "Delete",
-            tilo_actions::OperationKind::Effect,
-            "test.errand.effect",
-            &(),
-        )
-        .expect("a test action"),
-    );
-    let binding = tilo_actions::ActionBinding::unit_for(&spec, "delete").expect("published");
-    let address = binding.address().clone();
-    let mut row =
-        ListRow::new("milk", "Buy milk").swipe_binding(Icon::Trash, "Delete", true, binding);
-    row.swipe.as_mut().expect("a swipe").run();
-    let taken = crate::widget::controls::take_control_invocation(&mut row);
-    assert_eq!(
-        taken.as_ref().map(|taken| taken.address.clone()),
-        Some(address),
-        "one swipe runs the action once"
-    );
-    assert!(
-        crate::widget::controls::take_control_invocation(&mut row).is_none(),
-        "the swipe is taken once"
-    );
 }
 
 #[test]
@@ -1787,15 +1896,6 @@ fn a_checked_rows_title_is_struck_through_and_muted() {
 }
 
 #[test]
-fn a_toned_meta_is_spoken_once() {
-    let node = ListRowFace::new("Ring the letting agent")
-        .meta("Overdue since Jun 29")
-        .meta_spans(&[("Overdue since Jun 29", Tone::Danger)])
-        .accessibility(Rect::new(0.0, 0.0, 320.0, 40.0), "late");
-    assert_eq!(node.value.as_deref(), Some("Overdue since Jun 29"));
-}
-
-#[test]
 fn a_person_pressing_a_bound_rows_box_still_sees_the_check_fill_in() {
     use crate::time::testing::with_monotonic_time;
     use crate::time::{Duration, Instant};
@@ -1881,75 +1981,6 @@ fn a_row_that_says_still_marks_at_once_where_brisk_still_moves() {
     );
 }
 
-#[test]
-fn a_nested_row_indents_its_content_a_gutter_a_step_and_keeps_its_trailing_column() {
-    let theme = Theme::dark();
-    let step = crate::chrome::disclosure_gutter(&theme);
-    let rect = Rect::new(0.0, 0.0, 300.0, 40.0);
-    let top = geometry(&ListRowFace::new("Top"), rect);
-    let nested = geometry(&ListRowFace::new("Under").depth(2), rect);
-    assert!(
-        (nested.leading.x0 - (top.leading.x0 + 2.0 * step)).abs() < 0.5,
-        "the nested row's content stands two gutters in: {} from {}",
-        nested.leading.x0,
-        top.leading.x0
-    );
-    assert!(
-        (nested.text_x - (top.text_x + 2.0 * step)).abs() < 0.5,
-        "its title moves with its content"
-    );
-    assert!(
-        (nested.value_right - top.value_right).abs() < 0.5,
-        "depth never moves the row's trailing facts: {} and {}",
-        nested.value_right,
-        top.value_right
-    );
-}
-
-#[test]
-fn a_row_given_its_own_height_stands_at_it() {
-    let list_row = face_height(&ListRowFace::new("Project"), 1.0);
-    let tree_row = face_height(&ListRowFace::new("Project").row_height(28.0), 1.0);
-    assert!(
-        (tree_row - 28.0).abs() < 0.5,
-        "the tree's own row token: {tree_row}"
-    );
-    assert!(
-        tree_row < list_row,
-        "a tree's row stands under the list's row of the same theme"
-    );
-}
-
-#[test]
-fn a_face_leads_a_row_in_the_icon_slot_a_glyph_leads_in() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let rect = Rect::new(20.0, 0.0, 340.0, 52.0);
-    let colour = crate::presence::identity_colour("g1");
-    let face = crate::presence::Face::new("Claude Code", "g1", colour);
-    let with_face = ListRowFace::new("Claude Code").leading(RowLeading::Face(face));
-    let with_glyph = ListRowFace::new("Claude Code").leading(RowLeading::Icon(Icon::User));
-    let face_x = with_face.text_column(rect, &mut text, &theme);
-    let glyph_x = with_glyph.text_column(rect, &mut text, &theme);
-    assert!(
-        (face_x - glyph_x).abs() < 0.01,
-        "a face and a glyph lead in one slot: {face_x} and {glyph_x}"
-    );
-    assert!(
-        (face_x - (rect.x0 + mark_text_inset(&theme))).abs() < 0.01,
-        "the title starts past the content edge, the mark's slot and the gap: {face_x}"
-    );
-    assert!(
-        (with_face.height(&mut text, &theme) - with_glyph.height(&mut text, &theme)).abs() < 0.01,
-        "a face asks no more height than a glyph"
-    );
-    assert_eq!(
-        with_face.shape().leading,
-        RowLeadingShape::Mark,
-        "a face is a mark of icon size, not an avatar's column"
-    );
-}
-
 /// A control that wraps under its text fills the row, and stops filling only where it would stand
 /// beside the text again: its own width with the gap before it and the marks after it (here a
 /// disclosure chevron), as the row's wrap counts them. Reckoned without the marks, a width that
@@ -1983,25 +2014,6 @@ fn a_wrapping_control_settles_at_every_width_beside_marks_after_it() {
             "at {width} px a control under its text fills the row: {control:?} in {row:?}"
         );
     }
-}
-
-#[test]
-fn a_described_rows_explanation_is_its_description_and_not_its_value() {
-    let row = ListRow::new("bounce-alert", "Flash when a key is ignored")
-        .secondary("Show the visual alert each time bounce keys drops a press")
-        .description("Show the visual alert each time bounce keys drops a press");
-    let node = Widget::accessibility(&row).unwrap();
-    assert_eq!(node.name.as_deref(), Some("Flash when a key is ignored"));
-    assert_eq!(
-        node.description.as_deref(),
-        Some("Show the visual alert each time bounce keys drops a press")
-    );
-    assert_eq!(node.value, None, "the explanation is said once");
-
-    let read = ListRow::new("path", "Home").secondary("/home/quinten");
-    let node = Widget::accessibility(&read).unwrap();
-    assert_eq!(node.value.as_deref(), Some("/home/quinten"));
-    assert_eq!(node.description, None);
 }
 
 #[test]

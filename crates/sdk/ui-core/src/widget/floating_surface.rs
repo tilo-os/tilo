@@ -743,65 +743,69 @@ mod tests {
         116.0 * f - 16.0
     }
 
-    #[test]
-    fn the_armed_row_is_a_lift_that_clears_its_floor_on_every_material() {
-        for name in Theme::ALL {
-            let theme = Theme::named(name).expect("shipped preset resolves");
-            let colors = &theme.tokens.colors;
-            let ground = crate::chrome::panel_ground(&theme);
-            let (fill, ink) = armed_row(&theme);
-            let delta = (lightness(fill) - lightness(ground)).abs();
+    tilo_test_env::scenario! {
+        fn a_floating_surface_lifts_its_armed_row_and_anchors_its_panel;
+
+        phase the_armed_row_is_a_lift_that_clears_its_floor_on_every_material;
+        {
+            for name in Theme::ALL {
+                let theme = Theme::named(name).expect("shipped preset resolves");
+                let colors = &theme.tokens.colors;
+                let ground = crate::chrome::panel_ground(&theme);
+                let (fill, ink) = armed_row(&theme);
+                let delta = (lightness(fill) - lightness(ground)).abs();
+                assert!(
+                    delta >= 15.0,
+                    "{name}: the armed row stands only ΔL* {delta:.1} off its panel"
+                );
+                let list = colors.lift_on(ground, 1.0);
+                let list_delta = (lightness(list) - lightness(ground)).abs();
+                assert!(
+                    delta > list_delta,
+                    "{name}: the overlay lift ({delta:.1}) is stronger than a list lift ({list_delta:.1})"
+                );
+                assert_ne!(fill, colors.intent.accent, "{name}: not the inverted fill");
+                assert!(
+                    crate::a11y::contrast_ratio(ink, fill)
+                        >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    "{name}: the armed row's label is legible on it"
+                );
+            }
+        }
+
+        phase an_anchored_panel_opens_at_its_trigger_and_flips_and_shifts_at_the_edges;
+        {
+            let button = Rect::new(200.0, 16.0, 232.0, 48.0);
+            let (rect, side) = place_anchored(button, (160.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
+            assert_eq!(side, PopoverSide::Below);
+            assert_eq!((rect.x0, rect.y0), (200.0, 52.0));
+
+            let more = Rect::new(1088.0, 16.0, 1112.0, 40.0);
+            let (rect, _) = place_anchored(more, (220.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
             assert!(
-                delta >= 15.0,
-                "{name}: the armed row stands only ΔL* {delta:.1} off its panel"
+                (rect.x1 - more.x1).abs() < 1e-9,
+                "trailing-aligned with its trigger"
             );
-            let list = colors.lift_on(ground, 1.0);
-            let list_delta = (lightness(list) - lightness(ground)).abs();
-            assert!(
-                delta > list_delta,
-                "{name}: the overlay lift ({delta:.1}) is stronger than a list lift ({list_delta:.1})"
-            );
-            assert_ne!(fill, colors.intent.accent, "{name}: not the inverted fill");
-            assert!(
-                crate::a11y::contrast_ratio(ink, fill)
-                    >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-                "{name}: the armed row's label is legible on it"
-            );
+            assert!(rect.y0 >= more.y1, "below its trigger, not over it");
+
+            let low = Rect::new(400.0, 740.0, 480.0, 772.0);
+            let (rect, side) = place_anchored(low, (160.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
+            assert_eq!(side, PopoverSide::Above);
+            assert!((rect.y1 - (low.y0 - 4.0)).abs() < 1e-9);
+
+            let point = Rect::new(1270.0, 790.0, 1270.0, 790.0);
+            let (rect, _) = place_anchored(point, (200.0, 300.0), PopoverSide::Below, 0.0, WINDOW);
+            assert!(rect.x0 >= WINDOW.x0 && rect.y0 >= WINDOW.y0);
+            assert!(rect.x1 <= WINDOW.x1 && rect.y1 <= WINDOW.y1);
+            assert!((rect.x1 - 1270.0).abs() < 1e-9 && (rect.y1 - 790.0).abs() < 1e-9);
+
+            let middle = Rect::new(600.0, 100.0, 640.0, 120.0);
+            let (rect, _) = place_anchored(middle, (1270.0, 100.0), PopoverSide::Below, 4.0, WINDOW);
+            assert!(rect.x0 >= WINDOW.x0 && rect.x1 <= WINDOW.x1);
         }
     }
 
     const WINDOW: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-
-    #[test]
-    fn an_anchored_panel_opens_at_its_trigger_and_flips_and_shifts_at_the_edges() {
-        let button = Rect::new(200.0, 16.0, 232.0, 48.0);
-        let (rect, side) = place_anchored(button, (160.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
-        assert_eq!(side, PopoverSide::Below);
-        assert_eq!((rect.x0, rect.y0), (200.0, 52.0));
-
-        let more = Rect::new(1088.0, 16.0, 1112.0, 40.0);
-        let (rect, _) = place_anchored(more, (220.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
-        assert!(
-            (rect.x1 - more.x1).abs() < 1e-9,
-            "trailing-aligned with its trigger"
-        );
-        assert!(rect.y0 >= more.y1, "below its trigger, not over it");
-
-        let low = Rect::new(400.0, 740.0, 480.0, 772.0);
-        let (rect, side) = place_anchored(low, (160.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
-        assert_eq!(side, PopoverSide::Above);
-        assert!((rect.y1 - (low.y0 - 4.0)).abs() < 1e-9);
-
-        let point = Rect::new(1270.0, 790.0, 1270.0, 790.0);
-        let (rect, _) = place_anchored(point, (200.0, 300.0), PopoverSide::Below, 0.0, WINDOW);
-        assert!(rect.x0 >= WINDOW.x0 && rect.y0 >= WINDOW.y0);
-        assert!(rect.x1 <= WINDOW.x1 && rect.y1 <= WINDOW.y1);
-        assert!((rect.x1 - 1270.0).abs() < 1e-9 && (rect.y1 - 790.0).abs() < 1e-9);
-
-        let middle = Rect::new(600.0, 100.0, 640.0, 120.0);
-        let (rect, _) = place_anchored(middle, (1270.0, 100.0), PopoverSide::Below, 4.0, WINDOW);
-        assert!(rect.x0 >= WINDOW.x0 && rect.x1 <= WINDOW.x1);
-    }
 }
 
 #[cfg(test)]
@@ -809,68 +813,72 @@ mod control_bar_tests {
     use super::*;
     use crate::icons::Icon;
 
-    #[test]
-    fn a_control_bar_is_concentric_and_reports_its_clicks() {
-        let theme = Theme::dark();
-        let inset = control_inset(&theme);
-        assert!(
-            (inset - f64::from(theme.tokens.radii.panel - theme.tokens.radii.control)).abs() < 1e-9
-        );
-        let area = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let rect = ControlBar::bottom_centre(area, 3, &theme);
-        assert!((rect.center().x - 400.0).abs() < 1e-9);
-        assert!(rect.height() >= 36.0, "a single row never reads as a pill");
-        let mut bar = ControlBar::new();
-        let controls = [
-            BarControl::new(Icon::Camera, "Take photo"),
-            BarControl::new(Icon::Mic, "Record sound").toggled(true),
-            BarControl::new(Icon::Settings, "Settings").enabled(false),
-        ];
-        bar.paint(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut crate::text_render::TextRenderer::new(),
-            &theme,
-            rect,
-            &controls,
-        );
-        let first = bar.control_rect(0).unwrap();
-        assert!((first.x0 - (rect.x0 + inset)).abs() < 1e-9);
-        assert!((first.y0 - (rect.y0 + inset)).abs() < 1e-9);
-        let click = |bar: &mut ControlBar, p: Point| {
-            bar.handle(&crate::synthetic_input::cursor_moved(p.x, p.y), 1.0);
-            bar.handle(&crate::synthetic_input::mouse_press(), 1.0);
-            bar.handle(&crate::synthetic_input::mouse_release(), 1.0)
-        };
-        assert_eq!(click(&mut bar, first.center()), Some(0));
-        let disabled = bar.control_rect(2).unwrap();
-        assert_eq!(
-            click(&mut bar, disabled.center()),
-            None,
-            "a disabled control is inert"
-        );
-        assert!(bar.contains(rect.center()));
-    }
+    tilo_test_env::scenario! {
+        fn a_control_bar_lays_out_and_reports_its_clicks;
 
-    #[test]
-    fn trailing_alignment_mirrors_leading() {
-        let anchor = Rect::new(600.0, 10.0, 640.0, 42.0);
-        let window = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let (rect, side) = place_aligned(
-            anchor,
-            (200.0, 100.0),
-            PopoverSide::Below,
-            PanelAlign::Trailing,
-            4.0,
-            window,
-        );
-        assert_eq!(side, PopoverSide::Below);
-        assert!((rect.x1 - anchor.x1).abs() < 1e-9);
-        assert!((rect.y0 - (anchor.y1 + 4.0)).abs() < 1e-9);
-        let room = panel_room(window, &Theme::dark());
-        assert!(
-            room.x0 > window.x0 && room.x1 < window.x1,
-            "panels keep a margin"
-        );
+        phase a_control_bar_is_concentric_and_reports_its_clicks;
+        {
+            let theme = Theme::dark();
+            let inset = control_inset(&theme);
+            assert!(
+                (inset - f64::from(theme.tokens.radii.panel - theme.tokens.radii.control)).abs() < 1e-9
+            );
+            let area = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let rect = ControlBar::bottom_centre(area, 3, &theme);
+            assert!((rect.center().x - 400.0).abs() < 1e-9);
+            assert!(rect.height() >= 36.0, "a single row never reads as a pill");
+            let mut bar = ControlBar::new();
+            let controls = [
+                BarControl::new(Icon::Camera, "Take photo"),
+                BarControl::new(Icon::Mic, "Record sound").toggled(true),
+                BarControl::new(Icon::Settings, "Settings").enabled(false),
+            ];
+            bar.paint(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut crate::text_render::TextRenderer::new(),
+                &theme,
+                rect,
+                &controls,
+            );
+            let first = bar.control_rect(0).unwrap();
+            assert!((first.x0 - (rect.x0 + inset)).abs() < 1e-9);
+            assert!((first.y0 - (rect.y0 + inset)).abs() < 1e-9);
+            let click = |bar: &mut ControlBar, p: Point| {
+                bar.handle(&crate::synthetic_input::cursor_moved(p.x, p.y), 1.0);
+                bar.handle(&crate::synthetic_input::mouse_press(), 1.0);
+                bar.handle(&crate::synthetic_input::mouse_release(), 1.0)
+            };
+            assert_eq!(click(&mut bar, first.center()), Some(0));
+            let disabled = bar.control_rect(2).unwrap();
+            assert_eq!(
+                click(&mut bar, disabled.center()),
+                None,
+                "a disabled control is inert"
+            );
+            assert!(bar.contains(rect.center()));
+        }
+
+        phase trailing_alignment_mirrors_leading;
+        {
+            let anchor = Rect::new(600.0, 10.0, 640.0, 42.0);
+            let window = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let (rect, side) = place_aligned(
+                anchor,
+                (200.0, 100.0),
+                PopoverSide::Below,
+                PanelAlign::Trailing,
+                4.0,
+                window,
+            );
+            assert_eq!(side, PopoverSide::Below);
+            assert!((rect.x1 - anchor.x1).abs() < 1e-9);
+            assert!((rect.y0 - (anchor.y1 + 4.0)).abs() < 1e-9);
+            let room = panel_room(window, &Theme::dark());
+            assert!(
+                room.x0 > window.x0 && room.x1 < window.x1,
+                "panels keep a margin"
+            );
+        }
     }
 }

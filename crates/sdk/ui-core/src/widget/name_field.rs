@@ -419,177 +419,181 @@ mod tests {
         key(Key::Character(c.to_string().into()))
     }
 
-    #[test]
-    fn name_field_commits_trimmed_text_or_cancels() {
+    tilo_test_env::scenario! {
+        fn a_name_field_edits_commits_and_keeps_its_caret_in_view;
+
+        phase name_field_commits_trimmed_text_or_cancels;
         {
-            let mut f = NameField::new("");
-            let m = Modifiers::default();
-            for c in " Intro ".chars() {
-                let out = if c == ' ' {
-                    f.handle_event(&key(Key::Named(NamedKey::Space)), &m)
-                } else {
-                    f.handle_event(&ch(c), &m)
-                };
-                assert_eq!(out, NameFieldOutcome::Edited);
+            {
+                let mut f = NameField::new("");
+                let m = Modifiers::default();
+                for c in " Intro ".chars() {
+                    let out = if c == ' ' {
+                        f.handle_event(&key(Key::Named(NamedKey::Space)), &m)
+                    } else {
+                        f.handle_event(&ch(c), &m)
+                    };
+                    assert_eq!(out, NameFieldOutcome::Edited);
+                }
+                assert_eq!(f.text(), " Intro ");
+                assert_eq!(
+                    f.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
+                    NameFieldOutcome::Commit("Intro".to_string())
+                );
             }
-            assert_eq!(f.text(), " Intro ");
-            assert_eq!(
-                f.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
-                NameFieldOutcome::Commit("Intro".to_string())
-            );
-        }
 
-        {
-            let mut f = NameField::new("Intro rewrite");
-            let m = Modifiers::default();
-            assert_eq!(f.text(), "Intro rewrite");
-            for _ in 0.."Intro rewrite".len() {
-                f.handle_event(&key(Key::Named(NamedKey::Backspace)), &m);
+            {
+                let mut f = NameField::new("Intro rewrite");
+                let m = Modifiers::default();
+                assert_eq!(f.text(), "Intro rewrite");
+                for _ in 0.."Intro rewrite".len() {
+                    f.handle_event(&key(Key::Named(NamedKey::Backspace)), &m);
+                }
+                assert_eq!(f.text(), "");
+                assert_eq!(
+                    f.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
+                    NameFieldOutcome::Commit(String::new()),
+                    "an empty commit is reported, not swallowed — it means 'remove it'"
+                );
             }
-            assert_eq!(f.text(), "");
-            assert_eq!(
-                f.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
-                NameFieldOutcome::Commit(String::new()),
-                "an empty commit is reported, not swallowed — it means 'remove it'"
-            );
+
+            {
+                let mut f = NameField::new("half typed");
+                assert_eq!(
+                    f.handle_event(&key(Key::Named(NamedKey::Escape)), &Modifiers::default()),
+                    NameFieldOutcome::Cancel
+                );
+            }
         }
 
+        phase name_field_owns_editing_keys_but_leaves_chords_to_the_host;
         {
-            let mut f = NameField::new("half typed");
-            assert_eq!(
-                f.handle_event(&key(Key::Named(NamedKey::Escape)), &Modifiers::default()),
-                NameFieldOutcome::Cancel
-            );
-        }
-    }
+            {
+                let mut f = NameField::new("");
+                let m = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+                assert_eq!(f.handle_event(&ch('s'), &m), NameFieldOutcome::Ignored);
+                assert_eq!(f.text(), "", "Ctrl+S must not type an 's' into the name");
+            }
 
-    #[test]
-    fn name_field_owns_editing_keys_but_leaves_chords_to_the_host() {
-        {
-            let mut f = NameField::new("");
-            let m = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-            assert_eq!(f.handle_event(&ch('s'), &m), NameFieldOutcome::Ignored);
-            assert_eq!(f.text(), "", "Ctrl+S must not type an 's' into the name");
-        }
+            {
+                let mut f = NameField::new("x");
+                let out = f.handle_event(&key(Key::Named(NamedKey::ArrowLeft)), &Modifiers::default());
+                assert_eq!(out, NameFieldOutcome::Edited, "consumed");
+                assert_eq!(f.text(), "x", "and it changed nothing");
+            }
 
-        {
-            let mut f = NameField::new("x");
-            let out = f.handle_event(&key(Key::Named(NamedKey::ArrowLeft)), &Modifiers::default());
-            assert_eq!(out, NameFieldOutcome::Edited, "consumed");
-            assert_eq!(f.text(), "x", "and it changed nothing");
-        }
+            {
+                let family = "A👨\u{200d}👩\u{200d}👧\u{200d}👦";
+                let mut field = NameField::new(format!("{family}e\u{301}"));
+                let backspace = key(Key::Named(NamedKey::Backspace));
+                assert_eq!(
+                    field.handle_event(&backspace, &Modifiers::default()),
+                    NameFieldOutcome::Edited
+                );
+                assert_eq!(field.text(), family, "combining sequence is one deletion");
+                field.handle_event(&backspace, &Modifiers::default());
+                assert_eq!(field.text(), "A", "ZWJ family emoji is one deletion");
+            }
 
-        {
-            let family = "A👨\u{200d}👩\u{200d}👧\u{200d}👦";
-            let mut field = NameField::new(format!("{family}e\u{301}"));
-            let backspace = key(Key::Named(NamedKey::Backspace));
-            assert_eq!(
-                field.handle_event(&backspace, &Modifiers::default()),
-                NameFieldOutcome::Edited
-            );
-            assert_eq!(field.text(), family, "combining sequence is one deletion");
-            field.handle_event(&backspace, &Modifiers::default());
-            assert_eq!(field.text(), "A", "ZWJ family emoji is one deletion");
-        }
-
-        {
-            let mut field = NameField::new("ab");
-            let preedit = "漢字";
-            assert_eq!(
-                field.handle_event(
-                    &WindowEvent::Ime(
-                        Ime::Preedit(preedit.into(), Some(("漢".len(), "漢".len())),)
+            {
+                let mut field = NameField::new("ab");
+                let preedit = "漢字";
+                assert_eq!(
+                    field.handle_event(
+                        &WindowEvent::Ime(
+                            Ime::Preedit(preedit.into(), Some(("漢".len(), "漢".len())),)
+                        ),
+                        &Modifiers::default(),
                     ),
+                    NameFieldOutcome::Edited
+                );
+                assert_eq!(field.text(), "ab", "preedit stays out of the value");
+                let rect = Rect::new(10.0, 20.0, 210.0, 52.0);
+                draw_field(&field, rect);
+                let visual = field.visual.borrow();
+                assert_eq!(
+                    visual.layout.as_ref().unwrap().underlines,
+                    vec![(2, 2 + preedit.len())]
+                );
+                drop(visual);
+                let candidate = field
+                    .ime_cursor_rect()
+                    .expect("draw publishes caret geometry");
+                assert!(rect.contains(candidate.center()));
+
+                field.handle_event(
+                    &WindowEvent::Ime(Ime::Commit(preedit.into())),
                     &Modifiers::default(),
-                ),
+                );
+                assert_eq!(field.text(), "ab漢字");
+                assert!(!field.core.has_preedit());
+            }
+        }
+
+        phase typing_composing_and_erasing_clusters_leaves_the_exact_name;
+        {
+            let m = Modifiers::default();
+            let typed = |s: &str| key(Key::Character(s.into()));
+            let backspace = key(Key::Named(NamedKey::Backspace));
+            let mut field = NameField::new("");
+            for s in ["e", "\u{301}", "👍🏽", "🇩🇪"] {
+                assert_eq!(field.handle_event(&typed(s), &m), NameFieldOutcome::Edited);
+            }
+            assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
+            // A tab is consumed but never enters a one-line name.
+            assert_eq!(
+                field.handle_event(&typed("\t"), &m),
                 NameFieldOutcome::Edited
             );
-            assert_eq!(field.text(), "ab", "preedit stays out of the value");
-            let rect = Rect::new(10.0, 20.0, 210.0, 52.0);
-            draw_field(&field, rect);
-            let visual = field.visual.borrow();
-            assert_eq!(
-                visual.layout.as_ref().unwrap().underlines,
-                vec![(2, 2 + preedit.len())]
-            );
-            drop(visual);
-            let candidate = field
-                .ime_cursor_rect()
-                .expect("draw publishes caret geometry");
-            assert!(rect.contains(candidate.center()));
+            assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
 
+            // The composition shows after the text and stays out of the value; a
+            // filtered control character never reaches it either.
             field.handle_event(
-                &WindowEvent::Ime(Ime::Commit(preedit.into())),
-                &Modifiers::default(),
+                &WindowEvent::Ime(Ime::Preedit("か\n".into(), Some((3, 3)))),
+                &m,
             );
-            assert_eq!(field.text(), "ab漢字");
+            assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
+            assert_eq!(field.core.preedit(), "か");
+            assert_eq!(field.core.display_text(field.text()), "e\u{301}👍🏽🇩🇪か");
+            field.handle_event(&WindowEvent::Ime(Ime::Commit("火".into())), &m);
+            assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪火");
             assert!(!field.core.has_preedit());
-        }
-    }
 
-    #[test]
-    fn typing_composing_and_erasing_clusters_leaves_the_exact_name() {
-        let m = Modifiers::default();
-        let typed = |s: &str| key(Key::Character(s.into()));
-        let backspace = key(Key::Named(NamedKey::Backspace));
-        let mut field = NameField::new("");
-        for s in ["e", "\u{301}", "👍🏽", "🇩🇪"] {
-            assert_eq!(field.handle_event(&typed(s), &m), NameFieldOutcome::Edited);
-        }
-        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
-        // A tab is consumed but never enters a one-line name.
-        assert_eq!(
-            field.handle_event(&typed("\t"), &m),
-            NameFieldOutcome::Edited
-        );
-        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
-
-        // The composition shows after the text and stays out of the value; a
-        // filtered control character never reaches it either.
-        field.handle_event(
-            &WindowEvent::Ime(Ime::Preedit("か\n".into(), Some((3, 3)))),
-            &m,
-        );
-        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
-        assert_eq!(field.core.preedit(), "か");
-        assert_eq!(field.core.display_text(field.text()), "e\u{301}👍🏽🇩🇪か");
-        field.handle_event(&WindowEvent::Ime(Ime::Commit("火".into())), &m);
-        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪火");
-        assert!(!field.core.has_preedit());
-
-        for want in ["e\u{301}👍🏽🇩🇪", "e\u{301}👍🏽", "e\u{301}", ""] {
+            for want in ["e\u{301}👍🏽🇩🇪", "e\u{301}👍🏽", "e\u{301}", ""] {
+                field.handle_event(&backspace, &m);
+                assert_eq!(field.text(), want);
+            }
             field.handle_event(&backspace, &m);
-            assert_eq!(field.text(), want);
-        }
-        field.handle_event(&backspace, &m);
-        assert_eq!(field.text(), "", "Backspace on an empty name is harmless");
+            assert_eq!(field.text(), "", "Backspace on an empty name is harmless");
 
-        field.set_text("Draft 👍🏽");
-        field.handle_event(&backspace, &m);
-        field.handle_event(&typed("2"), &m);
-        assert_eq!(
-            field.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
-            NameFieldOutcome::Commit("Draft 2".to_owned())
-        );
-    }
-
-    #[test]
-    fn long_or_squeezed_names_keep_the_caret_end_visible_without_overflow() {
-        {
-            let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
-            let ltr = NameField::new("a very long version name whose end must stay visible");
-            draw_field(&ltr, rect);
-            let ltr_caret = ltr.ime_cursor_rect().unwrap();
-            assert!(ltr_caret.x0 >= rect.x1 - 9.0 && ltr_caret.x1 < rect.x1);
-
-            let rtl = NameField::new("שלום זהו שם גרסה ארוך מאוד");
-            draw_field(&rtl, rect);
-            let rtl_caret = rtl.ime_cursor_rect().unwrap();
-            assert!(
-                rtl_caret.x0 < rect.center().x,
-                "logical end of an RTL name is its visual left edge: {rtl_caret:?}"
+            field.set_text("Draft 👍🏽");
+            field.handle_event(&backspace, &m);
+            field.handle_event(&typed("2"), &m);
+            assert_eq!(
+                field.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
+                NameFieldOutcome::Commit("Draft 2".to_owned())
             );
-            assert!(rect.contains(rtl_caret.center()));
+        }
+
+        phase long_or_squeezed_names_keep_the_caret_end_visible_without_overflow;
+        {
+            {
+                let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
+                let ltr = NameField::new("a very long version name whose end must stay visible");
+                draw_field(&ltr, rect);
+                let ltr_caret = ltr.ime_cursor_rect().unwrap();
+                assert!(ltr_caret.x0 >= rect.x1 - 9.0 && ltr_caret.x1 < rect.x1);
+
+                let rtl = NameField::new("שלום זהו שם גרסה ארוך מאוד");
+                draw_field(&rtl, rect);
+                let rtl_caret = rtl.ime_cursor_rect().unwrap();
+                assert!(
+                    rtl_caret.x0 < rect.center().x,
+                    "logical end of an RTL name is its visual left edge: {rtl_caret:?}"
+                );
+                assert!(rect.contains(rtl_caret.center()));
+            }
         }
     }
 

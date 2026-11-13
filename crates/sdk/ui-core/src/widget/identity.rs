@@ -90,35 +90,39 @@ mod tests {
         Box::new(Button::new("new-note", "New note"))
     }
 
-    #[test]
-    fn a_control_says_what_it_does_in_its_own_node() {
-        let identified = Identified::new(button(), "so.tilo.lang.notes.Notebook\u{1f}new_note");
-        let node = super::Widget::accessibility(&identified).expect("the control describes itself");
-        assert_eq!(node.role, Role::Button);
-        assert_eq!(
-            node.action.as_deref(),
-            Some("so.tilo.lang.notes.Notebook\u{1f}new_note")
-        );
-        assert_eq!(node.name.as_deref(), Some("New note"));
-    }
+    tilo_test_env::scenario! {
+        fn an_identified_control_says_what_it_does_and_stays_itself;
 
-    #[test]
-    fn the_widget_it_stands_for_is_reached_as_it_was() {
-        let identified = Identified::new(button(), "notes.Notebook\u{1f}new_note");
-        assert!(
-            identified
-                .as_any()
-                .and_then(|any| any.downcast_ref::<Button>())
-                .is_some(),
-            "a host that updates the control in place finds it"
-        );
-    }
+        phase a_control_says_what_it_does_in_its_own_node;
+        {
+            let identified = Identified::new(button(), "so.tilo.lang.notes.Notebook\u{1f}new_note");
+            let node = super::Widget::accessibility(&identified).expect("the control describes itself");
+            assert_eq!(node.role, Role::Button);
+            assert_eq!(
+                node.action.as_deref(),
+                Some("so.tilo.lang.notes.Notebook\u{1f}new_note")
+            );
+            assert_eq!(node.name.as_deref(), Some("New note"));
+        }
 
-    #[test]
-    fn identifying_another_action_changes_only_what_it_does() {
-        let mut identified = Identified::new(button(), "notes.Notebook\u{1f}new_note");
-        identified.identify("notes.Notebook\u{1f}new_task");
-        let node = super::Widget::accessibility(&identified).expect("the control describes itself");
-        assert_eq!(node.action.as_deref(), Some("notes.Notebook\u{1f}new_task"));
+        phase the_widget_it_stands_for_is_reached_as_it_was;
+        {
+            let identified = Identified::new(button(), "notes.Notebook\u{1f}new_note");
+            assert!(
+                identified
+                    .as_any()
+                    .and_then(|any| any.downcast_ref::<Button>())
+                    .is_some(),
+                "a host that updates the control in place finds it"
+            );
+        }
+
+        phase identifying_another_action_changes_only_what_it_does;
+        {
+            let mut identified = Identified::new(button(), "notes.Notebook\u{1f}new_note");
+            identified.identify("notes.Notebook\u{1f}new_task");
+            let node = super::Widget::accessibility(&identified).expect("the control describes itself");
+            assert_eq!(node.action.as_deref(), Some("notes.Notebook\u{1f}new_task"));
+        }
     }
 }
