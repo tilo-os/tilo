@@ -326,58 +326,62 @@ mod tests {
             sources: imager_backend::destination::online_accounts::hints::HintSources::default(),
         }
     }
-    #[test]
-    fn offline_artifact_binding_never_substitutes_for_a_fresh_selection_generation() {
-        let form = AccountsForm::new();
-        let sealed = imager_backend::destination::online_accounts::hints::seal_password(
-            b"private-password",
-            "export-identity",
-            &[hint()],
-        )
-        .unwrap();
-        form.select_source(Some("selection/read-1".into())).unwrap();
-        form.accept_password_hints(
-            "selection/read-1",
-            "export-identity",
-            &sealed,
-            b"private-password",
-        )
-        .unwrap();
-        form.select_source(Some("selection/read-2".into())).unwrap();
-        assert_eq!(
+    tilo_test_env::scenario! {
+        fn account_hints_bind_only_to_the_current_authenticated_selection;
+
+        phase offline_artifact_binding_never_substitutes_for_a_fresh_selection_generation;
+        {
+            let form = AccountsForm::new();
+            let sealed = imager_backend::destination::online_accounts::hints::seal_password(
+                b"private-password",
+                "export-identity",
+                &[hint()],
+            )
+            .unwrap();
+            form.select_source(Some("selection/read-1".into())).unwrap();
             form.accept_password_hints(
                 "selection/read-1",
                 "export-identity",
                 &sealed,
-                b"private-password"
-            ),
-            Err(HintsError::Form(FormError::StaleSource))
-        );
-        assert_eq!(form.choose_hint(0), Err(FormError::InvalidFields));
-    }
+                b"private-password",
+            )
+            .unwrap();
+            form.select_source(Some("selection/read-2".into())).unwrap();
+            assert_eq!(
+                form.accept_password_hints(
+                    "selection/read-1",
+                    "export-identity",
+                    &sealed,
+                    b"private-password"
+                ),
+                Err(HintsError::Form(FormError::StaleSource))
+            );
+            assert_eq!(form.choose_hint(0), Err(FormError::InvalidFields));
+        }
 
-    #[test]
-    fn form_accepts_only_authenticated_current_selection_without_consent() {
-        let key = SymmetricKey::generate().unwrap();
-        let form = AccountsForm::new();
-        form.select_source(Some(SOURCE.into())).unwrap();
-        let sealed = seal(&key, SOURCE, &[hint()]).unwrap();
-        assert!(
-            form.accept_encrypted_hints(SOURCE, &sealed, &SymmetricKey::generate().unwrap())
-                .is_err()
-        );
-        assert_eq!(form.choose_hint(0), Err(FormError::InvalidFields));
-        form.accept_encrypted_hints(SOURCE, &sealed, &key).unwrap();
-        assert!(form.email.with(String::is_empty));
-        form.choose_hint(0).unwrap();
-        assert_eq!(form.email.with(Clone::clone), hint().email);
-        assert!(!form.mail.with(|mail| *mail));
-        assert!(form.drain_commands().is_empty());
-        form.select_source(Some("another/read-8".into())).unwrap();
-        assert_eq!(
-            form.accept_encrypted_hints(SOURCE, &sealed, &key),
-            Err(HintsError::Form(FormError::StaleSource))
-        );
-        assert_eq!(form.choose_hint(0), Err(FormError::InvalidFields));
+        phase form_accepts_only_authenticated_current_selection_without_consent;
+        {
+            let key = SymmetricKey::generate().unwrap();
+            let form = AccountsForm::new();
+            form.select_source(Some(SOURCE.into())).unwrap();
+            let sealed = seal(&key, SOURCE, &[hint()]).unwrap();
+            assert!(
+                form.accept_encrypted_hints(SOURCE, &sealed, &SymmetricKey::generate().unwrap())
+                    .is_err()
+            );
+            assert_eq!(form.choose_hint(0), Err(FormError::InvalidFields));
+            form.accept_encrypted_hints(SOURCE, &sealed, &key).unwrap();
+            assert!(form.email.with(String::is_empty));
+            form.choose_hint(0).unwrap();
+            assert_eq!(form.email.with(Clone::clone), hint().email);
+            assert!(!form.mail.with(|mail| *mail));
+            assert!(form.drain_commands().is_empty());
+            form.select_source(Some("another/read-8".into())).unwrap();
+            assert_eq!(
+                form.accept_encrypted_hints(SOURCE, &sealed, &key),
+                Err(HintsError::Form(FormError::StaleSource))
+            );
+            assert_eq!(form.choose_hint(0), Err(FormError::InvalidFields));
+        }
     }
 }

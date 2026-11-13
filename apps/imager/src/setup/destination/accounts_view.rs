@@ -581,332 +581,344 @@ mod tests {
         assert_eq!(harness.state_mut().doc.get_heads(), heads);
     }
 
-    #[test]
-    fn suggestion_widgets_prefill_editable_private_details_before_explicit_consent() {
-        let form = AccountsForm::new();
-        form.select_source(Some("source".into())).unwrap();
-        form.accept_hints(
-            "source",
-            vec![AccountHint {
-                provider: Provider::Nextcloud,
-                email: "private@example.org".into(),
-                server: "https://cloud.example.org".into(),
-                sources: imager_backend::destination::online_accounts::hints::HintSources::default(
-                ),
-            }],
-        )
-        .unwrap();
-        perform(
-            &form,
-            r#"{"actions":[{"perform":{"target":"installer.online.hint.0","action":"activate"}}]}"#,
-        );
-        assert_eq!(form.email.with(Clone::clone), "private@example.org");
-        assert_eq!(form.server.with(Clone::clone), "https://cloud.example.org");
-        assert!(form.connected.with(Vec::is_empty));
-        assert!(form.drain_commands().is_empty());
-        assert!(!form.files.with(|value| *value));
-        assert!(!form.mail.with(|value| *value));
-        assert!(!form.calendar.with(|value| *value));
-        perform(
-            &form,
-            r#"{"actions":[
+    tilo_test_env::scenario! {
+        fn account_suggestions_stay_editable_and_private_until_consent;
+
+        phase suggestion_widgets_prefill_editable_private_details_before_explicit_consent;
+        {
+            let form = AccountsForm::new();
+            form.select_source(Some("source".into())).unwrap();
+            form.accept_hints(
+                "source",
+                vec![AccountHint {
+                    provider: Provider::Nextcloud,
+                    email: "private@example.org".into(),
+                    server: "https://cloud.example.org".into(),
+                    sources: imager_backend::destination::online_accounts::hints::HintSources::default(
+                    ),
+                }],
+            )
+            .unwrap();
+            perform(
+                &form,
+                r#"{"actions":[{"perform":{"target":"installer.online.hint.0","action":"activate"}}]}"#,
+            );
+            assert_eq!(form.email.with(Clone::clone), "private@example.org");
+            assert_eq!(form.server.with(Clone::clone), "https://cloud.example.org");
+            assert!(form.connected.with(Vec::is_empty));
+            assert!(form.drain_commands().is_empty());
+            assert!(!form.files.with(|value| *value));
+            assert!(!form.mail.with(|value| *value));
+            assert!(!form.calendar.with(|value| *value));
+            perform(
+                &form,
+                r#"{"actions":[
             {"perform":{"target":"installer.online.email","action":"set_value","value":"edited@example.org"}},
             {"perform":{"target":"installer.online.server","action":"set_value","value":"https://edited.example.org"}},
             {"perform":{"target":"installer.online.files","action":"toggle_check"}},
             {"perform":{"target":"installer-online-add","action":"activate"}}
         ]}"#,
-        );
-        assert!(
-            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
-            if request.email == "edited@example.org"
-                && request.server == "https://edited.example.org"
-                && request.files && !request.mail && !request.calendar)
-        );
-    }
-
-    #[test]
-    fn continuing_widget_cancels_pending_request_without_forgetting_connected_services() {
-        let form = AccountsForm::new();
-        let account = ConnectedAccount {
-            provider: Provider::Google,
-            identity: "private@example.org".into(),
-            files: true,
-            mail: false,
-            calendar: true,
-        };
-        form.set_connected(vec![account.clone()]);
-        form.submit(false).unwrap();
-        perform(
-            &form,
-            r#"{"actions":[{"perform":{"target":"installer-online-skip","action":"activate"}}]}"#,
-        );
-        assert!(matches!(
-            &form.drain_commands()[..],
-            [AccountsCommand::SkipOffline]
-        ));
-        assert!(form.connected.with(|accounts| accounts == &[account]));
-        assert!(form.status() == AccountsStatus::SigningIn);
-    }
-
-    #[test]
-    fn connected_accounts_are_owner_supplied_and_survive_hint_source_changes() {
-        let form = AccountsForm::new();
-        let account = ConnectedAccount {
-            provider: Provider::Microsoft,
-            identity: "work@example.org".into(),
-            files: false,
-            mail: true,
-            calendar: false,
-        };
-        form.set_connected(vec![account.clone()]);
-        form.take_structure_changed();
-        form.set_connected(vec![account.clone()]);
-        assert!(!form.take_structure_changed());
-        form.select_source(Some("new-source".into())).unwrap();
-        assert!(form.connected.with(|connected| connected == &[account]));
-        assert!(form.hints.with(Vec::is_empty));
-        assert!(form.drain_commands().is_empty());
-    }
-
-    #[test]
-    fn merged_suggestions_are_editable_and_never_select_services_or_start_auth() {
-        let form = AccountsForm::new();
-        form.select_source(Some("source".into())).unwrap();
-        let files = AccountHint {
-            provider: Provider::Microsoft,
-            email: "person@example.org".into(),
-            server: String::new(),
-            sources: imager_backend::destination::online_accounts::hints::HintSources {
-                onedrive: true,
-                ..Default::default()
-            },
-        };
-        let mut mail = files.clone();
-        mail.sources = imager_backend::destination::online_accounts::hints::HintSources {
-            outlook: true,
-            ..Default::default()
-        };
-        form.accept_hints("source", vec![files, mail]).unwrap();
-        assert_eq!(form.hints.with(Vec::len), 1);
-        form.choose_hint(0).unwrap();
-        assert_eq!(form.email.with(Clone::clone), "person@example.org");
-        assert!(!form.files.with(|v| *v));
-        assert!(!form.mail.with(|v| *v));
-        assert!(!form.calendar.with(|v| *v));
-        assert!(form.drain_commands().is_empty());
-        assert_eq!(form.submit(false), Err(FormError::InvalidFields));
-        form.email.set("personal@example.org".into());
-        form.mail.set(true);
-        form.submit(false).unwrap();
-        assert!(
-            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
-            if request.email == "personal@example.org" && request.mail && !request.files && !request.calendar)
-        );
-    }
-
-    #[test]
-    fn prefilled_server_is_editable_and_unsafe_direct_handles_are_rejected() {
-        let form = AccountsForm::new();
-        form.select_source(Some("source".into())).unwrap();
-        form.accept_hints(
-            "source",
-            vec![AccountHint {
-                provider: Provider::Nextcloud,
-                email: "person@example.org".into(),
-                server: "https://cloud.example.org".into(),
-                sources: imager_backend::destination::online_accounts::hints::HintSources::default(
-                ),
-            }],
-        )
-        .unwrap();
-        form.choose_hint(0).unwrap();
-        assert_eq!(form.server.with(Clone::clone), "https://cloud.example.org");
-        form.files.set(true);
-        for server in [
-            "https://user:password@cloud.example.org",
-            "https://cloud.example.org/?token=secret",
-            "https://cloud.example.org/#secret",
-            "https://cloud.example.org\n",
-        ] {
-            form.server.set(server.into());
-            assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+            );
+            assert!(
+                matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+                if request.email == "edited@example.org"
+                    && request.server == "https://edited.example.org"
+                    && request.files && !request.mail && !request.calendar)
+            );
         }
-        form.server.set("https://edited.example.org".into());
-        form.submit(false).unwrap();
-        assert!(
-            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
-            if request.server == "https://edited.example.org")
-        );
-    }
 
-    #[test]
-    fn submit_is_private_snapshot_and_blocks_duplicate_start() {
-        let form = AccountsForm::new();
-        form.email.set("person@example.org".into());
-        assert_eq!(form.submit(false), Ok(()));
-        form.email.set("changed@example.org".into());
-        assert_eq!(form.submit(false), Err(FormError::Busy));
-        let commands = form.drain_commands();
-        assert!(matches!(&commands[..], [AccountsCommand::Add(request)]
-            if request.email == "person@example.org" && request.files && !request.mail));
-    }
+        phase merged_suggestions_are_editable_and_never_select_services_or_start_auth;
+        {
+            let form = AccountsForm::new();
+            form.select_source(Some("source".into())).unwrap();
+            let files = AccountHint {
+                provider: Provider::Microsoft,
+                email: "person@example.org".into(),
+                server: String::new(),
+                sources: imager_backend::destination::online_accounts::hints::HintSources {
+                    onedrive: true,
+                    ..Default::default()
+                },
+            };
+            let mut mail = files.clone();
+            mail.sources = imager_backend::destination::online_accounts::hints::HintSources {
+                outlook: true,
+                ..Default::default()
+            };
+            form.accept_hints("source", vec![files, mail]).unwrap();
+            assert_eq!(form.hints.with(Vec::len), 1);
+            form.choose_hint(0).unwrap();
+            assert_eq!(form.email.with(Clone::clone), "person@example.org");
+            assert!(!form.files.with(|v| *v));
+            assert!(!form.mail.with(|v| *v));
+            assert!(!form.calendar.with(|v| *v));
+            assert!(form.drain_commands().is_empty());
+            assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+            form.email.set("personal@example.org".into());
+            form.mail.set(true);
+            form.submit(false).unwrap();
+            assert!(
+                matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+                if request.email == "personal@example.org" && request.mail && !request.files && !request.calendar)
+            );
+        }
 
-    #[test]
-    fn calendar_consent_is_explicit_and_does_not_require_files_or_mail() {
-        let form = AccountsForm::new();
-        form.files.set(false);
-        assert_eq!(form.submit(false), Err(FormError::InvalidFields));
-        form.calendar.set(true);
-        assert_eq!(form.submit(false), Ok(()));
-        assert!(
-            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
-            if request.calendar && !request.files && !request.mail)
-        );
-        form.set_status(AccountsStatus::Ready);
-        assert_eq!(form.select_source(None), Ok(()));
-        assert!(!form.calendar.with(|v| *v));
-    }
-
-    #[test]
-    fn discovered_calendars_require_selection_before_confirmation() {
-        let form = AccountsForm::new();
-        form.set_calendars(vec![("/calendars/work/".into(), "Work".into())]);
-        form.set_status(AccountsStatus::ReviewCalendars);
-        assert_eq!(form.submit(false), Err(FormError::InvalidFields));
-        form.collections
-            .with(|collections| collections[0].2.set(true));
-        form.set_calendars(vec![("/calendars/work/".into(), "Work".into())]);
-        assert_eq!(form.submit(false), Ok(()));
-        assert!(
-            matches!(&form.drain_commands()[..], [AccountsCommand::SelectCalendars(selected)]
-            if selected == &["/calendars/work/"])
-        );
-    }
-
-    #[test]
-    fn unsupported_services_are_not_requested() {
-        let form = AccountsForm::new();
-        form.provider.set(Provider::Dropbox);
-        form.mail.set(true);
-        form.files.set(false);
-        assert_eq!(form.submit(false), Err(FormError::InvalidFields));
-        form.files.set(true);
-        assert_eq!(form.submit(false), Ok(()));
-        assert!(
-            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)] if !request.mail)
-        );
-    }
-
-    #[test]
-    fn microsoft_mail_is_offered_without_files() {
-        assert!(Provider::Microsoft.supports_mail());
-        let form = AccountsForm::new();
-        form.provider.set(Provider::Microsoft);
-        form.mail.set(true);
-        form.files.set(false);
-        assert_eq!(form.submit(false), Ok(()));
-        assert!(
-            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
-            if request.mail && !request.files)
-        );
-    }
-
-    #[test]
-    fn structural_changes_are_consumed_without_tracking_text_or_consent() {
-        let form = AccountsForm::new();
-        assert!(form.take_structure_changed());
-        assert!(!form.take_structure_changed());
-        form.email.set("person@example.org".into());
-        form.files.set(false);
-        form.mail.set(true);
-        assert!(!form.take_structure_changed());
-        form.provider.set(Provider::Nextcloud);
-        assert!(form.take_structure_changed());
-        assert!(!form.take_structure_changed());
-        form.set_status(AccountsStatus::Failed);
-        assert!(form.take_structure_changed());
-        assert_eq!(form.select_source(Some("source".into())), Ok(()));
-        assert!(form.take_structure_changed());
-        assert_eq!(
+        phase prefilled_server_is_editable_and_unsafe_direct_handles_are_rejected;
+        {
+            let form = AccountsForm::new();
+            form.select_source(Some("source".into())).unwrap();
             form.accept_hints(
                 "source",
                 vec![AccountHint {
                     provider: Provider::Nextcloud,
-                    email: String::new(),
+                    email: "person@example.org".into(),
                     server: "https://cloud.example.org".into(),
-                    sources:
-                        imager_backend::destination::online_accounts::hints::HintSources::default(),
-                }]
-            ),
-            Ok(())
-        );
-        assert!(form.take_structure_changed());
-        assert_eq!(form.choose_hint(0), Ok(()));
-        assert!(form.take_structure_changed());
-        assert!(!form.take_structure_changed());
-        assert_eq!(
-            form.accept_hints("stale", Vec::new()),
-            Err(FormError::StaleSource)
-        );
-        assert!(!form.take_structure_changed());
-    }
-
-    #[test]
-    fn retry_uses_corrected_server_and_escape_supersedes_queue() {
-        let form = AccountsForm::new();
-        form.provider.set(Provider::Nextcloud);
-        form.server.set("http://example.org".into());
-        assert_eq!(form.submit(false), Err(FormError::InvalidFields));
-        form.set_status(AccountsStatus::Failed);
-        form.server.set("https://cloud.example.org".into());
-        assert_eq!(form.submit(true), Ok(()));
-        assert!(
-            matches!(&form.drain_commands()[..], [AccountsCommand::Retry(request)]
-            if request.server == "https://cloud.example.org")
-        );
-        form.cancel();
-        assert!(matches!(
-            &form.drain_commands()[..],
-            [AccountsCommand::Cancel]
-        ));
-        form.set_status(AccountsStatus::Ready);
-        for _ in 0..COMMAND_CAPACITY {
-            assert_eq!(form.submit(false), Ok(()));
-            form.set_status(AccountsStatus::Ready);
+                    sources: imager_backend::destination::online_accounts::hints::HintSources::default(
+                    ),
+                }],
+            )
+            .unwrap();
+            form.choose_hint(0).unwrap();
+            assert_eq!(form.server.with(Clone::clone), "https://cloud.example.org");
+            form.files.set(true);
+            for server in [
+                "https://user:password@cloud.example.org",
+                "https://cloud.example.org/?token=secret",
+                "https://cloud.example.org/#secret",
+                "https://cloud.example.org\n",
+            ] {
+                form.server.set(server.into());
+                assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+            }
+            form.server.set("https://edited.example.org".into());
+            form.submit(false).unwrap();
+            assert!(
+                matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+                if request.server == "https://edited.example.org")
+            );
         }
-        assert_eq!(form.submit(false), Err(FormError::QueueFull));
-        form.skip_offline();
-        assert!(matches!(
-            &form.drain_commands()[..],
-            [AccountsCommand::SkipOffline]
-        ));
+
+        phase hints_require_current_source_and_explicit_review;
+        {
+            let form = AccountsForm::new();
+            let hint = AccountHint {
+                provider: Provider::Microsoft,
+                email: "person@example.org".into(),
+                server: String::new(),
+                sources: imager_backend::destination::online_accounts::hints::HintSources::default(),
+            };
+            assert_eq!(form.select_source(Some("source-a-read-1".into())), Ok(()));
+            assert_eq!(
+                form.accept_hints("source-a-read-1", vec![hint.clone()]),
+                Ok(())
+            );
+            assert!(form.email.with(String::is_empty));
+            assert_eq!(form.choose_hint(0), Ok(()));
+            assert_eq!(form.provider.with(|p| *p), Provider::Microsoft);
+            assert!(!form.mail.with(|v| *v));
+            assert!(form.drain_commands().is_empty());
+            assert_eq!(form.select_source(Some("source-b-read-2".into())), Ok(()));
+            assert_eq!(
+                form.accept_hints("source-a-read-1", vec![hint]),
+                Err(FormError::StaleSource)
+            );
+            assert!(form.email.with(String::is_empty));
+            assert_eq!(form.choose_hint(0), Err(FormError::InvalidFields));
+        }
     }
 
-    #[test]
-    fn hints_require_current_source_and_explicit_review() {
-        let form = AccountsForm::new();
-        let hint = AccountHint {
-            provider: Provider::Microsoft,
-            email: "person@example.org".into(),
-            server: String::new(),
-            sources: imager_backend::destination::online_accounts::hints::HintSources::default(),
-        };
-        assert_eq!(form.select_source(Some("source-a-read-1".into())), Ok(()));
-        assert_eq!(
-            form.accept_hints("source-a-read-1", vec![hint.clone()]),
-            Ok(())
-        );
-        assert!(form.email.with(String::is_empty));
-        assert_eq!(form.choose_hint(0), Ok(()));
-        assert_eq!(form.provider.with(|p| *p), Provider::Microsoft);
-        assert!(!form.mail.with(|v| *v));
-        assert!(form.drain_commands().is_empty());
-        assert_eq!(form.select_source(Some("source-b-read-2".into())), Ok(()));
-        assert_eq!(
-            form.accept_hints("source-a-read-1", vec![hint]),
-            Err(FormError::StaleSource)
-        );
-        assert!(form.email.with(String::is_empty));
-        assert_eq!(form.choose_hint(0), Err(FormError::InvalidFields));
+    tilo_test_env::scenario! {
+        fn an_account_submission_is_one_private_request_that_can_be_superseded;
+
+        phase continuing_widget_cancels_pending_request_without_forgetting_connected_services;
+        {
+            let form = AccountsForm::new();
+            let account = ConnectedAccount {
+                provider: Provider::Google,
+                identity: "private@example.org".into(),
+                files: true,
+                mail: false,
+                calendar: true,
+            };
+            form.set_connected(vec![account.clone()]);
+            form.submit(false).unwrap();
+            perform(
+                &form,
+                r#"{"actions":[{"perform":{"target":"installer-online-skip","action":"activate"}}]}"#,
+            );
+            assert!(matches!(
+                &form.drain_commands()[..],
+                [AccountsCommand::SkipOffline]
+            ));
+            assert!(form.connected.with(|accounts| accounts == &[account]));
+            assert!(form.status() == AccountsStatus::SigningIn);
+        }
+
+        phase connected_accounts_are_owner_supplied_and_survive_hint_source_changes;
+        {
+            let form = AccountsForm::new();
+            let account = ConnectedAccount {
+                provider: Provider::Microsoft,
+                identity: "work@example.org".into(),
+                files: false,
+                mail: true,
+                calendar: false,
+            };
+            form.set_connected(vec![account.clone()]);
+            form.take_structure_changed();
+            form.set_connected(vec![account.clone()]);
+            assert!(!form.take_structure_changed());
+            form.select_source(Some("new-source".into())).unwrap();
+            assert!(form.connected.with(|connected| connected == &[account]));
+            assert!(form.hints.with(Vec::is_empty));
+            assert!(form.drain_commands().is_empty());
+        }
+
+        phase submit_is_private_snapshot_and_blocks_duplicate_start;
+        {
+            let form = AccountsForm::new();
+            form.email.set("person@example.org".into());
+            assert_eq!(form.submit(false), Ok(()));
+            form.email.set("changed@example.org".into());
+            assert_eq!(form.submit(false), Err(FormError::Busy));
+            let commands = form.drain_commands();
+            assert!(matches!(&commands[..], [AccountsCommand::Add(request)]
+                if request.email == "person@example.org" && request.files && !request.mail));
+        }
+
+        phase structural_changes_are_consumed_without_tracking_text_or_consent;
+        {
+            let form = AccountsForm::new();
+            assert!(form.take_structure_changed());
+            assert!(!form.take_structure_changed());
+            form.email.set("person@example.org".into());
+            form.files.set(false);
+            form.mail.set(true);
+            assert!(!form.take_structure_changed());
+            form.provider.set(Provider::Nextcloud);
+            assert!(form.take_structure_changed());
+            assert!(!form.take_structure_changed());
+            form.set_status(AccountsStatus::Failed);
+            assert!(form.take_structure_changed());
+            assert_eq!(form.select_source(Some("source".into())), Ok(()));
+            assert!(form.take_structure_changed());
+            assert_eq!(
+                form.accept_hints(
+                    "source",
+                    vec![AccountHint {
+                        provider: Provider::Nextcloud,
+                        email: String::new(),
+                        server: "https://cloud.example.org".into(),
+                        sources:
+                            imager_backend::destination::online_accounts::hints::HintSources::default(),
+                    }]
+                ),
+                Ok(())
+            );
+            assert!(form.take_structure_changed());
+            assert_eq!(form.choose_hint(0), Ok(()));
+            assert!(form.take_structure_changed());
+            assert!(!form.take_structure_changed());
+            assert_eq!(
+                form.accept_hints("stale", Vec::new()),
+                Err(FormError::StaleSource)
+            );
+            assert!(!form.take_structure_changed());
+        }
+
+        phase retry_uses_corrected_server_and_escape_supersedes_queue;
+        {
+            let form = AccountsForm::new();
+            form.provider.set(Provider::Nextcloud);
+            form.server.set("http://example.org".into());
+            assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+            form.set_status(AccountsStatus::Failed);
+            form.server.set("https://cloud.example.org".into());
+            assert_eq!(form.submit(true), Ok(()));
+            assert!(
+                matches!(&form.drain_commands()[..], [AccountsCommand::Retry(request)]
+                if request.server == "https://cloud.example.org")
+            );
+            form.cancel();
+            assert!(matches!(
+                &form.drain_commands()[..],
+                [AccountsCommand::Cancel]
+            ));
+            form.set_status(AccountsStatus::Ready);
+            for _ in 0..COMMAND_CAPACITY {
+                assert_eq!(form.submit(false), Ok(()));
+                form.set_status(AccountsStatus::Ready);
+            }
+            assert_eq!(form.submit(false), Err(FormError::QueueFull));
+            form.skip_offline();
+            assert!(matches!(
+                &form.drain_commands()[..],
+                [AccountsCommand::SkipOffline]
+            ));
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn account_services_are_requested_only_as_offered_and_chosen;
+
+        phase calendar_consent_is_explicit_and_does_not_require_files_or_mail;
+        {
+            let form = AccountsForm::new();
+            form.files.set(false);
+            assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+            form.calendar.set(true);
+            assert_eq!(form.submit(false), Ok(()));
+            assert!(
+                matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+                if request.calendar && !request.files && !request.mail)
+            );
+            form.set_status(AccountsStatus::Ready);
+            assert_eq!(form.select_source(None), Ok(()));
+            assert!(!form.calendar.with(|v| *v));
+        }
+
+        phase discovered_calendars_require_selection_before_confirmation;
+        {
+            let form = AccountsForm::new();
+            form.set_calendars(vec![("/calendars/work/".into(), "Work".into())]);
+            form.set_status(AccountsStatus::ReviewCalendars);
+            assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+            form.collections
+                .with(|collections| collections[0].2.set(true));
+            form.set_calendars(vec![("/calendars/work/".into(), "Work".into())]);
+            assert_eq!(form.submit(false), Ok(()));
+            assert!(
+                matches!(&form.drain_commands()[..], [AccountsCommand::SelectCalendars(selected)]
+                if selected == &["/calendars/work/"])
+            );
+        }
+
+        phase unsupported_services_are_not_requested;
+        {
+            let form = AccountsForm::new();
+            form.provider.set(Provider::Dropbox);
+            form.mail.set(true);
+            form.files.set(false);
+            assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+            form.files.set(true);
+            assert_eq!(form.submit(false), Ok(()));
+            assert!(
+                matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)] if !request.mail)
+            );
+        }
+
+        phase microsoft_mail_is_offered_without_files;
+        {
+            assert!(Provider::Microsoft.supports_mail());
+            let form = AccountsForm::new();
+            form.provider.set(Provider::Microsoft);
+            form.mail.set(true);
+            form.files.set(false);
+            assert_eq!(form.submit(false), Ok(()));
+            assert!(
+                matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+                if request.mail && !request.files)
+            );
+        }
     }
 }
