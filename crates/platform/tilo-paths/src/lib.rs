@@ -109,16 +109,68 @@ pub fn language_packs_dir() -> Option<PathBuf> {
     xdg::data_home().map(|data| data.join("tilo").join("language-packs"))
 }
 
-/// The language a tag names, as a language pack is named: its language
-/// subtag, lower case (`de` of `de`, `de-DE` and `de_DE`). One pack holds a
-/// language's catalogues whatever region a tag adds, so a choice, the pack's
-/// directory and its package id meet at this one name.
+/// The language a locale names, as a language pack is named: its language
+/// subtag, lower case (`de` of `de`, `de-DE`, `de_DE.UTF-8@euro`). One pack
+/// holds a language's catalogues whatever region, encoding or modifier a
+/// locale adds, so a choice, the pack's directory and its package id meet at
+/// this one name. Empty when no language is named.
+///
+/// This is the one rule for "which language is this tag": every reader of a
+/// language tag — the packs, the toolkits, history, desktop entries — asks
+/// here, so a language picked anywhere matches everywhere.
 #[must_use]
 pub fn language_of(tag: &str) -> String {
-    tag.split(['-', '_'])
+    tag.trim()
+        .split(['-', '_', '.', '@'])
         .next()
-        .unwrap_or(tag)
+        .unwrap_or_default()
         .to_ascii_lowercase()
+}
+
+/// The BCP 47 tag a locale names: the POSIX `de_DE.UTF-8@euro`, the
+/// `LANGUAGE` list `de_AT:en_US` and the BCP 47 `de-DE` all name `de-DE`.
+/// The encoding and the modifier name no language, a list's first entry is
+/// the language, and a tag spells the `_` a POSIX locale uses as `-`.
+#[must_use]
+pub fn locale_tag(locale: &str) -> String {
+    locale
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .split(['.', '@'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .replace('_', "-")
+}
+
+/// Whether `tag` names a language: `C`, `POSIX`, `C.UTF-8` and an empty
+/// value name none, so their text is read untranslated.
+#[must_use]
+pub fn names_language(tag: &str) -> bool {
+    !matches!(language_of(tag).as_str(), "" | "c" | "posix")
+}
+
+/// The position in `candidates` (language tags, in the order the caller
+/// prefers them) of the one a reader of `locale` reads best: their own tag
+/// (`de-DE` for `de_DE.UTF-8`), else another region of their language
+/// (`de-DE` for `de-AT`). `None` when neither is there or `locale` names no
+/// language. This is the one rule for which tag a reader gets, so every
+/// catalogue, name and window picks the same one.
+#[must_use]
+pub fn matching<'a>(
+    locale: &str,
+    mut candidates: impl Iterator<Item = &'a str> + Clone,
+) -> Option<usize> {
+    if !names_language(locale) {
+        return None;
+    }
+    let tag = locale_tag(locale);
+    let language = language_of(locale);
+    let mut exact = candidates.clone();
+    exact
+        .position(|candidate| locale_tag(candidate).eq_ignore_ascii_case(&tag))
+        .or_else(|| candidates.position(|candidate| language_of(candidate) == language))
 }
 
 #[cfg(windows)]
@@ -1005,6 +1057,58 @@ mod tests {
     #[cfg(unix)]
     fn home_is(path: &str) -> impl FnOnce() -> Option<PathBuf> + '_ {
         move || Some(PathBuf::from(path))
+    }
+
+    /// Every spelling of a locale the desktop meets — a pack's tag, a person's
+    /// choice, the machine's POSIX locale, a `LANGUAGE` list — names one
+    /// language and one tag, and the C locale names none.
+    #[test]
+    fn a_locale_names_one_language_however_it_is_spelled() {
+        for (locale, language, tag, named) in [
+            ("de", "de", "de", true),
+            ("de-DE", "de", "de-DE", true),
+            ("de_DE", "de", "de-DE", true),
+            ("de_DE.UTF-8", "de", "de-DE", true),
+            ("de_DE.UTF-8@euro", "de", "de-DE", true),
+            ("de.UTF-8", "de", "de", true),
+            (" de-DE ", "de", "de-DE", true),
+            ("DE-de", "de", "DE-de", true),
+            ("de_AT:en_US", "de", "de-AT", true),
+            ("en-US", "en", "en-US", true),
+            ("es-419", "es", "es-419", true),
+            ("zh-Hant-TW", "zh", "zh-Hant-TW", true),
+            ("C", "c", "C", false),
+            ("C.UTF-8", "c", "C", false),
+            ("POSIX", "posix", "POSIX", false),
+            ("", "", "", false),
+        ] {
+            assert_eq!(language_of(locale), language, "{locale:?}");
+            assert_eq!(locale_tag(locale), tag, "{locale:?}");
+            assert_eq!(names_language(locale), named, "{locale:?}");
+        }
+    }
+
+    /// A reader is served by their own tag, else by another region of their
+    /// language; a locale that names none is served by nothing.
+    #[test]
+    fn a_reader_is_served_by_its_own_tag_or_another_region_of_its_language() {
+        for (locale, candidates, want) in [
+            ("de-DE", &["en-US", "de-DE"][..], Some(1)),
+            ("de_DE.UTF-8", &["en-US", "de-DE"], Some(1)),
+            ("de-AT", &["en-US", "de-DE"], Some(1)),
+            ("de", &["de-DE", "de"], Some(1)),
+            ("en-US", &["de-DE", "en-US"], Some(1)),
+            ("fr-FR", &["de-DE", "en-US"], None),
+            ("fr-FR", &[], None),
+            ("C", &["de-DE"], None),
+            ("", &["de-DE"], None),
+        ] {
+            assert_eq!(
+                matching(locale, candidates.iter().copied()),
+                want,
+                "{locale:?}"
+            );
+        }
     }
 
     #[test]

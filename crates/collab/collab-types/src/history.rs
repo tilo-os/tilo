@@ -79,45 +79,16 @@ impl NamedApp {
 }
 
 /// The name `names` (a package's `[package.names]`, by language tag) gives in `locale`: the
-/// name of its exact tag, else of its language, else of another region of its language. A tag is
-/// matched however it is spelled: the POSIX `de_DE` a machine's locale says and the BCP 47
-/// `de-DE` a package writes are one language, and a German machine reads `de-DE = "Aufgaben"`.
+/// name of its exact tag, else of its language, else of another region of its language — the
+/// one rule for which tag a reader gets ([`tilo_paths::matching`]), so a package named `de-DE`
+/// reads as `Aufgaben` on a German machine whatever its locale is spelled like.
 #[must_use]
 pub fn localized_name<'a>(
     names: &'a std::collections::BTreeMap<String, String>,
     locale: &str,
 ) -> Option<&'a str> {
-    fn language(tag: &str) -> &str {
-        tag.split(['-', '_', '.', '@']).next().unwrap_or(tag)
-    }
-    fn same(one: &str, other: &str) -> bool {
-        let spelled = |byte: u8| {
-            if byte == b'_' {
-                b'-'
-            } else {
-                byte.to_ascii_lowercase()
-            }
-        };
-        one.len() == other.len()
-            && one
-                .bytes()
-                .zip(other.bytes())
-                .all(|(a, b)| spelled(a) == spelled(b))
-    }
-    let locale = locale.trim();
-    let wanted = language(locale);
-    if wanted.is_empty() {
-        return None;
-    }
-    let find = |matches: &dyn Fn(&str) -> bool| {
-        names
-            .iter()
-            .find(|(tag, _)| matches(tag))
-            .map(|(_, name)| name.as_str())
-    };
-    find(&|tag| same(tag, locale))
-        .or_else(|| find(&|tag| same(tag, wanted)))
-        .or_else(|| find(&|tag| same(language(tag), wanted)))
+    let position = tilo_paths::matching(locale, names.keys().map(String::as_str))?;
+    names.values().nth(position).map(String::as_str)
 }
 
 /// Collect up to `max` ops of `artifact` with `seq < before_seq`: the newest

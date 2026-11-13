@@ -33,7 +33,7 @@ impl Language {
     /// English otherwise.
     #[must_use]
     pub fn of(locale: &str) -> Self {
-        if locale.to_lowercase().starts_with("de") {
+        if tilo_paths::language_of(locale) == "de" {
             Self::German
         } else {
             Self::English

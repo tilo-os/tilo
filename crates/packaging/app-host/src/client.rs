@@ -145,34 +145,17 @@ impl PackageAbout {
         about
     }
 
-    /// The tag line to show in `locale` (BCP 47): its exact tag, else its
-    /// language, else English; empty when the app declares none.
+    /// The tag line to show in `locale` (BCP 47): its tag, else its language, else English
+    /// ([`tilo_app_package::manifest::text_in`]); empty when the app declares none.
     #[must_use]
     pub fn tagline_for(&self, locale: &str) -> &str {
-        let language = tilo_paths::language_of(locale);
-        [locale, language.as_str(), "en"]
-            .into_iter()
-            .find_map(|wanted| {
-                self.taglines
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
-            })
-            .map_or("", |(_, tagline)| tagline.as_str())
+        tilo_app_package::manifest::text_in(&self.taglines, locale).unwrap_or_default()
     }
 
-    /// The name to show in `locale` (BCP 47): its exact tag, else its
-    /// language, else [`Self::name`].
+    /// The name to show in `locale` (BCP 47): its tag, else its language, else [`Self::name`].
     #[must_use]
     pub fn name_for(&self, locale: &str) -> &str {
-        let language = tilo_paths::language_of(locale);
-        [locale, language.as_str()]
-            .into_iter()
-            .find_map(|wanted| {
-                self.names
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
-            })
-            .map_or(self.name.as_str(), |(_, name)| name.as_str())
+        tilo_app_package::manifest::text_in(&self.names, locale).unwrap_or(&self.name)
     }
 }
 

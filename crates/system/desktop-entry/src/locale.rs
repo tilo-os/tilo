@@ -27,47 +27,45 @@ pub fn language_candidates(preferred: Option<&str>) -> Vec<String> {
 /// expand the same way.
 #[must_use]
 pub fn candidates_for(locale: &str) -> Vec<String> {
-    let locale = locale.trim();
-    if locale.is_empty() || locale == "C" || locale == "POSIX" {
+    if !tilo_paths::names_language(locale) {
         return Vec::new();
     }
-    // Strip the encoding: `de_DE.UTF-8@euro` → `de_DE@euro`.
-    let (head, modifier) = match locale.split_once('@') {
-        Some((head, modifier)) => (head, Some(modifier)),
-        None => (locale, None),
-    };
-    let head = head.split_once('.').map_or(head, |(h, _)| h);
-    // A BCP 47 tag spells the same parts with `-`; the file's keys never do.
-    let head = head.replace('-', "_");
-    if matches!(head.as_str(), "C" | "POSIX") {
-        return Vec::new();
-    }
-    let mut parts = head.split('_');
-    let lang = parts.next().unwrap_or_default();
+    let lang = tilo_paths::language_of(locale);
     // The region is the two-letter or three-digit subtag after the language: a
     // script subtag (`Hant`) names no key the format has.
-    let country = parts.find(|part| {
+    let tag = tilo_paths::locale_tag(locale);
+    let country = tag.split('-').skip(1).find(|part| {
         (part.len() == 2 && part.bytes().all(|b| b.is_ascii_alphabetic()))
             || (part.len() == 3 && part.bytes().all(|b| b.is_ascii_digit()))
     });
-
-    let mut out = Vec::new();
-    let mut push = |s: String| {
-        if !s.is_empty() && !out.contains(&s) {
-            out.push(s);
+    let modifier = locale
+        .split_once('@')
+        .map(|(_, modifier)| modifier)
+        .filter(|modifier| !modifier.is_empty());
+    // The file's keys spell a tag with `_` and the modifier after `@`.
+    let key = |country: Option<&str>, modifier: Option<&str>| {
+        let mut key = lang.clone();
+        if let Some(country) = country {
+            key.push('_');
+            key.push_str(country);
         }
+        if let Some(modifier) = modifier {
+            key.push('@');
+            key.push_str(modifier);
+        }
+        key
     };
-    match (country, modifier) {
-        (Some(c), Some(m)) => {
-            push(format!("{lang}_{c}@{m}"));
-            push(format!("{lang}_{c}"));
-            push(format!("{lang}@{m}"));
+    let mut out: Vec<String> = Vec::new();
+    for candidate in [
+        key(country, modifier),
+        key(country, None),
+        key(None, modifier),
+        key(None, None),
+    ] {
+        if !out.contains(&candidate) {
+            out.push(candidate);
         }
-        (Some(c), None) => push(format!("{lang}_{c}")),
-        (None, Some(m)) => push(format!("{lang}@{m}")),
-        (None, None) => {}
     }
-    push(lang.to_string());
     out
 }
 

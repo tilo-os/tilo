@@ -247,20 +247,11 @@ static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);
 /// `de:en_US`, whose first entry wins) as a language identifier. `C`, `POSIX`,
 /// empty and malformed values name none.
 pub fn parse_posix_locale(locale: &str) -> Option<LanguageIdentifier> {
-    let first = locale.split(':').next().unwrap_or(locale).trim();
-    if first.is_empty() || is_c_locale(first) {
+    let first = locale.split(':').next().unwrap_or(locale);
+    if !tilo_paths::names_language(first) {
         return None;
     }
-    let core = first.split(['.', '@']).next().unwrap_or(first);
-    core.replace('_', "-").parse().ok()
-}
-
-/// Whether a POSIX locale value names the `C`/`POSIX` locale (`C`,
-/// `C.UTF-8`, `POSIX`), which means untranslated source copy.
-fn is_c_locale(value: &str) -> bool {
-    let first = value.split(':').next().unwrap_or(value).trim();
-    let core = first.split(['.', '@']).next().unwrap_or(first);
-    core.eq_ignore_ascii_case("C") || core.eq_ignore_ascii_case("POSIX")
+    tilo_paths::locale_tag(first).parse().ok()
 }
 
 /// The user's message locale from the variables `var` reads: `LC_ALL`,
@@ -277,7 +268,7 @@ pub(crate) fn locale_from_vars(var: impl Fn(&str) -> Option<String>) -> Option<S
         if value.trim().is_empty() {
             continue;
         }
-        if is_c_locale(&value) {
+        if !tilo_paths::names_language(&value) {
             return None;
         }
         if parse_posix_locale(&value).is_some() {

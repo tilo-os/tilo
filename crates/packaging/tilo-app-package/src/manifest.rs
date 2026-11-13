@@ -382,21 +382,26 @@ pub struct ServiceProtocol {
     pub version: u32,
 }
 
+/// The text `texts` (a package's names or tag lines, by language tag) shows a reader of
+/// `locale`: its own tag, else another region of its language, else English; `None` when it has
+/// none of them ([`tilo_paths::matching`]).
+#[must_use]
+pub fn text_in<'a>(
+    texts: &'a std::collections::BTreeMap<String, String>,
+    locale: &str,
+) -> Option<&'a str> {
+    tilo_paths::matching(locale, texts.keys().map(String::as_str))
+        .or_else(|| texts.keys().position(|tag| tag.eq_ignore_ascii_case("en")))
+        .and_then(|position| texts.values().nth(position))
+        .map(String::as_str)
+}
+
 impl Package {
-    /// The tag line to show in `locale` (BCP 47): its exact tag, else its
-    /// language, else English; `None` when the app declares none.
+    /// The tag line to show in `locale` (BCP 47): its tag, else its language, else English
+    /// ([`text_in`]); `None` when the app declares none.
     #[must_use]
     pub fn tagline_for(&self, locale: &str) -> Option<&str> {
-        let language = tilo_paths::language_of(locale);
-        [locale, language.as_str(), "en"]
-            .into_iter()
-            .find_map(|wanted| {
-                self.taglines
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
-            })
-            .map(|(_, tagline)| tagline.as_str())
-            .filter(|tagline| !tagline.trim().is_empty())
+        text_in(&self.taglines, locale).filter(|tagline| !tagline.trim().is_empty())
     }
 
     /// The runtime build a native package binds: the one an app links, or

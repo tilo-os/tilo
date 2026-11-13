@@ -586,8 +586,7 @@ pub fn contact_key(address: &str) -> String {
 /// language tag its page was read in: `de` for German, otherwise `en`.
 #[must_use]
 pub fn mail_language(tag: &str) -> &'static str {
-    let primary = tag.split(['-', '_']).next().unwrap_or_default();
-    if primary.eq_ignore_ascii_case("de") {
+    if tilo_paths::language_of(tag) == "de" {
         "de"
     } else {
         "en"
