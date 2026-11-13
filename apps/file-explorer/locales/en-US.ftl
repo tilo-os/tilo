@@ -654,8 +654,11 @@ files-folder-revert = Take back change
 
 ## Actions bound to what the person is looking at
 
-files-folder-rename-selected = Rename selection
-files-folder-trash-selected = Move selection to Trash
+files-folder-rename-selected = Rename “{ $name }”
+files-folder-trash-selected = Move { $count ->
+    [one] “{ $name }”
+   *[other] { $count } items
+} to Trash
 files-folder-move-to = Move to folder…
 files-folder-rename-here = Rename an entry here
 files-folder-trash-here = Move entries here to Trash

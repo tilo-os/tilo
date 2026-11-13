@@ -308,7 +308,10 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
             )
             .declaration(
                 "remove-marker-here",
-                ui::tilo_resource::word!("video-editor-project-remove-marker"),
+                ui::tilo_resource::word!(
+                    "video-editor-project-remove-marker-here",
+                    name = marker.name.as_str()
+                ),
             ));
     }
     if ctx.mix.clipped() {

@@ -90,30 +90,31 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
 
 /// What `tilo_resource::word!` expands to: the word `key` of the catalogue
 /// beside the crate being built, named through `krate`, the path that crate
-/// reaches `tilo_resource` by.
+/// reaches `tilo_resource` by, its placeables filled with the arguments the
+/// word carries.
 #[proc_macro]
 pub fn word(input: TokenStream) -> TokenStream {
     let WordInput {
         krate,
         key,
         catalogue,
+        arguments,
     } = parse_macro_input!(input as WordInput);
     let catalogue = words::Catalogue::read(catalogue.as_deref().unwrap_or(words::LOCALES));
-    match catalogue
-        .declared(&krate, key.span(), Some(&key.value()), &key.value(), "")
-        .and_then(|(word, _)| catalogue.missing().map(|()| word))
-    {
+    match catalogue.named(&krate, key.span(), &key.value(), &arguments) {
         Ok(word) => word.into(),
         Err(error) => error.to_compile_error().into(),
     }
 }
 
-/// What `word!` takes: the path to `tilo_resource`, a key, and the catalogue
-/// it is in when not `locales`.
+/// What `word!` takes: the path to `tilo_resource`, a key, the arguments its
+/// placeables show (`name = …`), and the catalogue it is in when not
+/// `locales`.
 struct WordInput {
     krate: Tokens,
     key: syn::LitStr,
     catalogue: Option<String>,
+    arguments: Vec<(syn::Ident, syn::Expr)>,
 }
 
 impl syn::parse::Parse for WordInput {
@@ -125,21 +126,21 @@ impl syn::parse::Parse for WordInput {
         input.parse::<syn::Token![,]>()?;
         let key = input.parse()?;
         let mut catalogue = None;
-        if input.parse::<Option<syn::Token![,]>>()?.is_some() && !input.is_empty() {
+        let mut arguments = Vec::new();
+        while input.parse::<Option<syn::Token![,]>>()?.is_some() && !input.is_empty() {
             let name: syn::Ident = input.parse()?;
-            if name != "catalogue" {
-                return Err(syn::Error::new(
-                    name.span(),
-                    "expected `catalogue = \"dir\"`",
-                ));
-            }
             input.parse::<syn::Token![=]>()?;
-            catalogue = Some(input.parse::<syn::LitStr>()?.value());
+            if name == "catalogue" {
+                catalogue = Some(input.parse::<syn::LitStr>()?.value());
+            } else {
+                arguments.push((name, input.parse()?));
+            }
         }
         Ok(Self {
             krate,
             key,
             catalogue,
+            arguments,
         })
     }
 }

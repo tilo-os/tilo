@@ -8,7 +8,7 @@
 //!
 //! ## The golden path
 //!
-//! ```ignore
+//! ```
 //! use tilo_resource::{ActionCx, Collection, Id, Model, resource};
 //!
 //! #[derive(Model, Default)]
@@ -220,20 +220,27 @@ pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, res
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
-/// Items the generated code refers to. Not part of the public API.
-#[doc(hidden)]
 /// A word of the catalogue beside the crate that names it,
 /// `word!("files-rename-here")`: a [`label::Word`] read in the person's
 /// language whenever what carries it is published. A key the crate's
 /// `locales/en-US.ftl` does not hold does not build;
 /// `word!("key", catalogue = "tests/locales")` reads another catalogue.
+///
+/// A word that names what a person is looking at carries it as an argument —
+/// `word!("files-folder-rename-selected", name = file.0)` — which the
+/// catalogue's message shows with its placeable (`Rename “{ $name }”`) in
+/// every language the crate translates it into, and a count by its forms
+/// (`{ $count -> [one] … }`). An argument the message has no placeable for,
+/// or a placeable with no argument, does not build.
 #[macro_export]
 macro_rules! word {
-    ($key:literal $(, catalogue = $dir:literal)? $(,)?) => {
-        $crate::__private::word!($crate, $key $(, catalogue = $dir)?)
+    ($($input:tt)*) => {
+        $crate::__private::word!($crate, $($input)*)
     };
 }
 
+/// Items the generated code refers to. Not part of the public API.
+#[doc(hidden)]
 pub mod __private {
     pub use automerge::{ObjId, ObjType, Patch, ROOT, ReadDoc, ScalarValue, Value};
     pub use serde;
@@ -334,7 +341,7 @@ pub mod __private {
     }
 
     /// What `#[resource]` declares of one verb, besides how it is built.
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     #[allow(
         clippy::struct_excessive_bools,
         reason = "one independent `#[action(...)]` flag each, as the macro reads them"
@@ -495,10 +502,11 @@ pub mod __private {
         verb: VerbDecl,
         build: crate::vocabulary::Builds,
     ) -> crate::Declaration {
+        let written = verb.label.source;
         let mut decl = crate::Declaration::new(
             vocabulary,
             verb.id,
-            verb.label.source.to_owned(),
+            written.to_owned(),
             params_of(verb.params),
             build,
         );
@@ -521,7 +529,7 @@ pub mod __private {
         // What the description says beyond its first line, the label.
         let description = verb
             .description
-            .strip_prefix(verb.label.source)
+            .strip_prefix(written)
             .map_or(verb.description, |rest| {
                 rest.trim_start_matches('.').trim_start()
             });

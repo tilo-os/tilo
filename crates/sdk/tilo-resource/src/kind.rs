@@ -12,7 +12,7 @@
 //! ([`ResourceKind::hosted_by`]) and what an open resource is called
 //! ([`ResourceKind::named`]).
 //!
-//! ```ignore
+//! ```
 //! use tilo_resource::{Kinds, Model, ResourceKind, resource};
 //!
 //! #[derive(Model, Default)]

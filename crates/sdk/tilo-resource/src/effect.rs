@@ -3,7 +3,7 @@
 //!
 //! An app names its effects as one typed enum and derives [`Effect`]:
 //!
-//! ```ignore
+//! ```
 //! use tilo_resource::Effect;
 //!
 //! #[derive(Clone, Debug, Effect)]
@@ -842,7 +842,7 @@ impl EffectDecl {
     pub fn of_row(row: &EffectRow) -> Self {
         Self {
             id: row.id,
-            label: row.label,
+            label: row.label.clone(),
             keywords: row.keywords,
             icon: row.icon,
             description: row.description,

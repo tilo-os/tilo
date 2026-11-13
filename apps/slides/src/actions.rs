@@ -320,8 +320,36 @@ pub fn inserted_element_template(kind: ElementKind) -> Element {
     }
 }
 
+/// What the element selected in the editor is called in the edits bound to
+/// it: a text box's first line, else the word its kind goes by.
+#[must_use]
+pub fn element_label(kind: ElementKind, text: &str) -> String {
+    let kind_word = || {
+        crate::strings::tr(match kind {
+            ElementKind::Text => "slides-tool-text",
+            ElementKind::Rect => "slides-tool-rectangle",
+            ElementKind::Ellipse => "slides-tool-ellipse",
+            ElementKind::Line => "slides-tool-line",
+            ElementKind::Image => "slides-tool-image",
+        })
+    };
+    if kind != ElementKind::Text {
+        return kind_word();
+    }
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return kind_word();
+    }
+    if line.chars().count() > 32 {
+        let short: String = line.chars().take(32).collect();
+        return format!("{short}…");
+    }
+    line.to_string()
+}
+
 /// The most elements, across slides, one deck holds.
 pub const MAX_TOTAL_ELEMENTS: usize = 20_000;
+
 /// The most characters of words and notes one deck holds.
 pub const MAX_TOTAL_TEXT_CHARS: usize = 2_000_000;
 /// The most pictures one deck shows.

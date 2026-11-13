@@ -69,14 +69,69 @@ impl Catalogue {
     /// The word `key`, whose source text is `text`: a `Word` whose catalogue
     /// is this one.
     pub(crate) fn word(&self, krate: &Tokens, key: &str, text: &str) -> Tokens {
+        self.word_with(krate, key, text, &[])
+    }
+
+    /// The word `key`, whose source text is `text`, its placeables filled
+    /// with `arguments`: a `Word` whose catalogue is this one, read with them
+    /// wherever it is published.
+    pub(crate) fn word_with(
+        &self,
+        krate: &Tokens,
+        key: &str,
+        text: &str,
+        arguments: &[(syn::Ident, syn::Expr)],
+    ) -> Tokens {
         let catalogue = self.reference(krate);
+        let names = arguments.iter().map(|(name, _)| name.to_string());
+        let values = arguments.iter().map(|(_, value)| value);
         quote! {
             #krate::label::Word {
                 key: #key,
                 source: #text,
                 catalogue: ::core::option::Option::Some(#catalogue),
+                arguments: ::std::vec![ #((#names, #krate::label::Argument::from(#values))),* ],
             }
         }
+    }
+
+    /// The word `key` as `word!` names it, its placeables `arguments`: read
+    /// from this catalogue. A key it does not hold, a placeable no argument
+    /// fills or an argument no placeable shows does not build.
+    pub(crate) fn named(
+        &self,
+        krate: &Tokens,
+        span: Span,
+        key: &str,
+        arguments: &[(syn::Ident, syn::Expr)],
+    ) -> syn::Result<Tokens> {
+        let Some(text) = self.text(key) else {
+            return Err(syn::Error::new(
+                span,
+                format!("`{key}` is no message of {}/{SOURCE}.ftl", self.dir),
+            ));
+        };
+        let placeables = placeables(text);
+        for placeable in &placeables {
+            if !arguments.iter().any(|(name, _)| name == placeable) {
+                return Err(syn::Error::new(
+                    span,
+                    format!("`{key}` takes `{placeable}`: `word!(\"{key}\", {placeable} = …)`"),
+                ));
+            }
+        }
+        for (name, _) in arguments {
+            if !placeables
+                .iter()
+                .any(|placeable| placeable == &name.to_string())
+            {
+                return Err(syn::Error::new(
+                    name.span(),
+                    format!("`{key}` says no `{name}`: its message has no `{{ ${name} }}`"),
+                ));
+            }
+        }
+        Ok(self.word_with(krate, key, text, arguments))
     }
 
     /// A `&'static Catalogue` of this one, as the crate is built.
@@ -150,6 +205,30 @@ fn is_key(text: &str) -> bool {
         && text
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// The placeables (`{ $name }`) `text` uses, once each, in the order they
+/// appear: the arguments a word of it takes.
+fn placeables(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' || !chars.peek().is_some_and(|c| c.is_alphabetic()) {
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(&c) = chars.peek() {
+            if !c.is_alphanumeric() && c != '_' {
+                break;
+            }
+            name.push(c);
+            chars.next();
+        }
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 /// The key a declaration's word is derived under: `scope` (an operation or a

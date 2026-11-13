@@ -15,7 +15,7 @@
 //! names it otherwise. `#[resource]` refuses to compile an item action whose
 //! collection is neither.
 //!
-//! ```ignore
+//! ```
 //! use tilo_resource::{Collection, Id, Model, resource};
 //!
 //! #[derive(Model, Default)]

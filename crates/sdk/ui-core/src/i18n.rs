@@ -48,6 +48,17 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
     }
 }
 
+/// What a catalogue word carries into its message: the text as it is, or a
+/// count its forms select by.
+impl From<&tilo_resource::label::Argument> for ArgValue {
+    fn from(argument: &tilo_resource::label::Argument) -> Self {
+        match argument {
+            tilo_resource::label::Argument::Text(text) => ArgValue::Text(text.clone()),
+            tilo_resource::label::Argument::Number(number) => ArgValue::Number(*number),
+        }
+    }
+}
+
 /// The Fluent message a label, placeholder or button shows: looked up in
 /// the active locale when drawn, shown verbatim when no catalog has it.
 ///
@@ -679,16 +690,23 @@ pub fn spoken_name(name: &str, resolved: bool) -> Option<String> {
 
 /// A resource's name in the language this thread reads: the catalogue entry
 /// for its kind ([`tilo_resource::label::message_key`]) when one is loaded,
-/// and nothing when none is, so the resource keeps the name it declares.
+/// and nothing when none is, so the resource keeps the name it declares. A
+/// word bound to what a person is looking at carries that as an argument,
+/// which its message shows where it has the placeable.
 fn resource_label(
     catalogue: Option<&'static tilo_resource::label::Catalogue>,
     key: &str,
+    arguments: &[(&str, tilo_resource::label::Argument)],
 ) -> Option<String> {
     if let Some(catalogue) = catalogue {
         declared_catalogue(catalogue).ensure();
     }
     manager_id()?;
-    let said = I18nManager::lookup(key, None);
+    let arguments: Vec<(&str, ArgValue)> = arguments
+        .iter()
+        .map(|(name, value)| (*name, ArgValue::from(value)))
+        .collect();
+    let said = I18nManager::format(key, &arguments);
     (said != key).then_some(said)
 }
 

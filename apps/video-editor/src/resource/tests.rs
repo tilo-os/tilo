@@ -159,7 +159,14 @@ fn edits_bound_to_the_playhead_follow_it_and_the_markers_near_it() {
         .iter()
         .find(|decl| decl.id == "remove-marker-here")
         .expect("a marker under the playhead can be removed there");
-    assert!(remove.label.contains("Act two"), "{}", remove.label);
+    // In the window's language, as a host publishes it: the marker it
+    // removes is named in the label, not left to the row it sits in.
+    crate::resource::CATALOG.ensure();
+    assert!(
+        remove.shown_label().contains("Act two"),
+        "{}",
+        remove.shown_label()
+    );
     let action = remove
         .build_action(&tilo_actions::ActionArgs::default(), 0)
         .unwrap();

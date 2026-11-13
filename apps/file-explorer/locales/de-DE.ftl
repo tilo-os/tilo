@@ -653,8 +653,11 @@ files-folder-revert = Änderung zurücknehmen
 
 ## Actions bound to what the person is looking at
 
-files-folder-rename-selected = Auswahl umbenennen
-files-folder-trash-selected = Auswahl in den Papierkorb verschieben
+files-folder-rename-selected = „{ $name }“ umbenennen
+files-folder-trash-selected = { $count ->
+    [one] „{ $name }“
+   *[other] { $count } Objekte
+} in den Papierkorb verschieben
 files-folder-move-to = In Ordner verschieben…
 files-folder-rename-here = Eintrag hier umbenennen
 files-folder-trash-here = Einträge hier in den Papierkorb verschieben

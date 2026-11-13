@@ -376,6 +376,7 @@ video-editor-project-add-marker = Add marker
 video-editor-project-place-two-angles = Place two angles
 video-editor-project-unplace-two-angles = Unplace two angles
 video-editor-project-remove-marker = Remove marker
+video-editor-project-remove-marker-here = Remove marker “{ $name }”
 video-editor-project-add-track = Add track
 video-editor-project-reset-mix = Reset track mix
 video-editor-project-trim-lanes = Trim lanes

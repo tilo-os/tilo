@@ -43,6 +43,8 @@ pub(crate) enum Ask {
 pub(crate) struct Selected {
     pub(crate) slide: Id,
     pub(crate) element: Id,
+    /// What the element is called in the edits bound to it.
+    pub(crate) label: String,
 }
 
 /// What the editor and the view's effect handler share.
@@ -280,7 +282,12 @@ fn element_kind(deck: &Deck, slide: &str, element: &str) -> Result<ElementKind, 
 /// its declared actions: delete it, bring it to the front, send it to the
 /// back.
 pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionDecl<DeckRecord>> {
-    let Some(Selected { slide, element }) = selected else {
+    let Some(Selected {
+        slide,
+        element,
+        label,
+    }) = selected
+    else {
         return Vec::new();
     };
     let mut declarations = Vec::new();
@@ -295,7 +302,7 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
         )
         .declaration(
             "delete-selection",
-            ui::tilo_resource::word!("slides-deck-delete-selection"),
+            ui::tilo_resource::word!("slides-deck-delete-selection", name = label.as_str()),
         )
     {
         declarations.push(delete.describe("Delete the element selected in the editor."));
@@ -311,7 +318,7 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
         )
         .declaration(
             "bring-selection-front",
-            ui::tilo_resource::word!("slides-bring-front"),
+            ui::tilo_resource::word!("slides-deck-bring-selection-front", name = label.as_str()),
         );
     let back = DeckRecord::SEND_TO_BACK
         .bind(crate::deck::deck::SendToBack::paths().slide, slide.clone())
@@ -321,7 +328,7 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
         )
         .declaration(
             "send-selection-back",
-            ui::tilo_resource::word!("slides-send-back"),
+            ui::tilo_resource::word!("slides-deck-send-selection-back", name = label.as_str()),
         );
     for restack in [front, back].into_iter().flatten() {
         declarations.push(restack.describe("Restack the element selected in the editor."));

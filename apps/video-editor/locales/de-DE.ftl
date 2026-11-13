@@ -376,6 +376,7 @@ video-editor-project-add-marker = Marke hinzufügen
 video-editor-project-place-two-angles = Zwei Blickwinkel platzieren
 video-editor-project-unplace-two-angles = Zwei Blickwinkel aufheben
 video-editor-project-remove-marker = Marke entfernen
+video-editor-project-remove-marker-here = Marker „{ $name }“ entfernen
 video-editor-project-add-track = Spur hinzufügen
 video-editor-project-reset-mix = Spurabmischung zurücksetzen
 video-editor-project-trim-lanes = Spurenpegel senken

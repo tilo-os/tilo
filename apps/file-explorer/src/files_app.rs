@@ -1660,9 +1660,9 @@ impl FilesState {
         if self.is_trash_view() {
             return Vec::new();
         }
-        if self.selection_named().is_none() {
+        let Some((count, name)) = self.selection_named() else {
             return Vec::new();
-        }
+        };
         let paths: Vec<String> = self
             .selected_paths()
             .iter()
@@ -1675,7 +1675,10 @@ impl FilesState {
                     .bind(file_explorer::Rename::paths().device, device.clone())
                     .and(file_explorer::Rename::paths().folder, String::new())
                     .and(file_explorer::Rename::paths().entry, path.clone())
-                    .declaration("rename-selected", word!("files-folder-rename-selected")),
+                    .declaration(
+                        "rename-selected",
+                        word!("files-folder-rename-selected", name = name.clone()),
+                    ),
             );
         }
         declarations.extend(
@@ -1683,7 +1686,10 @@ impl FilesState {
                 .bind(file_explorer::Trash::paths().device, device)
                 .and(file_explorer::Trash::paths().folder, String::new())
                 .and(file_explorer::Trash::paths().entries, paths)
-                .declaration("trash-selected", word!("files-folder-trash-selected"))
+                .declaration(
+                    "trash-selected",
+                    word!("files-folder-trash-selected", name = name, count = count),
+                )
                 .map(|mut trash| {
                     trash.destructive = true;
                     trash
