@@ -515,6 +515,25 @@ impl Checker<'_> {
             ),
             Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
             Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
+            // Its value as that shows, or `none`: what `print` shows of an Option.
+            Ty::Option(inner) => {
+                let (opt, inner) = (v.ty.clone(), (**inner).clone());
+                let tmp = self.fresh(opt.clone());
+                let shown =
+                    self.text_of(Self::unwrap_opt(Ex::local(tmp, opt.clone()), &inner), span);
+                if shown.ty == Ty::Error {
+                    return shown;
+                }
+                let test = Ex::host(Imp::IsSome, vec![Ex::local(tmp, opt)], Ty::Bool);
+                let pick = Ex::new(
+                    Ek::If(Box::new(test), Box::new(shown), Box::new(Ex::str("none"))),
+                    Ty::Text,
+                );
+                Ex::new(
+                    Ek::Seq(vec![ir::Stmt::Set(tmp, v)], Box::new(pick)),
+                    Ty::Text,
+                )
+            }
             other => {
                 let t = self.show(other);
                 self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Duration, a Date, a Time, a Principal or a record"));
@@ -825,11 +844,16 @@ impl Checker<'_> {
             }
             other => {
                 let t = self.show(&other);
+                let hint = if matches!(other, Ty::Option(_)) {
+                    "; an Option has no order until it holds a value: take it out first (`if let d = t.due { … }`, `t.due ?? fallback`), or ask by it through the type's filter (`find(Task, due: ..2026-12-31)`)"
+                } else {
+                    ""
+                };
                 self.err(
                     "E024",
                     span,
                     format!(
-                        "`{}` orders Int, Float, Text, Date, Time or a Duration, not {t}",
+                        "`{}` orders Int, Float, Text, Date, Time or a Duration, not {t}{hint}",
                         op.text()
                     ),
                 );
@@ -885,6 +909,10 @@ impl Checker<'_> {
                     }
                     (Ty::Time | Ty::Date | Ty::Duration, Ty::Int) | (Ty::Int, Ty::Duration) => {
                         "; a length of time is written `2h` or `3d`, or read from a number of seconds with `Duration(n)`"
+                    }
+                    // Text joined with a value that is no Text: the value goes inside the text.
+                    (Ty::Text, _) | (_, Ty::Text) if op == BinOp::Add => {
+                        "; put a value into text inside it: `\"{t.title} is due {t.due}\"`, and a program prints values side by side: `print(t.title, t.due)`, or a row per item: `print(tasks, fields: [.title, .due])`"
                     }
                     _ => "",
                 };

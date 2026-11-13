@@ -1822,6 +1822,17 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let name = self.ident("a variable name")?;
                 let ty = if self.eat(&Tok::Colon) {
+                    // `let n := x`, as other languages bind: the `:` starts a type here.
+                    if self.is(&Tok::Assign) {
+                        let at = self.span();
+                        return self.fail(
+                            at,
+                            format!(
+                                "`let` binds with `=`: `let {} = …` (a `:` starts the variable's type, `let n: Int = 0`)",
+                                name.name
+                            ),
+                        );
+                    }
                     Some(self.type_expr()?)
                 } else {
                     None

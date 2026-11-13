@@ -291,6 +291,57 @@ mod cases {
         );
     }
 
+    /// What agents wrote live, and where each error sent them: a value joined to text with `+`
+    /// is taught to go inside the text, where an Option shows its value or `none`; `let n :=`
+    /// is taught `=`; an Option compared is taught to be taken out or asked by its filter.
+    #[test]
+    fn the_programs_agents_reach_for_are_taught_what_works() {
+        let w = world();
+        w.auth.trust_principal(&agent().0);
+        let mut session = Session::new();
+        done(&session.run(
+            &w.rt,
+            &agent(),
+            &format!(
+                "tasks.new_task({l}, title: \"Ship\", due: 2026-06-30)\ntasks.new_task({l}, title: \"Plan\")",
+                l = w.list_literal()
+            ),
+        ));
+        let joined = rejected(&session.run(
+            &w.rt,
+            &agent(),
+            &format!(
+                "{}.items.map(t -> t.title + \" | due=\" + t.due)",
+                w.list_literal()
+            ),
+        ));
+        assert!(
+            joined.contains("put a value into text inside it"),
+            "{joined}"
+        );
+        assert!(joined.contains("print(t.title, t.due)"), "{joined}");
+        let shown = done(&session.run(
+            &w.rt,
+            &agent(),
+            &format!(
+                "for t in {}.items {{ print(\"{{t.title}} due {{t.due}}\") }}",
+                w.list_literal()
+            ),
+        ));
+        assert_eq!(shown, "Ship due 2026-06-30\nPlan due none");
+        let bound = rejected(&session.run(&w.rt, &agent(), "let n := 1"));
+        assert!(bound.contains("`let n = …`"), "{bound}");
+        let ordered = rejected(&session.run(
+            &w.rt,
+            &agent(),
+            &format!(
+                "{}.items.filter(t -> t.due <= 2026-07-01)",
+                w.list_literal()
+            ),
+        ));
+        assert!(ordered.contains("through the type's filter"), "{ordered}");
+    }
+
     #[test]
     fn a_collection_changes_through_its_apps_actions() {
         let w = world();
