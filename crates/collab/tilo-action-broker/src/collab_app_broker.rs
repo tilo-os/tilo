@@ -4403,7 +4403,6 @@ impl AppBrokerState {
         argument: Option<&str>,
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
-        let unavailable = |_: String| ActionDirectoryBridgeError::Unavailable;
         let DirectoryActionTarget {
             cluster_id,
             peer_id,
@@ -4466,6 +4465,31 @@ impl AppBrokerState {
             &published.contract,
             confirmation,
         )?;
+        self.start_directory_invocation(
+            peer_id,
+            registered,
+            (published, revision.as_str()),
+            (argument, actor),
+            confirmation_token.as_deref(),
+        )
+        .await
+    }
+
+    /// Start the invocation `published` names on `peer_id`'s route, under the
+    /// caller's confirmation token.
+    #[allow(
+        clippy::future_not_send,
+        reason = "Admission needs the complete authenticated route and runs on the broker LocalSet with non-Send broker state."
+    )]
+    async fn start_directory_invocation(
+        &self,
+        peer_id: u64,
+        registered: RegisteredActionDirectory,
+        (published, revision): (PublishedAction, &str),
+        (argument, actor): (Option<&str>, &BrokerActor),
+        confirmation_token: Option<&str>,
+    ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
+        let unavailable = |_: String| ActionDirectoryBridgeError::Unavailable;
         let surface = PublishedSurface {
             peer_id,
             app_id: registered.app_id,
@@ -4484,10 +4508,10 @@ impl AppBrokerState {
                     execution: None,
                     argument,
                     actor,
-                    confirmation_token: confirmation_token.as_deref(),
+                    confirmation_token,
                     context: None,
                 },
-                Some(revision.as_str()),
+                Some(revision),
             )
             .map_err(unavailable)?;
         let job = job.start(self).await.map_err(unavailable)?;
