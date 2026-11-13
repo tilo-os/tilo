@@ -6,9 +6,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use automerge::{AutoCommit, LoadOptions, TextEncoding};
 use tilo_automerge::ApplyIncoming;
 
-/// A base document, the changes actors made on top of it, and the
-/// hand-built changes among them that no Automerge makes, kept apart for
-/// [`refuses_only_what_upstream_corrupts`].
 pub struct History {
     pub base: Vec<u8>,
     pub changes: Vec<Vec<u8>>,
@@ -81,12 +78,9 @@ fn upstream_encoding(encoding: TextEncoding) -> upstream_automerge::TextEncoding
     }
 }
 
-/// How a replica reads the document it is fed.
 #[derive(Clone, Copy)]
 pub struct Replica {
-    /// Arm a diff cursor and compare the patches of every delivery.
     pub diff: bool,
-    /// The text encoding patches count indexes in.
     pub encoding: TextEncoding,
 }
 

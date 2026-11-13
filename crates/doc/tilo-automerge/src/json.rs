@@ -21,15 +21,12 @@ use std::fmt;
 /// Why a value could not be read or written as JSON.
 #[derive(Debug)]
 pub enum JsonError {
-    /// The document holds what JSON has no value for, at `path`.
     Shape {
         /// Where the value is, as `config.folders.0`; empty at the value
         /// itself.
         path: String,
-        /// What it was expected to be.
         expected: &'static str,
     },
-    /// The document's own read or write error.
     Automerge(AutomergeError),
 }
 
@@ -41,7 +38,6 @@ impl JsonError {
         }
     }
 
-    /// Prefix the location the error was found at, innermost last.
     fn at(mut self, segment: &str) -> Self {
         if let Self::Shape { path, .. } = &mut self {
             *path = if path.is_empty() {
@@ -81,7 +77,6 @@ impl From<AutomergeError> for JsonError {
     }
 }
 
-/// What a JSON scalar is stored as: a number as an integer when it is one.
 fn scalar_of(value: &serde_json::Value) -> Result<ScalarValue, JsonError> {
     Ok(match value {
         serde_json::Value::Null => ScalarValue::Null,
@@ -106,7 +101,6 @@ fn scalar_of(value: &serde_json::Value) -> Result<ScalarValue, JsonError> {
     })
 }
 
-/// The JSON value of a stored scalar.
 pub fn scalar_json(scalar: &ScalarValue) -> Result<serde_json::Value, JsonError> {
     Ok(match scalar {
         ScalarValue::Null => serde_json::Value::Null,
@@ -124,8 +118,6 @@ pub fn scalar_json(scalar: &ScalarValue) -> Result<serde_json::Value, JsonError>
     })
 }
 
-/// Where a read looks: the document as it is now (`None`), or as it was at
-/// these heads.
 type Heads<'a> = Option<&'a [ChangeHash]>;
 
 /// How a read goes: how many values it may still produce, and whether bytes read as their count
@@ -135,7 +127,6 @@ struct Budget {
     bytes_counted: bool,
 }
 
-/// Whether the read may produce one more value, spending it.
 fn spend(budget: &mut Budget) -> bool {
     match &mut budget.left {
         Some(left) => match left.checked_sub(1) {
@@ -149,7 +140,6 @@ fn spend(budget: &mut Budget) -> bool {
     }
 }
 
-/// The entry `prop` of `obj`.
 fn get<'a, D: ReadDoc + ?Sized>(
     doc: &'a D,
     obj: &ObjId,
@@ -162,7 +152,6 @@ fn get<'a, D: ReadDoc + ?Sized>(
     }
 }
 
-/// The keys of the map `obj`.
 fn keys<D: ReadDoc + ?Sized>(doc: &D, obj: &ObjId, heads: Heads<'_>) -> Vec<String> {
     match heads {
         Some(heads) => doc.keys_at(obj, heads).collect(),
@@ -170,7 +159,6 @@ fn keys<D: ReadDoc + ?Sized>(doc: &D, obj: &ObjId, heads: Heads<'_>) -> Vec<Stri
     }
 }
 
-/// How many entries the list `obj` holds.
 fn length<D: ReadDoc + ?Sized>(doc: &D, obj: &ObjId, heads: Heads<'_>) -> usize {
     match heads {
         Some(heads) => doc.length_at(obj, heads),
@@ -178,7 +166,6 @@ fn length<D: ReadDoc + ?Sized>(doc: &D, obj: &ObjId, heads: Heads<'_>) -> usize 
     }
 }
 
-/// The string of the text object `obj`.
 fn text<D: ReadDoc + ?Sized>(
     doc: &D,
     obj: &ObjId,
@@ -190,7 +177,6 @@ fn text<D: ReadDoc + ?Sized>(
     }
 }
 
-/// The JSON value of the entry `value` at `id`.
 fn value_of<D: ReadDoc + ?Sized>(
     doc: &D,
     value: &Value<'_>,
@@ -210,7 +196,6 @@ fn value_of<D: ReadDoc + ?Sized>(
     }
 }
 
-/// The JSON value of the object `id` of type `kind`.
 fn object_of<D: ReadDoc + ?Sized>(
     doc: &D,
     id: &ObjId,
@@ -253,7 +238,6 @@ fn object_of<D: ReadDoc + ?Sized>(
     })
 }
 
-/// The JSON value of the entry `value` at `id`, as the document holds it now.
 pub fn read_value<D: ReadDoc + ?Sized>(
     doc: &D,
     value: &Value<'_>,
@@ -281,8 +265,6 @@ pub fn read_document<D: ReadDoc + ?Sized>(doc: &D) -> Result<serde_json::Value, 
     object_of(doc, &automerge::ROOT, ObjType::Map, None, &mut budget)
 }
 
-/// The JSON value of the object `id` as it was at `heads`, holding at most
-/// `limit` values: a longer subtree stops where the limit is reached.
 pub fn read_at<D: ReadDoc + ?Sized>(
     doc: &D,
     id: &ObjId,
@@ -297,8 +279,6 @@ pub fn read_at<D: ReadDoc + ?Sized>(
     object_of(doc, id, kind, Some(heads), &mut budget)
 }
 
-/// The object of type `kind` at `prop` of `obj`, made where something else or
-/// nothing is there.
 fn object_at<D: Transactable + ?Sized>(
     doc: &mut D,
     obj: &ObjId,
@@ -311,8 +291,6 @@ fn object_at<D: Transactable + ?Sized>(
     }
 }
 
-/// The map at `prop` of `obj`, made where something else or nothing is
-/// there.
 pub fn map_at<D: Transactable + ?Sized>(
     doc: &mut D,
     obj: &ObjId,
@@ -374,8 +352,6 @@ fn insert_at<D: Transactable + ?Sized>(
     }
 }
 
-/// Write the fields of a JSON object as the map at `prop` of `obj`, dropping
-/// the keys it no longer holds.
 pub fn write_object<D: Transactable + ?Sized>(
     doc: &mut D,
     obj: &ObjId,
@@ -396,7 +372,6 @@ pub fn write_object<D: Transactable + ?Sized>(
     Ok(())
 }
 
-/// Write `value` at `prop` of `obj`.
 fn write_at<D: Transactable + ?Sized>(
     doc: &mut D,
     obj: &ObjId,
