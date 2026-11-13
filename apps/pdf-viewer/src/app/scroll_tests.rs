@@ -374,21 +374,25 @@ impl ui::app::AppSurface for Window {
 
 fn covered(rects: &[vello::kurbo::Rect], (w, h): (u32, u32)) -> f64 {
     let window = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
-    let mut rows = vec![vec![false; w as usize]; h as usize];
+    // One cell a pixel, counted when a rectangle first covers it: the cells
+    // covered at the end, without walking the whole window after each frame.
+    let mut cells = vec![false; w as usize * h as usize];
+    let mut count = 0_usize;
     for rect in rects {
         let rect = rect.intersect(window).expand();
         let (x0, x1) = (rect.x0 as usize, rect.x1 as usize);
-        for row in rows
-            .iter_mut()
+        for row in cells
+            .chunks_exact_mut((w as usize).max(1))
             .take(rect.y1 as usize)
             .skip(rect.y0 as usize)
         {
-            if let Some(cells) = row.get_mut(x0..x1) {
-                cells.fill(true);
+            if let Some(span) = row.get_mut(x0..x1) {
+                count += span.iter().filter(|cell| !**cell).count();
+                span.fill(true);
             }
         }
     }
-    rows.iter().flatten().filter(|cell| **cell).count() as f64
+    count as f64
 }
 
 #[test]
