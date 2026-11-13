@@ -1,58 +1,28 @@
-//! Decode and apply untrusted Automerge bytes where a bad input can only cost
-//! a worker process.
+//! Decode and apply untrusted Automerge bytes where a bad input can only cost a
+//! worker process.
 //!
 //! Automerge is a CRDT library, not a parser hardened against hostile input:
-//! malformed storage can make it panic, loop forever or allocate without
-//! bound, and Tilo's release builds abort on panic. So bytes from peers never
-//! reach Automerge in the calling process first. They go through two steps:
+//! malformed storage can make it panic, loop forever or allocate without bound, and
+//! release builds abort on panic. So peer bytes pass [`precheck`] first, then the
+//! same call runs in a worker process with its heap capped ([`Limits::memory_bytes`])
+//! and a deadline per request ([`Limits::timeout`]), confined by Landlock and a
+//! seccomp allow-list; a crash, a refused syscall or an overrun rejects the input.
+//! Only then does the caller make the identical call on its own document, which is
+//! deterministic and so does what the worker's did.
 //!
-//! 1. [`precheck`]: the input's size and chunk framing, read in place without
-//!    decoding anything.
-//! 2. A worker process runs the same Automerge call on its own copy of the
-//!    document, with its heap capped ([`Limits::memory_bytes`]) and a deadline
-//!    per request ([`Limits::timeout`]). It can reach no file, socket or other
-//!    process: Landlock denies every path and TCP port, `openat` is refused,
-//!    and a seccomp allow-list kills it on any other syscall beyond its
-//!    pipes, memory, futexes, clocks and exit. A crash, an allocation failure,
-//!    a refused syscall, an overrun or an Automerge error rejects the input.
+//! Workers are long-lived and keep copies of the documents they have seen, keyed by
+//! state, each state routed to the worker that last saw it; what a worker keeps is
+//! bounded by bytes ([`Limits::cache_bytes`]) and an idle worker exits
+//! ([`Limits::idle`]). [`Isolate::load`] takes the change hashes its worker already
+//! computed instead of rebuilding them, and leaves the loaded document warm.
 //!
-//! Only then does the caller make the identical call on its own document.
-//! Automerge is deterministic, so that call does what the worker's did.
-//! [`Isolate::load`] skips the part of that call whose result the worker
-//! already has:
-//! the worker rebuilds and hashes every change of a document chunk and checks
-//! them against the heads the chunk stores, then hands the caller those
-//! hashes, so the caller's load of the same bytes takes them rather than
-//! rebuilding and hashing every change again (about half of loading a large
-//! document). It builds the same document.
-//!
-//! Workers are long-lived and keep copies of the documents they have seen,
-//! keyed by state, so an incoming change costs the change, not a reload of
-//! the document. Each document state is routed to the worker that last saw
-//! it. A document a worker has never seen costs one rebuild from a full save
-//! there; [`Isolate::load`] leaves the loaded document in its worker, so a
-//! document admitted that way starts warm. What a worker keeps is bounded by
-//! bytes ([`Limits::cache_bytes`]), and an idle worker exits
-//! ([`Limits::idle`]). A worker that dies is replaced on the next request and
-//! rebuilds its copies from the caller's documents.
-//!
-//! # Hosting workers
-//!
-//! A worker is the calling executable started again in worker mode, so every
-//! program that admits untrusted Automerge bytes calls [`dispatch_early`]
-//! first thing in `main`, before it starts threads or a runtime. A test crate
-//! adds [`test_worker!`] instead. Without either, admission fails with
-//! [`Rejected::Unavailable`] naming the missing line. A library loaded into
-//! an executable that is not Tilo's (a Python extension, a Node addon) ships
-//! the `tilo-automerge-worker` program beside itself and names it with
-//! [`serve_workers_from`].
-//!
-//! # In the browser
-//!
-//! A wasm build has no processes. There [`Isolate`] only pre-checks and then
-//! applies in the page, to a copy that replaces the document on success. The
-//! browser's bound comes from where its bytes come from: publications are
-//! signed by the host, which admitted them through its workers first.
+//! A worker is the calling executable started again in worker mode, so a program
+//! that admits untrusted bytes calls [`dispatch_early`] first thing in `main` (a
+//! test crate adds [`test_worker!`]); without it admission fails with
+//! [`Rejected::Unavailable`]. A library loaded into a foreign executable ships
+//! `tilo-automerge-worker` beside itself and names it with [`serve_workers_from`].
+//! A wasm build has no processes: there [`Isolate`] pre-checks and applies in the
+//! page, to a copy that replaces the document on success.
 
 mod engine;
 #[cfg(target_os = "linux")]
