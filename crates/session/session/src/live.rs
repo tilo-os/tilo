@@ -549,7 +549,8 @@ impl Shared {
     }
 
     /// `peer` was turned away from `workspace` 's plane for `why` : the journal says so when that
-    /// is news, and so does this session's reading for a workspace it runs a plane for. A relay
+    /// is news, and so does this session's reading for a workspace it runs a plane for, which
+    /// counts the asks that follow and is read again ever less often as they repeat. A relay
     /// answers whoever dials it, so nothing is kept of a workspace this session does not hold.
     fn turned_away(&self, workspace: WorkspaceId, peer: [u8; 32], name: String, why: Refusal) {
         let (presented, newest) = match why {
@@ -562,12 +563,14 @@ impl Shared {
                  no plane for");
             return;
         }
-        let news = note_turned_away(
-            self.turned.lock_recover().entry(workspace).or_default(),
-            peer,
-            name,
-            why,
-        );
+        let (news, times) = {
+            let mut turned = self.turned.lock_recover();
+            let of_workspace = turned.entry(workspace).or_default();
+            let news = note_turned_away(of_workspace, peer, name, why);
+            let times = of_workspace.get(&peer).map_or(1, |kept| kept.times);
+            drop(turned);
+            (news, times)
+        };
         if news {
             tracing::warn!(%workspace, peer = %hex::encode(peer), why = why.word(), ?presented,
                 ?newest, "a device was turned away from this workspace's live plane");
@@ -575,7 +578,12 @@ impl Shared {
             tracing::debug!(%workspace, peer = %hex::encode(peer), why = why.word(), ?presented,
                 ?newest, "a device was turned away from this workspace's live plane again");
         }
-        self.moved();
+        // The reading says it when it is news, and then ever less often: a device that asks again
+        // every few seconds, or an endpoint that dials in a loop, wakes the session a handful of
+        // times and no more.
+        if news || times.is_power_of_two() {
+            self.moved();
+        }
     }
 
     /// `peer` was let into `workspace` 's plane: it is no longer one this relay turned away.
