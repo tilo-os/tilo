@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn bounce_keys_timing_table() {
-        let rows: [(&str, Duration, &[Step]); 6] = [
+        let rows: [(&str, Duration, &[Step]); 8] = [
             (
                 "a keystroke, its bounces and other keys",
                 ms(300),
@@ -657,6 +657,28 @@ mod tests {
             ),
             ("no key at all", ms(300), &[]),
             ("one press and nothing after it", ms(300), &[down(0, A, OK)]),
+            (
+                // Each key's rejected press is remembered until its own release, whichever key
+                // lets go first.
+                "two keys chattering at once are each swallowed until their own release",
+                ms(300),
+                &[
+                    down(0, A, OK),
+                    up(10, A, OK),
+                    down(20, A, NO),
+                    down(30, B, OK),
+                    up(40, B, OK),
+                    down(50, B, NO),
+                    up(60, A, NO),
+                    up(70, B, NO),
+                ],
+            ),
+            (
+                // After a boundary that lost the press, the release still starts the window.
+                "a release whose press was never seen starts the window",
+                ms(300),
+                &[up(0, A, OK), down(100, A, NO), up(110, A, NO)],
+            ),
         ];
         for (name, window, steps) in rows {
             run(name, window, steps);

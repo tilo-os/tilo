@@ -847,6 +847,14 @@ mod tests {
                 10_000 - 800,
                 None,
             ),
+            (
+                // Nothing is left beside a cover as wide as the window, not even an empty piece.
+                "a band across the window leaves the piece above it and the piece below",
+                rect(0, 0, 100, 100),
+                vec![rect(-5, 40, 200, 20)],
+                10_000 - 2_000,
+                Some(vec![rect(0, 0, 100, 40), rect(0, 60, 100, 40)]),
+            ),
         ];
         for (name, bounds, covers, left, pinned) in rows {
             let pieces = outside(bounds, &covers);

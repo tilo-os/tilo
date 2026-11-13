@@ -1030,7 +1030,8 @@ mod tests {
 
     /// Where [`placement`] puts a surface on the 1000 by 800 output: what the row shows, the
     /// surface's anchors, the size it asks for and its margins (top, right, bottom, left), then
-    /// its place as x, y, width and height.
+    /// its place as x, y, width and height. Each row is placed on that output at the desktop's
+    /// corner and again on one standing elsewhere, where its place is counted from that output's.
     #[test]
     fn a_surface_is_placed_by_its_anchors_its_size_and_its_margins() {
         let bar = Anchor::TOP | Anchor::LEFT | Anchor::RIGHT;
@@ -1118,11 +1119,20 @@ mod tests {
             ),
         ];
         for (name, anchor, size, margin, (x, y, width, height)) in rows {
-            assert_eq!(
-                placement(&request(anchor, size, margin), output()),
-                Rectangle::new(Point::from((x, y)), Size::from((width, height))),
-                "{name}"
-            );
+            // An output standing elsewhere in the desktop places the surface the same way, from
+            // its own corner.
+            for (left, top) in [(0, 0), (1000, -200)] {
+                let mut on = output();
+                on.loc = Point::from((left, top));
+                assert_eq!(
+                    placement(&request(anchor, size, margin), on),
+                    Rectangle::new(
+                        Point::from((left + x, top + y)),
+                        Size::from((width, height))
+                    ),
+                    "{name}, on the output at {left}, {top}"
+                );
+            }
         }
     }
 

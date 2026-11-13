@@ -785,6 +785,14 @@ mod tests {
                 INTERVAL * 2,
                 INTERVAL * 2 - ms(3),
             ),
+            (
+                // The point one lead before that blank is already past: it is built at once.
+                "a frame built inside the lead before a blank is still for that blank",
+                ms(3),
+                INTERVAL - ms(1),
+                INTERVAL,
+                INTERVAL - ms(3),
+            ),
         ];
         for (name, lead, built, blank, due) in rows {
             assert_eq!(

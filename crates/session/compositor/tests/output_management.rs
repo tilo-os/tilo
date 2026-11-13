@@ -117,7 +117,8 @@ fn two_outputs() -> Compositor {
 
 /// A client the session did not start is offered neither display tool: not the manager that
 /// configures displays, nor the one that switches panels off. A client the session started is
-/// offered both, in the listing the ordinary client was sent without them.
+/// offered both, in the listing the ordinary client was sent without them, and an ordinary client
+/// that connects after it is still offered neither.
 #[test]
 fn ordinary_clients_are_offered_no_display_tool() {
     const TOOLS: [(&str, &str); 2] = [
@@ -142,6 +143,19 @@ fn ordinary_clients_are_offered_no_display_tool() {
             .iter()
             .all(|(offered, _)| tool.globals.iter().any(|global| global == *offered))
     });
+
+    // Trust is each client's own: an ordinary client that connects after the trusted one is
+    // offered neither tool either.
+    let mut later = Client::connect(&mut compositor, false);
+    pump(&mut compositor, &mut later, |tool| {
+        tool.globals.iter().any(|global| global == "wl_compositor")
+    });
+    for (withheld, what) in TOOLS {
+        assert!(
+            !later.tool.globals.iter().any(|global| global == withheld),
+            "a later ordinary client is offered {withheld}, which would let it {what}"
+        );
+    }
 }
 
 #[test]

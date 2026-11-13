@@ -531,6 +531,18 @@ mod tests {
                 Some(red),
             ),
             (
+                "an icon before a cut-off one is kept",
+                vec![1, 1, 0xFFFF_FFFF, 8, 8, 1, 2, 3],
+                Some(1),
+                Some(white.clone()),
+            ),
+            (
+                "a header whose size overflows yields nothing",
+                vec![u32::MAX, u32::MAX],
+                None,
+                None,
+            ),
+            (
                 "an icon one pixel past the largest edge is skipped",
                 square(MAX_EDGE + 1, 0xFF00_0000, &[1, 1, 0xFFFF_FFFF]),
                 Some(1),
