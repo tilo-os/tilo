@@ -4771,7 +4771,9 @@ default = false
 
 [[check]]
 name = "os-layer-system-x86_64"
-egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+# The system layer prepares the font catalog, whose faces tools/font-catalog.py fetches from
+# tilo's package store by the SHA-256 the catalog pins.
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system x86_64 /target/os/x86_64/layers/system"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-builder-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -4987,7 +4989,9 @@ default = false
 
 [[check]]
 name = "os-layer-system-aarch64"
-egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+# The system layer prepares the font catalog, whose faces tools/font-catalog.py fetches from
+# tilo's package store by the SHA-256 the catalog pins.
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system aarch64 /target/os/aarch64/layers/system"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -5095,7 +5099,9 @@ default = false
 
 [[check]]
 name = "os-layer-system-release-lenovo-83ed"
-egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+# The system layer prepares the font catalog, whose faces tools/font-catalog.py fetches from
+# tilo's package store by the SHA-256 the catalog pins.
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system aarch64 /target/os/aarch64/board-layers/lenovo-83ed/system"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
