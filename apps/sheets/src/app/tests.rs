@@ -26,11 +26,19 @@ pub(crate) fn new_doc() -> AutoCommit {
 /// The sample workbook, as a document of the caller's own. Its recorded edits take a quarter of
 /// a second to build and apply in a test build, and most tests here start several cases from
 /// it: the thread builds it once and each call copies it. Nothing writes to the kept document.
+///
+/// Each copy writes as an actor of its own, as each sample built for one case did. Copies that
+/// all wrote as the kept document's actor would be one writer in several places, which no
+/// document is: the record the thread keeps from the last action (`tilo_resource`'s apply cache)
+/// knows that action's change by its actor, the version it stands on and its size, so a later
+/// case's first change could pass for an earlier case's.
 pub(crate) fn sample_doc() -> AutoCommit {
     thread_local! {
         static SAMPLE: AutoCommit = crate::sample::replica().doc().clone();
     }
-    SAMPLE.with(AutoCommit::clone)
+    SAMPLE
+        .with(AutoCommit::clone)
+        .with_actor(automerge::ActorId::random())
 }
 
 pub(crate) fn doc_workbook(doc: &AutoCommit) -> Workbook {
