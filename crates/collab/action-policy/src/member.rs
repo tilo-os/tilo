@@ -1,6 +1,7 @@
 //! Who a workspace's people, agents and bots are, and who made a change.
 
 use serde::{Deserialize, Serialize};
+use tilo_app_id::AppId;
 
 /// A person, agent or bot in a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -132,16 +133,12 @@ impl std::fmt::Display for ResourceId {
     }
 }
 
-/// Who made a change: a member, an automation running for one, or an app
-/// under its own identity.
+/// Who made a change: a member, or an automation running for one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Actor {
     Member(MemberId),
     Automation(AutomationId),
-    /// An application acting under its own identity, by its package id: it
-    /// may do what the workspace grants it and nothing it borrows.
-    App(String),
 }
 
 impl Actor {
@@ -160,7 +157,6 @@ impl Actor {
     pub fn subject(&self) -> crate::Subject {
         match self {
             Self::Member(member) => crate::granted_to(member),
-            Self::App(app) => crate::Subject::App(app.clone()),
             Self::Automation(id) => crate::Subject::Shortcut(id.as_str().to_owned()),
         }
     }
@@ -170,7 +166,7 @@ impl Actor {
     pub fn member_id(&self) -> Option<&MemberId> {
         match self {
             Self::Member(member) => Some(member),
-            Self::Automation(_) | Self::App(_) => None,
+            Self::Automation(_) => None,
         }
     }
 }
@@ -180,6 +176,7 @@ impl From<Actor> for Acting {
         Self {
             by: actor,
             agent_session: None,
+            app: None,
             cause: None,
             foreign_device: false,
             acted_for: Vec::new(),
@@ -198,7 +195,6 @@ impl std::fmt::Display for Actor {
         match self {
             Self::Member(member) => member.fmt(f),
             Self::Automation(id) => write!(f, "automation {}", id.as_str()),
-            Self::App(app) => write!(f, "app {app}"),
         }
     }
 }
@@ -209,6 +205,9 @@ impl std::fmt::Display for Actor {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Acting {
     pub by: Actor,
+    /// The app the change was made through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
     /// The agent session that acted, when an agent did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<AgentSessionId>,
@@ -230,6 +229,7 @@ impl Acting {
         Self {
             by: Actor::Member(member),
             agent_session: None,
+            app: None,
             cause: None,
             foreign_device: false,
             acted_for: Vec::new(),
@@ -251,15 +251,11 @@ impl Acting {
         Self::member(MemberId::bot(id))
     }
 
+    /// The same acting, through the app `app`.
     #[must_use]
-    pub fn app(id: impl Into<String>) -> Self {
-        Self {
-            by: Actor::App(id.into()),
-            agent_session: None,
-            cause: None,
-            foreign_device: false,
-            acted_for: Vec::new(),
-        }
+    pub fn in_app(mut self, app: impl Into<AppId>) -> Self {
+        self.app = Some(app.into());
+        self
     }
 
     #[must_use]
@@ -267,6 +263,7 @@ impl Acting {
         Self {
             by: Actor::automation(id),
             agent_session: None,
+            app: None,
             cause: None,
             foreign_device: false,
             acted_for: Vec::new(),

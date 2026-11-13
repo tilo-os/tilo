@@ -79,11 +79,6 @@ impl<'a> Authority<'a> {
                 Actor::Automation(id) => {
                     others.push(with_work(automation_party(id, granted), work.as_ref()));
                 }
-                Actor::App(app) => others.push(
-                    policy
-                        .party_of(Subject::App(app.clone()))
-                        .with_grants(granted),
-                ),
             }
         }
         let mut parts = person_parts.into_iter().chain(foreign_parts).chain(others);
@@ -91,6 +86,8 @@ impl<'a> Authority<'a> {
             person: parts.next().unwrap_or_default(),
             bounds: parts.collect(),
             people,
+            app: acting.app.as_ref(),
+            app_kinds: None,
         }
     }
 }
@@ -376,6 +373,35 @@ mod tests {
         assert_eq!(
             answer(&Acting::person("owner"), &policy, &[], ActionKind::Undoable),
             Answer::Allow
+        );
+    }
+
+    #[test]
+    fn an_app_reaches_only_the_kinds_it_declares_in_its_own_node() {
+        let policy = policy();
+        let acting = Acting::person("editor").in_app("so.tilo.notes");
+        let kinds = ["notes.note".to_owned()];
+        let answer = |node: TreePath| {
+            Authority::of_acting(&acting, &policy, &[])
+                .in_app(&kinds)
+                .decide(&node, ActionKind::Undoable, &Context::at_secs(1))
+                .answer
+        };
+        let own = TreePath::workspace(WORKSPACE).app("so.tilo.notes");
+        assert_eq!(answer(own.clone().kind("notes.note")), Answer::Allow);
+        assert_eq!(
+            answer(own.kind("notes.book")),
+            Answer::Deny,
+            "a kind the app does not declare is out of its reach"
+        );
+        assert_eq!(
+            answer(
+                TreePath::workspace(WORKSPACE)
+                    .app("so.tilo.chat")
+                    .kind("chat.messages")
+            ),
+            Answer::Allow,
+            "in another app's node the person's own grants decide"
         );
     }
 

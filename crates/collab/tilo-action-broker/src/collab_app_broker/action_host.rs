@@ -655,7 +655,15 @@ impl AppBrokerState {
     ) -> Result<Caller, Box<tilo_actions::remote::RemoteActionMessage>> {
         use tilo_actions::remote::{RemoteActionMessage, refuse};
         let access = self.app_action_access(app_id);
-        let mut as_app = Caller::local_app(app_id);
+        let owner = person
+            .acting_for_person()
+            .or_else(|| match person.principal() {
+                tilo_actions::remote::CallerPrincipal::Person(id) => Some(id.as_str()),
+                _ => None,
+            })
+            .unwrap_or_default()
+            .to_owned();
+        let mut as_app = Caller::local_app(app_id).acting_for(owner);
         if let Some(workspace) = person.workspace() {
             as_app = as_app.in_workspace(workspace);
         }
@@ -2419,9 +2427,10 @@ impl AppBrokerState {
             // The connection's app may act under its own identity, by what
             // the workspace grants it.
             let own_app = match origin {
-                Some(super::published_invocation::InvocationCaller::Local { route, .. }) => {
-                    actual.is_agent && actual.id == BrokerActor::app(&route.app_id).id
-                }
+                Some(super::published_invocation::InvocationCaller::Local { route, .. }) => actual
+                    .app
+                    .as_ref()
+                    .is_some_and(|app| app.as_str() == route.app_id),
                 _ => false,
             };
             if !own_app && (expected.id != actual.id || expected.is_agent != actual.is_agent) {

@@ -1050,7 +1050,8 @@ fn seams(
         });
     // What each installed app's signed manifest declares it may do on the
     // action door: a ceiling the broker decides an app's calls against.
-    let app_action_access = crate::seams::declared_access(lists);
+    let app_action_access = crate::seams::declared_access(lists.clone());
+    let app_resource_kinds = crate::seams::declared_resource_kinds(lists);
     // Where the broker keeps the actions of apps that are closed, beside the
     // journal of what it admitted: a closed app's actions survive a restart.
     let launchable_catalogue = journal_root.as_ref().and_then(|journal| {
@@ -1222,6 +1223,7 @@ fn seams(
         // files runs.
         file_clipboard: Seam::served(file_clipboard),
         app_action_access: Seam::served(app_action_access),
+        app_resource_kinds: Seam::served(app_resource_kinds),
         // A grant for an app to take another app's action is kept in a
         // workspace's own record, which this session's engine commits; the
         // host records none of them for the door to ask.

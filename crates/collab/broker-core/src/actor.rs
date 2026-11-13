@@ -8,6 +8,7 @@
 
 use tilo_action_policy::{Acting, ActionKind, Answer, Authority, MemberId, Standing, TreePath};
 use tilo_actions::remote::{Caller, CallerPrincipal};
+use tilo_app_id::AppId;
 use tilo_desktop_model::Workspace;
 
 use crate::published::{PublishedAction, PublishedSurface, canonical_record, published_node};
@@ -48,6 +49,11 @@ pub struct BrokerActor {
     /// takes part in. Every op an agent makes names it, so presence and history
     /// say what caused it, and no agent acts outside one.
     turn: Option<tilo_action_policy::turn::Turn>,
+    /// The app the person acts through, when their session runs one: what it
+    /// may reach is bounded by the kinds it declares.
+    pub app: Option<AppId>,
+    /// The resource kinds `app` declares, when the host holds its manifest.
+    app_kinds: Option<Vec<String>>,
     /// The issue whose run the agent works in, by its address: grants
     /// naming the issue decide for the run as the agent's own do.
     issue: Option<String>,
@@ -67,6 +73,8 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             turn: None,
+            app: None,
+            app_kinds: None,
             issue: None,
             ceiling: None,
         }
@@ -81,23 +89,8 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             turn: None,
-            issue: None,
-            ceiling: None,
-        }
-    }
-
-    /// The application `app`, acting under its own identity: it may do what
-    /// the workspace grants it and nothing it borrows from a person. A reading it
-    /// takes is decided the same way.
-    #[must_use]
-    pub fn app(app: &str) -> Self {
-        Self {
-            id: format!("app:{app}"),
-            is_agent: true,
-            capped: false,
-            for_person: None,
-            session_delegated: false,
-            turn: None,
+            app: None,
+            app_kinds: None,
             issue: None,
             ceiling: None,
         }
@@ -114,6 +107,8 @@ impl BrokerActor {
             for_person: Some(installer.into()),
             session_delegated: false,
             turn: None,
+            app: None,
+            app_kinds: None,
             issue: None,
             ceiling: None,
         }
@@ -148,7 +143,10 @@ impl BrokerActor {
                     (None, None) => agent,
                 }
             }
-            CallerPrincipal::App(id) => Self::app(id),
+            CallerPrincipal::App(id) => {
+                let person = caller.acting_for_person().unwrap_or_default().to_owned();
+                Self::person(person).through_app(id.clone())
+            }
             CallerPrincipal::Bot(id) => match caller.user_public_key() {
                 Some(root) => Self::bot(id, principal_id_for_root(*root)),
                 // A bot nobody installed has no authority to borrow: acting
@@ -240,13 +238,37 @@ impl BrokerActor {
         self.is_agent
     }
 
-    /// Whether this is an application acting under its own identity
-    /// ([`Self::app`]): decided by what the workspace grants it, as an agent
-    /// is, but never an agent, whose actions a workspace may confine to its
-    /// runs.
+    /// The app the person acts through, when their session runs one.
+    #[must_use]
+    pub fn app(&self) -> Option<&AppId> {
+        self.app.as_ref()
+    }
+
+    /// Whether this is an app acting through the person whose session runs it.
     #[must_use]
     pub fn is_app(&self) -> bool {
-        self.id.starts_with("app:")
+        self.app.is_some()
+    }
+
+    /// The same actor, acting through `app`, which declares the resource
+    /// `kinds` it may reach in its own node.
+    #[must_use]
+    pub fn in_app(
+        mut self,
+        app: impl Into<AppId>,
+        kinds: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.app = Some(app.into());
+        self.app_kinds = Some(kinds.into_iter().collect());
+        self
+    }
+
+    /// The same actor, acting through `app`, whose declared kinds this host
+    /// does not hold.
+    #[must_use]
+    pub fn through_app(mut self, app: impl Into<AppId>) -> Self {
+        self.app = Some(app.into());
+        self
     }
 
     /// The person this agent acts for, when one delegated it.
@@ -258,9 +280,6 @@ impl BrokerActor {
     /// Who this actor is when it is not a person.
     #[must_use]
     pub fn delegate(&self) -> Option<tilo_action_policy::Actor> {
-        if let Some(app) = self.id.strip_prefix("app:") {
-            return Some(tilo_action_policy::Actor::App(app.to_owned()));
-        }
         // A person's policy id is lowercase hex, so it never starts with
         // `bot:` and the prefix cannot misread a person.
         if let Some(bot) = self.id.strip_prefix("bot:") {
@@ -274,17 +293,22 @@ impl BrokerActor {
     }
 
     /// Who this actor's actions are: a person, an agent or bot acting for the
-    /// person who delegated it, an app under its own identity.
+    /// person who delegated it, an app acting as the person whose session
+    /// runs it.
     #[must_use]
     pub fn acting(&self) -> Acting {
         let acting = match (self.delegate(), &self.for_person) {
-            (None, _) => Acting::person(self.id.clone()),
+            (None, Some(person)) => Acting::person(person.clone()),
+            (None, None) => Acting::person(self.id.clone()),
             (Some(tilo_action_policy::Actor::Member(member)), Some(person)) => {
                 Acting::member(member).acting_for(Acting::person(person.clone()))
             }
             (Some(tilo_action_policy::Actor::Member(member)), None) => Acting::member(member),
-            (Some(tilo_action_policy::Actor::App(app)), _) => Acting::app(app),
             (Some(tilo_action_policy::Actor::Automation(id)), _) => Acting::automation(id.as_str()),
+        };
+        let acting = match &self.app {
+            Some(app) => acting.in_app(app.clone()),
+            None => acting,
         };
         let acting = acting.on_foreign_device(self.capped);
         match &self.issue {
@@ -311,8 +335,11 @@ impl BrokerActor {
     /// grants the workspace's policy does not hold ([`Self::granted`]).
     #[must_use]
     pub fn standing_in(&self, workspace: &Workspace) -> Standing {
-        let standing = Standing::new(workspace.policy.clone(), self.acting())
+        let mut standing = Standing::new(workspace.policy.clone(), self.acting())
             .granted(self.granted(&workspace.policy.workspace));
+        if let Some(kinds) = &self.app_kinds {
+            standing = standing.in_app(kinds.clone());
+        }
         if self.capped {
             standing.on_foreign_device()
         } else {

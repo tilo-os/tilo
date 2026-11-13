@@ -171,8 +171,10 @@ impl AppBrokerState {
                 // never attested as the connection's person
                 // (`AppBrokerState::invocation_owner`).
                 if route.cluster_id == workspace
-                    && actor.is_agent
-                    && actor.id == BrokerActor::app(&route.app_id).id
+                    && actor
+                        .app
+                        .as_ref()
+                        .is_some_and(|app| app.as_str() == route.app_id)
                 {
                     return Ok(InvocationOwner::Local { actor: actor.id });
                 }

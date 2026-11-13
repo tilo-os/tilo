@@ -1404,12 +1404,29 @@ impl AppBrokerState {
         caller: &tilo_actions::remote::Caller,
         workspace: &str,
     ) -> BrokerActor {
-        BrokerActor::for_caller(caller).capped(cap_applies_in(
+        let actor = BrokerActor::for_caller(caller).capped(cap_applies_in(
             self.certificate_authority.get().map(AsRef::as_ref),
             workspace,
             caller.is_foreign_device(),
             caller.device_public_key(),
-        ))
+        ));
+        match caller.principal() {
+            tilo_actions::remote::CallerPrincipal::App(app) => match self.app_resource_kinds(app) {
+                Some(kinds) => actor.in_app(app.clone(), kinds),
+                None => actor.through_app(app.clone()),
+            },
+            _ => actor,
+        }
+    }
+
+    /// The resource kinds `app` declared in its signed manifest, when this
+    /// broker reads installed manifests.
+    fn app_resource_kinds(&self, app: &str) -> Option<Vec<String>> {
+        self.app_resource_kinds
+            .read()
+            .ok()?
+            .as_ref()
+            .map(|resolve| resolve(app))
     }
 
     /// The person `cert` certifies, acting in `workspace` from that certificate's device.
@@ -2799,6 +2816,7 @@ pub struct AppBrokerState {
     /// What each application declared it may do on the action door under
     /// its own identity.
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
+    app_resource_kinds: RwLock<Option<crate::app_actions::AppResourceKindsResolver>>,
     /// Who is asked before an application uses another application's
     /// action it holds no grant for. Nobody, until the host installs its
     /// sheet: such a request is then refused.
@@ -3571,6 +3589,7 @@ impl AppBrokerState {
                         .clone()
                         .unwrap_or_else(crate::app_actions::nothing_declared),
                 ),
+                app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
                 app_action_consent: RwLock::new(None),
                 run_question_notices: Mutex::new(HashMap::new()),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),

@@ -101,8 +101,9 @@ impl Caller {
     }
 
     /// An application on a connection the host admitted itself, by the
-    /// package id that admission established. It holds no role of its own:
-    /// it may use only what it owns and what a workspace grants it.
+    /// package id that admission established. It acts as the person whose
+    /// session runs it ([`Self::acting_for`]), in that app; with nobody
+    /// behind it, it holds nothing.
     #[must_use]
     pub fn local_app(app_id: impl Into<String>) -> Self {
         Self {
@@ -430,7 +431,10 @@ impl Caller {
                 Some(person) => Acting::agent(agent.clone()).acting_for(Acting::person(person)),
                 None => Acting::agent(agent.clone()),
             },
-            CallerPrincipal::App(app) => Acting::app(app.clone()),
+            CallerPrincipal::App(app) => match self.acting_for.clone().or_else(root) {
+                Some(person) => Acting::person(person).in_app(app.clone()),
+                None => Acting::person("").in_app(app.clone()),
+            },
             // A bot nobody installed has no authority to borrow: acting for
             // nobody's standing, it gets nothing.
             CallerPrincipal::Bot(bot) => match self.acting_for.clone().or_else(root) {

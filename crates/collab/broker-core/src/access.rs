@@ -23,3 +23,7 @@ pub type AppActionAccessResolver = Arc<dyn Fn(&str) -> AppActionAccess + Send + 
 pub fn nothing_declared() -> AppActionAccessResolver {
     Arc::new(|_| AppActionAccess::default())
 }
+
+/// The resource kinds an application declared in its signed manifest, by
+/// package id: what it may reach in its own node.
+pub type AppResourceKindsResolver = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;

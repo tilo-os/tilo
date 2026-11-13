@@ -22,6 +22,10 @@ pub struct Standing {
     /// turn, an automation's steps.
     #[serde(default)]
     pub granted: Vec<Grant>,
+    /// The resource kinds the app in `acting` declares: what it may reach in
+    /// its own node. `None` where the host does not hold its manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_kinds: Option<Vec<String>>,
 }
 
 impl Standing {
@@ -32,6 +36,7 @@ impl Standing {
             acting,
             policy: policy.into(),
             granted: Vec::new(),
+            app_kinds: None,
         }
     }
 
@@ -81,6 +86,13 @@ impl Standing {
         }
         self.acting = acting;
         Some(self)
+    }
+
+    /// The same standing, with the resource kinds the app in it declares.
+    #[must_use]
+    pub fn in_app(mut self, kinds: impl IntoIterator<Item = String>) -> Self {
+        self.app_kinds.get_or_insert_with(Vec::new).extend(kinds);
+        self
     }
 
     /// The same standing, with `grants` for its software.
@@ -133,7 +145,11 @@ impl Standing {
     /// The authority this standing confers.
     #[must_use]
     pub fn authority(&self) -> Authority<'_> {
-        Authority::of_acting(&self.acting, &self.policy, &self.granted)
+        let authority = Authority::of_acting(&self.acting, &self.policy, &self.granted);
+        match (self.acting.app.as_ref(), self.app_kinds.as_deref()) {
+            (Some(_), Some(kinds)) => authority.in_app(kinds),
+            _ => authority,
+        }
     }
 
     #[must_use]

@@ -1,6 +1,8 @@
 //! The one decision every door, host and receiver makes.
 
-use crate::{ActionKind, Answer, Context, Grant, GrantId, Lifetime, Subject, TreePath};
+use tilo_app_id::AppId;
+
+use crate::{ActionKind, Answer, Context, Grant, GrantId, Level, Lifetime, Subject, TreePath};
 
 /// Why a party answered as it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,7 +197,7 @@ impl<'g> Party<'g> {
 }
 
 /// Who is acting: a person, and the delegations bounding them (an agent, a
-/// task, a Shortcut, an app, a foreign device).
+/// task, a Shortcut, a foreign device).
 #[derive(Clone, Debug, Default)]
 pub struct Authority<'g> {
     pub person: Party<'g>,
@@ -203,6 +205,11 @@ pub struct Authority<'g> {
     /// How many of `person` and `bounds`, in order, are people of the acting: a
     /// privileged action needs each of them to allow it.
     pub people: usize,
+    /// The app the change is made through.
+    pub app: Option<&'g AppId>,
+    /// The resource kinds the app declares: what it may reach in its own node.
+    /// `None` where the host deciding does not hold the app's manifest.
+    pub app_kinds: Option<&'g [String]>,
 }
 
 impl<'g> Authority<'g> {
@@ -212,7 +219,17 @@ impl<'g> Authority<'g> {
             person,
             bounds: Vec::new(),
             people: 1,
+            app: None,
+            app_kinds: None,
         }
+    }
+
+    /// The same authority, with `kinds` as what the app it acts through may
+    /// reach in its own node.
+    #[must_use]
+    pub fn in_app(mut self, kinds: &'g [String]) -> Self {
+        self.app_kinds = Some(kinds);
+        self
     }
 
     /// The same authority, bounded by `party` too.
@@ -235,11 +252,19 @@ impl<'g> Authority<'g> {
         let mut parts = Vec::with_capacity(self.bounds.len().saturating_add(1));
         parts.push(self.person.decide(node, kind, cx));
         parts.extend(self.bounds.iter().map(|bound| bound.decide(node, kind, cx)));
-        let answer = parts
+        let mut answer = parts
             .iter()
             .map(|part| part.answer)
             .min()
             .unwrap_or(Answer::Deny);
+        if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
+            && node.id_at(Level::App) == Some(app.as_str())
+            && !kinds
+                .iter()
+                .any(|kind| node.id_at(Level::Kind) == Some(kind.as_str()))
+        {
+            answer = Answer::Deny;
+        }
         Verdict {
             answer,
             node: node.clone(),

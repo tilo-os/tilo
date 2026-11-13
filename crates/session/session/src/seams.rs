@@ -141,6 +141,7 @@ seams! {
     nearby_transfer: Arc<dyn NearbyTransferServices>,
     file_clipboard: Arc<dyn FileClipboardServices>,
     app_action_access: tilo_broker_core::access::AppActionAccessResolver,
+    app_resource_kinds: tilo_broker_core::access::AppResourceKindsResolver,
     app_action_grants: Arc<dyn AppActionGrants>,
     launchable_catalogue: PathBuf,
     record_content: Arc<tilo_action_broker::record_content::RouteContent>,
@@ -173,6 +174,20 @@ pub(crate) fn declared_access(
             .declared
             .get(app_id)
             .copied()
+            .unwrap_or_default()
+    })
+}
+
+/// The resource kinds each installed app declares, by package id: what it may reach in its own node.
+pub(crate) fn declared_resource_kinds(
+    lists: crate::lists::Lists,
+) -> tilo_broker_core::access::AppResourceKindsResolver {
+    std::sync::Arc::new(move |app_id: &str| {
+        lists
+            .latest()
+            .resource_kinds
+            .get(app_id)
+            .cloned()
             .unwrap_or_default()
     })
 }

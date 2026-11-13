@@ -1495,12 +1495,12 @@ mod tests {
         // phase: a_delegation_without_grants_is_denied_everything
         {
             let owner = PermissionContext::member("owner", Role::Owner);
-            let app = owner.clone().with_standing(
-                owner
-                    .standing()
-                    .clone()
-                    .acting_as(policy::Actor::App("dev.example.thing".into()), Vec::new()),
-            );
+            let app = owner
+                .clone()
+                .with_standing(owner.standing().clone().acting_as(
+                    policy::Actor::Member(policy::MemberId::agent("thing")),
+                    Vec::new(),
+                ));
             assert!(!app.check(&PermissionScope::workspace(ActionKind::Read)));
             assert!(!app.check(&PermissionScope::app_kind(
                 AppKind::FileExplorer,
