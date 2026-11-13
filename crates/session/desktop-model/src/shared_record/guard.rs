@@ -36,6 +36,41 @@ pub fn is_shared_desktop(app: &str, record: &str) -> bool {
     app == DESKTOP_APP && record == DESKTOP_RECORD
 }
 
+/// Whether `(app, record)` is a record of the desktop app: the workspace's layout, or one person's
+/// view of it.
+#[must_use]
+pub fn is_desktop(app: &str, record: &str) -> bool {
+    app == DESKTOP_APP
+        && (record == DESKTOP_RECORD || crate::person_view::person_of(record).is_some())
+}
+
+/// Who may write `(app, record)`: every member writes the workspace's layout, and a person's view
+/// of it is that person's alone, so the others' devices and their pages show where they are looking
+/// and never move it.
+///
+/// # Errors
+/// Why `person` may not write it.
+pub fn may_write(app: &str, record: &str, person: &str) -> Result<(), NotTheirView> {
+    let owner = crate::person_view::person_of(record).filter(|_| app == DESKTOP_APP);
+    match owner {
+        Some(owner) if owner != person => Err(NotTheirView {
+            writer: person.to_owned(),
+            owner: owner.to_owned(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Why a write of a person's view of the layout was refused.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{writer} may not write {owner}'s view of the layout: a view is its person's")]
+pub struct NotTheirView {
+    /// The writer's person id.
+    pub writer: String,
+    /// The person whose view it is.
+    pub owner: String,
+}
+
 /// A workspace's shared desktop as a door that decides its writes follows it.
 pub struct DesktopGuard {
     doc: AutoCommit,

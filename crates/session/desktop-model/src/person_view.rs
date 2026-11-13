@@ -24,6 +24,12 @@ pub fn record_of(person: &str) -> String {
     format!("view-of-{person}")
 }
 
+/// The person whose view of the layout record `record` holds, on [`crate::ownership::DESKTOP_APP`].
+#[must_use]
+pub fn person_of(record: &str) -> Option<&str> {
+    record.strip_prefix("view-of-")
+}
+
 /// The keys a view is kept under.
 const FRONT_STRIP: &str = "front_strip";
 const FRONT_GROUP: &str = "front_group";

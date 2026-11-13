@@ -525,3 +525,26 @@ fn a_persons_window_left_on_the_shared_desktop_is_gone_for_everyone() {
     assert!(after.tree.tab(3).is_none(), "taken out of the record");
     assert_eq!(windows(&guard), vec![1, 2, 4]);
 }
+
+/// A person's view of the layout is theirs to write, and the workspace's layout is every member's:
+/// the record a write names decides whose it is.
+#[test]
+fn a_view_of_the_layout_belongs_to_its_person_and_the_layout_to_everyone() {
+    use crate::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+    use crate::person_view::record_of;
+
+    assert!(is_desktop(DESKTOP_APP, DESKTOP_RECORD));
+    assert!(is_desktop(DESKTOP_APP, &record_of(ADA)));
+    assert!(!is_desktop("so.tilo.notes", &record_of(ADA)));
+
+    may_write(DESKTOP_APP, &record_of(ADA), ADA).expect("her own view");
+    let refused = may_write(DESKTOP_APP, &record_of(ADA), BEN).unwrap_err();
+    assert_eq!(
+        refused,
+        NotTheirView {
+            writer: BEN.into(),
+            owner: ADA.into()
+        }
+    );
+    may_write(DESKTOP_APP, DESKTOP_RECORD, BEN).expect("every member writes the layout");
+}
