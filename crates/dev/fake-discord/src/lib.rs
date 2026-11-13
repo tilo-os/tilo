@@ -1,24 +1,18 @@
-//! A stand-in for Discord on loopback: the REST routes, the CDN and the
-//! gateway the connector's outside worker uses, with one guild in memory.
+//! A stand-in for Discord on loopback: the REST routes, the CDN and the gateway the connector's
+//! outside worker uses, with one guild in memory.
 //!
-//! Tests drive it from both sides. They act as Discord users through the
-//! methods below ([`FakeDiscord::post`], [`FakeDiscord::react`],
-//! [`FakeDiscord::slash`], ...), each of which changes the guild and
-//! dispatches the matching gateway event, and they read what the worker did
-//! through the recorded requests and the guild's state. Scripts make the
-//! awkward cases happen on purpose: a 429 on a route, a refused call, a
-//! dropped gateway, a refused resume, a revoked token.
+//! Tests act as Discord users through the methods below ([`FakeDiscord::post`],
+//! [`FakeDiscord::react`], [`FakeDiscord::slash`], ...), each of which changes the guild and
+//! dispatches the matching gateway event, and read what the worker did through the recorded
+//! requests. Scripts make the awkward cases happen on purpose: a 429 on a route, a refused call, a
+//! dropped gateway, a refused resume, a revoked token. The REST side dispatches the events Discord
+//! would (a webhook message comes back as `MESSAGE_CREATE`), so echo suppression is exercised for
+//! real.
 //!
-//! The REST side mutates the guild the way Discord does and dispatches the
-//! events Discord would (a webhook message comes back as `MESSAGE_CREATE`),
-//! so echo suppression is exercised for real.
-//!
-//! Voice is faked too: a voice gateway and a UDP media path on loopback,
-//! with transport encryption and DAVE for real (see `voice`'s notes in
-//! the source). Fake users join, mute, leave and say Opus frames through
-//! [`FakeDiscord::voice_join`] and friends; what the bot said is decrypted
-//! and kept for [`FakeDiscord::voice_heard`]. [`tone`] makes and tells
-//! tones.
+//! Voice is faked too: a voice gateway and a UDP media path on loopback, with transport encryption
+//! and DAVE for real. Fake users join, mute, leave and say Opus frames through
+//! [`FakeDiscord::voice_join`] and friends; what the bot said is decrypted and kept for
+//! [`FakeDiscord::voice_heard`].
 
 #![allow(
     clippy::indexing_slicing,
@@ -120,8 +114,8 @@ struct Script {
     answer: Scripted,
 }
 
-/// A rate-limit window: at most `limit` matching requests per `window`,
-/// counted down in the headers the way Discord does.
+/// A rate-limit window: at most `limit` matching requests per `window`, counted down in the headers
+/// the way Discord does.
 #[derive(Clone, Debug)]
 struct Window {
     method: String,
@@ -166,9 +160,8 @@ struct Gateway {
     intents: Option<u64>,
 }
 
-/// The bot's standing over the guild's emoji: Create Expressions (upload,
-/// and rename or delete what it uploaded), Manage Expressions (any emoji),
-/// and the guild's emoji slots, as its boost level gives them.
+/// The bot's standing over the guild's emoji: Create Expressions (upload, and rename or delete what
+/// it uploaded), Manage Expressions (any emoji), and the guild's emoji slots.
 #[derive(Debug)]
 struct Expressions {
     create: bool,
@@ -203,10 +196,8 @@ struct State {
     webhooks: Vec<Webhook>,
     member_roles: HashMap<String, Vec<String>>,
     bans: Vec<String>,
-    /// The guild's custom emoji, as Discord's emoji objects.
     emojis: Vec<Value>,
-    /// What the bot's role may do with the guild's emoji, and how many
-    /// the guild holds.
+    /// What the bot's role may do with the guild's emoji, and how many the guild holds.
     expressions: Expressions,
     bot_reactions: Vec<(String, String)>,
     audit: Vec<Value>,
@@ -216,14 +207,13 @@ struct State {
     windows: Vec<Window>,
     commands: Value,
     interaction_replies: Vec<Value>,
-    /// Edits of interaction replies (`PATCH .../messages/@original`), as
-    /// `{"interaction", "edit"}`.
+    /// Edits of interaction replies (`PATCH .../messages/@original`), as `{"interaction", "edit"}`.
     interaction_edits: Vec<Value>,
     /// Who is signed in to Discord in the browser: the account the consent
     /// page authorizes.
     oauth_user: Option<User>,
-    /// Authorization codes the consent page handed out, each to its
-    /// account and redirect address, good once.
+    /// Authorization codes the consent page handed out, each to its account and redirect address,
+    /// good once.
     oauth_codes: HashMap<String, (User, String)>,
     /// Access tokens the token endpoint issued, by token.
     oauth_tokens: HashMap<String, User>,
@@ -233,8 +223,8 @@ struct State {
 }
 
 impl State {
-    /// A fresh snowflake carrying the current time, so the worker's
-    /// duplicate check (which compares creation times) sees real ones.
+    /// A fresh snowflake carrying the current time, so the worker's duplicate check (which compares
+    /// creation times) sees real ones.
     fn snowflake(&mut self) -> String {
         let since = time::now_ms().saturating_sub(DISCORD_EPOCH_MS);
         let candidate = since << 22;
@@ -242,8 +232,8 @@ impl State {
         self.last_id.to_string()
     }
 
-    /// Send a dispatch on the current session, if there is one, and keep it
-    /// for a resume. Events while no worker is connected wait in the log.
+    /// Send a dispatch on the current session, if there is one, and keep it for a resume. Events
+    /// while no worker is connected wait in the log.
     fn dispatch(&mut self, kind: &str, data: Value) {
         let Some(session) = self.gateway.session.as_mut() else {
             return;
@@ -322,11 +312,9 @@ impl State {
         message
     }
 
-    /// `emoji` as a reaction event carries it: a Unicode emoji by itself,
-    /// a custom one (`:name:` as a person picks it, `name:id` as the
-    /// reaction routes name it) with its id and animation. A name the guild
-    /// has no emoji of gets a made-up id, as an emoji of another server
-    /// would have.
+    /// `emoji` as a reaction event carries it: a Unicode emoji by itself, or a custom one (`:name:`
+    /// as a person picks it, `name:id` as the reaction routes name it) with its id and animation. A
+    /// name the guild has no emoji of gets a made-up id, as an emoji of another server would have.
     fn emoji_json(&self, emoji: &str) -> Value {
         let named = emoji
             .strip_prefix(':')
@@ -385,8 +373,8 @@ impl FakeDiscord {
         Self::start_with_channels(seed_channels()).await
     }
 
-    /// [`Self::start`] with the guild holding `channels` (Discord's channel
-    /// objects, `guild_id` filled in when absent) instead of the seeded ones.
+    /// [`Self::start`] with the guild holding `channels` (Discord's channel objects, `guild_id`
+    /// filled in when absent) instead of the seeded ones.
     pub async fn start_with_channels(channels: Vec<Value>) -> std::io::Result<Self> {
         let fake = Self::start_on(
             "127.0.0.1:0".parse().map_err(std::io::Error::other)?,
@@ -490,16 +478,14 @@ impl FakeDiscord {
         self.post_message(channel, author, content, Some(reply_to), true)
     }
 
-    /// A message that lands in the channel's history without the gateway
-    /// telling anyone: what a worker misses while it is disconnected and its
-    /// session cannot be resumed.
+    /// A message that lands in the channel's history without the gateway telling anyone: what a
+    /// worker misses while it is disconnected and its session cannot be resumed.
     pub fn post_unseen(&self, channel: &str, author: &User, content: &str) -> String {
         self.post_message(channel, author, content, None, false)
     }
 
-    /// A message `author` wrote at `at_ms` (Unix ms), long before anyone
-    /// connected: in the channel's history, its id carrying that time, and
-    /// never announced on the gateway.
+    /// A message `author` wrote at `at_ms` (Unix ms), long before anyone connected: in the channel's
+    /// history, its id carrying that time, and never announced on the gateway.
     pub fn post_written(&self, channel: &str, author: &User, content: &str, at_ms: u64) -> String {
         let mut state = self.shared.lock();
         let mut message = state.message_json(channel, author, content, None);
@@ -513,9 +499,8 @@ impl FakeDiscord {
         id
     }
 
-    /// A message posted through `webhook` as `name` at `at_ms`, before
-    /// anyone connected, as a bridge posts: in the channel's history like
-    /// [`Self::post_written`]'s.
+    /// A message posted through `webhook` as `name` at `at_ms`, before anyone connected, as a bridge
+    /// posts: in the channel's history like [`Self::post_written`]'s.
     pub fn post_written_through(
         &self,
         webhook: &str,
@@ -611,9 +596,8 @@ impl FakeDiscord {
         drop(state);
     }
 
-    /// The message is deleted, by `executor` when that is a moderator
-    /// deleting someone else's message (which Discord writes to the audit
-    /// log).
+    /// The message is deleted, by `executor` when that is a moderator deleting someone else's
+    /// message (which Discord writes to the audit log).
     pub fn delete(&self, message: &str, executor: Option<&str>) {
         let mut state = self.shared.lock();
         let Some(index) = state.messages.iter().position(|m| m["id"] == message) else {
@@ -638,8 +622,8 @@ impl FakeDiscord {
         drop(state);
     }
 
-    /// `user` adds `emoji` (unicode, or a custom emoji as `:name:`, the
-    /// guild's of that name when it has one) to `message`.
+    /// `user` adds `emoji` (Unicode, or a custom emoji as `:name:`, the guild's of that name when it
+    /// has one) to `message`.
     pub fn react(&self, channel: &str, message: &str, user: &User, emoji: &str) {
         let mut state = self.shared.lock();
         let event = json!({
@@ -660,10 +644,9 @@ impl FakeDiscord {
         state.dispatch("MESSAGE_REACTION_REMOVE", event);
     }
 
-    /// The guild's custom emoji become `emojis`, `(name, id, animated)`,
-    /// as a server's moderator uploads or deletes them: in the guild a
-    /// worker connecting later is sent, and as `GUILD_EMOJIS_UPDATE` to one
-    /// connected now.
+    /// The guild's custom emoji become `emojis`, `(name, id, animated)`, as a moderator uploads or
+    /// deletes them: in the guild a worker connecting later is sent, and as `GUILD_EMOJIS_UPDATE` to
+    /// one connected now.
     pub fn set_emojis(&self, emojis: &[(&str, &str, bool)]) {
         let mut state = self.shared.lock();
         state.emojis = emojis
@@ -682,10 +665,9 @@ impl FakeDiscord {
         self.shared.lock().emojis.clone()
     }
 
-    /// Whether the bot's role holds Create Expressions and Manage
-    /// Expressions, and how many emoji the guild has room for. A change to
-    /// the role's permissions dispatches `GUILD_ROLE_UPDATE`, as granting
-    /// or revoking them in the server's settings does.
+    /// Whether the bot's role holds Create Expressions and Manage Expressions, and how many emoji
+    /// the guild has room for. A change to the role's permissions dispatches `GUILD_ROLE_UPDATE`, as
+    /// granting or revoking them in the server's settings does.
     pub fn set_expressions(&self, create: bool, manage: bool, slots: usize) {
         const CREATE: u64 = 1 << 43;
         const MANAGE: u64 = 1 << 30;
@@ -724,8 +706,8 @@ impl FakeDiscord {
             .map(|(_, bytes)| bytes.clone())
     }
 
-    /// A user starts a thread on `message` in `parent`; returns the thread
-    /// id, which is the message's id as on Discord.
+    /// A user starts a thread on `message` in `parent`; returns the thread id, which is the
+    /// message's id as on Discord.
     pub fn start_thread(&self, parent: &str, message: &str, name: &str) -> String {
         let thread = json!({"id": message, "type": 11, "name": name, "parent_id": parent, "guild_id": GUILD, "position": 0});
         let mut state = self.shared.lock();
@@ -777,8 +759,8 @@ impl FakeDiscord {
         self.shared.lock().dispatch(kind, data);
     }
 
-    /// The next `times` requests whose method is `method` and whose path
-    /// (after `/api/v10`) starts with `path_prefix` get a 429.
+    /// The next `times` requests whose method is `method` and whose path (after `/api/v10`) starts
+    /// with `path_prefix` get a 429.
     pub fn rate_limit(&self, method: &str, path_prefix: &str, times: u32, retry_after_ms: u64) {
         self.script(
             method,
@@ -814,9 +796,8 @@ impl FakeDiscord {
         );
     }
 
-    /// Matching requests share one bucket of `limit` calls per `window_ms`,
-    /// as Discord's real buckets do: the headers count it down and a call
-    /// beyond it gets a 429 until the window ends.
+    /// Matching requests share one bucket of `limit` calls per `window_ms`, as Discord's real
+    /// buckets do: the headers count it down and a call beyond it gets a 429 until the window ends.
     pub fn limit(&self, method: &str, path_prefix: &str, limit: u32, window_ms: u64) {
         self.shared.lock().windows.push(Window {
             method: method.to_owned(),
@@ -837,8 +818,7 @@ impl FakeDiscord {
         });
     }
 
-    /// Close the live gateway connection as a network failure would; the
-    /// session stays resumable.
+    /// Close the live gateway connection as a network failure would; the session stays resumable.
     pub fn drop_gateway(&self) {
         self.close_gateway(4000, "unknown error");
     }
@@ -851,15 +831,13 @@ impl FakeDiscord {
         }
     }
 
-    /// The next resume is answered with Invalid Session, as when Discord has
-    /// dropped the session.
+    /// The next resume is answered with Invalid Session, as when Discord has dropped the session.
     pub fn refuse_next_resume(&self) {
         self.shared.lock().gateway.refuse_next_resume = true;
     }
 
-    /// The bot token stops working, as when it is reset in the developer
-    /// portal: REST answers 401, an identify is closed with 4004, and the
-    /// live connection is closed with 4004.
+    /// The bot token stops working, as when it is reset in the developer portal: REST answers 401, an
+    /// identify is closed with 4004, and the live connection is closed with 4004.
     pub fn revoke_token(&self, new_token: &str) {
         let mut state = self.shared.lock();
         new_token.clone_into(&mut state.token);
@@ -939,8 +917,8 @@ impl FakeDiscord {
         self.shared.lock().bans.clone()
     }
 
-    /// `(message, emoji)` the bot user has reacted with, the emoji as the
-    /// reaction route named it: Unicode, or `name:id` for a custom one.
+    /// `(message, emoji)` the bot user has reacted with, the emoji as the reaction route named it:
+    /// Unicode, or `name:id` for a custom one.
     #[must_use]
     pub fn bot_reactions(&self) -> Vec<(String, String)> {
         self.shared.lock().bot_reactions.clone()
@@ -1082,8 +1060,8 @@ impl FakeDiscord {
         self.shared.lock().user_mutes(user, muted);
     }
 
-    /// `user`, in the bot's call, says `frames` (20 ms Opus frames) in real
-    /// time, end-to-end and transport encrypted to the bot.
+    /// `user`, in the bot's call, says `frames` (20 ms Opus frames) in real time, end-to-end and
+    /// transport encrypted to the bot.
     pub async fn voice_say(&self, user: &str, frames: &[Vec<u8>]) {
         let mut tick = tokio::time::interval(Duration::from_millis(20));
         for frame in frames {
@@ -1132,8 +1110,8 @@ impl FakeDiscord {
         self.shared.lock().voice.connected()
     }
 
-    /// Whether DAVE is established: the bot and every fake user in its
-    /// call share the group's epoch, no transition in flight.
+    /// Whether DAVE is established: the bot and every fake user in its call share the group's epoch,
+    /// no transition in flight.
     #[must_use]
     pub fn voice_dave_ready(&self) -> bool {
         self.shared.lock().voice.dave_ready()
@@ -1145,8 +1123,8 @@ impl FakeDiscord {
         self.shared.lock().voice.dave_version
     }
 
-    /// The voice privacy codes the fake users see, one per user in the
-    /// group: all equal once DAVE is established.
+    /// The voice privacy codes the fake users see, one per user in the group: all equal once DAVE is
+    /// established.
     #[must_use]
     pub fn voice_privacy_codes(&self) -> Vec<String> {
         self.shared.lock().voice.privacy_codes()
@@ -1206,14 +1184,13 @@ impl FakeDiscord {
         state_json
     }
 
-    /// From now on the voice server negotiates no DAVE (version 0), as for
-    /// a call with a client that lacks it.
+    /// From now on the voice server negotiates no DAVE (version 0), as for a call with a client that
+    /// lacks it.
     pub fn voice_without_dave(&self) {
         self.shared.lock().voice.no_dave = true;
     }
 
-    /// Close the bot's voice connection as a network failure would; its
-    /// session stays resumable.
+    /// Close the bot's voice connection as a network failure would; its session stays resumable.
     pub fn drop_voice(&self) {
         self.shared
             .lock()
@@ -1233,9 +1210,8 @@ impl FakeDiscord {
         drop(state);
     }
 
-    /// Someone moves `channel` in Discord's channel list: under `parent`
-    /// (none for the top level) at `position` (dispatching
-    /// `CHANNEL_UPDATE`).
+    /// Someone moves `channel` in Discord's channel list: under `parent` (none for the top level) at
+    /// `position` (dispatching `CHANNEL_UPDATE`).
     pub fn place_channel(&self, channel: &str, parent: Option<&str>, position: i64) {
         let mut state = self.shared.lock();
         let Some(stored) = state.channel_mut(channel) else {
@@ -1248,8 +1224,7 @@ impl FakeDiscord {
         drop(state);
     }
 
-    /// `@everyone` loses `perms` in `channel` through an overwrite
-    /// (dispatching `CHANNEL_UPDATE`).
+    /// `@everyone` loses `perms` in `channel` through an overwrite (dispatching `CHANNEL_UPDATE`).
     pub fn deny_everyone(&self, channel: &str, perms: u64) {
         let mut state = self.shared.lock();
         let Some(stored) = state.channel_mut(channel) else {
@@ -1265,7 +1240,6 @@ impl FakeDiscord {
         drop(state);
     }
 
-    /// Poll `check` every 10 ms until it answers, for at most `timeout`.
     pub async fn eventually<T>(
         &self,
         timeout: Duration,

@@ -1,13 +1,11 @@
-//! The fake voice server: Discord's voice gateway (v8) and its UDP media
-//! path on loopback, with DAVE end-to-end encryption for real.
+//! The fake voice server: Discord's voice gateway (v8) and its UDP media path on loopback, with DAVE
+//! end-to-end encryption for real.
 //!
-//! The fake is the MLS group's external sender, as Discord's voice server
-//! is: it proposes adding each member's key package, takes one commit per
-//! epoch, announces it as a transition and executes it once the bot is
-//! ready. Each fake voice user is a `davey` session living in the fake, so
-//! the bot's handshake, sending and receiving all run on real DAVE frames.
-//! A member leaving starts a new group (`prepare_epoch` 1), which the
-//! protocol allows and which exercises the bot's re-initialisation.
+//! The fake is the MLS group's external sender, as Discord's voice server is: it proposes adding
+//! each member's key package, takes one commit per epoch, announces it as a transition and executes
+//! it once the bot is ready. Each fake voice user is a `davey` session living in the fake, so the
+//! bot's handshake, sending and receiving run on real DAVE frames. A member leaving starts a new
+//! group (`prepare_epoch` 1), which exercises the bot's re-initialisation.
 
 #![allow(
     clippy::indexing_slicing,
