@@ -95,7 +95,16 @@ impl TiloStore {
                     "the chunk {chunk} is not here yet"
                 )));
             }
-            inner.chunk_loader.take()
+            let loader = inner.chunk_loader.take();
+            if loader.is_none() && inner.adopted {
+                // The holder handed over every chunk it has: one it did not is not on this
+                // device yet, and is waited on as one a source cannot give.
+                inner.waited.insert(chunk);
+                return Err(StoreError::Backend(format!(
+                    "the chunk {chunk} is not here yet"
+                )));
+            }
+            loader
         };
         let Some(mut loader) = loader else {
             // Nothing to load it with: what reads into the chunk says so where it reads it, and

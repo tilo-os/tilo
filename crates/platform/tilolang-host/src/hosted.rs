@@ -2470,14 +2470,19 @@ impl Applier {
         let mut record = record;
         let scope = RecordScope::of(&record, &wake);
         let _code = scope.enter();
-        let host = Host::new(
-            &tilo_resource::Doc::new(),
+        // The host opens without the record, which its store holds from here on: what the
+        // origin applies is written there, and read there at once.
+        let host = Host::open(
+            tilolang_tilo::host::Opening {
+                record: None,
+                chunks: None,
+                index_dir: None,
+                device: None,
+            },
             tilolang_tilo::runtime::Principal::new(spec.person.clone()),
             || None,
         )
         .map_err(|error| error.to_string())?;
-        // The host's store holds the record from here on: what the origin applies is written
-        // there, and read there at once.
         record.hold_in(&host);
         host.set_clock(tilolang_tilo::host::system_time);
         host.load_bundle(bundle)

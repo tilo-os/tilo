@@ -753,12 +753,13 @@ impl TiloStore {
         store
     }
 
-    /// A store without the record yet, reading the indexes kept in `dir`: what opens a workspace
-    /// before its record is loaded. Packages whose index is missing show nothing until the
-    /// record is had ([`Self::sync_from`], or the [`Loader`]).
+    /// A store without the record yet, reading the indexes kept in `dir` (`None`: built in
+    /// memory): what opens a workspace before its record is loaded, or before its holder hands
+    /// the record's chunks over ([`Self::adopt`]). Packages whose index is missing show nothing
+    /// until the record is had ([`Self::sync_from`], or the [`Loader`]).
     #[must_use]
-    pub fn detached(dir: PathBuf) -> Self {
-        Self::empty(Some(dir))
+    pub fn detached(dir: Option<PathBuf>) -> Self {
+        Self::empty(dir)
     }
 
     fn empty(index_dir: Option<PathBuf>) -> Self {

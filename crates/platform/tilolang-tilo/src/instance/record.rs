@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
+use automerge::transaction::Transactable as _;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
@@ -487,24 +488,38 @@ impl InstanceRecord {
     }
 
     /// The record as this replica holds it: chunk [`FIRST`], which every record has and which
-    /// holds the manifest of where everything else is.
+    /// holds the manifest of where everything else is. Its committed changes only: the store's
+    /// unsaved writes are no change of the record, and a copy that kept them would commit them
+    /// as one when it is saved.
     #[must_use]
     pub fn doc(&self) -> Doc {
-        self.read(|chunks| chunks.first().cloned().unwrap_or_default())
+        self.chunk(FIRST).unwrap_or_default()
     }
 
-    /// A copy of the record and the chunks above it this replica holds, sharing each document
-    /// until either side writes it: to look at, as a test does. A frame reads through
-    /// [`Self::read`].
+    /// A copy of the record and the chunks above it this replica holds, their committed changes
+    /// only ([`Self::doc`]): to look at, as a test does. A frame reads through [`Self::read`].
     #[must_use]
     pub fn chunks(&self) -> Chunks {
-        self.read(Chunks::whole)
+        let mut whole = self.read(Chunks::whole);
+        let open: Vec<ChunkNo> = whole
+            .docs()
+            .filter(|(_, doc)| doc.pending_ops() > 0)
+            .map(|(chunk, _)| chunk)
+            .collect();
+        for chunk in open {
+            if let Some(doc) = whole.mirror_mut(chunk) {
+                doc.rollback();
+            }
+        }
+        whole
     }
 
-    /// A copy of the chunk `chunk`, to look at.
+    /// A copy of the chunk `chunk`, its committed changes only ([`Self::doc`]).
     #[must_use]
     pub fn chunk(&self, chunk: ChunkNo) -> Option<Doc> {
-        self.read(|chunks| chunks.held(chunk).cloned())
+        let mut doc = self.read(|chunks| chunks.held(chunk).cloned())?;
+        doc.rollback();
+        Some(doc)
     }
 
     /// Read the record and the chunks above it this replica holds.

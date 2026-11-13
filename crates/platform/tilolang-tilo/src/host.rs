@@ -966,8 +966,9 @@ impl Host {
                 }
                 store
             }
-            (None, Some(dir)) => TiloStore::detached(dir),
-            (None, None) => TiloStore::new(&tilo_resource::Doc::new()),
+            // Without the record: the indexes kept in the directory, or the chunks the caller
+            // hands over next ([`Self::adopt`]), are what it opens over.
+            (None, dir) => TiloStore::detached(dir),
         };
         if let Some(device) = opening.device {
             store.set_device(device);
