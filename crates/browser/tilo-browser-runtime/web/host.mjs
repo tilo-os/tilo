@@ -14,6 +14,7 @@ import {createCrashQuarantine,createPageRestarts,crashAction,pageCrashAction,sho
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createHere} from './here.mjs';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
+import {defaultDisplayName} from './workspaces.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 import {createViewPresenter,VIEW_CSS} from './view-present.mjs';
@@ -413,10 +414,11 @@ export async function mountDesktop(target,options={}) {
   // The accounts elsewhere someone's profile names, which their card says.
   function showLinked(user,linked){if(!config.app&&active()&&runtime.desktop_set_person_links)runtime.desktop_set_person_links(id,user,JSON.stringify(linked));}
   // The names people's profiles keep, for those the invite sheet may make a link for who are not
-  // here to say them (`profiles` host requests): each asked once per page, an empty name for a
-  // profile that keeps none.
+  // here to say them (`profiles` host requests): each asked once per page. Someone whose profile
+  // keeps none goes by the name drawn from their key, as everywhere they are seen
+  // (`defaultDisplayName`).
   const named=new Set();
-  function fetchNames(users){if(config.app||!options.peer?.origin)return;for(const user of users){if(typeof user!=='string'||named.has(user))continue;named.add(user);void fetchPersonProfile(options.peer.origin,user).then(profile=>{if(active()&&runtime.desktop_set_person_name)runtime.desktop_set_person_name(id,user,typeof profile?.display_name==='string'?profile.display_name:'');},error=>{named.delete(user);report({profileError:String(error)});});}}
+  function fetchNames(users){if(config.app||!options.peer?.origin)return;for(const user of users){if(typeof user!=='string'||named.has(user))continue;named.add(user);void fetchPersonProfile(options.peer.origin,user).then(profile=>{const chosen=typeof profile?.display_name==='string'?profile.display_name.trim():'';if(active()&&runtime.desktop_set_person_name)runtime.desktop_set_person_name(id,user,chosen||defaultDisplayName(user));},error=>{named.delete(user);report({profileError:String(error)});});}}
   const photos=followPhotos({profileOf:user=>fetchPersonProfile(options.peer.origin,user),show:showPhoto,linked:showLinked,own:()=>options.peer?.userPublicKey,onOwn:ownStatus,onError:error=>report({photoError:String(error)})});
   const nativeCatalogue = createNativeCatalogueBridge({current:active,
     actions:()=>options.peer?.actions,
