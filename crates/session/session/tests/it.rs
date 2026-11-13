@@ -101,6 +101,8 @@ mod directory;
 mod display_settings;
 #[path = "displays.rs"]
 mod displays;
+#[path = "door_find_loop.rs"]
+mod door_find_loop;
 #[path = "fabric.rs"]
 mod fabric;
 #[path = "file_clipboard.rs"]

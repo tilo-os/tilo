@@ -147,6 +147,10 @@ pub struct SearchOptions {
     /// The records the workspaces on this device hold: what search finds by name across them, and
     /// where a record brought here is named.
     pub records: Option<Records>,
+    /// Sources a test mounts beside the session's own, asked exactly as the host's are: an index
+    /// that answers slowly stands here to prove the loop never waits for one. No production host
+    /// sets it, and a search over no extra source is the one the device's own sources answer.
+    pub extra_sources: Vec<Held>,
 }
 
 /// The sources the session keeps between searches, each indexed once per reading of the apps they
@@ -202,6 +206,8 @@ pub struct SessionSearch {
     apps: Option<Rc<dyn AppActions>>,
     /// The records the workspaces on this device hold.
     records: Option<Records>,
+    /// Sources a test mounts beside the session's own, asked as the host's are ([`SearchOptions::extra_sources`]).
+    extra_sources: Vec<Held>,
     /// What the session itself publishes, as of the last frame: the desk cannot read its own tree
     /// while it opens search.
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
@@ -230,6 +236,60 @@ pub struct SessionSearch {
     ask: crate::search_ask::Shared,
     /// What wakes the session's loop as an answer is written, so the row shows it as it lands.
     wake: Option<tilo_service::Wake>,
+    /// The sources' threads for a find with no frame of the toolkit's own: a door's `find` runs
+    /// on the loop's thread and must never wait for a source, so its search asks these and the
+    /// answers come on a later pass.
+    workers: tilo_desktop_search::SearchWorkers,
+    /// The finds still waiting for a source, each taken up on a later pass.
+    pending: RefCell<Vec<PendingFind>>,
+}
+
+/// A find a door asked, as it stands between passes: the search's stream, the sources it was
+/// made from (which outlive the stream's own borrow of them), and where the answer goes.
+struct PendingFind {
+    stream: tilo_desktop_search::SearchStream,
+    /// The sources the stream was made from: moved with it, since the stream borrows them each
+    /// pass it is asked.
+    sources: Vec<Held>,
+    /// The pool this find's sources work on: its own, since a find asked while another is in
+    /// flight must not retire the other's answer (`SearchWorkers::fork`).
+    workers: tilo_desktop_search::SearchWorkers,
+    /// What the person's earlier choices add to a row, as they were when the find was asked.
+    used: std::rc::Rc<dyn Fn(&tilo_desktop_search::Hit) -> f32>,
+    needle: String,
+    workspace: Option<String>,
+    /// Where the answer goes, and the pass it must be answered by: the caller has its own
+    /// deadline, and a source that never answers is cut off with what is in.
+    answer: Option<FindAnswer>,
+    due: std::time::Instant,
+}
+
+/// Who a find was asked for, and so what its hits become when they are in.
+pub(crate) enum FindAnswer {
+    /// A door's find: the resources the hits name, as a caller who addresses them reads them,
+    /// under what a place can show ([`found_all`]).
+    Door {
+        done: FoundSearch,
+        /// What a place can show, read at the ask where the arrangement is: `'static` by holding
+        /// the catalogue itself, not a borrow of it.
+        shows: Rc<dyn Fn(&str) -> bool>,
+    },
+    /// Text typed on the canvas: the hits in the ranking's order, which the arrangement places
+    /// through its own catalogue (never a second reading of what a place can show).
+    Canvas(crate::arrangement::FindDone),
+}
+
+/// Answer `answer` with the hits a search has: a door's find as the resources they name, the
+/// canvas's as the hits themselves. `needle` is what was typed, which [`found_all`] ranks the
+/// lead by.
+fn finish(answer: FindAnswer, needle: &str, hits: &[tilo_desktop_search::Hit]) {
+    match answer {
+        FindAnswer::Door { done, shows } => {
+            let shows = &*shows;
+            done.complete(found_all(needle, hits.to_vec(), shows));
+        }
+        FindAnswer::Canvas(done) => done(hits.to_vec()),
+    }
 }
 
 /// What an app is called here, as the host's own lists name it: the answer a row says an app by.
@@ -271,6 +331,7 @@ impl SessionSearch {
             preferences,
             places,
             records,
+            extra_sources,
         } = options;
         let reading = lists.as_ref().map(|lists| lists.reading());
         let indexed = indexes.as_ref().map(|indexes| indexes.of(person));
@@ -283,6 +344,12 @@ impl SessionSearch {
             files: indexed.as_ref().and_then(|index| index.files()),
             workspace: None,
         };
+        // The sources of a door's `find` answer on their own threads, and the wake asks the loop
+        // for the pass that takes them up: the same wake the session's services use.
+        let workers = match &wake {
+            Some(wake) => tilo_desktop_search::SearchWorkers::waking(Arc::clone(wake)),
+            None => tilo_desktop_search::SearchWorkers::waking(Arc::new(|| {})),
+        };
         Self {
             apps_lists: lists,
             preferences: RefCell::new(preferences),
@@ -294,6 +361,7 @@ impl SessionSearch {
             indexes: indexed,
             apps,
             records,
+            extra_sources,
             own: RefCell::default(),
             own_types: RefCell::default(),
             open_tabs: RefCell::default(),
@@ -304,6 +372,8 @@ impl SessionSearch {
             #[cfg(target_os = "linux")]
             agents: RefCell::default(),
             ask: crate::search_ask::Shared::default(),
+            workers,
+            pending: RefCell::default(),
             wake,
         }
     }
@@ -466,6 +536,7 @@ impl SessionSearch {
                 records.held(workspace),
             )));
         }
+        sources.extend(self.extra_sources.iter().cloned());
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
             workspace: workspace.to_owned(),
@@ -514,6 +585,12 @@ impl SessionSearch {
     /// ranking's order: what text typed on the canvas places (shell.md §8). Every one, as ranked:
     /// the best resource to place may stand below many actions the text names ("Inbox" under each
     /// conversation's "Move to inbox").
+    ///
+    /// Test code only: a session's own caller must never wait for a source on the loop it draws
+    /// from, so the production build has no such entry at all, and its finds ask with
+    /// [`Self::find_soon`] and take the answer on a later pass. The one waiting search left is
+    /// `tilo_desktop_search::search`'s, which a test drives on its own thread.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
         self.find_in(needle, None)
@@ -523,6 +600,9 @@ impl SessionSearch {
     /// publish and its records hold, and none of the desk's own rows, whose windows and places
     /// are the person's across every workspace (a window's title names what another workspace
     /// holds). `None` is the person's search, over everything they see.
+    ///
+    /// Test code only, as [`Self::find`] is.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn find_in(
         &self,
@@ -556,6 +636,135 @@ impl SessionSearch {
             None => 0.0,
         });
         groups.into_iter().flat_map(|group| group.results).collect()
+    }
+
+    /// What [`Self::find_in`] answers, asked by the session's own door on the loop's thread: the
+    /// sources are handed to their workers and the search stays pending (`shows` names what a
+    /// place can show, read here where the arrangement is), and `done` hears what it found on a
+    /// later pass ([`Self::poll_finds`]), as its answers land.
+    ///
+    /// A source that never answers cuts the find off at `within` with the rows that are in,
+    /// saying so: the caller's own deadline, never the loop's. The loop keeps running at its own
+    /// rate while a search is in flight, which is the point: an MCP `find` over the agent door
+    /// must not freeze the desktop's frames.
+    pub(crate) fn find_soon(
+        &self,
+        needle: &str,
+        workspace: Option<&str>,
+        shows: Rc<dyn Fn(&str) -> bool>,
+        within: std::time::Duration,
+        done: FoundSearch,
+    ) {
+        self.find_off_loop(needle, workspace, within, FindAnswer::Door { done, shows });
+    }
+
+    /// Text typed on the canvas, asked of the same search off the pass that places it: the hits
+    /// in the ranking's order reach `done` on a later pass, which places what they name. Never
+    /// waits for a source, so a canvas whose index is reading a disk keeps its frames.
+    pub(crate) fn place_soon(
+        &self,
+        needle: &str,
+        workspace: Option<&str>,
+        within: std::time::Duration,
+        done: crate::arrangement::FindDone,
+    ) {
+        self.find_off_loop(needle, workspace, within, FindAnswer::Canvas(done));
+    }
+
+    /// The one search a host's find runs: the sources handed to their workers, and `answer` heard
+    /// on a later pass.
+    fn find_off_loop(
+        &self,
+        needle: &str,
+        workspace: Option<&str>,
+        within: std::time::Duration,
+        answer: FindAnswer,
+    ) {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            finish(answer, needle, &[]);
+            return;
+        }
+        let (mut sources, mut published) = self.sources(workspace.unwrap_or(""), &Scope::Workspace);
+        if workspace.is_some() {
+            published.retain(|actions| actions.app != DESKTOP_APP);
+        }
+        sources.push(Held::new(tilo_desktop_search::providers::Captures(
+            published.clone(),
+        )));
+        sources.push(Held::new(tilo_desktop_search::providers::Published(
+            published,
+        )));
+        let refs: Vec<&dyn Source> = sources.iter().map(|source| source as &dyn Source).collect();
+        let now = ui::time::unix_now();
+        let usage = self.usage.borrow().clone();
+        // The find's own pool, so a find asked while this one is in flight does not retire it: a
+        // palette's newer query replaces the older, but two finds of a host's are each answered.
+        let workers = self.workers.fork();
+        let typed = needle.to_owned();
+        let used: Rc<dyn Fn(&tilo_desktop_search::Hit) -> f32> = {
+            let typed = typed.clone();
+            Rc::new(move |hit: &tilo_desktop_search::Hit| match usage.as_ref() {
+                Some(usage) => usage.strength(&typed, hit, now),
+                None => 0.0,
+            })
+        };
+        let stream = tilo_desktop_search::search_stream(needle, &refs, 0, &workers, &*used);
+        // What is in already answers at once; what still works comes on a later pass.
+        if stream.pending() {
+            let due = std::time::Instant::now()
+                .checked_add(within)
+                .unwrap_or_else(std::time::Instant::now);
+            self.pending.borrow_mut().push(PendingFind {
+                stream,
+                sources,
+                workers,
+                used,
+                needle: typed,
+                workspace: workspace.map(str::to_owned),
+                answer: Some(answer),
+                due,
+            });
+            return;
+        }
+        finish(answer, needle, &stream.rows());
+    }
+
+    /// Take up the finds whose answers are in, and those a source did not answer in time: called
+    /// once per pass, and what asks the loop for that pass (`workers`'s wake is the loop's own).
+    pub(crate) fn poll_finds(&self) {
+        let waiting = self.pending.take();
+        if waiting.is_empty() {
+            return;
+        }
+        let mut kept = Vec::with_capacity(waiting.len());
+        for mut find in waiting {
+            // The sources that stay on the frame are asked one per pass here, as a palette's
+            // frame asks them, and the answers the workers sent are merged: never a wait.
+            let refs: Vec<&dyn Source> = find
+                .sources
+                .iter()
+                .map(|source| source as &dyn Source)
+                .collect();
+            let _ = find.stream.resume(&refs, &find.workers, &*find.used);
+            let overdue = std::time::Instant::now() >= find.due;
+            if find.stream.pending() && !overdue {
+                kept.push(find);
+                continue;
+            }
+            let Some(answer) = find.answer.take() else {
+                continue;
+            };
+            if overdue && find.stream.pending() {
+                tracing::warn!(
+                    needle = %find.needle,
+                    workspace = ?find.workspace,
+                    "a find answers with the rows that came: a source did not answer in time"
+                );
+            }
+            finish(answer, &find.needle, &find.stream.rows());
+        }
+        *self.pending.borrow_mut() = kept;
     }
 
     /// A window was at `place` .
@@ -1000,9 +1209,10 @@ fn feed(search: &SessionSearch, workspace: &str, scope: &Scope) -> SearchHostFee
 }
 
 /// The desktop's one search as a host that holds it offers it
-/// ([`ResourceSearch`]): the same [`SessionSearch::find`] the palette and
-/// text typed on the canvas run, so an agent's `find` answers what those do,
-/// in their order.
+/// ([`ResourceSearch`]): the same search the palette and text typed on the
+/// canvas run ([`SessionSearch::find_soon`]), so an agent's `find` answers what
+/// those do, in their order — asked on the loop's pass and answered when its
+/// sources answer, never waited for there.
 impl ResourceSearch for SearchThrough {
     fn find(
         &self,
@@ -1048,7 +1258,8 @@ impl SearchThrough {
         Self(ask)
     }
 
-    /// Ask for what `needle` finds, in `workspace` alone where one is named ([`SessionSearch::find_in`]).
+    /// Ask for what `needle` finds, in `workspace` alone where one is named
+    /// ([`SessionSearch::find_soon`]).
     fn ask(&self, needle: String, workspace: Option<String>, done: FoundSearch) {
         (self.0)(needle, workspace, done);
     }

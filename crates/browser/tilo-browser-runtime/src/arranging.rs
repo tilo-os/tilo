@@ -12,7 +12,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_desktop_surface::DesktopHandle;
-use tilo_session_core::arrangement::{Arrangement, Ask, Busy, Door, Find, RECORD_RESOURCE};
+use tilo_session_core::arrangement::{
+    Arrangement, Ask, Busy, Door, Find, FindDone, RECORD_RESOURCE,
+};
 use tilo_session_core::desk::Desk;
 
 /// The page's arrangement, and the door everything that arranges by action reaches it through.
@@ -32,8 +34,9 @@ impl Arranging {
             Rc::new(tilo_desktop_search::names::window_name),
         )));
         // Nothing here answers a search or has an agent to ask, so both seams are honestly empty: a
-        // place made by text is the page's palette's to open, never a second index of its own.
-        let find: Find = Rc::new(|_: &str| Vec::new());
+        // place made by text is the page's palette's to open, never a second index of its own. The
+        // empty find answers at once with nothing, as a search over no source would.
+        let find: Find = Rc::new(|_: &str, done: FindDone| done(Vec::new()));
         let ask: Ask = Rc::new(|_: &str| false);
         let door = Door::new(Rc::clone(&arrangement), Rc::new(Busy::default), find, ask);
         Self { arrangement, door }

@@ -94,8 +94,16 @@ impl Session {
     /// # Errors
     /// The compositor failed.
     pub fn step(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
+        // This thread draws the desktop for the length of the pass: a search that would wait for a
+        // source here is caught where it is called in a development build, rather than freezing
+        // the desktop as it did on 2026-11-13 (`tilo_desktop_search::the_loop`).
+        tilo_desktop_search::the_loop(|| self.pass(timeout.into()))
+    }
+
+    /// One pass, with the loop's marker already set by [`Self::step`].
+    fn pass(&mut self, timeout: Option<Duration>) -> Result<(), Error> {
         self.compositor.begin_tick();
-        let timeout = self.wait(timeout.into());
+        let timeout = self.wait(timeout);
         tilo_frame_metrics::profile::expire(Instant::now());
         self.compositor.dispatch(timeout)?;
         // A launch asked since the last pass starts before this one waits for its frame, and

@@ -1261,6 +1261,8 @@ fn search_options(
         // The records the workspaces on this device hold, read now and followed as the apps of
         // those workspaces name more.
         records: Some(tilo_session::Records::of(cli::data_home())),
+        // No test source is mounted on a device: its search is over its own sources alone.
+        extra_sources: Vec::new(),
     }
 }
 
