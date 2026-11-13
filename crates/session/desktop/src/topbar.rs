@@ -1053,10 +1053,16 @@ impl TopBarChrome {
         let now = tilo_clock::unix_now();
         // Settled over the whole workspace, so a peer's avatar matches the colour their cursor is
         // drawn in elsewhere on the desktop.
-        let colors =
-            crate::collaborators::roster_colors_with_local_user(roster, local.unwrap_or(""), |c| {
-                crate::collaborators::collaborator_is_agent(active_ws, c, now)
-            });
+        let colors = crate::collaborators::roster_colors_with_local_user(
+            roster,
+            local.unwrap_or(""),
+            |c| crate::collaborators::collaborator_is_agent(active_ws, c, now),
+            |agent| {
+                active_ws
+                    .and_then(|workspace| workspace.agent_keeper(agent))
+                    .map(str::to_owned)
+            },
+        );
         // Everyone present, the one this person follows first: the bar stands as many faces as it
         // has room for and folds the rest into the count badge, so a narrow bar keeps the face
         // being watched and never drops anyone uncounted.

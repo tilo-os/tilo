@@ -106,7 +106,11 @@ fn rows_of(
                 is_workspace_bot(workspace, participant) || names_agent(&agents, participant)
             })
     };
-    let colors = roster_colors_with_local_user(roster, local_user, of);
+    let colors = roster_colors_with_local_user(roster, local_user, of, |agent| {
+        workspace
+            .and_then(|workspace| workspace.agent_keeper(agent))
+            .map(str::to_owned)
+    });
     let rows: Vec<RosterRow> = roster
         .iter()
         .map(|participant| {
@@ -269,12 +273,15 @@ fn display_role_id(id: &str) -> String {
 
 /// What colour each person on `roster` is drawn in, with `local` the principal this device speaks
 /// as and `is_agent` saying which of them is software: a person is settled by their identity, an
-/// agent by what it is ([`ui::presence::participant_color`]), so one actor is one colour on the
-/// bar, in the People list and in every window.
+/// agent by the one assignment every surface reads
+/// ([`ui::presence::participant_color`]) — clear of the colour of the person it acts for, which
+/// `keeper` names — so one actor is one colour on the bar, in the People list and in every
+/// window.
 pub fn roster_colors_with_local_user(
     roster: &[Collaborator],
     local: &str,
     is_agent: impl Fn(&Collaborator) -> bool,
+    keeper: impl Fn(&str) -> Option<String>,
 ) -> HashMap<String, (u8, u8, u8)> {
     let chosen: HashMap<String, (u8, u8, u8)> = roster
         .iter()
@@ -285,18 +292,27 @@ pub fn roster_colors_with_local_user(
                 .map(|rgb| (c.id.clone(), rgb))
         })
         .collect();
+    let colour_of = |id: &str, agent: bool| {
+        if !agent {
+            return ui::presence::participant_color(id, false, None);
+        }
+        // A roster row may name software by its bare id where the workspace names it by its
+        // member key: one identity, so one colour.
+        let key = if id.starts_with("agent:") || id.starts_with("bot:") {
+            id.to_owned()
+        } else {
+            format!("agent:{id}")
+        };
+        let for_person = keeper(key.strip_prefix("agent:").unwrap_or(&key));
+        ui::presence::participant_color(&key, true, for_person.as_deref())
+    };
     let mut naturals: Vec<(&str, (u8, u8, u8))> = roster
         .iter()
-        .map(|c| {
-            (
-                c.id.as_str(),
-                ui::presence::participant_color(&c.id, is_agent(c), None),
-            )
-        })
+        .map(|c| (c.id.as_str(), colour_of(&c.id, is_agent(c))))
         .collect();
     if !local.is_empty() {
         let agent = roster.iter().find(|c| c.id == local).is_some_and(&is_agent);
-        naturals.push((local, ui::presence::participant_color(local, agent, None)));
+        naturals.push((local, colour_of(local, agent)));
     }
     // The person at this device is honoured first: their own colour is not given to anyone on
     // the roster.

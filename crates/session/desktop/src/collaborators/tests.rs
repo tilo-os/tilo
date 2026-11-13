@@ -617,6 +617,55 @@ fn agent_classification_uses_stable_identity_not_display_label() {
     );
 }
 
+/// One agent is one colour. Its admission assigns it once, clear of the colour of the person it
+/// acts for ([`collab_types::Member::of_software`]); the bar, the member list and the history
+/// that names the person it works for all read that assignment, so a face is never drawn in a
+/// colour of its own working out.
+#[test]
+fn an_agents_face_wears_the_colour_its_admission_assigned() {
+    use tilo_desktop_model::{Workspace, WorkspaceSlot};
+
+    let mut workspace = Workspace::new(WorkspaceSlot(72), "Shared");
+    workspace.set_owner("owner");
+    let node = workspace.node();
+    workspace.grant(tilo_action_policy::Grant::new(
+        "agent-member:scribe",
+        tilo_action_policy::Grantee::agent("scribe"),
+        node,
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person("owner"),
+    ));
+    workspace
+        .collaborators
+        .push(Collaborator::new("scribe", "Scribe"));
+    let desktop = DesktopTree {
+        active: workspace.slot,
+        workspaces: vec![workspace],
+        ..DesktopTree::default()
+    };
+
+    let rows = collaborator_roster_rows(&desktop, "local");
+    let scribe = rows.iter().find(|row| row.id == "scribe").unwrap();
+    let assigned = ui::presence::participant_color("agent:scribe", true, Some("owner"));
+    assert_eq!(
+        scribe.color,
+        Color::from_rgb8(assigned.0, assigned.1, assigned.2),
+        "the bar wears the agent's assignment, by its member key"
+    );
+    let row = collab_types::Member::of_software(
+        collab_types::MemberId::agent("scribe"),
+        "Scribe",
+        Some(&collab_types::PersonId::new("owner")),
+    );
+    let (red, green, blue) = collab_types::presence::identity_rgb(row.colour);
+    assert_eq!(
+        scribe.color,
+        Color::from_rgb8(red, green, blue),
+        "the bar wears the colour the member row stores"
+    );
+}
+
 /// Software's row names the window it works in once: what it is doing there, with the record
 /// beside it. A "Viewing Launch notes" above that says the same record twice, so software's row
 /// carries none, while a person's still says which record they are looking at.
