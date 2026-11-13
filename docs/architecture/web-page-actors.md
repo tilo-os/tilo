@@ -415,10 +415,13 @@ ends before.
 
 That third cause is held by a test of real sessions in the order the
 machines were made and started (`window_share_live`), which fails without
-the change and passes with it on the tree the machines ran. On this tree the
-tests that run two real sessions do not reach the share: they stop where a
-workspace made on one device should arrive on the person's other one, which
-does not happen here. The step has not been run on booted machines since
+the change and passes with it on the tree the machines ran. On this tree
+seven of the eight tests that run real sessions do not reach the share: five
+stop where a workspace made on one device should arrive on the person's other
+one, and two where a copied machine waits for its host to take it in. The
+eighth, the one in the machines' order, reached the share and passed in the
+one run made here: the change carries over, and the tree's own tests are not
+yet a hold on it. The step has not been run on booted machines since
 (see "Not built yet"); it now judges by what the two sessions publish of the
 share, when the first picture came and again twenty seconds on.
 
