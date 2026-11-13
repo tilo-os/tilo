@@ -85,10 +85,11 @@ fn row_id(surface: &ui::serde_json::Value, kind: &str) -> String {
         .to_owned()
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
-    eprintln!("phase every_scenario_captures_at_its_viewport");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn scenarios_and_resources_expose_real_navigation_and_backend_states;
+
+    phase every_scenario_captures_at_its_viewport;
     {
         for scenario in PrintCentreShell::scenarios()
             .iter()
@@ -108,7 +109,7 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
         assert!(frame.contains("Set up your first printer"), "{frame}");
     }
 
-    eprintln!("phase published_tree_exposes_real_navigation_and_device_operations");
+    phase published_tree_exposes_real_navigation_and_device_operations;
     {
         let mut app = live_with_studio();
         let audit = app.harness().native_app_audit();
@@ -197,7 +198,7 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
         );
     }
 
-    eprintln!("phase scan_review_steps_are_offered_only_with_a_page_to_act_on");
+    phase scan_review_steps_are_offered_only_with_a_page_to_act_on;
     {
         let no_page = |effect| EffectStatus::unavailable(effect, "no-page", "Scan a page first.");
         let no_scanner = EffectStatus::unavailable(
@@ -246,7 +247,7 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
         assert!(blocked(&centre, &no_scanner));
     }
 
-    eprintln!("phase scan_controls_change_the_person_s_defaults");
+    phase scan_controls_change_the_person_s_defaults;
     {
         let mut app = live_with_studio();
         app.effect(&PrintCentreEffect::ScanDocument).unwrap();
@@ -270,7 +271,7 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
         assert_eq!(app.state().ocr_language.0, "deu");
     }
 
-    eprintln!("phase backend_failures_remain_distinct_from_legitimate_empty_results");
+    phase backend_failures_remain_distinct_from_legitimate_empty_results;
     {
         let unavailable = Snapshot {
             queues: Err("cups socket closed".into()),
@@ -299,10 +300,11 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn phone_and_large_text_layouts_keep_actions_visible_and_measured() {
-    eprintln!("phase scan_review_actions_wrap_inside_phone_viewports");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn phone_and_large_text_layouts_keep_actions_visible_and_measured;
+
+    phase scan_review_actions_wrap_inside_phone_viewports;
     {
         fn inspect(widget: &ui::headless::InspectionNode, width: f64, buttons: &mut usize) {
             let [x, y, w, h] = widget.rect;
@@ -338,7 +340,7 @@ fn phone_and_large_text_layouts_keep_actions_visible_and_measured() {
         }
     }
 
-    eprintln!("phase print_setup_footer_stays_visible_and_touch_sized_on_phones");
+    phase print_setup_footer_stays_visible_and_touch_sized_on_phones;
     {
         fn collect_buttons(widget: &ui::headless::InspectionNode, buttons: &mut Vec<Rect>) {
             let [x, y, w, h] = widget.rect;
@@ -397,7 +399,7 @@ fn phone_and_large_text_layouts_keep_actions_visible_and_measured() {
         }
     }
 
-    eprintln!("phase dashboard_cards_and_actions_stay_measured_at_large_text_scales");
+    phase dashboard_cards_and_actions_stay_measured_at_large_text_scales;
     {
         fn rect_for(widget: &ui::headless::InspectionNode, id: &str) -> Option<Rect> {
             if widget.test_id.as_deref() == Some(id) {
@@ -493,9 +495,10 @@ fn phone_and_large_text_layouts_keep_actions_visible_and_measured() {
     }
 }
 
-#[test]
-fn backend_telemetry_is_humanized_and_never_invented() {
-    eprintln!("phase backend_states_are_translated_to_people_facing_copy");
+tilo_test_env::scenario! {
+    fn backend_telemetry_is_humanized_and_never_invented;
+
+    phase backend_states_are_translated_to_people_facing_copy;
     {
         use os_actions::printing::QueueState;
         assert_eq!(
@@ -512,7 +515,7 @@ fn backend_telemetry_is_humanized_and_never_invented() {
         );
     }
 
-    eprintln!("phase supply_gauge_uses_the_lowest_known_cartridge");
+    phase supply_gauge_uses_the_lowest_known_cartridge;
     {
         let mut printer = queue(os_actions::printing::QueueState::Ready, true);
         printer.telemetry.supplies = Some(vec![
@@ -532,20 +535,20 @@ fn backend_telemetry_is_humanized_and_never_invented() {
         assert_eq!(percent, 14);
     }
 
-    eprintln!("phase missing_supply_telemetry_is_not_invented");
+    phase missing_supply_telemetry_is_not_invented;
     {
         let printer = queue(os_actions::printing::QueueState::Ready, true);
         assert_eq!(supply_level(&printer), None);
     }
 
-    eprintln!("phase backend_identifiers_are_humanized_before_display");
+    phase backend_identifiers_are_humanized_before_display;
     {
         assert_eq!(display_name("Studio_printer"), "Studio printer");
         assert_eq!(display_name("office--laser_2"), "office laser 2");
         assert_eq!(display_name("  Nearby_Printer  "), "Nearby Printer");
     }
 
-    eprintln!("phase device_reasons_are_translated_without_leaking_backend_jargon");
+    phase device_reasons_are_translated_without_leaking_backend_jargon;
     {
         assert_eq!(
             friendly_reason("media-empty-warning"),
@@ -562,9 +565,10 @@ fn backend_telemetry_is_humanized_and_never_invented() {
     }
 }
 
-#[test]
-fn scan_output_is_opaque_byte_exact_private_and_previewable() {
-    eprintln!("phase scan_result_fixture_is_opaque_and_visually_structured");
+tilo_test_env::scenario! {
+    fn scan_output_is_opaque_byte_exact_private_and_previewable;
+
+    phase scan_result_fixture_is_opaque_and_visually_structured;
     {
         let pixels = demo_scanned_page_pixels(320, 440);
         assert_eq!(pixels.len(), 320 * 440 * 4);
@@ -583,7 +587,7 @@ fn scan_output_is_opaque_byte_exact_private_and_previewable() {
         );
     }
 
-    eprintln!("phase scanned_pages_are_saved_byte_exactly_with_private_permissions");
+    phase scanned_pages_are_saved_byte_exactly_with_private_permissions;
     {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("receipt.png");
@@ -598,7 +602,7 @@ fn scan_output_is_opaque_byte_exact_private_and_previewable() {
         }
     }
 
-    eprintln!("phase selected_image_produces_real_bounded_preview_pixels");
+    phase selected_image_produces_real_bounded_preview_pixels;
     {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("boarding-pass.png");
@@ -838,9 +842,10 @@ fn a_scanned_page_is_decoded_by_the_toolkits_codec() {
     assert!(refused.contains("invalid image"), "{refused}");
 }
 
-#[test]
-fn scan_page_edits_invalidate_ocr_and_export_in_order() {
-    eprintln!("phase multipage_scan_session_preserves_reorders_navigates_and_deletes_pages");
+tilo_test_env::scenario! {
+    fn scan_page_edits_invalidate_ocr_and_export_in_order;
+
+    phase multipage_scan_session_preserves_reorders_navigates_and_deletes_pages;
     {
         let mut centre = PrintCentre::new();
         centre.show(Some(&demo_snapshot()));
@@ -867,7 +872,7 @@ fn scan_page_edits_invalidate_ocr_and_export_in_order() {
         assert_eq!(centre.scan.result.as_ref().map(|page| page.width), Some(20));
     }
 
-    eprintln!("phase rotation_updates_saved_pixels_and_invalidates_stale_ocr");
+    phase rotation_updates_saved_pixels_and_invalidates_stale_ocr;
     {
         let mut page = scanned_page(3);
         page.recognized_text = Some("stale orientation".into());
@@ -880,7 +885,7 @@ fn scan_page_edits_invalidate_ocr_and_export_in_order() {
         assert!(page.ocr_needs_refresh);
     }
 
-    eprintln!("phase crop_updates_preview_and_export_bytes_and_invalidates_ocr");
+    phase crop_updates_preview_and_export_bytes_and_invalidates_ocr;
     {
         let mut page = ScannedPage {
             png: Arc::from(Vec::<u8>::new()),
@@ -907,7 +912,7 @@ fn scan_page_edits_invalidate_ocr_and_export_in_order() {
         assert!(page.ocr_needs_refresh);
     }
 
-    eprintln!("phase whole_document_export_keeps_page_order_and_ocr_layer");
+    phase whole_document_export_keeps_page_order_and_ocr_layer;
     {
         let mut first = scanned_page(3);
         first.recognized_text = Some("FIRST PAGE".into());
