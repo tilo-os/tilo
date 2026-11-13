@@ -117,6 +117,7 @@ pub fn agent_acting(resource: &str, action: &str) -> tilo_actions::SemanticInter
             label: action.into(),
             app: None,
             step: None,
+            creates: None,
         },
         resource: tilo_actions::ActionResource {
             id: resource.into(),
@@ -797,6 +798,7 @@ mod locus_tests {
                 label: "Edit".into(),
                 app: None,
                 step: None,
+                creates: None,
             },
             resource: tilo_actions::ActionResource {
                 id: resource.into(),

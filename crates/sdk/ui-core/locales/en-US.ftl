@@ -609,6 +609,10 @@ interaction-progress = { $label } - { $done }/{ $total }
 # work the action's own declaration names, on the record or item it acts in.
 # The record is the item's title where the step names one.
 step-creating = Creating in { $record }
+# A create whose declaration names the collection it adds to says what it makes,
+# by the noun the app's own catalogue gives one of them, with its article
+# ("Creating an issue in Issues").
+step-creating-one = Creating { $noun } in { $record }
 step-writing = Writing in { $record }
 step-editing = Editing { $record }
 step-deleting = Deleting { $record }

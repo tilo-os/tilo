@@ -353,6 +353,31 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
     assert_eq!(invoker.on_behalf_of.as_deref(), Some("ada"));
 }
 
+/// A create says what it makes: the collection it adds to, so a window says the
+/// step by that collection's own noun ("Creating an issue in Issues") rather
+/// than only where it happens.
+#[test]
+fn a_create_names_the_collection_it_makes_one_of() {
+    let person = ada();
+    let tree = person.published().unwrap();
+    let create = tree
+        .actions
+        .iter()
+        .find(|action| action.id == "create")
+        .expect("the tracker publishes its create");
+    assert_eq!(create.contract.step, Some(tilo_actions::StepKind::Create));
+    assert_eq!(create.contract.creates.as_deref(), Some("issues"));
+    let area = tree
+        .actions
+        .iter()
+        .find(|action| action.id == "create-area")
+        .expect("the tracker publishes its project and area create");
+    assert_eq!(
+        area.contract.creates, None,
+        "a create whose declaration names no collection says nothing it makes"
+    );
+}
+
 #[test]
 fn a_project_holds_the_tasks_that_work_towards_it_and_the_people_involved() {
     use crate::model::{Kind, area_goal};

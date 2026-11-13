@@ -732,6 +732,15 @@ fn resource_noun(key: &str, count: u32) -> Option<String> {
     (said != key).then_some(said)
 }
 
+/// What one of the collection `key` names is, in this window's language, with
+/// its article ("an issue", "eine Aufgabe"): the noun the app's catalogue
+/// writes for it ([`tilo_resource::label::noun_key`]). `None` where no
+/// catalogue of this window holds it.
+#[must_use]
+pub fn noun(key: &str) -> Option<String> {
+    resource_noun(key, 1)
+}
+
 impl I18nManager {
     /// Register shared widget labels in every bundled language without
     /// replacing an application's catalogs or its selected language. A host

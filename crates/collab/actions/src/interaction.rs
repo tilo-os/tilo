@@ -199,6 +199,12 @@ pub struct InteractionAction {
     /// part of the record it acts on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<crate::StepKind>,
+    /// The collection of its resource the action adds to, when it declares one
+    /// (`writes = issues`): what a create makes, named by that collection's
+    /// own noun in the reader's language
+    /// ([`ActionContract::creates`](crate::ActionContract::creates)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creates: Option<String>,
 }
 
 /// One broker-normalized, transient semantic interaction event.
@@ -470,6 +476,7 @@ mod tests {
                     label: "Sheets".into(),
                 }),
                 step: None,
+                creates: None,
             },
             resource: ActionResource {
                 id: "sheets.sheet:budget".into(),

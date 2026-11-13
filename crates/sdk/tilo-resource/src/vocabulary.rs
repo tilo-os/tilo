@@ -187,6 +187,10 @@ pub struct Declaration {
     /// The kind of step it takes, as it declares it
     /// ([`tilo_actions::StepKind`]), published with its contract.
     pub step: Option<tilo_actions::StepKind>,
+    /// The collection of its resource it adds to, when it is a create whose
+    /// declaration names one (`writes = issues`): what the step makes, so a
+    /// surface says that collection's own noun ("Creating an issue in Issues").
+    pub creates: Option<&'static str>,
     /// The units the action writes ([`crate::footprint`]): `record`, an
     /// item's unit, declared fields'.
     pub writes: Vec<String>,
@@ -257,6 +261,7 @@ impl Declaration {
             content: None,
             refines: false,
             step: None,
+            creates: None,
             writes: vec![crate::footprint::RECORD_UNIT.to_owned()],
             resource: vocabulary.kind,
             action_type: vocabulary.action_type,

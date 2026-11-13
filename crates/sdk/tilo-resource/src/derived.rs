@@ -162,6 +162,7 @@ fn bound_declaration(
     decl.description.clone_from(&verb.description);
     decl.destructive = verb.destructive;
     decl.step = verb.step;
+    decl.creates = verb.creates;
     // Bound or not, the verb is undone the same way (or not at all), and
     // housekeeping stays housekeeping.
     decl.tags.extend(

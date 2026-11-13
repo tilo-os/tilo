@@ -520,6 +520,11 @@ pub mod __private {
         decl.step = verb
             .step
             .or_else(|| verb.destructive.then_some(tilo_actions::StepKind::Delete));
+        // A create that declares the collection it adds to makes one of them:
+        // its step says that collection's noun ("an issue").
+        decl.creates = (decl.step == Some(tilo_actions::StepKind::Create))
+            .then(|| verb.writes.first().copied())
+            .flatten();
         if verb.irreversible {
             decl.tags.push(tilo_actions::IRREVERSIBLE_TAG.to_owned());
         }

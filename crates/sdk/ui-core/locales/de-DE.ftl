@@ -605,7 +605,12 @@ interaction-progress = { $label } - { $done }/{ $total }
 # Handlung liest: die Art Arbeit, die die Handlung selbst angibt, an dem
 # Datensatz oder Eintrag, an dem sie geschieht; der Eintrag wird mit seinem
 # Titel benannt, wo der Schritt einen nennt.
-step-creating = Erstellt in { $record }
+step-creating = Legt in { $record } an
+# Ein Anlegen, dessen Angabe die Sammlung nennt, in die es schreibt, sagt, was
+# entsteht: mit dem Substantiv, das der Katalog der App dafür schreibt, samt
+# Artikel ("Legt eine Aufgabe in Aufgaben an"). "Erstellt" läse sich als
+# Vergangenheit, deshalb sagt das Verb, was gerade geschieht.
+step-creating-one = Legt { $noun } in { $record } an
 step-writing = Schreibt in { $record }
 step-editing = Bearbeitet { $record }
 step-deleting = Löscht { $record }

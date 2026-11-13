@@ -1201,6 +1201,7 @@ mod tests {
                 label: "Rename".into(),
                 app: None,
                 step: None,
+                creates: None,
             },
             resource: ActionResource {
                 id: "file:draft".into(),
@@ -1925,6 +1926,7 @@ mod tests {
                 label: "Tasks".into(),
             }),
             step: Some(StepKind::Create),
+            creates: None,
         };
         made.resource.label = "Issues".into();
         assert_eq!(card_detail(&made, 0), "Creating in Issues");
@@ -2238,6 +2240,7 @@ mod tests {
             label: "Replace text at a place".into(),
             app: None,
             step: None,
+            creates: None,
         };
         write.anchor = tilo_actions::InteractionAnchor::Text {
             region: "body".into(),
