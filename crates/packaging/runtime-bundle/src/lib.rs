@@ -1663,267 +1663,274 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[cfg(unix)]
-    #[test]
-    fn included_launcher_is_executable_and_covered_by_signed_runtime_identity() {
-        use std::os::unix::fs::PermissionsExt;
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let launcher = host.path().join("tilo-launcher");
-        fs::write(&launcher, b"launcher compiled for this runtime").unwrap();
-        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
-        let identity = Identity::generate();
-        let identity_path = host.path().join("identity.json");
-        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let (manifest, bundle) = build_abi_bundle(
-            out.path(),
-            "2026.07",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: Some(&identity_path),
-                extra_bins: std::slice::from_ref(&launcher),
-                ..BuildOptions::default()
-            },
-        )
-        .unwrap();
-        assert!(
-            manifest
-                .files
-                .iter()
-                .any(|file| file.path == "bin/tilo-launcher")
-        );
-        assert!(
-            !manifest
-                .files
-                .iter()
-                .any(|file| file.path == "lib/tilo-launcher")
-        );
-        let packaged = bundle.join("bin/tilo-launcher");
-        assert_eq!(
-            fs::metadata(&packaged).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
-        let options = VerifyOptions {
-            require_publisher: Some(identity.public_key_hex()),
-            require_signature: true,
-            require_arch: Some("x86_64".into()),
-        };
-        assert_eq!(
-            verify_bundle_with(&bundle, &options).unwrap().root_hash,
-            manifest.root_hash
-        );
-        fs::write(&packaged, b"changed launcher bytes").unwrap();
-        assert!(matches!(
-            verify_bundle_with(&bundle, &options),
-            Err(BundleError::SizeMismatch { .. } | BundleError::HashMismatch { .. })
-        ));
-    }
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn binaries_in_a_bundle_are_executable_signed_and_refused_when_ambiguous;
 
-    #[cfg(unix)]
-    #[test]
-    fn an_entrypoint_runtime_bundle_holds_its_binary_and_no_loader_set() {
-        use std::os::unix::fs::PermissionsExt;
-        let work = tempfile::tempdir().unwrap();
-        let binary = work.path().join("tilolang-app");
-        fs::write(&binary, b"runtime binary linking the app runtime").unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
-        let identity = Identity::generate();
-        let identity_path = work.path().join("identity.json");
-        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
-        let bundle = work.path().join("bundle");
-
-        let manifest = build_binaries_bundle(
-            &bundle,
-            "0.1.0+tilolang",
-            None,
-            Some(&identity_path),
-            std::slice::from_ref(&binary),
-        )
-        .unwrap();
-        let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, ["bin/tilolang-app"]);
-        assert!(!bundle.join("lib").exists());
-        assert!(!bundle.join("etc").exists());
-        let options = VerifyOptions {
-            require_publisher: Some(identity.public_key_hex()),
-            require_signature: true,
-            require_arch: Some(host_arch().into()),
-        };
-        assert_eq!(
-            verify_bundle_with(&bundle, &options).unwrap().root_hash,
-            manifest.root_hash
-        );
-        fs::write(bundle.join("bin/tilolang-app"), b"another binary").unwrap();
-        assert!(verify_bundle_with(&bundle, &options).is_err());
-
-        assert!(matches!(
-            build_binaries_bundle(&work.path().join("empty"), "0.1.0", None, None, &[]),
-            Err(BundleError::NoSources { .. })
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn binary_includes_refuse_redirected_non_executable_or_ambiguous_services() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-        let source = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let launcher = source.path().join("tilo-launcher");
-        fs::write(&launcher, b"launcher").unwrap();
-        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o644)).unwrap();
-        let include = |bins: &[PathBuf]| copy_binaries(out.path(), bins, &mut Vec::new());
-        assert!(matches!(
-            include(std::slice::from_ref(&launcher)),
-            Err(BundleError::IncludeInvalidBinary { .. })
-        ));
-        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
-        let redirected = source.path().join("redirected-launcher");
-        symlink(&launcher, &redirected).unwrap();
-        assert!(matches!(
-            include(&[redirected]),
-            Err(BundleError::IncludeInvalidBinary { .. })
-        ));
-        let second = other.path().join("tilo-launcher");
-        fs::write(&second, b"different compiler output").unwrap();
-        fs::set_permissions(&second, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(matches!(
-            include(&[launcher.clone(), second]),
-            Err(BundleError::IncludeDuplicateBinary { .. })
-        ));
-        assert!(
-            include(&[launcher.clone(), launcher]).is_ok(),
-            "same source is copied once"
-        );
-    }
-
-    #[test]
-    fn sdk_font_catalog_is_signed_and_corruption_does_not_change_a_retained_sdk() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let work = tempfile::tempdir().unwrap();
-        let fonts = work.path().join("fonts");
-        let prepared = std::process::Command::new("python3")
-            // Isolated, as the CI helpers in `tools/ci` are run: without it Python lists the
-            // script's directory, so this test would read every file in `tools/` and rerun when
-            // any of them changes. The tool imports nothing of its own.
-            .arg("-I")
-            .arg(repo.join("tools/font-catalog.py"))
-            .arg("prepare")
-            .arg(repo.join("crates/sdk/ui-core/assets/fonts"))
-            .arg(&fonts)
-            .args(["--scope", "product"])
-            .output_locked()
-            .unwrap();
-        assert!(
-            prepared.status.success(),
-            "{}",
-            String::from_utf8_lossy(&prepared.stderr)
-        );
-        let identity = Identity::generate();
-        let identity_path = work.path().join("identity.json");
-        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
-        let bundles = work.path().join("bundles");
-        let includes = [fonts];
-        let options = BuildOptions {
-            identity: Some(&identity_path),
-            extra_libs: &includes,
-            ..Default::default()
-        };
-        let (_, held) = build_abi_bundle(&bundles, "held", &options).unwrap();
-        let (_, current) = build_abi_bundle(&bundles, "current", &options).unwrap();
-        let verification = VerifyOptions {
-            require_publisher: Some(identity.public_key_hex()),
-            require_signature: true,
-            require_arch: None,
-        };
-        let manifest = verify_bundle_with(&current, &verification).unwrap();
-        assert!(
-            manifest
-                .files
-                .iter()
-                .any(|file| file.path == "lib/fonts/manifest.toml")
-        );
-        let original = fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap();
-        let changed = current.join("lib/fonts/NotoSansMath-Regular.ttf");
-        let mut bytes = fs::read(&changed).unwrap();
-        bytes[0] ^= 1;
-        fs::write(changed, bytes).unwrap();
-        assert!(verify_bundle_with(&current, &verification).is_err());
-        verify_bundle_with(&held, &verification).unwrap();
-        assert_eq!(
-            fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap(),
-            original
-        );
-    }
-
-    #[test]
-    fn an_abi_bundle_is_named_by_its_payload_and_cannot_claim_another_build() {
-        // phase: the_version_carries_the_payload_digest
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let libs = tempfile::tempdir().unwrap();
-        let dylib = libs.path().join("libruntime_dylib.so");
-        std::fs::write(&dylib, b"runtime build one").unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let build = |extra: &[PathBuf]| {
-            build_abi_bundle(
-                root.path(),
+        phase included_launcher_is_executable_and_covered_by_signed_runtime_identity;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let launcher = host.path().join("tilo-launcher");
+            fs::write(&launcher, b"launcher compiled for this runtime").unwrap();
+            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+            let identity = Identity::generate();
+            let identity_path = host.path().join("identity.json");
+            fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let (manifest, bundle) = build_abi_bundle(
+                out.path(),
                 "2026.07",
                 &BuildOptions {
                     from: Some(host.path()),
                     arch: Some("x86_64"),
-                    identity: None,
-                    extra_libs: extra,
-                    extra_bins: &[],
+                    identity: Some(&identity_path),
+                    extra_bins: std::slice::from_ref(&launcher),
+                    ..BuildOptions::default()
                 },
             )
-            .expect("build")
-        };
-        let (first, first_dir) = build(std::slice::from_ref(&dylib));
-        let (release, digest) = split_abi_version(&first.version).expect("abi version");
-        assert_eq!(release, "2026.07");
-        assert_eq!(digest, abi_digest(&first.root_hash));
-        assert_eq!(digest.len(), ABI_DIGEST_HEX_LEN);
-        assert_eq!(first_dir, root.path().join(&first.version));
-        verify_bundle(&first_dir).expect("verify");
-
-        // phase: rebuilding_the_same_bytes_names_the_same_build
-        let (again, _) = build(std::slice::from_ref(&dylib));
-        assert_eq!(again.version, first.version);
-
-        // phase: a_different_dylib_is_a_different_runtime
-        std::fs::write(&dylib, b"runtime build two").unwrap();
-        let (second, second_dir) = build(std::slice::from_ref(&dylib));
-        assert_ne!(second.version, first.version);
-        assert!(first_dir.exists() && second_dir.exists());
-
-        // phase: a_bundle_claiming_another_builds_digest_is_refused
-        let text = std::fs::read_to_string(second_dir.join(BUNDLE_MANIFEST_FILENAME)).unwrap();
-        let forged = text.replace(&second.version, &first.version);
-        std::fs::write(second_dir.join(BUNDLE_MANIFEST_FILENAME), forged).unwrap();
-        assert!(matches!(
-            verify_bundle(&second_dir),
-            Err(BundleError::AbiDigestMismatch { .. })
-        ));
-
-        // phase: a_release_must_be_one_path_component
-        for bad in ["", "2026/07", "2026.07+native.00", ".hidden"] {
+            .unwrap();
+            assert!(
+                manifest
+                    .files
+                    .iter()
+                    .any(|file| file.path == "bin/tilo-launcher")
+            );
+            assert!(
+                !manifest
+                    .files
+                    .iter()
+                    .any(|file| file.path == "lib/tilo-launcher")
+            );
+            let packaged = bundle.join("bin/tilo-launcher");
+            assert_eq!(
+                fs::metadata(&packaged).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+            let options = VerifyOptions {
+                require_publisher: Some(identity.public_key_hex()),
+                require_signature: true,
+                require_arch: Some("x86_64".into()),
+            };
+            assert_eq!(
+                verify_bundle_with(&bundle, &options).unwrap().root_hash,
+                manifest.root_hash
+            );
+            fs::write(&packaged, b"changed launcher bytes").unwrap();
             assert!(matches!(
-                build_abi_bundle(root.path(), bad, &BuildOptions::default()),
-                Err(BundleError::InvalidRelease(_))
+                verify_bundle_with(&bundle, &options),
+                Err(BundleError::SizeMismatch { .. } | BundleError::HashMismatch { .. })
             ));
+        }
+
+        phase an_entrypoint_runtime_bundle_holds_its_binary_and_no_loader_set;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let work = tempfile::tempdir().unwrap();
+            let binary = work.path().join("tilolang-app");
+            fs::write(&binary, b"runtime binary linking the app runtime").unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+            let identity = Identity::generate();
+            let identity_path = work.path().join("identity.json");
+            fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+            let bundle = work.path().join("bundle");
+
+            let manifest = build_binaries_bundle(
+                &bundle,
+                "0.1.0+tilolang",
+                None,
+                Some(&identity_path),
+                std::slice::from_ref(&binary),
+            )
+            .unwrap();
+            let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(paths, ["bin/tilolang-app"]);
+            assert!(!bundle.join("lib").exists());
+            assert!(!bundle.join("etc").exists());
+            let options = VerifyOptions {
+                require_publisher: Some(identity.public_key_hex()),
+                require_signature: true,
+                require_arch: Some(host_arch().into()),
+            };
+            assert_eq!(
+                verify_bundle_with(&bundle, &options).unwrap().root_hash,
+                manifest.root_hash
+            );
+            fs::write(bundle.join("bin/tilolang-app"), b"another binary").unwrap();
+            assert!(verify_bundle_with(&bundle, &options).is_err());
+
+            assert!(matches!(
+                build_binaries_bundle(&work.path().join("empty"), "0.1.0", None, None, &[]),
+                Err(BundleError::NoSources { .. })
+            ));
+        }
+
+        phase binary_includes_refuse_redirected_non_executable_or_ambiguous_services;
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            let source = tempfile::tempdir().unwrap();
+            let other = tempfile::tempdir().unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let launcher = source.path().join("tilo-launcher");
+            fs::write(&launcher, b"launcher").unwrap();
+            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o644)).unwrap();
+            let include = |bins: &[PathBuf]| copy_binaries(out.path(), bins, &mut Vec::new());
+            assert!(matches!(
+                include(std::slice::from_ref(&launcher)),
+                Err(BundleError::IncludeInvalidBinary { .. })
+            ));
+            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+            let redirected = source.path().join("redirected-launcher");
+            symlink(&launcher, &redirected).unwrap();
+            assert!(matches!(
+                include(&[redirected]),
+                Err(BundleError::IncludeInvalidBinary { .. })
+            ));
+            let second = other.path().join("tilo-launcher");
+            fs::write(&second, b"different compiler output").unwrap();
+            fs::set_permissions(&second, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(matches!(
+                include(&[launcher.clone(), second]),
+                Err(BundleError::IncludeDuplicateBinary { .. })
+            ));
+            assert!(
+                include(&[launcher.clone(), launcher]).is_ok(),
+                "same source is copied once"
+            );
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn build_produces_deterministic_verifiable_bundles_per_layout() {
-        // phase: source_date_epoch_controls_produced_at
+    fn payload_paths(manifest: &BundleManifest) -> Vec<&str> {
+        manifest.files.iter().map(|f| f.path.as_str()).collect()
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn build_produces_deterministic_verifiable_bundles_per_layout;
+
+        phase sdk_font_catalog_is_signed_and_corruption_does_not_change_a_retained_sdk;
+        {
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+            let work = tempfile::tempdir().unwrap();
+            let fonts = work.path().join("fonts");
+            let prepared = std::process::Command::new("python3")
+                // Isolated, as the CI helpers in `tools/ci` are run: without it Python lists the
+                // script's directory, so this test would read every file in `tools/` and rerun when
+                // any of them changes. The tool imports nothing of its own.
+                .arg("-I")
+                .arg(repo.join("tools/font-catalog.py"))
+                .arg("prepare")
+                .arg(repo.join("crates/sdk/ui-core/assets/fonts"))
+                .arg(&fonts)
+                .args(["--scope", "product"])
+                .output_locked()
+                .unwrap();
+            assert!(
+                prepared.status.success(),
+                "{}",
+                String::from_utf8_lossy(&prepared.stderr)
+            );
+            let identity = Identity::generate();
+            let identity_path = work.path().join("identity.json");
+            fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+            let bundles = work.path().join("bundles");
+            let includes = [fonts];
+            let options = BuildOptions {
+                identity: Some(&identity_path),
+                extra_libs: &includes,
+                ..Default::default()
+            };
+            let (_, held) = build_abi_bundle(&bundles, "held", &options).unwrap();
+            let (_, current) = build_abi_bundle(&bundles, "current", &options).unwrap();
+            let verification = VerifyOptions {
+                require_publisher: Some(identity.public_key_hex()),
+                require_signature: true,
+                require_arch: None,
+            };
+            let manifest = verify_bundle_with(&current, &verification).unwrap();
+            assert!(
+                manifest
+                    .files
+                    .iter()
+                    .any(|file| file.path == "lib/fonts/manifest.toml")
+            );
+            let original = fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap();
+            let changed = current.join("lib/fonts/NotoSansMath-Regular.ttf");
+            let mut bytes = fs::read(&changed).unwrap();
+            bytes[0] ^= 1;
+            fs::write(changed, bytes).unwrap();
+            assert!(verify_bundle_with(&current, &verification).is_err());
+            verify_bundle_with(&held, &verification).unwrap();
+            assert_eq!(
+                fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap(),
+                original
+            );
+        }
+
+        phase an_abi_bundle_is_named_by_its_payload_and_cannot_claim_another_build;
+        {
+            // phase: the_version_carries_the_payload_digest
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let libs = tempfile::tempdir().unwrap();
+            let dylib = libs.path().join("libruntime_dylib.so");
+            std::fs::write(&dylib, b"runtime build one").unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let build = |extra: &[PathBuf]| {
+                build_abi_bundle(
+                    root.path(),
+                    "2026.07",
+                    &BuildOptions {
+                        from: Some(host.path()),
+                        arch: Some("x86_64"),
+                        identity: None,
+                        extra_libs: extra,
+                        extra_bins: &[],
+                    },
+                )
+                .expect("build")
+            };
+            let (first, first_dir) = build(std::slice::from_ref(&dylib));
+            let (release, digest) = split_abi_version(&first.version).expect("abi version");
+            assert_eq!(release, "2026.07");
+            assert_eq!(digest, abi_digest(&first.root_hash));
+            assert_eq!(digest.len(), ABI_DIGEST_HEX_LEN);
+            assert_eq!(first_dir, root.path().join(&first.version));
+            verify_bundle(&first_dir).expect("verify");
+
+            // phase: rebuilding_the_same_bytes_names_the_same_build
+            let (again, _) = build(std::slice::from_ref(&dylib));
+            assert_eq!(again.version, first.version);
+
+            // phase: a_different_dylib_is_a_different_runtime
+            std::fs::write(&dylib, b"runtime build two").unwrap();
+            let (second, second_dir) = build(std::slice::from_ref(&dylib));
+            assert_ne!(second.version, first.version);
+            assert!(first_dir.exists() && second_dir.exists());
+
+            // phase: a_bundle_claiming_another_builds_digest_is_refused
+            let text = std::fs::read_to_string(second_dir.join(BUNDLE_MANIFEST_FILENAME)).unwrap();
+            let forged = text.replace(&second.version, &first.version);
+            std::fs::write(second_dir.join(BUNDLE_MANIFEST_FILENAME), forged).unwrap();
+            assert!(matches!(
+                verify_bundle(&second_dir),
+                Err(BundleError::AbiDigestMismatch { .. })
+            ));
+
+            // phase: a_release_must_be_one_path_component
+            for bad in ["", "2026/07", "2026.07+native.00", ".hidden"] {
+                assert!(matches!(
+                    build_abi_bundle(root.path(), bad, &BuildOptions::default()),
+                    Err(BundleError::InvalidRelease(_))
+                ));
+            }
+        }
+
+        phase source_date_epoch_controls_produced_at;
         {
             assert_eq!(produced_at_from(Ok("123456".into())).unwrap(), 123_456);
             assert!(matches!(
@@ -1931,7 +1938,8 @@ mod tests {
                 Err(BundleError::InvalidSourceDateEpoch(_))
             ));
         }
-        // phase: build_then_verify_roundtrips_x86_64
+
+        phase build_then_verify_roundtrips_x86_64;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -1958,7 +1966,8 @@ mod tests {
             assert_eq!(verified.root_hash, manifest.root_hash);
             assert_eq!(verified.arch, "x86_64");
         }
-        // phase: build_supports_aarch64_fedora_layout
+
+        phase build_supports_aarch64_fedora_layout;
         {
             let host = tempfile::tempdir().unwrap();
             fake_aarch64_fedora_host(host.path());
@@ -1985,7 +1994,8 @@ mod tests {
             assert!(paths.iter().any(|p| p.ends_with("lib64/libc.so.6")));
             verify_bundle(out.path()).expect("verify");
         }
-        // phase: build_supports_aarch64_debian_layout
+
+        phase build_supports_aarch64_debian_layout;
         {
             let host = tempfile::tempdir().unwrap();
             fake_aarch64_debian_host(host.path());
@@ -2010,7 +2020,8 @@ mod tests {
             );
             verify_bundle(out.path()).expect("verify");
         }
-        // phase: unsupported_arch_errors
+
+        phase unsupported_arch_errors;
         {
             let host = tempfile::tempdir().unwrap();
             let out = tempfile::tempdir().unwrap();
@@ -2028,7 +2039,8 @@ mod tests {
             .unwrap_err();
             matches!(err, BundleError::UnsupportedArch(_));
         }
-        // phase: build_fails_when_no_sources_resolve
+
+        phase build_fails_when_no_sources_resolve;
         {
             let host = tempfile::tempdir().unwrap();
             let out = tempfile::tempdir().unwrap();
@@ -2046,7 +2058,8 @@ mod tests {
             .unwrap_err();
             matches!(err, BundleError::NoSources { .. });
         }
-        // phase: root_hash_is_deterministic
+
+        phase root_hash_is_deterministic;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2063,7 +2076,8 @@ mod tests {
             let b = build_bundle_with(out2.path(), "v", &opts).unwrap();
             assert_eq!(a.root_hash, b.root_hash);
         }
-        // phase: extra_libs_land_at_lib_root_and_are_hashed_and_verify
+
+        phase extra_libs_land_at_lib_root_and_are_hashed_and_verify;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2097,7 +2111,8 @@ mod tests {
 
             verify_bundle(out.path()).expect("verify with extras");
         }
-        // phase: an_included_directory_keeps_its_tree
+
+        phase an_included_directory_keeps_its_tree;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2149,7 +2164,8 @@ mod tests {
                 assert!(matches!(err, BundleError::IncludeSpecialFile { .. }));
             }
         }
-        // phase: missing_extra_lib_is_an_error
+
+        phase missing_extra_lib_is_an_error;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2169,185 +2185,181 @@ mod tests {
             .unwrap_err();
             assert!(matches!(err, BundleError::IncludeMissing { .. }));
         }
-    }
 
-    #[test]
-    fn repeated_extra_inputs_build_one_signed_abi_payload() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let identity = Identity::generate();
-        let identity_path = host.path().join("identity.json");
-        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
-        let libstd = host.path().join("libstd-fixture.so");
-        let libruntime = host.path().join("libruntime_dylib.so");
-        fs::write(&libstd, b"Rust standard library fixture").unwrap();
-        fs::write(&libruntime, b"Tilo runtime fixture").unwrap();
-        let unique = tempfile::tempdir().unwrap();
-        let repeated = tempfile::tempdir().unwrap();
-        let opts = BuildOptions {
-            from: Some(host.path()),
-            arch: Some("x86_64"),
-            identity: Some(&identity_path),
-            extra_libs: &[libstd.clone(), libruntime.clone()],
-            extra_bins: &[],
-        };
-        let (expected, _) = build_abi_bundle(unique.path(), "2026.07", &opts).unwrap();
-        let (actual, root) = build_abi_bundle(
-            repeated.path(),
-            "2026.07",
-            &BuildOptions {
-                extra_libs: &[libruntime.clone(), libstd.clone(), libstd, libruntime],
-                ..opts
-            },
-        )
-        .unwrap();
-        verify_bundle_with(
-            &root,
-            &VerifyOptions {
-                require_publisher: Some(identity.public_key_hex()),
-                require_signature: true,
-                require_arch: Some("x86_64".to_string()),
-            },
-        )
-        .expect("repeated source inputs still produce a valid signed bundle");
-        assert_eq!(actual.version, expected.version);
-        assert_eq!(actual.root_hash, expected.root_hash);
-        assert_eq!(actual.files.len(), expected.files.len());
-    }
-
-    #[test]
-    fn different_extra_inputs_with_the_same_name_are_still_rejected() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        let name = "libruntime_dylib.so";
-        fs::write(first.path().join(name), b"first runtime").unwrap();
-        fs::write(second.path().join(name), b"conflicting runtime").unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let error = build_abi_bundle(
-            out.path(),
-            "2026.07",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &[first.path().join(name), second.path().join(name)],
-                extra_bins: &[],
-            },
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            BundleError::IncludeConflict { name: path, .. } if path == format!("lib/{name}")
-        ));
-        assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
-    }
-
-    fn payload_paths(manifest: &BundleManifest) -> Vec<&str> {
-        manifest.files.iter().map(|f| f.path.as_str()).collect()
-    }
-
-    #[test]
-    fn a_library_in_the_loader_set_and_the_includes_is_signed_once() {
-        let host = tempfile::tempdir().unwrap();
-        fake_x86_64_host(host.path());
-        let runtime = host.path().join("libruntime_dylib.so");
-        fs::write(&runtime, b"Tilo runtime fixture").unwrap();
-        let closure = [
-            runtime,
-            host.path().join("lib64/libc.so.6"),
-            host.path().join("lib64/ld-linux-x86-64.so.2"),
-        ];
-        let out = tempfile::tempdir().unwrap();
-        let manifest = build_bundle_with(
-            out.path(),
-            "2026.07",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("x86_64"),
-                identity: None,
-                extra_libs: &closure,
-                extra_bins: &[],
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            payload_paths(&manifest),
-            [
-                "lib/ld-linux-x86-64.so.2",
-                "lib/lib64/ld-linux-x86-64.so.2",
-                "lib/lib64/libm.so.6",
-                "lib/libc.so.6",
-                "lib/libruntime_dylib.so",
-            ]
-        );
-        assert_eq!(
-            fs::read(out.path().join("lib/libc.so.6")).unwrap(),
-            b"fake contents of lib64/libc.so.6"
-        );
-        verify_bundle(out.path()).expect("the deduplicated bundle verifies");
-
-        let host = tempfile::tempdir().unwrap();
-        fake_aarch64_fedora_host(host.path());
-        let usr = host.path().join("usr/lib64");
-        fs::create_dir_all(&usr).unwrap();
-        fs::copy(host.path().join("lib64/libc.so.6"), usr.join("libc.so.6")).unwrap();
-        let closure = [
-            host.path().join("lib64/libc.so.6"),
-            host.path().join("lib/ld-linux-aarch64.so.1"),
-        ];
-        let out = tempfile::tempdir().unwrap();
-        let manifest = build_bundle_with(
-            out.path(),
-            "1",
-            &BuildOptions {
-                from: Some(host.path()),
-                arch: Some("aarch64"),
-                identity: None,
-                extra_libs: &closure,
-                extra_bins: &[],
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            payload_paths(&manifest),
-            [
-                "lib/ld-linux-aarch64.so.1",
-                "lib/lib/ld-linux-aarch64.so.1",
-                "lib/lib64/libgcc_s.so.1",
-                "lib/lib64/libm.so.6",
-                "lib/libc.so.6",
-            ]
-        );
-        verify_bundle(out.path()).expect("the deduplicated bundle verifies");
-    }
-
-    #[test]
-    fn a_loader_set_library_and_an_include_of_its_name_must_be_the_same_bytes() {
-        for name in ["libc.so.6", "ld-linux-x86-64.so.2"] {
+        phase repeated_extra_inputs_build_one_signed_abi_payload;
+        {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
-            let other = tempfile::tempdir().unwrap();
-            let include = other.path().join(name);
-            fs::write(&include, b"another glibc build").unwrap();
+            let identity = Identity::generate();
+            let identity_path = host.path().join("identity.json");
+            fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+            let libstd = host.path().join("libstd-fixture.so");
+            let libruntime = host.path().join("libruntime_dylib.so");
+            fs::write(&libstd, b"Rust standard library fixture").unwrap();
+            fs::write(&libruntime, b"Tilo runtime fixture").unwrap();
+            let unique = tempfile::tempdir().unwrap();
+            let repeated = tempfile::tempdir().unwrap();
+            let opts = BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: Some(&identity_path),
+                extra_libs: &[libstd.clone(), libruntime.clone()],
+                extra_bins: &[],
+            };
+            let (expected, _) = build_abi_bundle(unique.path(), "2026.07", &opts).unwrap();
+            let (actual, root) = build_abi_bundle(
+                repeated.path(),
+                "2026.07",
+                &BuildOptions {
+                    extra_libs: &[libruntime.clone(), libstd.clone(), libstd, libruntime],
+                    ..opts
+                },
+            )
+            .unwrap();
+            verify_bundle_with(
+                &root,
+                &VerifyOptions {
+                    require_publisher: Some(identity.public_key_hex()),
+                    require_signature: true,
+                    require_arch: Some("x86_64".to_string()),
+                },
+            )
+            .expect("repeated source inputs still produce a valid signed bundle");
+            assert_eq!(actual.version, expected.version);
+            assert_eq!(actual.root_hash, expected.root_hash);
+            assert_eq!(actual.files.len(), expected.files.len());
+        }
+
+        phase different_extra_inputs_with_the_same_name_are_still_rejected;
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let first = tempfile::tempdir().unwrap();
+            let second = tempfile::tempdir().unwrap();
+            let name = "libruntime_dylib.so";
+            fs::write(first.path().join(name), b"first runtime").unwrap();
+            fs::write(second.path().join(name), b"conflicting runtime").unwrap();
             let out = tempfile::tempdir().unwrap();
-            let error = build_bundle_with(
+            let error = build_abi_bundle(
                 out.path(),
                 "2026.07",
                 &BuildOptions {
                     from: Some(host.path()),
                     arch: Some("x86_64"),
                     identity: None,
-                    extra_libs: std::slice::from_ref(&include),
+                    extra_libs: &[first.path().join(name), second.path().join(name)],
                     extra_bins: &[],
                 },
             )
             .unwrap_err();
-            assert!(
-                matches!(&error, BundleError::IncludeConflict { name: named, .. } if named == name),
-                "{name}: {error}"
+            assert!(matches!(
+                error,
+                BundleError::IncludeConflict { name: path, .. } if path == format!("lib/{name}")
+            ));
+            assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
+        }
+
+        phase a_library_in_the_loader_set_and_the_includes_is_signed_once;
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let runtime = host.path().join("libruntime_dylib.so");
+            fs::write(&runtime, b"Tilo runtime fixture").unwrap();
+            let closure = [
+                runtime,
+                host.path().join("lib64/libc.so.6"),
+                host.path().join("lib64/ld-linux-x86-64.so.2"),
+            ];
+            let out = tempfile::tempdir().unwrap();
+            let manifest = build_bundle_with(
+                out.path(),
+                "2026.07",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: &closure,
+                    extra_bins: &[],
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                payload_paths(&manifest),
+                [
+                    "lib/ld-linux-x86-64.so.2",
+                    "lib/lib64/ld-linux-x86-64.so.2",
+                    "lib/lib64/libm.so.6",
+                    "lib/libc.so.6",
+                    "lib/libruntime_dylib.so",
+                ]
             );
+            assert_eq!(
+                fs::read(out.path().join("lib/libc.so.6")).unwrap(),
+                b"fake contents of lib64/libc.so.6"
+            );
+            verify_bundle(out.path()).expect("the deduplicated bundle verifies");
+
+            let host = tempfile::tempdir().unwrap();
+            fake_aarch64_fedora_host(host.path());
+            let usr = host.path().join("usr/lib64");
+            fs::create_dir_all(&usr).unwrap();
+            fs::copy(host.path().join("lib64/libc.so.6"), usr.join("libc.so.6")).unwrap();
+            let closure = [
+                host.path().join("lib64/libc.so.6"),
+                host.path().join("lib/ld-linux-aarch64.so.1"),
+            ];
+            let out = tempfile::tempdir().unwrap();
+            let manifest = build_bundle_with(
+                out.path(),
+                "1",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("aarch64"),
+                    identity: None,
+                    extra_libs: &closure,
+                    extra_bins: &[],
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                payload_paths(&manifest),
+                [
+                    "lib/ld-linux-aarch64.so.1",
+                    "lib/lib/ld-linux-aarch64.so.1",
+                    "lib/lib64/libgcc_s.so.1",
+                    "lib/lib64/libm.so.6",
+                    "lib/libc.so.6",
+                ]
+            );
+            verify_bundle(out.path()).expect("the deduplicated bundle verifies");
+        }
+
+        phase a_loader_set_library_and_an_include_of_its_name_must_be_the_same_bytes;
+        {
+            for name in ["libc.so.6", "ld-linux-x86-64.so.2"] {
+                let host = tempfile::tempdir().unwrap();
+                fake_x86_64_host(host.path());
+                let other = tempfile::tempdir().unwrap();
+                let include = other.path().join(name);
+                fs::write(&include, b"another glibc build").unwrap();
+                let out = tempfile::tempdir().unwrap();
+                let error = build_bundle_with(
+                    out.path(),
+                    "2026.07",
+                    &BuildOptions {
+                        from: Some(host.path()),
+                        arch: Some("x86_64"),
+                        identity: None,
+                        extra_libs: std::slice::from_ref(&include),
+                        extra_bins: &[],
+                    },
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&error, BundleError::IncludeConflict { name: named, .. } if named == name),
+                    "{name}: {error}"
+                );
+            }
         }
     }
 
@@ -2389,13 +2401,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn verify_rejects_modified_unlisted_and_malformed_payloads() {
-        // phase: verify_detects_a_modified_byte
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn verify_rejects_modified_unlisted_and_malformed_payloads;
+
+        phase verify_detects_a_modified_byte;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2420,7 +2433,8 @@ mod tests {
             let err = verify_bundle(out.path()).unwrap_err();
             matches!(err, BundleError::HashMismatch { .. });
         }
-        // phase: verify_detects_unlisted_file
+
+        phase verify_detects_unlisted_file;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2441,7 +2455,8 @@ mod tests {
             let err = verify_bundle(out.path()).unwrap_err();
             matches!(err, BundleError::FileUnlisted { .. });
         }
-        // phase: metadata_verify_checks_shape_but_deliberately_not_content
+
+        phase metadata_verify_checks_shape_but_deliberately_not_content;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2483,7 +2498,8 @@ mod tests {
                 Err(BundleError::SizeMismatch { .. })
             ));
         }
-        // phase: verify_rejects_traversal_and_duplicate_manifest_paths
+
+        phase verify_rejects_traversal_and_duplicate_manifest_paths;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2536,13 +2552,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn bundle_signatures_bind_the_publisher_and_domain() {
-        // phase: signed_bundle_roundtrips_and_verify_accepts
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn bundle_signatures_bind_the_publisher_and_domain;
+
+        phase signed_bundle_roundtrips_and_verify_accepts;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2582,7 +2599,8 @@ mod tests {
             )
             .expect("required-publisher matches");
         }
-        // phase: verify_refuses_bad_publisher
+
+        phase verify_refuses_bad_publisher;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2616,7 +2634,8 @@ mod tests {
             .unwrap_err();
             matches!(err, BundleError::PublisherMismatch { .. });
         }
-        // phase: verify_refuses_tampered_signature
+
+        phase verify_refuses_tampered_signature;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2649,7 +2668,8 @@ mod tests {
             let err = verify_bundle(out.path()).unwrap_err();
             matches!(err, BundleError::BadSignature);
         }
-        // phase: require_signature_refuses_unsigned_bundle
+
+        phase require_signature_refuses_unsigned_bundle;
         {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
@@ -2676,7 +2696,8 @@ mod tests {
             .unwrap_err();
             matches!(err, BundleError::NotSigned);
         }
-        // phase: signing_preimage_is_domain_separated
+
+        phase signing_preimage_is_domain_separated;
         {
             let a = signing_preimage("v1", "aa");
             let b = signing_preimage("v2", "aa");
@@ -2739,9 +2760,10 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn bundle_root_resolves_from_the_environment_or_data_dir() {
-        // phase: default_bundle_path_uses_data_dir
+    tilo_test_env::scenario! {
+        fn bundle_root_resolves_from_the_environment_or_data_dir;
+
+        phase default_bundle_path_uses_data_dir;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove(RUNTIME_DIR_ENV);
@@ -2749,7 +2771,8 @@ mod tests {
                 assert!(p.ends_with("tilo-runtime/v"));
             }
         }
-        // phase: the_env_override_names_the_bundle_root
+
+        phase the_env_override_names_the_bundle_root;
         // A session that repoints `XDG_DATA_HOME` for its own documents must
         // still reach the machine's runtime bundles, or every app in that
         // session fails to launch on a missing bundle.
@@ -2767,7 +2790,8 @@ mod tests {
                 "the override must win over an isolated XDG_DATA_HOME",
             );
         }
-        // phase: an_empty_override_falls_back_to_the_data_dir
+
+        phase an_empty_override_falls_back_to_the_data_dir;
         // An empty value is not a path — treating it as one resolves to
         // `/<version>` (nowhere), turning a stray `TILO_RUNTIME_BUNDLE_DIR=`
         // into "no app on this machine launches".

@@ -127,126 +127,130 @@ fn bytes_read() -> u64 {
         .unwrap()
 }
 
-#[test]
-fn the_builder_signs_each_files_verity_digest_apart_from_the_root_hash() {
-    let _serial = one_at_a_time();
-    let fixture = signed_bundle(&std::env::temp_dir(), 3 * 4096 + 5, true);
-    let manifest = verify_bundle_with(&fixture.bundle, &policy(&fixture.publisher)).unwrap();
-    assert!(manifest.verity_signature_hex.is_some());
-    for file in &manifest.files {
-        let bytes = fs::read(fixture.bundle.join(&file.path)).unwrap();
-        assert_eq!(
-            file.verity.as_deref(),
-            Some(hex::encode(verity::digest(&bytes)).as_str()),
-            "{}",
-            file.path
-        );
-    }
+tilo_test_env::scenario! {
+    fn verity_digests_are_signed_apart_and_a_launch_without_them_hashes;
 
-    // phase: a_forged_digest_breaks_the_verity_signature
-    let mut forged = manifest.clone();
-    forged.files[0].verity = Some(hex::encode(verity::digest(b"other bytes")));
-    write_manifest(&fixture.bundle, &forged);
-    for result in [
-        verify_bundle_with(&fixture.bundle, &policy(&fixture.publisher)).map(|_| ()),
-        verify_bundle_verity_with(&fixture.bundle, &policy(&fixture.publisher)).map(|_| ()),
-    ] {
-        assert!(
-            matches!(result, Err(BundleError::BadVeritySignature)),
-            "{result:?}"
-        );
-    }
-
-    // phase: the_digests_change_neither_the_root_hash_nor_the_signature
-    // A launcher that predates fs-verity ignores both fields; the bundle must
-    // still verify there, so stripping them leaves a valid signed bundle.
-    let mut stripped = manifest.clone();
-    stripped.verity_signature_hex = None;
-    for file in &mut stripped.files {
-        file.verity = None;
-    }
-    write_manifest(&fixture.bundle, &stripped);
-    let verified = verify_bundle_with(&fixture.bundle, &policy(&fixture.publisher)).unwrap();
-    assert_eq!(verified.root_hash, manifest.root_hash);
-    let (_, check) =
-        verify_bundle_verity_with(&fixture.bundle, &policy(&fixture.publisher)).unwrap();
-    assert_eq!(check.by_verity, 0);
-    assert_eq!(check.hashed, manifest.files.len());
-}
-
-#[test]
-fn without_fs_verity_the_launch_check_hashes_and_refuses_a_modified_byte() {
-    let _serial = one_at_a_time();
-    let fixture = signed_bundle(&std::env::temp_dir(), 2 * 4096, true);
-    let (manifest, check) =
-        verify_bundle_verity_with(&fixture.bundle, &policy(&fixture.publisher)).unwrap();
-    let total: u64 = manifest.files.iter().map(|file| file.size).sum();
-    assert_eq!(
-        check,
-        PayloadCheck {
-            by_verity: 0,
-            by_record: 0,
-            hashed: manifest.files.len(),
-            hashed_bytes: total,
+    phase the_builder_signs_each_files_verity_digest_apart_from_the_root_hash;
+    {
+        let _serial = one_at_a_time();
+        let fixture = signed_bundle(&std::env::temp_dir(), 3 * 4096 + 5, true);
+        let manifest = verify_bundle_with(&fixture.bundle, &policy(&fixture.publisher)).unwrap();
+        assert!(manifest.verity_signature_hex.is_some());
+        for file in &manifest.files {
+            let bytes = fs::read(fixture.bundle.join(&file.path)).unwrap();
+            assert_eq!(
+                file.verity.as_deref(),
+                Some(hex::encode(verity::digest(&bytes)).as_str()),
+                "{}",
+                file.path
+            );
         }
-    );
-    replace_with_one_byte_changed(&fixture.bundle.join(DYLIB));
-    let refused = verify_bundle_verity_with(&fixture.bundle, &policy(&fixture.publisher));
-    assert!(
-        matches!(refused, Err(BundleError::HashMismatch { .. })),
-        "{refused:?}"
-    );
-}
 
-#[test]
-fn an_unsigned_bundle_is_always_hashed() {
-    let _serial = one_at_a_time();
-    let Ok(dir) = verity_dir() else {
-        // Sealed or not, an unsigned bundle's digests vouch for nothing; on a
-        // filesystem without fs-verity there is nothing more to show.
-        let fixture = signed_bundle(&std::env::temp_dir(), 4096, false);
-        let (manifest, check) =
-            verify_bundle_verity_with(&fixture.bundle, &VerifyOptions::default()).unwrap();
-        assert!(manifest.verity_signature_hex.is_none());
+        // phase: a_forged_digest_breaks_the_verity_signature
+        let mut forged = manifest.clone();
+        forged.files[0].verity = Some(hex::encode(verity::digest(b"other bytes")));
+        write_manifest(&fixture.bundle, &forged);
+        for result in [
+            verify_bundle_with(&fixture.bundle, &policy(&fixture.publisher)).map(|_| ()),
+            verify_bundle_verity_with(&fixture.bundle, &policy(&fixture.publisher)).map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(BundleError::BadVeritySignature)),
+                "{result:?}"
+            );
+        }
+
+        // phase: the_digests_change_neither_the_root_hash_nor_the_signature
+        // A launcher that predates fs-verity ignores both fields; the bundle must
+        // still verify there, so stripping them leaves a valid signed bundle.
+        let mut stripped = manifest.clone();
+        stripped.verity_signature_hex = None;
+        for file in &mut stripped.files {
+            file.verity = None;
+        }
+        write_manifest(&fixture.bundle, &stripped);
+        let verified = verify_bundle_with(&fixture.bundle, &policy(&fixture.publisher)).unwrap();
+        assert_eq!(verified.root_hash, manifest.root_hash);
+        let (_, check) =
+            verify_bundle_verity_with(&fixture.bundle, &policy(&fixture.publisher)).unwrap();
+        assert_eq!(check.by_verity, 0);
         assert_eq!(check.hashed, manifest.files.len());
-        return;
-    };
-    let fixture = signed_bundle(dir.path(), 4096, false);
-    let manifest = read_manifest(&fixture.bundle);
-    assert!(manifest.verity_signature_hex.is_none());
-    assert_eq!(
-        enable_bundle_verity(&fixture.bundle, &manifest).unwrap(),
-        manifest.files.len()
-    );
-    let (_, check) = verify_bundle_verity_with(&fixture.bundle, &VerifyOptions::default()).unwrap();
-    assert_eq!(check.by_verity, 0);
-    assert_eq!(check.hashed, manifest.files.len());
-}
+    }
 
-#[test]
-fn the_kernel_measures_the_digest_the_builder_signs() {
-    let _serial = one_at_a_time();
-    let dir = require_capability!(
-        FsVerity,
-        verity_dir(),
-        "no fs-verity filesystem to measure on"
-    );
-    for size in [
-        0,
-        1,
-        4095,
-        4096,
-        4097,
-        128 * 4096,
-        128 * 4096 + 1,
-        129 * 4096 + 7,
-    ] {
-        let path = dir.path().join(format!("file-{size}"));
-        let bytes = vec![0x5a; size];
-        fs::write(&path, &bytes).unwrap();
-        verity::enable(&path).unwrap();
-        let measured = verity::measure(&fs::File::open(&path).unwrap());
-        assert_eq!(measured, Some(verity::digest(&bytes)), "size {size}");
+    phase without_fs_verity_the_launch_check_hashes_and_refuses_a_modified_byte;
+    {
+        let _serial = one_at_a_time();
+        let fixture = signed_bundle(&std::env::temp_dir(), 2 * 4096, true);
+        let (manifest, check) =
+            verify_bundle_verity_with(&fixture.bundle, &policy(&fixture.publisher)).unwrap();
+        let total: u64 = manifest.files.iter().map(|file| file.size).sum();
+        assert_eq!(
+            check,
+            PayloadCheck {
+                by_verity: 0,
+                by_record: 0,
+                hashed: manifest.files.len(),
+                hashed_bytes: total,
+            }
+        );
+        replace_with_one_byte_changed(&fixture.bundle.join(DYLIB));
+        let refused = verify_bundle_verity_with(&fixture.bundle, &policy(&fixture.publisher));
+        assert!(
+            matches!(refused, Err(BundleError::HashMismatch { .. })),
+            "{refused:?}"
+        );
+    }
+
+    phase an_unsigned_bundle_is_always_hashed;
+    {
+        let _serial = one_at_a_time();
+        let Ok(dir) = verity_dir() else {
+            // Sealed or not, an unsigned bundle's digests vouch for nothing; on a
+            // filesystem without fs-verity there is nothing more to show.
+            let fixture = signed_bundle(&std::env::temp_dir(), 4096, false);
+            let (manifest, check) =
+                verify_bundle_verity_with(&fixture.bundle, &VerifyOptions::default()).unwrap();
+            assert!(manifest.verity_signature_hex.is_none());
+            assert_eq!(check.hashed, manifest.files.len());
+            return;
+        };
+        let fixture = signed_bundle(dir.path(), 4096, false);
+        let manifest = read_manifest(&fixture.bundle);
+        assert!(manifest.verity_signature_hex.is_none());
+        assert_eq!(
+            enable_bundle_verity(&fixture.bundle, &manifest).unwrap(),
+            manifest.files.len()
+        );
+        let (_, check) = verify_bundle_verity_with(&fixture.bundle, &VerifyOptions::default()).unwrap();
+        assert_eq!(check.by_verity, 0);
+        assert_eq!(check.hashed, manifest.files.len());
+    }
+
+    phase the_kernel_measures_the_digest_the_builder_signs;
+    {
+        let _serial = one_at_a_time();
+        let dir = require_capability!(
+            FsVerity,
+            verity_dir(),
+            "no fs-verity filesystem to measure on"
+        );
+        for size in [
+            0,
+            1,
+            4095,
+            4096,
+            4097,
+            128 * 4096,
+            128 * 4096 + 1,
+            129 * 4096 + 7,
+        ] {
+            let path = dir.path().join(format!("file-{size}"));
+            let bytes = vec![0x5a; size];
+            fs::write(&path, &bytes).unwrap();
+            verity::enable(&path).unwrap();
+            let measured = verity::measure(&fs::File::open(&path).unwrap());
+            assert_eq!(measured, Some(verity::digest(&bytes)), "size {size}");
+        }
     }
 }
 

@@ -299,31 +299,35 @@ mod tests {
         ),
     ];
 
-    #[test]
-    fn digests_match_the_kernel_definition() {
-        assert_eq!(
-            hex::encode(digest(b"hello world")),
-            "1e2eaa4202d750a41174ee454970b92c1bc2f925b1e35076d8c7d5f56362ba64"
-        );
-        for (size, expected) in VECTORS {
-            assert_eq!(
-                hex::encode(digest(&vec![0x5a; *size])),
-                *expected,
-                "size {size}"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_verity_digest_matches_the_kernels_whole_or_streamed;
 
-    #[test]
-    fn streaming_in_any_chunking_gives_the_same_digest() {
-        let bytes: Vec<u8> = (0..=250u8).cycle().take(130 * 4096 + 123).collect();
-        let whole = digest(&bytes);
-        for chunk in [1, 7, 4095, 4096, 4097, 65536] {
-            let mut hasher = VerityHasher::new();
-            for piece in bytes.chunks(chunk) {
-                hasher.update(piece);
+        phase digests_match_the_kernel_definition;
+        {
+            assert_eq!(
+                hex::encode(digest(b"hello world")),
+                "1e2eaa4202d750a41174ee454970b92c1bc2f925b1e35076d8c7d5f56362ba64"
+            );
+            for (size, expected) in VECTORS {
+                assert_eq!(
+                    hex::encode(digest(&vec![0x5a; *size])),
+                    *expected,
+                    "size {size}"
+                );
             }
-            assert_eq!(hasher.finalize(), whole, "chunk {chunk}");
+        }
+
+        phase streaming_in_any_chunking_gives_the_same_digest;
+        {
+            let bytes: Vec<u8> = (0..=250u8).cycle().take(130 * 4096 + 123).collect();
+            let whole = digest(&bytes);
+            for chunk in [1, 7, 4095, 4096, 4097, 65536] {
+                let mut hasher = VerityHasher::new();
+                for piece in bytes.chunks(chunk) {
+                    hasher.update(piece);
+                }
+                assert_eq!(hasher.finalize(), whole, "chunk {chunk}");
+            }
         }
     }
 }
