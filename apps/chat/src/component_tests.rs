@@ -683,10 +683,8 @@ fn two_real_components_open_the_existing_recordless_chat_migrating_it_once() {
     let identity = LocalIdentity::demo();
     // The app-state document an older build wrote; opening it migrates it once to this
     // build's version, in a change both windows share.
-    ui::tilo_resource::Slot::Key(&ROOT, "tilo:schema_version")
-        .put_scalar(&mut doc, automerge::ScalarValue::Uint(1))
-        .unwrap();
     crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    ui::tilo_resource::evolution::write_version(&mut doc, 1).unwrap();
     doc.commit();
     let heads = doc.base_heads();
     let actor = doc.get_actor().clone();
