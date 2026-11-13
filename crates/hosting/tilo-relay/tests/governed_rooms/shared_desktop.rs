@@ -257,7 +257,7 @@ async fn admit(
     owner: &TestDevice,
     room: &str,
     (person, device): (&TestUser, &TestDevice),
-    role: MemberRole,
+    role: Role,
     request: u8,
 ) {
     let invitation = invite(relay, owner, room, role, person.user_pk).await;
@@ -303,7 +303,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         &laptop,
         &room.workspace,
         (&ada, &ada_browser),
-        MemberRole::Editor,
+        Role::Editor,
         31,
     )
     .await;
@@ -312,7 +312,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         &laptop,
         &room.workspace,
         (&ben, &ben_browser),
-        MemberRole::Editor,
+        Role::Editor,
         32,
     )
     .await;
@@ -321,7 +321,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         &laptop,
         &room.workspace,
         (&mo, &mo_browser),
-        MemberRole::Editor,
+        Role::Editor,
         33,
     )
     .await;
@@ -330,7 +330,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         &laptop,
         &room.workspace,
         (&cy, &cy_laptop),
-        MemberRole::Editor,
+        Role::Editor,
         35,
     )
     .await;
@@ -348,7 +348,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
             SetMemberRoleRequest {
                 request_id: [34; 32],
                 user_public_key: mo.user_pk,
-                role: MemberRole::Moderator,
+                role: Role::Moderator,
             },
         )
         .await
@@ -520,7 +520,7 @@ async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
         &laptop,
         &room.workspace,
         (&ada, &ada_browser),
-        MemberRole::Editor,
+        Role::Editor,
         41,
     )
     .await;

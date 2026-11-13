@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::MemberRole;
+use crate::Role;
 
 /// Issue one invitation. A repeated `request_id` returns the invitation it
 /// issued, and fails if it named a different request.
@@ -17,7 +17,7 @@ use crate::MemberRole;
 pub struct IssueInvitationRequest {
     /// Caller-chosen idempotency key; never zero.
     pub request_id: [u8; 32],
-    pub role: MemberRole,
+    pub role: Role,
     /// Restrict redemption to devices of this person.
     pub recipient_user_public_key: Option<[u8; 32]>,
     /// How the invitation names its recipient to them.
@@ -51,7 +51,7 @@ pub struct PendingInvitation {
     /// Digest of the signed invitation.
     pub invite_id: [u8; 32],
     /// The role it grants.
-    pub role: MemberRole,
+    pub role: Role,
     /// The only person who may redeem it, if restricted.
     pub recipient_user_public_key: Option<[u8; 32]>,
     /// How it names its recipient.

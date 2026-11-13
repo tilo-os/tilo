@@ -32,6 +32,9 @@ use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
+/// What a member may do in a workspace.
+pub use collab_types::Role;
+
 /// The invitation whose grant no longer names the workspace's authority: an
 /// invitation is issued by a device of a member, and nothing above it.
 const INVITATION_VERSION: u32 = 3;
@@ -67,25 +70,6 @@ pub const JOIN_PROOF_LAPSED: u16 = 410;
 /// ([`JoinTransportRequest::MembershipChallenge`]) instead.
 pub const JOIN_COMPLETED_REFRESH: u16 = 409;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MemberRole {
-    Viewer,
-    Commenter,
-    Editor,
-    Moderator,
-}
-
-impl From<MemberRole> for collab_types::Role {
-    fn from(role: MemberRole) -> Self {
-        match role {
-            MemberRole::Viewer => Self::Viewer,
-            MemberRole::Commenter => Self::Commenter,
-            MemberRole::Editor => Self::Editor,
-            MemberRole::Moderator => Self::Moderator,
-        }
-    }
-}
-
 /// An application record, named at its committed heads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentRow {
@@ -98,12 +82,12 @@ pub struct DocumentRow {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedMember {
     pub user_public_key: [u8; 32],
-    pub role: MemberRole,
+    pub role: Role,
     pub display_name: Option<String>,
     pub active_device_keys: Vec<[u8; 32]>,
     pub removed: bool,
     /// Made an administrator by the workspace's members: `role` is then
-    /// [`MemberRole::Editor`] holding every governance action of the
+    /// [`Role::Editor`] holding every governance action of the
     /// workspace, bounded by that role
     /// (`tilo_action_policy::roles::administrator_grant`).
     #[serde(default)]
@@ -139,7 +123,7 @@ pub struct InviteGrant {
     /// Device that signs this invitation: a device of a member the workspace's
     /// policy lets invite, which every participant checks on admission.
     pub issuer: DeviceCert,
-    pub role: MemberRole,
+    pub role: Role,
     pub nonce: [u8; 16],
     /// `Some` is a recipient-bound invitation and must match exactly. `None`
     /// is an explicit single-use bearer invitation for an unknown person.
@@ -439,7 +423,7 @@ pub struct JoinBootstrap {
     pub version: u32,
     pub invite_id: [u8; 32],
     pub device_cert: DeviceCert,
-    pub role: MemberRole,
+    pub role: Role,
     /// The workspace's id, a canonical lowercase UUID.
     pub room: String,
     pub workspace_id: u64,

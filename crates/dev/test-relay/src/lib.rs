@@ -25,7 +25,7 @@ use std::sync::{Arc, OnceLock, mpsc};
 use ed25519_dalek::SigningKey;
 use tilo_endpoint_reachability::EndpointRelays;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
-use tilo_workspace_join::MemberRole;
+use tilo_workspace_join::Role;
 use tilo_workspace_join::invitations::IssueInvitationRequest;
 
 /// This run's key material: the same seed gives the same key all run long, as a test's
@@ -424,7 +424,7 @@ impl Host {
                 &self.0.cert,
                 IssueInvitationRequest {
                     request_id: [request; 32],
-                    role: MemberRole::Editor,
+                    role: Role::Editor,
                     recipient_user_public_key: Some(person),
                     invitee_name: None,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),

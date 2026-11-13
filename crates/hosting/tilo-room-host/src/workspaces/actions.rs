@@ -65,7 +65,7 @@ use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
 };
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_protocol::voice::{CallOperation, Directions};
 use tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER;
 use tilo_user_identity::DeviceCert;
@@ -715,19 +715,16 @@ impl Args {
         }
     }
 
-    fn role(&self) -> Result<MemberRole, ActionHostError> {
+    fn role(&self) -> Result<Role, ActionHostError> {
         self.role_at("role")
     }
 
     /// The role the argument `name` names.
-    fn role_at(&self, name: &str) -> Result<MemberRole, ActionHostError> {
-        match self.required_text(name)? {
-            "viewer" => Ok(MemberRole::Viewer),
-            "commenter" => Ok(MemberRole::Commenter),
-            "editor" => Ok(MemberRole::Editor),
-            "moderator" => Ok(MemberRole::Moderator),
-            other => Err(invalid(format!("no role `{other}`"))),
-        }
+    fn role_at(&self, name: &str) -> Result<Role, ActionHostError> {
+        let text = self.required_text(name)?;
+        Role::parse(text)
+            .filter(|role| role.assignable())
+            .ok_or_else(|| invalid(format!("no role `{text}`")))
     }
 
     fn directions(&self) -> Result<Directions, ActionHostError> {
@@ -770,20 +767,11 @@ impl Args {
     }
 }
 
-const fn role_name(role: MemberRole) -> &'static str {
-    match role {
-        MemberRole::Viewer => "viewer",
-        MemberRole::Commenter => "commenter",
-        MemberRole::Editor => "editor",
-        MemberRole::Moderator => "moderator",
-    }
-}
-
 /// A pending invitation, as listing invitations reports it.
 fn pending_json(invitation: &super::PendingInvitation) -> Value {
     json!({
         "invite": hex::encode(invitation.invite_id),
-        "role": role_name(invitation.role),
+        "role": invitation.role.key(),
         "recipient": invitation.recipient_user_public_key.map(hex::encode),
         "invitee_name": invitation.invitee_name,
         "expires_at_ns": invitation.expires_at_ns,
@@ -1127,22 +1115,20 @@ impl Workspaces {
             Some(listing) => json!({
                 "public": true,
                 "description": listing.description,
-                "default_role": role_name(super::pages::member_role(listing.default_role)),
+                "default_role": listing.default_role.key(),
             }),
             None => json!({ "public": false }),
         };
         match action {
             PUBLISH => {
-                let default_role = match args.required_text("default_role")? {
-                    "viewer" => tilo_relay_protocol::workspaces::WorkspaceRole::Viewer,
-                    "commenter" => tilo_relay_protocol::workspaces::WorkspaceRole::Commenter,
-                    "editor" => tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
-                    other => {
-                        return Err(invalid(format!(
-                            "a public workspace hands out viewer, commenter or editor, not `{other}`"
-                        )));
-                    }
-                };
+                let text = args.required_text("default_role")?;
+                let default_role = Role::parse(text)
+                    .filter(|role| matches!(role, Role::Viewer | Role::Commenter | Role::Editor))
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "a public workspace hands out viewer, commenter or editor, not `{text}`"
+                        ))
+                    })?;
                 let listing = tilo_relay_protocol::directory::Listing {
                     description: args.text("description")?.unwrap_or_default().to_owned(),
                     default_role,
@@ -1343,7 +1329,7 @@ impl Workspaces {
                         json!({
                             "person": hex::encode(member.user_public_key),
                             "name": member.display_name,
-                            "role": role_name(member.role),
+                            "role": member.role.key(),
                             "owner": member.user_public_key == owner,
                             "administrator": member.administrator,
                         })

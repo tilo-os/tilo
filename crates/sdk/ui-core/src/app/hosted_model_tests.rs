@@ -801,7 +801,6 @@ fn complete_context_replaces_the_people_a_member_list_names() {
                 collab_types::MemberId::agent("build-helper"),
                 "Build helper",
                 None,
-                None,
             ),
         ],
         permissions: vec![],

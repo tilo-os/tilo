@@ -31,7 +31,7 @@ use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::KeptRecord;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 #[cfg(target_os = "linux")]
 use tilo_peer_state::join::invitations::{
     CancelInvitationRequest, IssueInvitationRequest, PendingInvitation,
@@ -65,7 +65,7 @@ pub struct Person {
     /// The name the workspace knows them by, if it knows one.
     pub name: String,
     /// The part they take in the workspace.
-    pub role: MemberRole,
+    pub role: Role,
     /// Whether the workspace removed them.
     pub removed: bool,
 }
@@ -92,7 +92,7 @@ pub struct Issued {
     /// The text a device joins with.
     pub link: String,
     /// The part it brings the person in at.
-    pub role: MemberRole,
+    pub role: Role,
     /// When it stops working, in nanoseconds since the Unix epoch.
     pub expires_at_ns: u64,
 }
@@ -1330,7 +1330,7 @@ impl Engine {
     /// least to the most: what the surfaces offering a part to grant list. Empty when the person
     /// may not invite at all, since no part is theirs to hand out then.
     #[must_use]
-    pub fn invitable_roles(&self, workspace: &str) -> Vec<MemberRole> {
+    pub fn invitable_roles(&self, workspace: &str) -> Vec<Role> {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return Vec::new();
         };
@@ -1338,19 +1338,10 @@ impl Engine {
         self.owner
             .with_current(workspace, |view| {
                 let now = tilo_clock::wall();
-                Ok([
-                    MemberRole::Viewer,
-                    MemberRole::Commenter,
-                    MemberRole::Editor,
-                    MemberRole::Moderator,
-                ]
-                .into_iter()
-                .filter(|role| {
-                    view.peer()
-                        .governance()
-                        .may_invite_role(key, (*role).into(), now)
-                })
-                .collect())
+                Ok(Role::ASSIGNABLE
+                    .into_iter()
+                    .filter(|role| view.peer().governance().may_invite_role(key, *role, now))
+                    .collect())
             })
             .unwrap_or_default()
     }
@@ -1367,7 +1358,7 @@ impl Engine {
     pub async fn issue_invitation(
         &self,
         workspace: &str,
-        role: MemberRole,
+        role: Role,
         invitee_name: Option<String>,
         recipient_user_public_key: Option<[u8; 32]>,
         expires_in_seconds: u64,

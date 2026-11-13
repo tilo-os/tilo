@@ -19,17 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 /// What a member may do in a workspace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WorkspaceRole {
-    Viewer,
-    /// Reads and comments.
-    Commenter,
-    /// Reads and writes.
-    Editor,
-    /// Writes, moderates other people's content and removes or bans members
-    /// ranked below Moderator.
-    Moderator,
-}
+pub use collab_types::Role;
 
 /// A person governance records in a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +30,7 @@ pub struct WorkspaceMember {
     /// label.
     pub name: Option<String>,
     /// Their role.
-    pub role: WorkspaceRole,
+    pub role: Role,
     pub owner: bool,
     /// They were removed.
     pub removed: bool,
@@ -87,7 +77,7 @@ pub struct PreAdmission {
     /// The workspace's UUID.
     #[serde(rename = "room")]
     pub workspace: String,
-    pub role: WorkspaceRole,
+    pub role: Role,
     /// SHA-256 of the token the person presents.
     pub token_sha256: [u8; 32],
     /// Whom it is for, as the owner knows them (an email address); the
@@ -108,7 +98,7 @@ pub struct PreAdmission {
 struct PreAdmissionView<'a> {
     #[serde(rename = "room")]
     workspace: &'a str,
-    role: WorkspaceRole,
+    role: Role,
     token_sha256: &'a [u8; 32],
     label: &'a str,
     expires_at_ns: u64,
@@ -184,7 +174,7 @@ pub enum WorkspaceNotice {
         /// The pre-admission's label.
         label: String,
         /// Their role.
-        role: WorkspaceRole,
+        role: Role,
         at_ns: u64,
     },
     /// Someone reported the public workspace through its door
@@ -204,7 +194,7 @@ pub struct PendingInvite {
     /// Digest of the signed invitation.
     pub invite_id: [u8; 32],
     /// The role it grants.
-    pub role: WorkspaceRole,
+    pub role: Role,
     /// It stops being redeemable here.
     pub expires_at_ns: u64,
     /// The one person it names, when it names one: only a device of theirs
@@ -238,7 +228,7 @@ pub enum WorkspacesRequest {
         /// Caller-chosen idempotency key; never zero.
         request_id: [u8; 32],
         /// The role the invitation grants.
-        role: WorkspaceRole,
+        role: Role,
         /// It stops being redeemable here, at most 30 days ahead.
         expires_at_ns: u64,
         /// How the inviting person names themself; the invitation records
@@ -288,7 +278,7 @@ pub enum WorkspacesRequest {
         request_id: [u8; 32],
         /// The member.
         user_public_key: [u8; 32],
-        role: WorkspaceRole,
+        role: Role,
     },
     /// Remove a member and every device of theirs.
     Remove {
@@ -474,7 +464,7 @@ pub enum JoinReply {
         workspace_id: u64,
         name: String,
         /// The role it grants.
-        role: WorkspaceRole,
+        role: Role,
         /// It stops being redeemable here.
         expires_at_ns: u64,
         /// Who sent it, when the invitation names them.
@@ -491,7 +481,7 @@ pub enum JoinReply {
         /// Its relay workspace.
         workspace_id: u64,
         name: String,
-        role: WorkspaceRole,
+        role: Role,
     },
     /// Refused, and why.
     Refused(String),

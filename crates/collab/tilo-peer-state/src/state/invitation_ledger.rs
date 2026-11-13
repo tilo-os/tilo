@@ -212,7 +212,7 @@ mod tests {
             user_public_key: [1; 32],
             device_public_key: [2; 32],
             request_id: [3; 32],
-            role: crate::join::MemberRole::Editor,
+            role: crate::join::Role::Editor,
         }
     }
 

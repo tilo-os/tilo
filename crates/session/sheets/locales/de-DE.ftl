@@ -225,6 +225,7 @@ directory-role-viewer = Betrachter
 directory-role-commenter = Kommentierende
 directory-role-editor = Bearbeitende
 directory-role-moderator = Moderierende
+directory-role-owner = Eigentümer
 
 ## Display sheet
 display-sheet-title = Anzeige

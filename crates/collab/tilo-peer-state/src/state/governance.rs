@@ -4,7 +4,7 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
     GrantId, Grantee, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role,
-    SystemTime, Transactable, administrator_grant_id, err, governed_map, member_role_from_role,
+    SystemTime, Transactable, administrator_grant_id, err, governed_map,
     now_ns, workspace,
 };
 use collab_types::signer::DeviceSigner;
@@ -434,11 +434,7 @@ impl PeerGovernance<'_> {
                 let id = administrator_grant_id(root);
                 workspace_policy.grants.iter().any(|grant| grant.id == id)
             };
-            let active_role = if role == Some(Role::Owner) {
-                Some(crate::join::MemberRole::Editor)
-            } else {
-                role.and_then(member_role_from_role)
-            };
+            let active_role = role;
             naming.entry(root).or_default().learn(
                 &identity.device_cert,
                 identity.delegate.is_none(),
@@ -477,10 +473,7 @@ impl PeerGovernance<'_> {
             if hex::decode_to_slice(person, &mut root).is_err() || rows.contains_key(&root) {
                 continue;
             }
-            let Some(role) = workspace_policy
-                .active_role(person)
-                .and_then(member_role_from_role)
-            else {
+            let Some(role) = workspace_policy.active_role(person) else {
                 continue;
             };
             let id = administrator_grant_id(root);
@@ -558,17 +551,18 @@ impl PeerGovernance<'_> {
     }
     /// The role a member's device that proved `membership` holds now, as the
     /// answer to it names it: the person's role in the workspace, which is
-    /// what the device takes part as. A device of the workspace's owner holds
-    /// the workspace as its owner, and an answer names the strongest
-    /// collaborator role for it: a member's answer carries a role, never the
-    /// owner's authority, which governance alone decides.
+    /// what the device takes part as. An answer never names the owner's
+    /// authority, which governance alone decides; a device of the owner hears
+    /// the strongest collaborator role.
     pub fn member_role(
         self,
         membership: &crate::join::VerifiedMembership,
         now: SystemTime,
-    ) -> Result<crate::join::MemberRole, String> {
-        let role = self.peer.current_membership_role(membership, now)?;
-        Ok(member_role_from_role(role).unwrap_or(crate::join::MemberRole::Moderator))
+    ) -> Result<crate::join::Role, String> {
+        Ok(match self.peer.current_membership_role(membership, now)? {
+            Role::Owner => Role::Moderator,
+            role => role,
+        })
     }
 }
 
@@ -924,12 +918,12 @@ impl PeerGovernanceMut<'_> {
     pub fn set_member_role(
         self,
         user_public_key: [u8; 32],
-        role: crate::join::MemberRole,
+        role: crate::join::Role,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer
-            .set_member(user_public_key, role.into(), false, key, now)
+            .set_member(user_public_key, role, false, key, now)
     }
     /// Hold the person `user_public_key` as a member of the workspace at
     /// `role`, an administrator or not, before any device of theirs is
@@ -944,13 +938,13 @@ impl PeerGovernanceMut<'_> {
     pub fn declare_member(
         self,
         user_public_key: [u8; 32],
-        role: crate::join::MemberRole,
+        role: crate::join::Role,
         administrator: bool,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer
-            .declare_member(user_public_key, role.into(), administrator, key, now)
+            .declare_member(user_public_key, role, administrator, key, now)
     }
 
     /// Make a person an administrator of the workspace: a member as an Editor,
@@ -972,7 +966,7 @@ impl PeerGovernanceMut<'_> {
     ) -> Result<bool, String> {
         self.declare_member(
             user_public_key,
-            crate::join::MemberRole::Editor,
+            crate::join::Role::Editor,
             true,
             key,
             now,

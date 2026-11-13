@@ -145,7 +145,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
             &lounge.governor,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

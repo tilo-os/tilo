@@ -436,7 +436,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use tilo_relay_protocol::directory::{DoorJoin, Listing};
     use tilo_relay_protocol::entering::{Entered, Entering, Entry, Through};
-    use tilo_relay_protocol::workspaces::{JoinReply, WorkspaceRole};
+    use tilo_relay_protocol::workspaces::{JoinReply, Role};
     use tilo_relay_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -494,7 +494,7 @@ mod tests {
         owner: &DeviceCert,
         workspace: &str,
         root: &SigningKey,
-        role: WorkspaceRole,
+        role: Role,
     ) {
         let first = device_of(root, DeviceCapabilities::member());
         let token: [u8; 16] = rand::random();
@@ -555,7 +555,7 @@ mod tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Viewer,
+                    default_role: Role::Viewer,
                 },
             )
             .await
@@ -567,20 +567,20 @@ mod tests {
         let unlisted = workspaces.create("Team").await.unwrap().workspace;
 
         let ada = SigningKey::from_bytes(&rand::random());
-        member_at(workspaces, &owner, &closed, &ada, WorkspaceRole::Moderator).await;
+        member_at(workspaces, &owner, &closed, &ada, Role::Moderator).await;
         member_at(
             workspaces,
             &owner,
             &unlisted,
             &ada,
-            WorkspaceRole::Commenter,
+            Role::Commenter,
         )
         .await;
         let before = role_of(workspaces, &closed, ada.verifying_key().to_bytes()).await;
 
         for (workspace, role) in [
-            (&closed, WorkspaceRole::Moderator),
-            (&unlisted, WorkspaceRole::Commenter),
+            (&closed, Role::Moderator),
+            (&unlisted, Role::Commenter),
         ] {
             let tab = device_of(&ada, DeviceCapabilities::member());
             let entered = through_the_door(workspaces, workspace, &tab).await;
@@ -632,7 +632,7 @@ mod tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Viewer,
+                    default_role: Role::Viewer,
                 },
             )
             .await
@@ -647,7 +647,7 @@ mod tests {
             &owner,
             &workspace,
             &ada,
-            WorkspaceRole::Moderator,
+            Role::Moderator,
         )
         .await;
         let before = role_of(workspaces, &workspace, ada.verifying_key().to_bytes()).await;
@@ -671,7 +671,7 @@ mod tests {
             matches!(
                 reply,
                 JoinReply::Admitted {
-                    role: WorkspaceRole::Moderator,
+                    role: Role::Moderator,
                     ..
                 }
             ),
@@ -698,7 +698,7 @@ mod tests {
         let removed = SigningKey::from_bytes(&rand::random());
         let ada = SigningKey::from_bytes(&rand::random());
         for root in [&banned, &removed, &ada] {
-            member_at(workspaces, &owner, &workspace, root, WorkspaceRole::Editor).await;
+            member_at(workspaces, &owner, &workspace, root, Role::Editor).await;
         }
         workspaces
             .ban_member(

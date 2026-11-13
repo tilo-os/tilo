@@ -27,7 +27,7 @@ use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane, Bounds, RemoteDevice};
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::join::{
-    InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, decode_and_verify_invitation,
+    InviteGrant, JoinChallenge, Role, VerifiedRedemption, decode_and_verify_invitation,
     issue_invitation, sign_join_proof, verify_join_proof,
 };
 use tilo_user_identity::{
@@ -492,7 +492,7 @@ fn guest(
             workspace_id: 7,
             room: WORKSPACE.into(),
             issuer: a.1.clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [43; 16],
             recipient_user_public_key: Some(guest_root.verifying_key().to_bytes()),
             invitee_name: Some("Guest".into()),

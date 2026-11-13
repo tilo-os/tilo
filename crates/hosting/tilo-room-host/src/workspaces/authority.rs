@@ -290,7 +290,7 @@ impl Workspaces {
     ) -> Result<String, CollaborationError> {
         let change = Change::SetRole {
             person: hex::encode(request.user_public_key),
-            role: request.role.into(),
+            role: request.role,
         };
         let by = self.authorize(device, Some(workspace), WorkspaceOp::Change(&change), now)?;
         if device.user_public_key != self.inner.host.cert.user_public_key

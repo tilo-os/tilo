@@ -184,7 +184,7 @@ fn admit(
     ));
     let invitation = governor.issue(
         vec![hint],
-        join::MemberRole::Editor,
+        join::Role::Editor,
         Some(certificate.user_public_key),
         Some(certificate.device_label.clone()),
         ns.saturating_add(60_000_000_000),

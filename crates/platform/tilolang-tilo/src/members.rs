@@ -99,7 +99,7 @@ pub fn members_of(standing: &Standing, people: &People) -> Vec<Member> {
         out.push(Member {
             who: Principal::new(who),
             kind: MemberKind::Person,
-            role: Some(role.name().to_lowercase()),
+            role: Some(role.key().to_owned()),
         });
     }
     let mut agents: Vec<&str> = policy

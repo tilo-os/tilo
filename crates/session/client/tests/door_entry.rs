@@ -61,7 +61,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_say
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -213,7 +213,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

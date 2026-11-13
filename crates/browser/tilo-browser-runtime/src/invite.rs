@@ -13,9 +13,7 @@ use std::sync::atomic::Ordering;
 
 use serde::Deserialize;
 use tilo_desktop::here::Here;
-use tilo_relay_protocol::workspaces::{
-    PendingInvite, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
-};
+use tilo_relay_protocol::workspaces::{PendingInvite, Role, WorkspacesReply, WorkspacesRequest};
 use tilo_session::invite::{Answer, Invite, Issued, Refused, Workspace};
 use tilo_sheets::Presentation;
 use tilo_sheets::invite::{self as sheet, Choosing, InviteEffect};
@@ -331,11 +329,11 @@ impl Workspace for PageWorkspace {
 
     fn roles(&self) -> Vec<sheet::Role> {
         let ceiling = self.shared.standing.role().unwrap_or(Role::Editor);
-        Role::ALL
+        Role::ASSIGNABLE
             .into_iter()
-            .filter(|role| *role != Role::Owner && ceiling.includes(*role))
+            .filter(|role| ceiling.includes(*role))
             .map(|role| sheet::Role {
-                key: role_id(role).to_owned(),
+                key: role.key().to_owned(),
                 label: role_label(role),
                 brings: role_preview(role),
             })
@@ -381,7 +379,7 @@ impl Workspace for PageWorkspace {
             .map(|invite| {
                 sheet::pending(
                     &hex::encode(invite.invite_id),
-                    &role_label(role_of(invite.role)),
+                    &role_label(invite.role),
                     invite.invitee_name.as_deref(),
                     invite.recipient.is_some(),
                     invite.expires_at_ns,
@@ -391,7 +389,7 @@ impl Workspace for PageWorkspace {
     }
 
     fn issue(&self, role: &str, recipient: &str, answer: Answer<Issued>) {
-        let Some(asked) = role_from_id(role).and_then(workspace_role) else {
+        let Some(asked) = Role::parse(role).filter(|role| role.assignable()) else {
             return answer(refuse("that is not a part a link can bring someone in at"));
         };
         let Some(workspace) = self.workspace() else {
@@ -495,11 +493,6 @@ impl Workspace for PageWorkspace {
 /// one.
 pub(crate) type Role = tilo_action_policy::Role;
 
-/// The role a link's part names, when it is one.
-pub(crate) fn role_from_id(id: &str) -> Option<Role> {
-    tilo_desktop_model::role_from_id(id)
-}
-
 /// What a role is called, as the workspace settings call it.
 fn role_label(role: Role) -> String {
     tilo_desktop::workspace_settings::role_label(role)
@@ -508,32 +501,6 @@ fn role_label(role: Role) -> String {
 /// What a role lets whoever joins with a link do here.
 fn role_preview(role: Role) -> String {
     tilo_desktop::workspace_settings::role_capability_preview(role)
-}
-
-/// A role's id in the sheet and in the host's requests.
-pub(crate) fn role_id(role: Role) -> &'static str {
-    tilo_desktop_model::role_id(role)
-}
-
-/// The part a host's invitation grants, as the sheet names it.
-pub(crate) fn role_of(role: WorkspaceRole) -> Role {
-    match role {
-        WorkspaceRole::Viewer => Role::Viewer,
-        WorkspaceRole::Commenter => Role::Commenter,
-        WorkspaceRole::Editor => Role::Editor,
-        WorkspaceRole::Moderator => Role::Moderator,
-    }
-}
-
-/// The role a host is asked for, when a link may grant it.
-pub(crate) fn workspace_role(role: Role) -> Option<WorkspaceRole> {
-    match role {
-        Role::Viewer => Some(WorkspaceRole::Viewer),
-        Role::Commenter => Some(WorkspaceRole::Commenter),
-        Role::Editor => Some(WorkspaceRole::Editor),
-        Role::Moderator => Some(WorkspaceRole::Moderator),
-        Role::Owner => None,
-    }
 }
 
 /// What the host refused, in its own words, or what it answered instead of

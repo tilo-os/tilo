@@ -15,7 +15,7 @@ use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceJoinService,
 };
-use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole};
+use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, Role};
 use tilo_peer_state::owner::testing::governor::TestGovernor;
 use tilo_peer_state::owner_commit::CommitOperation;
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
@@ -287,7 +287,7 @@ impl HostedWorkspace {
         let now = ns(SystemTime::now());
         let signed = self.authority.lock().unwrap().issue(
             vec![self.hint.clone()],
-            MemberRole::Editor,
+            Role::Editor,
             Some(recipient),
             Some("Runtime".into()),
             now.saturating_add(60_000_000_000),

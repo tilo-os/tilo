@@ -310,7 +310,7 @@ pub struct Admission {
     /// Its name.
     pub name: String,
     /// What the device's person may do there.
-    pub role: tilo_relay_protocol::workspaces::WorkspaceRole,
+    pub role: tilo_relay_protocol::workspaces::Role,
 }
 
 #[cfg(test)]

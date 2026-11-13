@@ -362,7 +362,7 @@ async fn invitation(
             administrator,
             &tilo_peer_state::join::invitations::IssueInvitationRequest {
                 request_id,
-                role: tilo_peer_state::join::MemberRole::Editor,
+                role: tilo_peer_state::join::Role::Editor,
                 recipient_user_public_key: None,
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),

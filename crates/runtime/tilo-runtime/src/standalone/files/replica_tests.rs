@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -120,7 +120,7 @@ async fn invitation(
             desk,
             IssueInvitationRequest {
                 request_id: [request; 32],
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: person,
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),

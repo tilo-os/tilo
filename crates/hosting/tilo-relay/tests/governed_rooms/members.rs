@@ -14,7 +14,7 @@ pub(super) async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice,
             tilo_relay::workspaces::IssueInvitationRequest {
                 // One per member, so a room admits several this way.
                 request_id: *blake3::hash(&member.device_pubkey()).as_bytes(),
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: Some(member.cert.user_public_key),
                 invitee_name: None,
                 inviter_name: None,

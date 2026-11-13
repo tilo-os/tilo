@@ -2384,7 +2384,7 @@ async fn a_listed_room_keeps_sharing_its_windows_after_a_restart() {
             &cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Come in".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

@@ -895,7 +895,7 @@ mod tests {
                 .expect("a workspace's id"),
             room: WORKSPACE.to_owned(),
             issuer,
-            role: tilo_workspace_join::MemberRole::Viewer,
+            role: tilo_workspace_join::Role::Viewer,
             nonce: [0x33; 16],
             recipient_user_public_key: Some(person),
             invitee_name: None,

@@ -9,7 +9,7 @@
 
 use test_http::{Reply, Responder};
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_workspace_directory::{Way, client, fetch_directory, read_site, through_door};
 
 /// The workspace every test in this file joins.
@@ -20,7 +20,7 @@ fn entry(name: &str) -> DirectoryEntry {
         workspace: WORKSPACE.to_owned(),
         name: name.to_owned(),
         description: format!("All about {name}"),
-        default_role: WorkspaceRole::Commenter,
+        default_role: Role::Commenter,
         door: format!("directory/{WORKSPACE}/"),
         here: Vec::new(),
         here_count: 0,

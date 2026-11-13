@@ -2,7 +2,7 @@ use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Change, Grantee, TreePath, roles};
+use tilo_action_policy::{Change, Grantee, Role, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -89,10 +89,11 @@ impl StatePeer {
         let workspace = self.core.workspace.clone();
         match change {
             Change::AddMember { person: who, role } | Change::SetRole { person: who, role } => {
-                let role = super::member_role_from_role(*role)
-                    .ok_or("the owner's role is not given through membership")?;
+                if *role == Role::Owner {
+                    return Err("the owner's role is not given through membership".into());
+                }
                 self.governance_mut()
-                    .set_member_role(person(who)?, role, key, now)
+                    .set_member_role(person(who)?, *role, key, now)
             }
             Change::RemoveMember { person: who } => {
                 self.governance_mut().remove_member(person(who)?, key, now)

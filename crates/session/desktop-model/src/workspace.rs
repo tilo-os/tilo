@@ -191,25 +191,6 @@ pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
 /// Taking such a grant back, named the same way.
 pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
 
-/// A role's stable name, as a collaborator row records it
-/// ([`crate::Collaborator::role_id`]). Surfaces translate it for display
-/// through [`role_from_id`]; it is never shown as is.
-pub fn role_id(role: Role) -> &'static str {
-    match role {
-        Role::Owner => "owner",
-        Role::Moderator => "moderator",
-        Role::Editor => "editor",
-        Role::Commenter => "commenter",
-        Role::Viewer => "viewer",
-    }
-}
-
-/// The role a [`role_id`] names, or `None` for a name this model does not
-/// define.
-pub fn role_from_id(id: &str) -> Option<Role> {
-    Role::ALL.into_iter().find(|role| role_id(*role) == id)
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WorkspaceDefaultError {
     #[error("only a workspace administrator may change workspace policy")]

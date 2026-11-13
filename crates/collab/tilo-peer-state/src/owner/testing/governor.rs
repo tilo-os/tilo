@@ -9,7 +9,7 @@ use crate::{
     GovernedAccess, SeedDocument, SeedState, StatePeer, TransportOrigin,
     join::{
         self, JoinBootstrap, JoinChallenge, JoinChallengeResponse, JoinInspection,
-        JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
+        JoinTransportRequest, JoinTransportResponse, Role, TransportHint,
     },
     seed_workspace,
 };
@@ -266,7 +266,7 @@ impl TestGovernor {
     pub fn issue(
         &mut self,
         transport: Vec<TransportHint>,
-        role: MemberRole,
+        role: Role,
         recipient_user_public_key: Option<[u8; 32]>,
         invitee_name: Option<String>,
         expires_at_ns: u64,
@@ -665,7 +665,7 @@ mod empty_interactive_tests {
     fn empty_interactive_governor_redeems_its_actual_session_custody_without_app_seed() {
         use crate::join::{
             self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
-            JoinTransportResponse, MemberRole,
+            JoinTransportResponse, Role,
         };
         let key = SigningKey::from_bytes(&[92; 32]);
         let cert = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
@@ -683,7 +683,7 @@ mod empty_interactive_tests {
             .unwrap();
         let invitation = governor.issue(
             vec![governor.hint(endpoint)],
-            MemberRole::Editor,
+            Role::Editor,
             Some(cert.user_public_key),
             Some("Fixture session".into()),
             expiry,

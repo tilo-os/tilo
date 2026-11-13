@@ -17,7 +17,7 @@ use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
 use tilo_peer_state::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
-    MemberRole, TransportHint,
+    Role, TransportHint,
 };
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_peer_state::owner::testing::{self, WORKSPACE, governor::TestGovernor};
@@ -75,7 +75,7 @@ fn enroll(
     key: &SigningKey,
     certificate: &DeviceCert,
     governor: &mut TestGovernor,
-    role: MemberRole,
+    role: Role,
     request_id: [u8; 32],
     now: SystemTime,
 ) {
@@ -190,7 +190,7 @@ async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_membe
         &key_a,
         &cert_a,
         &mut governor,
-        MemberRole::Moderator,
+        Role::Moderator,
         [1; 32],
         now,
     );
@@ -242,7 +242,7 @@ async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_membe
         &key_b,
         &cert_b,
         &mut governor,
-        MemberRole::Moderator,
+        Role::Moderator,
         [2; 32],
         now,
     );
@@ -276,7 +276,7 @@ async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_membe
             &cert_b,
             &IssueInvitationRequest {
                 request_id: [3; 32],
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: Some(cert_c.user_public_key),
                 invitee_name: None,
                 expires_at_ns: testing::ns(now)
@@ -440,7 +440,7 @@ async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
         &key_a,
         &cert_a,
         &mut governor,
-        MemberRole::Moderator,
+        Role::Moderator,
         [11; 32],
         now,
     );
@@ -458,7 +458,7 @@ async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
         &key_b,
         &cert_b,
         &mut governor,
-        MemberRole::Moderator,
+        Role::Moderator,
         [12; 32],
         now,
     );
@@ -479,7 +479,7 @@ async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
             &cert_b,
             &IssueInvitationRequest {
                 request_id: [13; 32],
-                role: MemberRole::Viewer,
+                role: Role::Viewer,
                 recipient_user_public_key: None,
                 invitee_name: Some("Ada".into()),
                 expires_at_ns: testing::ns(now)
@@ -497,7 +497,7 @@ async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
     let pending = b.pending_invitations(workspace, now).unwrap();
     assert_eq!(pending.len(), 1, "B's one invitation is still open");
     assert_eq!(pending[0].invite_id, issued.invite_id);
-    assert_eq!(pending[0].role, MemberRole::Viewer);
+    assert_eq!(pending[0].role, Role::Viewer);
     assert_eq!(pending[0].invitee_name.as_deref(), Some("Ada"));
 
     // What B publishes reaches A; the invitation itself is B's own bookkeeping.
@@ -590,7 +590,7 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
         &key_a,
         &cert_a,
         &mut governor,
-        MemberRole::Moderator,
+        Role::Moderator,
         [1; 32],
         now,
     );
@@ -600,7 +600,7 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
         &key_b,
         &cert_b,
         &mut governor,
-        MemberRole::Moderator,
+        Role::Moderator,
         [2; 32],
         now,
     );
@@ -737,7 +737,7 @@ async fn the_door_a_device_settles_is_the_door_another_device_reads() {
         &key_a,
         &cert_a,
         &mut governor,
-        MemberRole::Moderator,
+        Role::Moderator,
         [21; 32],
         now,
     );
@@ -755,7 +755,7 @@ async fn the_door_a_device_settles_is_the_door_another_device_reads() {
         &key_b,
         &cert_b,
         &mut governor,
-        MemberRole::Moderator,
+        Role::Moderator,
         [22; 32],
         now,
     );

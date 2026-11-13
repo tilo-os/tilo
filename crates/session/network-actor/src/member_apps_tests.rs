@@ -20,7 +20,7 @@ use tilo_desktop_model::WorkspaceId as Workspace;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Owning};
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
-use tilo_peer_state::join::{MemberRole, TransportHint, encode_invitation_text};
+use tilo_peer_state::join::{Role, TransportHint, encode_invitation_text};
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_peer_state::join_transport::LocalJoinService;
 use tilo_peer_state::owner::{NativeWorkspaceOwner, OwnerJoinWorkspaces, enroll};
@@ -111,7 +111,7 @@ async fn invitation(
             administrator,
             &IssueInvitationRequest {
                 request_id,
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: None,
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),

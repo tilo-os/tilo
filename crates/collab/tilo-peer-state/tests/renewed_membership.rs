@@ -16,7 +16,7 @@ use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceH
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::join::invitations::{IssueInvitationRequest, IssuedInvitation};
 use tilo_peer_state::join::{
-    self, JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
+    self, JoinTransportRequest, JoinTransportResponse, Role, TransportHint,
 };
 use tilo_peer_state::join_answer::{JoinAnswer, JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
@@ -280,7 +280,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let issued = governor.0.issue(
         IssueInvitationRequest {
             request_id: [1; 32],
-            role: MemberRole::Editor,
+            role: Role::Editor,
             recipient_user_public_key: Some(first.user_public_key),
             invitee_name: None,
             expires_at_ns: joined_ns.saturating_add(60_000_000_000),
@@ -381,11 +381,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         panic!("the governor answers the slot's renewed membership");
     };
     assert_eq!(renewal.device_cert, renewed);
-    assert_eq!(
-        renewal.role,
-        MemberRole::Editor,
-        "the same member, with its role"
-    );
+    assert_eq!(renewal.role, Role::Editor, "the same member, with its role");
     member
         .renew_membership(workspace, &renewed, &renewal, later)
         .unwrap();

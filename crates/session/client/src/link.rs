@@ -173,7 +173,7 @@ pub enum Entry {
         /// Its name.
         name: String,
         /// What the person may do there.
-        role: tilo_relay_protocol::workspaces::WorkspaceRole,
+        role: tilo_relay_protocol::workspaces::Role,
     },
     /// The door or the workspace did not let it in: the door's `code`
     /// (`banned`, `removed`, `invitation-only`, `full`, `refused`), or

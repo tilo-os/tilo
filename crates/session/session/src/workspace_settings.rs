@@ -14,7 +14,7 @@ use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
-use tilo_desktop_model::{DesktopTree, UserId, Workspace, WorkspaceId, role_from_id, role_id};
+use tilo_desktop_model::{DesktopTree, UserId, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_sheets::Seat as _;
@@ -255,7 +255,7 @@ fn ask(
         }
         sheet::WorkspaceSettingsEffect::Move { step } => move_workspace(handle, step),
         sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
-            let Some(role) = role_from_id(&role) else {
+            let Some(role) = Role::parse(&role) else {
                 tracing::debug!(%role, "no such role: nothing changed");
                 return;
             };
@@ -1142,7 +1142,7 @@ fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People
                 name: entry.name.clone(),
                 you: entry.you,
                 role: entry.role.clone(),
-                role_key: ws.role_of(&entry.user).map(|role| role_id(role).to_owned()),
+                role_key: ws.role_of(&entry.user).map(|role| role.key().to_owned()),
                 extra: entry.extra.clone(),
                 offers: match entry.offers {
                     domain::people::Offers::Nothing => sheet::Offers::Nothing,
@@ -1155,7 +1155,7 @@ fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People
         roles: [Role::Viewer, Role::Commenter, Role::Editor]
             .into_iter()
             .map(|role| sheet::RoleChoice {
-                key: role_id(role).to_owned(),
+                key: role.key().to_owned(),
                 label: domain::role_label(role),
                 allows: domain::role_capability_preview(role),
             })

@@ -32,7 +32,7 @@ fn guest() -> (SigningKey, DeviceCert) {
 fn invitation(recipient: Option<[u8; 32]>, now: u64) -> IssueInvitationRequest {
     IssueInvitationRequest {
         request_id: [7; 32],
-        role: MemberRole::Editor,
+        role: Role::Editor,
         recipient_user_public_key: recipient,
         invitee_name: Some("Guest".into()),
         expires_at_ns: now.saturating_add(10_000_000_000),
@@ -235,7 +235,7 @@ fn joined(
             &workspace.peer.owner_certificates()[0],
             IssueInvitationRequest {
                 request_id: [seed; 32],
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: None,
                 invitee_name: None,
                 expires_at_ns: now_ns.saturating_add(10_000_000_000),
@@ -453,7 +453,7 @@ fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unc
         governance_messages: Some(&messages),
     };
     let (_, cert) = guest();
-    let admitted = workspace.admission([9; 32], cert, MemberRole::Editor);
+    let admitted = workspace.admission([9; 32], cert, Role::Editor);
     let delivered = workspace.filled(admitted.clone()).unwrap();
     assert!(!delivered.certified_roster.is_empty());
     let receipt = JoinCompletionRecord::receipt([1; 32], [2; 32], [3; 32], admitted);

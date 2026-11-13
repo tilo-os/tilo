@@ -25,9 +25,8 @@ use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::{CataloguePage, ReceiptStatus};
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_protocol::directory::Listing;
-use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_session_core::remote::SessionActions;
 use tilo_user_identity::DeviceCapabilities;
@@ -108,7 +107,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
             &host.cert,
             Listing {
                 description: "Everyone".into(),
-                default_role: WorkspaceRole::Editor,
+                default_role: Role::Editor,
             },
         )
         .await
@@ -118,14 +117,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     // A member of the workspace wrote a note there.
     let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
     let member_device = enrol(&member_root, "member-browser", DeviceCapabilities::member());
-    admit_person(
-        &hosted,
-        &host,
-        &workspace,
-        &member_device,
-        MemberRole::Editor,
-    )
-    .await;
+    admit_person(&hosted, &host, &workspace, &member_device, Role::Editor).await;
     let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace).await;
     let mut note =
         crate::common::open_in(&workspace, NOTES, "member", ReplicaActor::Owner, Seed::New)
@@ -275,7 +267,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
             &host.cert,
             Listing {
                 description: "Everyone".into(),
-                default_role: WorkspaceRole::Editor,
+                default_role: Role::Editor,
             },
         )
         .await
@@ -338,14 +330,7 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
     // A member of the workspace, through its door.
     let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
     let member_device = enrol(&member_root, "member-browser", DeviceCapabilities::member());
-    admit_person(
-        &hosted,
-        &host,
-        &workspace,
-        &member_device,
-        MemberRole::Editor,
-    )
-    .await;
+    admit_person(&hosted, &host, &workspace, &member_device, Role::Editor).await;
     let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace).await;
 
     // What runs there, as the host's service lists it: the chat is one, though
@@ -444,14 +429,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     // A member of the workspace, whose device runs their agent.
     let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
     let member_device = enrol(&member_root, "member-agent", DeviceCapabilities::member());
-    admit_person(
-        &hosted,
-        &host,
-        &workspace,
-        &member_device,
-        MemberRole::Editor,
-    )
-    .await;
+    admit_person(&hosted, &host, &workspace, &member_device, Role::Editor).await;
     let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace).await;
     tilo_session_client::device::run_as_agent(&member.peer, "Claude Code")
         .await
@@ -534,7 +512,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
             &host.cert,
             Listing {
                 description: "Everyone".into(),
-                default_role: WorkspaceRole::Editor,
+                default_role: Role::Editor,
             },
         )
         .await
@@ -548,14 +526,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
         "Claude Code on build-box",
         DeviceCapabilities::member(),
     );
-    admit_person(
-        &hosted,
-        &host,
-        &workspace,
-        &browser_device,
-        MemberRole::Editor,
-    )
-    .await;
+    admit_person(&hosted, &host, &workspace, &browser_device, Role::Editor).await;
     let mut browser = open_admitted_peer(&hosted, &browser_device, &host, &workspace).await;
     // They opened Notes before their agent came: their page founded it.
     let mut founded =
@@ -572,7 +543,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
         &founded.take_mutation().unwrap().unwrap(),
     )
     .await;
-    admit_person(&hosted, &host, &workspace, &computer, MemberRole::Editor).await;
+    admit_person(&hosted, &host, &workspace, &computer, Role::Editor).await;
     let agent = open_admitted_peer(&hosted, &computer, &host, &workspace).await;
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(

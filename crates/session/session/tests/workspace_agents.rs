@@ -16,7 +16,7 @@
 
 use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 /// The names of the agents the workspace's copy of Chat's agents record holds on `device` .
 fn agents_held(device: &Device) -> Vec<String> {
@@ -144,7 +144,7 @@ fn send(device: &Device, to: &Value, text: &str) -> Value {
 
 /// Ada's laptop in a published workspace, Chat open in it.
 fn laptop_with_chat(ada: &Person, site: &Site) -> Device {
-    site.publish(WorkspaceRole::Editor);
+    site.publish(Role::Editor);
     site.author_apps(&["so.tilo.chat"]);
     let mut laptop = ada.device("Ada's laptop");
     let member = site.admit(ada.public);

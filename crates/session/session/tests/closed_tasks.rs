@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 /// The app whose record the step changes.
 const APP: &str = "so.tilo.tasks";
@@ -168,7 +168,7 @@ fn shows_window(device: &Device, app: &str) -> bool {
 fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_it() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.publish(WorkspaceRole::Editor);
+    site.publish(Role::Editor);
     // The workspace lets Tasks write the tracker its people read there, as its host does before
     // they open the app in it.
     site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP, APP]);

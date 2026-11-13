@@ -150,7 +150,6 @@ pub(super) fn self_row(admitted: &AdmittedJoinIdentity) -> Option<ui::collaborat
             collab_types::MemberId::agent(task.agent_id.clone()),
             task.agent_id.clone(),
             None,
-            None,
         )
         .claiming_self()
     })

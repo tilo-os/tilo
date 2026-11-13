@@ -25,7 +25,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_clock::unix_now_ns;
 use tilo_peer_state::actions::{ActionPlane, NoActions};
 use tilo_peer_state::direct::Replica;
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_relay::host::HostMode;
 use tilo_relay::host_jobs::ComputeJobs;
@@ -219,7 +219,7 @@ async fn invited(
             hosted.host.device_cert(),
             IssueInvitationRequest {
                 request_id: [3; 32],
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: Some(user.user_pk),
                 invitee_name: None,
                 expires_at_ns: unix_now_ns().checked_add(600_000_000_000).unwrap(),

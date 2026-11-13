@@ -870,7 +870,7 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
 /// is not heard, and one it says on the plane is its own, never the host's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
-    use tilo_peer_state::join::MemberRole;
+    use tilo_peer_state::join::Role;
     let (operator, _) = tilo_user_identity::UserIdentity::generate("Operator", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
     let host = enrol(
@@ -890,8 +890,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     let workspace = workspaces.create("Grace's workspace").await.unwrap();
     let cluster = workspace.workspace.clone();
     for device in [&page_device, &computer] {
-        super::resource_support::admit_person(&hosted, &host, &cluster, device, MemberRole::Editor)
-            .await;
+        super::resource_support::admit_person(&hosted, &host, &cluster, device, Role::Editor).await;
     }
     let mut browser =
         super::resource_support::open_admitted_peer(&hosted, &page_device, &host, &cluster).await;

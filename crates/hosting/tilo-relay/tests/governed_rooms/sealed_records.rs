@@ -52,7 +52,7 @@ pub(super) async fn join(
     device: &TestDevice,
     request_id: [u8; 32],
 ) -> Result<StatePeer, String> {
-    let invitation = invite(relay, issuer, room, MemberRole::Editor, person.user_pk).await;
+    let invitation = invite(relay, issuer, room, Role::Editor, person.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,

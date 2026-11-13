@@ -71,7 +71,6 @@ pub enum EntryHealth {
 
 impl EntryHealth {
     fn of(entry: &Entry) -> Self {
-        use tilo_relay_protocol::workspaces::WorkspaceRole;
         match entry {
             Entry::Admitted {
                 workspace,
@@ -81,12 +80,7 @@ impl EntryHealth {
             } => Self::Admitted {
                 workspace: workspace.clone(),
                 name: name.clone(),
-                role: match role {
-                    WorkspaceRole::Viewer => "viewer",
-                    WorkspaceRole::Commenter => "commenter",
-                    WorkspaceRole::Editor => "editor",
-                    WorkspaceRole::Moderator => "moderator",
-                },
+                role: role.key(),
             },
             Entry::Refused {
                 code,

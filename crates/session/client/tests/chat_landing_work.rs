@@ -260,7 +260,7 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

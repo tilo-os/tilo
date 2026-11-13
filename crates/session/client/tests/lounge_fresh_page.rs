@@ -50,7 +50,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
 use tilo_relay_client::invite::guest_certificate;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
-use tilo_relay_protocol::workspaces::{WorkspaceRole, WorkspacesReply, WorkspacesRequest};
+use tilo_relay_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -345,7 +345,7 @@ impl Lounge {
                 // a request of its own: the id names this ask, not a fixed
                 // number two asks would share.
                 request_id: *blake3::hash(&to.root.verifying_key().to_bytes()).as_bytes(),
-                role: WorkspaceRole::Editor,
+                role: Role::Editor,
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: Some("The Lounge".into()),
                 wait_list_entry: None,

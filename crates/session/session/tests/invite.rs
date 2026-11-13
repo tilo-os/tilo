@@ -22,7 +22,7 @@ use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_network_actor::{HostIdentity, workspace_topic_id};
 use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner, testing};
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
@@ -154,7 +154,7 @@ fn settle(session: &mut Session) {
 }
 
 /// Who `owner` 's copy of `workspace` has in it, by person, in the part each holds.
-fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String, MemberRole)> {
+fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String, Role)> {
     owner
         .with_current(workspace, |view| {
             let members = view
@@ -526,7 +526,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .iter()
             .find(|(who, _)| *who == hex::encode(her.user_public_key))
             .map(|(_, role)| *role),
-        Some(MemberRole::Editor),
+        Some(Role::Editor),
         "in the part the sheet asked for: {people:?}"
     );
 

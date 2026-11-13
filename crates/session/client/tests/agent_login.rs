@@ -56,7 +56,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

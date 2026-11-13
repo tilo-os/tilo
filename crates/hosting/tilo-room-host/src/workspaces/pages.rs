@@ -15,10 +15,10 @@
 //! ([`WorkspacesRequest::WaitList`]).
 
 use tilo_action_policy::roles::governance;
-use tilo_peer_state::join::{MemberRole, VerifiedRedemption};
+use tilo_peer_state::join::VerifiedRedemption;
 use tilo_relay_protocol::workspaces::{
-    Inviter, JoinReply, PendingInvite, PreAdmission, WaitListEntry, Workspace, WorkspaceMember,
-    WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+    Inviter, JoinReply, PendingInvite, PreAdmission, Role, WaitListEntry, Workspace,
+    WorkspaceMember, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -105,24 +105,6 @@ impl Presented {
     }
 }
 
-pub(super) const fn member_role(role: WorkspaceRole) -> MemberRole {
-    match role {
-        WorkspaceRole::Viewer => MemberRole::Viewer,
-        WorkspaceRole::Commenter => MemberRole::Commenter,
-        WorkspaceRole::Editor => MemberRole::Editor,
-        WorkspaceRole::Moderator => MemberRole::Moderator,
-    }
-}
-
-const fn room_role(role: MemberRole) -> WorkspaceRole {
-    match role {
-        MemberRole::Viewer => WorkspaceRole::Viewer,
-        MemberRole::Commenter => WorkspaceRole::Commenter,
-        MemberRole::Editor => WorkspaceRole::Editor,
-        MemberRole::Moderator => WorkspaceRole::Moderator,
-    }
-}
-
 /// `workspace` as a page sees it, with `summary` its people as
 /// [`Workspaces::people`] names them, `certificates` the devices its
 /// governance records and `owner` the person whose workspace it is.
@@ -139,7 +121,7 @@ fn page_room(summary: WorkspaceSummary, certificates: &[DeviceCert], owner: [u8;
                     .filter(|label| !label.is_empty())
             }),
             user_public_key: member.user_public_key,
-            role: room_role(member.role),
+            role: member.role,
             owner: member.user_public_key == owner,
             removed: member.removed,
         })
@@ -255,7 +237,7 @@ impl Workspaces {
             } => {
                 let request = IssueInvitationRequest {
                     request_id,
-                    role: member_role(role),
+                    role: role,
                     recipient_user_public_key: recipient,
                     invitee_name: None,
                     expires_at_ns,
@@ -443,7 +425,7 @@ impl Workspaces {
                     SetMemberRoleRequest {
                         request_id,
                         user_public_key,
-                        role: member_role(role),
+                        role: role,
                     },
                 )
                 .await?;
@@ -582,7 +564,7 @@ impl Workspaces {
                 device,
                 IssueInvitationRequest {
                     request_id,
-                    role: member_role(grant.role),
+                    role: grant.role,
                     recipient_user_public_key,
                     invitee_name: None,
                     expires_at_ns: grant.expires_at_ns,
@@ -705,7 +687,7 @@ impl Workspaces {
             self.authorize(
                 device,
                 Some(&governed),
-                WorkspaceOp::Invite(request.role.into()),
+                WorkspaceOp::Invite(request.role),
                 now,
             )?;
             if !governed.wait_list.has(entry, now) {
@@ -752,7 +734,7 @@ impl Workspaces {
                 .into_iter()
                 .map(|invitation| PendingInvite {
                     invite_id: invitation.invite_id,
-                    role: room_role(invitation.role),
+                    role: invitation.role,
                     expires_at_ns: invitation.expires_at_ns,
                     recipient: invitation.recipient_user_public_key,
                     invitee_name: invitation.invitee_name,
@@ -1053,7 +1035,7 @@ impl Workspaces {
             workspace: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
             name: workspace.record.name.clone(),
-            role: room_role(join.grant().role),
+            role: join.grant().role,
             expires_at_ns: join.grant().expires_at_ns,
             inviter: join.inviter().map(|inviter| Inviter {
                 user_public_key: inviter.user_public_key,
@@ -1173,7 +1155,7 @@ impl Workspaces {
         self.authorize(
             &issuer,
             Some(&workspace),
-            WorkspaceOp::Invite(redemption.join().grant().role.into()),
+            WorkspaceOp::Invite(redemption.join().grant().role),
             now,
         )?;
         let join = super::collaboration::Redeeming {
@@ -1213,11 +1195,11 @@ impl Workspaces {
             workspace_id: workspace.workspace_id(),
             name: workspace.record.name.clone(),
             role: match role.role {
-                collab_types::role::Role::Moderator => WorkspaceRole::Moderator,
-                collab_types::role::Role::Commenter => WorkspaceRole::Commenter,
-                collab_types::role::Role::Viewer => WorkspaceRole::Viewer,
+                collab_types::role::Role::Moderator => Role::Moderator,
+                collab_types::role::Role::Commenter => Role::Commenter,
+                collab_types::role::Role::Viewer => Role::Viewer,
                 collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
-                    WorkspaceRole::Editor
+                    Role::Editor
                 }
             },
         })
@@ -1419,7 +1401,7 @@ impl Workspaces {
         invites: &mut std::collections::BTreeSet<[u8; 32]>,
         now: u64,
     ) -> Result<
-        (VerifiedRedemption, String, WorkspaceRole),
+        (VerifiedRedemption, String, Role),
         Box<Result<JoinReply, CollaborationError>>,
     > {
         let redemption = join
@@ -1432,7 +1414,7 @@ impl Workspaces {
                 "invitation was already redeemed",
             ))));
         }
-        let role = room_role(redemption.join().grant().role);
+        let role = redemption.join().grant().role;
         let grant = workspace
             .admissions
             .grant_for(invite_id, &join.token, now)

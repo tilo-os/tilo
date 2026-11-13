@@ -27,7 +27,7 @@ use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::Host;
 use tilo_relay_client::{Approver, Carrier};
-use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
+use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, Role};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
@@ -770,7 +770,7 @@ pub async fn door(
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
         workspace: workspace.to_owned(),
-        role: WorkspaceRole::Editor,
+        role: Role::Editor,
         token_sha256,
         label: "Guest".into(),
         expires_at_ns: tilo_clock::unix_now_ns()
@@ -823,7 +823,7 @@ pub async fn redeem(
         matches!(
             &admitted,
             JoinReply::Admitted {
-                role: WorkspaceRole::Editor,
+                role: Role::Editor,
                 ..
             }
         ),

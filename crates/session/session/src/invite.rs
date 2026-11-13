@@ -15,8 +15,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+use tilo_action_policy::Role;
 use tilo_desktop::workspace_settings as domain;
-use tilo_desktop_model::role_from_id;
 use tilo_sheets::Seat as _;
 use tilo_sheets::invite as sheet;
 use tilo_sheets::{word, words};
@@ -152,7 +152,7 @@ impl sheet::Invitations for Invite {
     }
 
     fn create(&self, role: &str, recipient: &str) {
-        let label = role_from_id(role).map_or_else(|| role.to_owned(), domain::role_label);
+        let label = Role::parse(role).map_or_else(|| role.to_owned(), domain::role_label);
         // A link for a person names them as the sheet lists them.
         let name = (!recipient.is_empty()).then(|| {
             let person = self.workspace.people().into_iter();

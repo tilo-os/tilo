@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use tilo_relay_protocol::directory::Activity;
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_sheets::directory::{Directory, Listing, ListingAction};
 
 use crate::Listed;
@@ -90,12 +90,13 @@ impl Store {
 }
 
 /// The words a role is shown with.
-fn role_label(role: WorkspaceRole) -> String {
+fn role_label(role: Role) -> String {
     tilo_sheets::word(match role {
-        WorkspaceRole::Viewer => "directory-role-viewer",
-        WorkspaceRole::Commenter => "directory-role-commenter",
-        WorkspaceRole::Editor => "directory-role-editor",
-        WorkspaceRole::Moderator => "directory-role-moderator",
+        Role::Viewer => "directory-role-viewer",
+        Role::Commenter => "directory-role-commenter",
+        Role::Editor => "directory-role-editor",
+        Role::Moderator => "directory-role-moderator",
+        Role::Owner => "directory-role-owner",
     })
 }
 
@@ -141,7 +142,7 @@ mod tests {
             workspace: workspace.into(),
             name: name.into(),
             description: String::new(),
-            default_role: WorkspaceRole::Commenter,
+            default_role: Role::Commenter,
             door: format!("directory/{workspace}/"),
             here: Vec::new(),
             here_count: 0,

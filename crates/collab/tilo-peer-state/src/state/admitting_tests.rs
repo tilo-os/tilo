@@ -4,7 +4,7 @@
 //! participant.
 use super::*;
 use crate::join::{
-    InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, issue_invitation, sign_join_proof,
+    InviteGrant, JoinChallenge, Role, VerifiedRedemption, issue_invitation, sign_join_proof,
     verify_join_proof,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
@@ -33,7 +33,7 @@ fn redemption(
     issuer: &DeviceCert,
     issuer_key: &SigningKey,
     (key, joiner): &(SigningKey, DeviceCert),
-    role: MemberRole,
+    role: Role,
     nonce: u8,
     now: SystemTime,
 ) -> VerifiedRedemption {
@@ -90,7 +90,7 @@ fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
         &owner,
         &owner_key,
         &guest,
-        MemberRole::Viewer,
+        Role::Viewer,
         72,
         now,
     );
@@ -137,7 +137,7 @@ fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
         &owner,
         &owner_key,
         &other,
-        MemberRole::Viewer,
+        Role::Viewer,
         72,
         now,
     );
@@ -163,7 +163,7 @@ fn an_invitation_admits_only_what_its_issuer_could_invite() {
         &editor,
         &editor_key,
         &guest,
-        MemberRole::Viewer,
+        Role::Viewer,
         77,
         now,
     );
@@ -198,7 +198,7 @@ fn refusal_of_tampered_admission(
         &owner,
         &owner_key,
         &guest,
-        MemberRole::Editor,
+        Role::Editor,
         80,
         now,
     );
@@ -207,7 +207,7 @@ fn refusal_of_tampered_admission(
         &owner,
         &owner_key,
         &guest,
-        MemberRole::Editor,
+        Role::Editor,
         81,
         now,
     );
@@ -342,7 +342,7 @@ fn any_participant_admits_a_members_further_device() {
         &owner,
         &owner_key,
         &guest,
-        MemberRole::Viewer,
+        Role::Viewer,
         84,
         now,
     );
@@ -400,7 +400,7 @@ fn a_workspace_forgets_an_expired_page_devices_row_and_keeps_admitted_ones() {
         &owner,
         &owner_key,
         &member,
-        MemberRole::Viewer,
+        Role::Viewer,
         82,
         now,
     );
@@ -421,7 +421,7 @@ fn a_workspace_forgets_an_expired_page_devices_row_and_keeps_admitted_ones() {
         &owner,
         &owner_key,
         &(invited_key, expiring_invitee.clone()),
-        MemberRole::Viewer,
+        Role::Viewer,
         86,
         now,
     );

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::{InvokeArgument, ReceiptStatus};
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
@@ -255,7 +255,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         &host,
         &workspace.workspace,
         &member_device,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
     let mut page =

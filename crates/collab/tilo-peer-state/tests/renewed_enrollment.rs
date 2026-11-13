@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_identity_host::custody::HostIdentity;
-use tilo_peer_state::join::{self, MemberRole};
+use tilo_peer_state::join::{self, Role};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{Relay, RelayConfig};
@@ -111,7 +111,7 @@ impl Admitted {
                 &laptop,
                 IssueInvitationRequest {
                     request_id: [9; 32],
-                    role: MemberRole::Editor,
+                    role: Role::Editor,
                     recipient_user_public_key: Some(bob.verifying_key().to_bytes()),
                     invitee_name: None,
                     expires_at_ns: now.saturating_add(600 * SECOND),

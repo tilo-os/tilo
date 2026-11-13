@@ -17,7 +17,7 @@ pub(crate) struct Fixture {
 pub(crate) fn fixture() -> Fixture {
     let key = SigningKey::from_bytes(&[92; 32]);
     let root = SigningKey::from_bytes(&[91; 32]);
-    fixture_with(&root, key.clone(), key, join::MemberRole::Editor, false)
+    fixture_with(&root, key.clone(), key, join::Role::Editor, false)
 }
 
 /// A device of a second person, enrolled into a workspace another person governs:
@@ -27,7 +27,7 @@ pub(crate) fn member_device_fixture() -> Fixture {
         &SigningKey::from_bytes(&[96; 32]),
         SigningKey::from_bytes(&[92; 32]),
         SigningKey::from_bytes(&[94; 32]),
-        join::MemberRole::Moderator,
+        join::Role::Moderator,
         true,
     )
 }
@@ -38,7 +38,7 @@ fn fixture_with(
     root: &SigningKey,
     key: SigningKey,
     governor_key: SigningKey,
-    role: join::MemberRole,
+    role: join::Role,
     administers: bool,
 ) -> Fixture {
     let governor_root = SigningKey::from_bytes(&[91; 32]);

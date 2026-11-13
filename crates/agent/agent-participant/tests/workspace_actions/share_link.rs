@@ -10,7 +10,7 @@ use super::{
 };
 use tilo_actions::remote::ReceiptStatus;
 use tilo_agent_participant::ReplicaActor;
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -37,7 +37,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
         &host,
         &workspace.workspace,
         &writer_device,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
     let mut publisher =

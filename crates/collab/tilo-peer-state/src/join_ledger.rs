@@ -29,7 +29,7 @@ use crate::join::invitations::{
 };
 use crate::join::{
     InviteGrant, Inviter, JoinBootstrap, JoinChallenge, JoinChallengeRequest, JoinProof,
-    MemberRole, MembershipChallenge, MembershipChallengeRequest, MembershipCompleteRequest,
+    MembershipChallenge, MembershipChallengeRequest, MembershipCompleteRequest, Role,
     TransportHint, VerifiedJoin, VerifiedRedemption, decode_and_verify_invitation,
     issue_invitation, issue_invitation_from, verify_connection_redemption, verify_join_proof,
     verify_membership_proof,
@@ -202,7 +202,7 @@ impl Governed<'_> {
         &self,
         invite_id: [u8; 32],
         device_cert: DeviceCert,
-        role: MemberRole,
+        role: Role,
     ) -> Result<JoinBootstrap, JoinError> {
         self.filled(Self::admission(self, invite_id, device_cert, role))
     }
@@ -210,12 +210,7 @@ impl Governed<'_> {
     /// What a bootstrap says of the one device it admits, with the workspace's
     /// state it carries (roster, revocations, records, governance) left out:
     /// as large as the workspace, so built only for a device it is sent to.
-    fn admission(
-        &self,
-        invite_id: [u8; 32],
-        device_cert: DeviceCert,
-        role: MemberRole,
-    ) -> JoinBootstrap {
+    fn admission(&self, invite_id: [u8; 32], device_cert: DeviceCert, role: Role) -> JoinBootstrap {
         JoinBootstrap {
             version: 1,
             invite_id,

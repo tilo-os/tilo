@@ -226,7 +226,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

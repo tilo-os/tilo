@@ -103,7 +103,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

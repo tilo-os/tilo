@@ -20,7 +20,7 @@ use serde_json::Value;
 use tilo_action_policy::roles;
 use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_session::workspaces::{
     ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM,
     DETACH_HOST, ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM,
@@ -463,7 +463,7 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 let own = IssueInvitationRequest {
                     request_id,
-                    role: MemberRole::Editor,
+                    role: Role::Editor,
                     recipient_user_public_key: Some(device.user_public_key),
                     invitee_name: None,
                     expires_at_ns: expiry(now, seconds),
@@ -599,7 +599,7 @@ impl Workspaces {
                     continue;
                 };
                 if let Ok(mut one) = self.listing_of(&workspace).await {
-                    one.role = Some(super::role_name(role).to_owned());
+                    one.role = Some(role.key().to_owned());
                     listed.push(one);
                 }
             }
@@ -718,7 +718,7 @@ impl Workspaces {
         self.invite_own_person(
             summary,
             person,
-            MemberRole::Editor,
+            Role::Editor,
             request_id,
             expiry(now, seconds),
         )
@@ -746,7 +746,7 @@ impl Workspaces {
         self.invite_own_person(
             summary,
             device.user_public_key,
-            MemberRole::Editor,
+            Role::Editor,
             request_id,
             expires_at_ns,
         )
@@ -756,7 +756,7 @@ impl Workspaces {
     /// The role `person` holds in `workspace` now, a member it has not
     /// removed; `None` for anyone else, and for a workspace not governed
     /// here.
-    async fn role_of(&self, workspace: &str, person: [u8; 32], now: u64) -> Option<MemberRole> {
+    async fn role_of(&self, workspace: &str, person: [u8; 32], now: u64) -> Option<Role> {
         let governed = self.workspace(workspace).await.ok()?;
         let governed = governed.lock().await;
         governed
@@ -775,7 +775,7 @@ impl Workspaces {
         &self,
         summary: WorkspaceSummary,
         person: [u8; 32],
-        role: MemberRole,
+        role: Role,
         request_id: [u8; 32],
         expires_at_ns: u64,
     ) -> Result<Value, ActionHostError> {

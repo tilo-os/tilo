@@ -51,7 +51,7 @@ fn an_administrator_governs_and_an_editor_does_not() {
 
     // Setting a role takes the standing back with the grant.
     peer.governance_mut()
-        .set_member_role(user, crate::join::MemberRole::Editor, &host_key, now)
+        .set_member_role(user, crate::join::Role::Editor, &host_key, now)
         .unwrap();
     assert!(!is_administrator(&peer, user, now));
     assert_eq!(governs(&peer, editor.device_public_key, now), 0);
@@ -155,7 +155,7 @@ fn an_administrator_moderates_and_an_editor_does_not() {
     );
     assert!(moderates(&peer));
     peer.governance_mut()
-        .set_member_role(user, crate::join::MemberRole::Editor, &host_key, now)
+        .set_member_role(user, crate::join::Role::Editor, &host_key, now)
         .unwrap();
     assert!(!moderates(&peer));
 }
@@ -171,7 +171,7 @@ fn an_administrators_own_device_changes_a_role_and_an_editors_cannot() {
     assert!(
         peer.clone()
             .governance_mut()
-            .set_member_role(user, crate::join::MemberRole::Viewer, &editor_key, now)
+            .set_member_role(user, crate::join::Role::Viewer, &editor_key, now)
             .is_err()
     );
     peer.governance_mut()
@@ -179,7 +179,7 @@ fn an_administrators_own_device_changes_a_role_and_an_editors_cannot() {
         .unwrap();
     assert!(
         peer.governance_mut()
-            .set_member_role(user, crate::join::MemberRole::Viewer, &editor_key, now)
+            .set_member_role(user, crate::join::Role::Viewer, &editor_key, now)
             .unwrap()
     );
     assert_eq!(
@@ -474,7 +474,7 @@ fn a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it() {
     };
     assert!(change_settings(&mut peer.clone(), &editor, rename.clone(), now).is_err());
     peer.governance_mut()
-        .set_member_role(user, crate::join::MemberRole::Moderator, &host_key, now)
+        .set_member_role(user, crate::join::Role::Moderator, &host_key, now)
         .unwrap();
     assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
     assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));

@@ -293,7 +293,7 @@ pub fn invitation_admits(
         .check_invite(
             &issuer,
             &authority,
-            grant.role.into(),
+            grant.role,
             &Context::at_secs(at_ns / 1_000_000_000),
             false,
         )
@@ -368,7 +368,7 @@ fn redemptions(
             }
             let grant =
                 invitation_admits(held, workspace, &signed, receipt.user_public_key, at_ns)?;
-            let role: Role = grant.role.into();
+            let role: Role = grant.role;
             if grant.role != receipt.role || wanted.role_of(&person) != Some(role) {
                 return Err(MembershipRefusal::Refused(format!(
                     "{person} does not take the role their invitation gives"

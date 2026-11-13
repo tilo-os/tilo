@@ -226,6 +226,7 @@ directory-role-viewer = a viewer
 directory-role-commenter = a commenter
 directory-role-editor = an editor
 directory-role-moderator = a moderator
+directory-role-owner = the owner
 
 ## Display sheet
 display-sheet-title = Display

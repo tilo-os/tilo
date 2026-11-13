@@ -52,7 +52,7 @@ fn value(status: &ReceiptStatus) -> serde_json::Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_links_their_discord_account_through_the_host() {
     use super::resource_support::{admit_person, open_admitted_peer};
-    use tilo_peer_state::join::MemberRole;
+    use tilo_peer_state::join::Role;
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Bridge host", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Bridge guest", 1);
     let host = enrol(
@@ -96,7 +96,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
         &host,
         &workspace.workspace,
         &guest_device,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
     let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.workspace).await;

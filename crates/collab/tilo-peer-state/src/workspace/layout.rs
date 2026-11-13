@@ -50,7 +50,7 @@ struct ReceiptBefore {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
     request_id: [u8; 32],
-    role: crate::join::MemberRole,
+    role: crate::join::Role,
     /// The signed invitation as base64 text, in the ledger's copy.
     #[serde(default)]
     invitation: Option<String>,

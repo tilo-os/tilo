@@ -356,7 +356,7 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::ActionHostError;
     use tilo_peer_state::actions::OFFER_DEADLINE;
-    use tilo_relay_protocol::workspaces::WorkspaceRole;
+    use tilo_relay_protocol::workspaces::Role;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -370,7 +370,7 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
     let route = Route::new("so.tilo.notes", "notes.root", "insert");
     let host = relay.node_addr();
     let mut closed = Vec::new();
-    for (seed, role) in [(51, WorkspaceRole::Editor), (52, WorkspaceRole::Viewer)] {
+    for (seed, role) in [(51, Role::Editor), (52, Role::Viewer)] {
         let (device_key, device_cert) = guest_device();
         door_join_as(
             workspaces,
@@ -412,7 +412,7 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
         .expect("the invocation answers")
         .expect("the device answered");
         match role {
-            WorkspaceRole::Viewer => assert_eq!(
+            Role::Viewer => assert_eq!(
                 update,
                 Err(ActionHostError::NotPermitted),
                 "a viewer may not use another device's compute"

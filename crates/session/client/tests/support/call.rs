@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
@@ -112,7 +112,7 @@ pub async fn issue(
             issuer,
             IssueInvitationRequest {
                 request_id: person,
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: Some(person),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns()

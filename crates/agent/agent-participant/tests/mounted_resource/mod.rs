@@ -34,7 +34,7 @@ pub async fn run() {
     use super::resource_support::{
         admit_person, on_messages, open_admitted_peer, part_route, published_message,
     };
-    use tilo_peer_state::join::MemberRole;
+    use tilo_peer_state::join::Role;
     use tilo_relay::workspaces::RemoveMemberRequest;
     let bundle = std::env::args()
         .nth(1)
@@ -136,7 +136,7 @@ pub async fn run() {
             &host,
             &workspace.workspace,
             &publisher,
-            MemberRole::Editor,
+            Role::Editor,
         )
         .await;
         open_admitted_peer(&hosted, &publisher, &host, &workspace.workspace).await
@@ -347,9 +347,9 @@ pub async fn run() {
     };
     for recipient in readers {
         let role = if voice_journey || disconnect_retry {
-            MemberRole::Editor
+            Role::Editor
         } else {
-            MemberRole::Viewer
+            Role::Viewer
         };
         admit_person(&hosted, &host, &workspace.workspace, recipient, role).await;
     }

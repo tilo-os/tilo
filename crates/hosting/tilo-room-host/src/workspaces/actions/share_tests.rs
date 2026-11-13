@@ -106,7 +106,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
             crate::workspaces::SetMemberRoleRequest {
                 request_id: [40; 32],
                 user_public_key: bo.user_public_key,
-                role: tilo_peer_state::join::MemberRole::Viewer,
+                role: tilo_peer_state::join::Role::Viewer,
             },
         )
         .await
@@ -249,7 +249,7 @@ async fn a_share_to_edit_lifts_no_restriction() {
             crate::workspaces::SetMemberRoleRequest {
                 request_id: [40; 32],
                 user_public_key: bo.user_public_key,
-                role: tilo_peer_state::join::MemberRole::Viewer,
+                role: tilo_peer_state::join::Role::Viewer,
             },
         )
         .await

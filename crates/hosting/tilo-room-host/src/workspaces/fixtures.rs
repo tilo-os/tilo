@@ -346,7 +346,7 @@ pub fn signed_pre_admission(
     signed_pre_admission_as(
         workspace,
         token,
-        tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+        tilo_relay_protocol::workspaces::Role::Editor,
     )
 }
 
@@ -360,7 +360,7 @@ pub fn signed_pre_admission(
 pub fn signed_pre_admission_as(
     workspace: &str,
     token: &[u8],
-    role: tilo_relay_protocol::workspaces::WorkspaceRole,
+    role: tilo_relay_protocol::workspaces::Role,
 ) -> tilo_relay_protocol::workspaces::PreAdmission {
     use ed25519_dalek::Signer as _;
     use sha2::Digest as _;
@@ -395,7 +395,7 @@ pub async fn door_join(
     tilo_peer_state::join::JoinTransportRequest,
     tilo_peer_state::join::JoinTransportResponse,
 ) {
-    let role = tilo_relay_protocol::workspaces::WorkspaceRole::Editor;
+    let role = tilo_relay_protocol::workspaces::Role::Editor;
     door_join_as(
         workspaces,
         host,
@@ -421,7 +421,7 @@ pub async fn door_join_as(
     workspace: &str,
     (device, device_cert): (&SigningKey, &DeviceCert),
     seed: u8,
-    role: tilo_relay_protocol::workspaces::WorkspaceRole,
+    role: tilo_relay_protocol::workspaces::Role,
 ) -> (
     tilo_peer_state::join::JoinTransportRequest,
     tilo_peer_state::join::JoinTransportResponse,

@@ -71,7 +71,6 @@ fn remote_cursor_moves_populate_and_update_presence() {
                 MemberId::agent("release"),
                 "Release assistant",
                 None,
-                None,
             )],
             permissions: vec![],
             apps: Vec::new(),

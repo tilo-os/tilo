@@ -13,7 +13,7 @@ use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_peer_state::join::invitations::PendingInvitation;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
@@ -848,10 +848,12 @@ impl Desk {
         let engine = self.engine()?;
         let room = self.workspace_id(workspace)?;
         let role = match role {
-            None => MemberRole::Editor,
-            Some(name) => role_named(name).ok_or_else(|| {
-                DoorError::InvalidArguments(format!("`{name}` is no part of a workspace"))
-            })?,
+            None => Role::Editor,
+            Some(name) => Role::parse(name)
+                .filter(|role| role.assignable())
+                .ok_or_else(|| {
+                    DoorError::InvalidArguments(format!("`{name}` is no part of a workspace"))
+                })?,
         };
         let recipient = recipient
             .map(|person| {
@@ -902,7 +904,7 @@ impl Desk {
                 value: Some(serde_json::json!({
                     "invite": issued.invite,
                     "link": issued.link,
-                    "role": role_name(issued.role),
+                    "role": issued.role.key(),
                     "expires_at_ns": issued.expires_at_ns,
                 })),
                 resources: Vec::new(),
@@ -991,32 +993,11 @@ impl Desk {
 fn invitation_json(invitation: &PendingInvitation) -> Value {
     serde_json::json!({
         "invite": hex::encode(invitation.invite_id),
-        "role": role_name(invitation.role),
+        "role": invitation.role.key(),
         "recipient": invitation.recipient_user_public_key.map(hex::encode),
         "invitee_name": invitation.invitee_name,
         "expires_at_ns": invitation.expires_at_ns,
     })
-}
-
-/// The part an invitation grants, as the workspace's settings name it.
-const fn role_name(role: MemberRole) -> &'static str {
-    match role {
-        MemberRole::Viewer => "viewer",
-        MemberRole::Commenter => "commenter",
-        MemberRole::Editor => "editor",
-        MemberRole::Moderator => "moderator",
-    }
-}
-
-/// The part `name` names, as [`role_name`] writes it.
-fn role_named(name: &str) -> Option<MemberRole> {
-    match name {
-        "viewer" => Some(MemberRole::Viewer),
-        "commenter" => Some(MemberRole::Commenter),
-        "editor" => Some(MemberRole::Editor),
-        "moderator" => Some(MemberRole::Moderator),
-        _ => None,
-    }
 }
 
 /// How long an invitation the desk hands out without being told otherwise works for: an hour, as a

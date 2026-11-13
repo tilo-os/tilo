@@ -128,7 +128,7 @@ impl Workspaces {
             self.authorize(
                 administrator,
                 Some(&governed),
-                WorkspaceOp::Invite(request.role.into()),
+                WorkspaceOp::Invite(request.role),
                 now,
             )?;
             self.stage_issue(&mut governed, administrator, request, now)?

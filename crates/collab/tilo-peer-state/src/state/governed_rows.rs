@@ -226,5 +226,5 @@ pub(crate) struct RedemptionReceipt {
     pub(crate) user_public_key: [u8; 32],
     pub(crate) device_public_key: [u8; 32],
     pub(crate) request_id: [u8; 32],
-    pub(crate) role: crate::join::MemberRole,
+    pub(crate) role: crate::join::Role,
 }

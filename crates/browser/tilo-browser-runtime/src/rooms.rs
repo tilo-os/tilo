@@ -10,13 +10,13 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tilo_relay_protocol::workspaces::{
-    PendingInvite, WaitListEntry, Workspace, WorkspaceMember, WorkspaceRole, WorkspacesReply,
+    PendingInvite, Role, WaitListEntry, Workspace, WorkspaceMember, WorkspacesReply,
     WorkspacesRequest,
 };
 use tilo_workspace_join::encode_invitation_text;
 use wasm_bindgen::prelude::*;
 
-use crate::invite::{role_from_id, role_id, role_of, workspace_role};
+use crate::invite::Role;
 use crate::peer::{WasmPeer, device_key, js_error};
 
 /// How long an invitation stays redeemable unless the page says.
@@ -43,9 +43,9 @@ struct RoomsArgs {
 }
 
 /// The role a host is asked for, under the name the workspace settings give it.
-pub(crate) fn wire_role(name: &str) -> Result<WorkspaceRole, JsError> {
-    role_from_id(name)
-        .and_then(workspace_role)
+pub(crate) fn wire_role(name: &str) -> Result<Role, JsError> {
+    Role::parse(name)
+        .filter(|role| role.assignable())
         .ok_or_else(|| js_error(format!("no such role: {name}")))
 }
 
@@ -56,7 +56,7 @@ fn named_key(key: Option<&String>, what: &str) -> Result<[u8; 32], JsError> {
 }
 
 impl RoomsArgs {
-    fn role(&self) -> Result<WorkspaceRole, JsError> {
+    fn role(&self) -> Result<Role, JsError> {
         wire_role(&self.role)
     }
 
@@ -67,7 +67,7 @@ impl RoomsArgs {
             workspace,
             request_id: new_request_id()?,
             role: match self.role.as_str() {
-                "" => WorkspaceRole::Editor,
+                "" => Role::Editor,
                 _ => self.role()?,
             },
             expires_at_ns: ui::time::unix_now_ns()
@@ -125,7 +125,7 @@ fn millis(nanoseconds: u64) -> u64 {
 
 fn member(value: &WorkspaceMember) -> Value {
     json!({"userPublicKey": hex::encode(value.user_public_key), "name": value.name,
-        "role": role_id(role_of(value.role)), "owner": value.owner, "removed": value.removed})
+        "role": value.role.key(), "owner": value.owner, "removed": value.removed})
 }
 
 fn workspace(value: &Workspace) -> Value {
@@ -134,7 +134,7 @@ fn workspace(value: &Workspace) -> Value {
 }
 
 fn invitation(value: &PendingInvite) -> Value {
-    json!({"inviteId": hex::encode(value.invite_id), "role": role_id(role_of(value.role)),
+    json!({"inviteId": hex::encode(value.invite_id), "role": value.role.key(),
         "expiresAtMs": millis(value.expires_at_ns)})
 }
 

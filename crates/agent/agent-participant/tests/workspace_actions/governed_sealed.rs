@@ -17,7 +17,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, application_open_target,
 };
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
@@ -135,7 +135,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         &host,
         &workspace.workspace,
         &member_device,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
     let mut page =

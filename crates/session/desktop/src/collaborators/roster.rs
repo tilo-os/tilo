@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use vello::peniko::Color;
 
+use tilo_action_policy::Role;
 use tilo_desktop_model::{Collaborator, DesktopTree};
 
 use crate::i18n::{t, t_args};
@@ -263,8 +264,7 @@ fn names_agent(agents: &[String], participant: &Collaborator) -> bool {
 
 /// A recorded role id as people read it; an id this model does not define shows as recorded.
 fn display_role_id(id: &str) -> String {
-    tilo_desktop_model::role_from_id(id)
-        .map_or_else(|| id.to_string(), crate::workspace_settings::role_label)
+    Role::parse(id).map_or_else(|| id.to_string(), crate::workspace_settings::role_label)
 }
 
 /// What colour each person on `roster` is drawn in, with `local` the principal this device speaks

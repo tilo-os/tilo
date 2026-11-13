@@ -7368,7 +7368,6 @@ impl AppBrokerState {
             let row = collab_types::Member::of_software(
                 collab_types::MemberId::agent(agent.clone()),
                 agent,
-                None,
                 keeper.as_ref(),
             );
             if row.id == self_id {
@@ -13420,7 +13419,6 @@ pub mod tests {
         let forged = collab_types::Member::of_software(
             collab_types::MemberId::agent("forged"),
             "forged",
-            None,
             None,
         );
         {

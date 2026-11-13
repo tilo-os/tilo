@@ -21,7 +21,7 @@ use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
 use tilo_actions::remote::identity_admin;
 use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 /// The Devices step of the person's identity administration, as Settings asks
 /// it: `resource␟action`, as the action door spells an address.
@@ -71,7 +71,7 @@ fn fleet_of(device: &Device, person: [u8; 32]) -> DeviceFleetStore {
 fn a_browser_approved_on_the_web_is_in_the_desktop_s_settings_list() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.publish(WorkspaceRole::Editor);
+    site.publish(Role::Editor);
     let mut desktop = ada.device("Ada's desktop");
     desktop.join(&site.admit(ada.public));
     desktop.wait_holding(&site.workspace);
@@ -127,7 +127,7 @@ fn a_browser_approved_on_the_web_is_in_the_desktop_s_settings_list() {
 fn a_paired_device_reaches_the_record_without_the_workspace_list_moving() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.publish(WorkspaceRole::Editor);
+    site.publish(Role::Editor);
     let mut desktop = ada.device("Ada's desktop");
     desktop.join(&site.admit(ada.public));
     desktop.wait_holding(&site.workspace);

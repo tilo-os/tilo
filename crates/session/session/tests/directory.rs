@@ -47,7 +47,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::workspaces::RemoveMemberRequest;
 use tilo_relay_client::Host;
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::Seat as _;
@@ -235,7 +235,7 @@ fn community_entry(members: u32, now_ms: u64) -> DirectoryEntry {
         workspace: COMMUNITY_WORKSPACE.to_owned(),
         name: "Tilers".to_owned(),
         description: "Anyone who lays tiles".to_owned(),
-        default_role: WorkspaceRole::Editor,
+        default_role: Role::Editor,
         door: door_path(COMMUNITY_WORKSPACE),
         here: vec![face("Ada", "a1b2"), face("Bo", "c3d4")],
         here_count: 2,
@@ -253,7 +253,7 @@ fn club_entry(now_ms: u64) -> DirectoryEntry {
         workspace: CLUB_WORKSPACE.to_owned(),
         name: "Book club".to_owned(),
         description: String::new(),
-        default_role: WorkspaceRole::Viewer,
+        default_role: Role::Viewer,
         door: door_path(CLUB_WORKSPACE),
         here: Vec::new(),
         here_count: 0,
@@ -441,7 +441,7 @@ fn page_listing_the_workspace_on_this_desk(held_name: &str, held_room: &str) -> 
         workspace: held_room.to_owned(),
         name: held_name.to_owned(),
         description: "The one on this desk".to_owned(),
-        default_role: WorkspaceRole::Commenter,
+        default_role: Role::Commenter,
         door: door_path(held_room),
         here: Vec::new(),
         here_count: 0,
@@ -1256,7 +1256,7 @@ impl LoungeHost {
                         &self.host_cert,
                         tilo_relay_protocol::directory::Listing {
                             description: "Where the site's people talk".to_owned(),
-                            default_role: WorkspaceRole::Editor,
+                            default_role: Role::Editor,
                         },
                     )
                     .await
@@ -1299,7 +1299,7 @@ impl LoungeHost {
             workspace: self.workspace.clone(),
             name: "Lounge".to_owned(),
             description: "Where the site's people talk".to_owned(),
-            default_role: WorkspaceRole::Editor,
+            default_role: Role::Editor,
             door: host_door.clone(),
             here: Vec::new(),
             here_count: 0,
@@ -1506,7 +1506,7 @@ impl Lounge {
                 &self.host_cert,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
                     request_id: [0x61; 32],
-                    role: tilo_workspace_join::MemberRole::Editor,
+                    role: tilo_workspace_join::Role::Editor,
                     recipient_user_public_key: Some(self.person),
                     invitee_name: None,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
@@ -1564,7 +1564,7 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         .expect("the lounge is shared with this person");
     assert_eq!(
         member.role,
-        tilo_workspace_join::MemberRole::Editor,
+        tilo_workspace_join::Role::Editor,
         "in the part the invitation gave them"
     );
     assert!(!member.removed, "and the lounge has not removed them");
@@ -1648,7 +1648,7 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
         .expect("the linked workspace is shared with this person");
     assert_eq!(
         member.role,
-        tilo_workspace_join::MemberRole::Editor,
+        tilo_workspace_join::Role::Editor,
         "in the part the invitation gave them"
     );
     assert!(!member.removed, "and the workspace has not removed them");

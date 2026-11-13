@@ -46,7 +46,7 @@ fn the_owner_s_own_device_is_answered_the_strongest_collaborator_role() {
     );
     assert_eq!(
         peer.governance().member_role(&membership, now).unwrap(),
-        crate::join::MemberRole::Moderator
+        crate::join::Role::Moderator
     );
 }
 
@@ -65,7 +65,7 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
             workspace_id: 7,
             room: peer.workspace_id().into(),
             issuer: peer.owner_certificates()[0].clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [43; 16],
             recipient_user_public_key: Some(cert.user_public_key),
             invitee_name: None,
@@ -104,9 +104,9 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
         .admit_invited_member(&redemption, &host_key, now)
         .unwrap();
     for role in [
-        MemberRole::Viewer,
-        MemberRole::Commenter,
-        MemberRole::Editor,
+        Role::Viewer,
+        Role::Commenter,
+        Role::Editor,
     ] {
         peer.governance_mut()
             .set_member_role(cert.user_public_key, role, &host_key, now)

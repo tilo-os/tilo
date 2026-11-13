@@ -37,7 +37,7 @@ use tilo_peer_state::join_ledger::request_digest;
 use tilo_relay_protocol::directory::{
     DirectoryEntry, DoorJoin, DoorReport, Face, Listing, MAX_FACES, door_path,
 };
-use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice, WorkspaceRole};
+use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
 
@@ -187,12 +187,12 @@ fn faces(
 /// The part an invitation hands a member who holds `role`, so that redeeming
 /// it leaves them as they are. The owner holds the workspace whatever an
 /// invitation names: none is theirs.
-const fn invited_part(role: Role) -> Option<WorkspaceRole> {
+const fn invited_part(role: Role) -> Option<Role> {
     match role {
-        Role::Viewer => Some(WorkspaceRole::Viewer),
-        Role::Commenter => Some(WorkspaceRole::Commenter),
-        Role::Editor => Some(WorkspaceRole::Editor),
-        Role::Moderator => Some(WorkspaceRole::Moderator),
+        Role::Viewer => Some(Role::Viewer),
+        Role::Commenter => Some(Role::Commenter),
+        Role::Editor => Some(Role::Editor),
+        Role::Moderator => Some(Role::Moderator),
         Role::Owner => None,
     }
 }
@@ -200,21 +200,11 @@ const fn invited_part(role: Role) -> Option<WorkspaceRole> {
 /// The part a listing hands everyone who joins through the door. A listing hands
 /// out no more than an editor ([`DoorPolicy::checked`] refuses a moderator's or
 /// an owner's), so one written another way still hands out no governance.
-const fn listed_part(role: Role) -> WorkspaceRole {
+const fn listed_part(role: Role) -> Role {
     match role {
-        Role::Viewer => WorkspaceRole::Viewer,
-        Role::Commenter => WorkspaceRole::Commenter,
-        Role::Editor | Role::Moderator | Role::Owner => WorkspaceRole::Editor,
-    }
-}
-
-/// The part the wire names, as the workspace's policy names it.
-const fn action_role(role: WorkspaceRole) -> Role {
-    match role {
-        WorkspaceRole::Viewer => Role::Viewer,
-        WorkspaceRole::Commenter => Role::Commenter,
-        WorkspaceRole::Editor => Role::Editor,
-        WorkspaceRole::Moderator => Role::Moderator,
+        Role::Viewer => Role::Viewer,
+        Role::Commenter => Role::Commenter,
+        Role::Editor | Role::Moderator | Role::Owner => Role::Editor,
     }
 }
 
@@ -343,7 +333,7 @@ impl Workspaces {
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         let settling = ListingPolicy {
             description: listing.description,
-            default_role: action_role(listing.default_role),
+            default_role: listing.default_role,
         };
         let door = self
             .settle_door(workspace, device, |door| {
@@ -709,7 +699,7 @@ impl Workspaces {
                         &host,
                         IssueInvitationRequest {
                             request_id: rand::random(),
-                            role: super::pages::member_role(role),
+                            role,
                             recipient_user_public_key: Some(user),
                             invitee_name: tilo_user_identity::display_name(&join.display_name)
                                 .ok()
@@ -744,7 +734,7 @@ impl Workspaces {
     fn door_grant(
         &self,
         workspace: &str,
-        role: WorkspaceRole,
+        role: Role,
         now: u64,
         token: &str,
     ) -> Result<PreAdmission, DoorRefusal> {
@@ -832,7 +822,7 @@ pub(super) mod tests {
     fn member(key: u8, name: &str, removed: bool) -> tilo_peer_state::GovernedMember {
         tilo_peer_state::GovernedMember {
             user_public_key: [key; 32],
-            role: tilo_peer_state::join::MemberRole::Commenter,
+            role: tilo_peer_state::join::Role::Commenter,
             display_name: Some(name.into()),
             active_device_keys: Vec::new(),
             removed,
@@ -869,9 +859,9 @@ mod door_tests {
         ActionHost as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,
     };
-    use tilo_peer_state::join::MemberRole;
+    use tilo_peer_state::join::Role;
     use tilo_relay_protocol::directory::{DoorJoin, Listing};
-    use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
+    use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission};
     use tilo_relay_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::DeviceCert;
 
@@ -996,7 +986,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1095,12 +1085,12 @@ mod door_tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "Coffee");
         assert_eq!(listed[0].description, "Talk about coffee");
-        assert_eq!(listed[0].default_role, WorkspaceRole::Commenter);
+        assert_eq!(listed[0].default_role, Role::Commenter);
 
         for _ in 0..2 {
             let (reply, cert) = walk_in(workspaces, &workspace).await;
             match reply.unwrap() {
-                JoinReply::Admitted { role, .. } => assert_eq!(role, WorkspaceRole::Commenter),
+                JoinReply::Admitted { role, .. } => assert_eq!(role, Role::Commenter),
                 other => panic!("the door admits at once: {other:?}"),
             }
             let members = workspaces.summary(&workspace).await.unwrap().members;
@@ -1108,7 +1098,7 @@ mod door_tests {
                 .iter()
                 .find(|member| member.user_public_key == cert.user_public_key)
                 .expect("a member now");
-            assert_eq!(joined.role, MemberRole::Commenter);
+            assert_eq!(joined.role, Role::Commenter);
         }
 
         // Another default from now on: the next person gets it.
@@ -1118,7 +1108,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: "Talk about coffee".into(),
-                    default_role: WorkspaceRole::Viewer,
+                    default_role: Role::Viewer,
                 },
             )
             .await
@@ -1128,7 +1118,7 @@ mod door_tests {
             matches!(
                 reply.unwrap(),
                 JoinReply::Admitted {
-                    role: WorkspaceRole::Viewer,
+                    role: Role::Viewer,
                     ..
                 }
             ),
@@ -1174,7 +1164,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1183,7 +1173,7 @@ mod door_tests {
         assert!(matches!(
             reply.unwrap(),
             JoinReply::Admitted {
-                role: WorkspaceRole::Editor,
+                role: Role::Editor,
                 ..
             }
         ));
@@ -1219,7 +1209,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Viewer,
+                    default_role: Role::Viewer,
                 },
             )
             .await
@@ -1263,7 +1253,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1299,7 +1289,7 @@ mod door_tests {
             matches!(
                 walk_in_as(workspaces, &workspace, &join, &guest).await,
                 Ok(JoinReply::Admitted {
-                    role: WorkspaceRole::Editor,
+                    role: Role::Editor,
                     ..
                 })
             ),
@@ -1326,7 +1316,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1400,7 +1390,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1482,7 +1472,7 @@ mod door_tests {
             workspaces.listing(&workspace).await,
             Some(Listing {
                 description: "Open to look at".into(),
-                default_role: WorkspaceRole::Viewer,
+                default_role: Role::Viewer,
             })
         );
         assert_eq!(workspaces.published_rooms().await, vec![workspace.clone()]);
@@ -1523,7 +1513,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1570,7 +1560,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1600,7 +1590,7 @@ mod door_tests {
                     &owner,
                     Listing {
                         description: String::new(),
-                        default_role: WorkspaceRole::Moderator,
+                        default_role: Role::Moderator,
                     },
                 )
                 .await
@@ -1622,7 +1612,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: String::new(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1683,7 +1673,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: "Coffee and tea".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -1772,7 +1762,7 @@ mod door_tests {
                 &owner,
                 Listing {
                     description: "Coffee and tea".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await

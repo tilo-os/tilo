@@ -18,7 +18,7 @@
 use super::fixtures::{door_join_as, governor, test_host};
 use super::*;
 use tilo_relay_protocol::entering::{Entered, Entering, Entry, Through};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 /// A device of the person whose root is `root`, certified at `issued_at_ns`
@@ -46,7 +46,7 @@ async fn join_on_a_tab_that_ends(
     host: &DeviceCert,
     workspace: &str,
     root: &SigningKey,
-    role: WorkspaceRole,
+    role: Role,
 ) -> DeviceCert {
     let now = tilo_clock::unix_now_ns();
     let (tab, tab_cert) = device_of(root, now.saturating_sub(1_000_000_000), now + 2_000_000_000);
@@ -142,7 +142,7 @@ async fn a_new_tab_comes_back_at_the_part_they_hold(
     let Entered::Admitted { role, .. } = entered else {
         panic!("the returning person is let in: {entered:?}");
     };
-    assert_eq!(role, WorkspaceRole::Moderator, "with the part they hold");
+    assert_eq!(role, Role::Moderator, "with the part they hold");
     let members = workspaces.summary(workspace).await.unwrap().members;
     assert_eq!(
         members
@@ -170,7 +170,7 @@ async fn a_member_whose_every_device_expired_is_still_a_member_on_each_way_back(
         &cert,
         &workspace,
         &root,
-        WorkspaceRole::Moderator,
+        Role::Moderator,
     )
     .await;
     let registry = &workspaces.inner.host.workspaces;

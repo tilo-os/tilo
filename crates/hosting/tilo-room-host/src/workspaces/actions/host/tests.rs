@@ -15,7 +15,7 @@ use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
     RemoteActionMessage, RemoteActionTarget,
 };
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay_session::workspaces::{
     ATTACH_HOST, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM, DETACH_HOST, ENTER_ROOM,
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_REVOCATIONS,
@@ -147,7 +147,7 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
         .into_iter()
         .find(|pending| pending.invite_id == first.invite_id)
         .expect("the first invitation is pending");
-    assert_eq!(pending.role, MemberRole::Commenter);
+    assert_eq!(pending.role, Role::Commenter);
     assert_eq!(
         pending.recipient_user_public_key,
         Some(guest.user_public_key)

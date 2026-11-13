@@ -58,7 +58,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::directory::DoorRefused;
-use crate::workspaces::WorkspaceRole;
+use crate::workspaces::Role;
 
 /// How many entries a host runs at once, across every connection: the same
 /// bound its iroh join service holds its exchanges to.
@@ -193,7 +193,7 @@ pub enum Entered {
         /// Its name.
         name: String,
         /// What the person may do there.
-        role: WorkspaceRole,
+        role: Role,
         /// The channel group whose keys seal the workspace's shared desktop
         /// record, as the workspace's governance decides it now: the
         /// workspace's own group ([`collab_types::workspace_scope`]) while

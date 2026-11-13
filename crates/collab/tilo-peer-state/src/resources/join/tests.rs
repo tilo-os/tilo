@@ -40,7 +40,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         workspace_id: 42,
         room: peer.workspace_id().into(),
         issuer: member.clone(),
-        role: MemberRole::Editor,
+        role: Role::Editor,
         nonce: [17; 16],
         recipient_user_public_key: Some(member.user_public_key),
         invitee_name: Some("A real guest 🦀".into()),
@@ -88,7 +88,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         version: 1,
         invite_id: verified.invite_id(),
         device_cert: member,
-        role: MemberRole::Editor,
+        role: Role::Editor,
         room: peer.workspace_id().into(),
         workspace_id: 42,
         host: peer.owner_certificates()[0].clone(),
@@ -242,9 +242,9 @@ fn owner_bootstrap_wire_keeps_response_tags_and_role_bytes() {
         );
     }
     for (role, wire) in [
-        (MemberRole::Viewer, vec![0]),
-        (MemberRole::Commenter, vec![1]),
-        (MemberRole::Editor, vec![2]),
+        (Role::Viewer, vec![0]),
+        (Role::Commenter, vec![1]),
+        (Role::Editor, vec![2]),
     ] {
         assert_eq!(postcard::to_allocvec(&role).unwrap(), wire);
     }

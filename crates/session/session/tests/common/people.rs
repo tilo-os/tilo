@@ -48,7 +48,7 @@ use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_relay_protocol::directory::{DoorJoin, Listing, door_path};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
@@ -202,7 +202,7 @@ impl Site {
 
     /// Make the workspace public with `role` for everyone who joins at the door, as its owner does:
     /// from now on the door admits people.
-    pub fn publish(&self, role: WorkspaceRole) {
+    pub fn publish(&self, role: Role) {
         self.runtime
             .block_on(self.workspaces.publish(
                 &self.workspace,
@@ -252,7 +252,7 @@ impl Site {
 
     /// Make `person` one of the workspace's `role` , as its owner does: a moderator invites and
     /// removes, an editor writes.
-    pub fn set_role(&self, person: [u8; 32], role: WorkspaceRole) {
+    pub fn set_role(&self, person: [u8; 32], role: Role) {
         self.runtime
             .block_on(self.workspaces.set_member_role(
                 &self.workspace,
@@ -260,7 +260,7 @@ impl Site {
                 tilo_relay::workspaces::SetMemberRoleRequest {
                     request_id: fresh_id(),
                     user_public_key: person,
-                    role: member_role(role),
+                    role,
                 },
             ))
             .expect("the workspace's owner sets a member's role");
@@ -268,7 +268,7 @@ impl Site {
 
     /// The invitation the site's owner issues for `person` , as a person invites someone into their
     /// workspace: it binds the person's root, so only their devices redeem it.
-    pub fn invite(&self, person: [u8; 32], role: WorkspaceRole) -> Invitation {
+    pub fn invite(&self, person: [u8; 32], role: Role) -> Invitation {
         let issued = self
             .runtime
             .block_on(self.workspaces.issue(
@@ -276,7 +276,7 @@ impl Site {
                 &self.host,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
                     request_id: fresh_id(),
-                    role: member_role(role),
+                    role,
                     recipient_user_public_key: Some(person),
                     invitee_name: None,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
@@ -693,7 +693,7 @@ pub fn joined_carrying(
 ) -> Device {
     let mut device = person.device(label);
     install(&device);
-    let invitation = site.invite(person.public, WorkspaceRole::Editor);
+    let invitation = site.invite(person.public, Role::Editor);
     device.join(&invitation);
     device.wait_holding(&site.workspace);
     device
@@ -717,7 +717,7 @@ fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Perso
     share_the_fleet(&ada, &[&laptop, &phone]);
     for device in [&mut laptop, &mut phone] {
         install(device);
-        let invitation = site.invite(ada.public, WorkspaceRole::Editor);
+        let invitation = site.invite(ada.public, Role::Editor);
         device.join(&invitation);
         device.wait_holding(&site.workspace);
     }
@@ -2335,17 +2335,6 @@ fn manifest_of(app: &str) -> String {
         kept.push('\n');
     }
     kept
-}
-
-/// The role a member holds in a workspace, as [`WorkspaceRole`] names the workspace's listing of
-/// it.
-fn member_role(role: WorkspaceRole) -> tilo_workspace_join::MemberRole {
-    match role {
-        WorkspaceRole::Viewer => tilo_workspace_join::MemberRole::Viewer,
-        WorkspaceRole::Commenter => tilo_workspace_join::MemberRole::Commenter,
-        WorkspaceRole::Editor => tilo_workspace_join::MemberRole::Editor,
-        WorkspaceRole::Moderator => tilo_workspace_join::MemberRole::Moderator,
-    }
 }
 
 /// An id of this test's own, distinct from every other it makes: what a request is remembered by.

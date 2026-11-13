@@ -49,7 +49,7 @@ use tilo_relay_client::{
     DeviceSigner, Host, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
 };
 use tilo_relay_protocol::workspaces::{
-    JoinReply, PreAdmission, WorkspaceNotice, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+    JoinReply, PreAdmission, Role, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
@@ -375,7 +375,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         WorkspacesRequest::Invite {
             workspace: acme.workspace.clone(),
             request_id: [1; 32],
-            role: WorkspaceRole::Editor,
+            role: Role::Editor,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: Some("Ada".into()),
             wait_list_entry: None,
@@ -425,7 +425,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         asked.name, "Acme",
         "the invitation admits the person who holds it"
     );
-    assert_eq!(asked.role, WorkspaceRole::Editor);
+    assert_eq!(asked.role, Role::Editor);
     bo.send(Cmd::Join(acme.workspace_id)).unwrap();
     let mut written = automerge::AutoCommit::load(&snapshot).unwrap();
     written.load_incoming(&change).unwrap();
@@ -438,7 +438,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let token = b"one-time token for cy@acme.example";
     let mut grant = PreAdmission {
         workspace: acme.workspace.clone(),
-        role: WorkspaceRole::Editor,
+        role: Role::Editor,
         token_sha256: Sha256::digest(token).into(),
         label: "cy@acme.example".into(),
         expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
@@ -492,7 +492,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     .await;
     let admitted = admitted.unwrap();
     assert_eq!(admitted.name, "Acme");
-    assert_eq!(admitted.role, WorkspaceRole::Editor);
+    assert_eq!(admitted.role, Role::Editor);
     cy_page.close();
     let WorkspacesReply::Notices(notices) = workspaces(
         &ada,

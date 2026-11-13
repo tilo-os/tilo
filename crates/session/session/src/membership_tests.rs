@@ -12,7 +12,6 @@ use tilo_action_policy::{Change, Grant, Grantee, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_network_actor::HostIdentity;
-use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_session_client::engine::Engine;
@@ -170,7 +169,7 @@ fn workspace_signed_through(
 }
 
 /// The role the workspace `WORKSPACE` gives `person` , as its governance here has it.
-fn role_of(engine: &Engine, person: &str) -> Option<MemberRole> {
+fn role_of(engine: &Engine, person: &str) -> Option<Role> {
     engine
         .people(WORKSPACE)
         .expect("the workspace's people")
@@ -271,7 +270,7 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
     let desks = the_owner_admitted_ada();
     assert_eq!(
         role_of(&desks.desk, &desks.person),
-        Some(MemberRole::Editor),
+        Some(Role::Editor),
         "the workspace has her as an editor"
     );
 
@@ -314,7 +313,7 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
     }
     assert_eq!(
         role_of(&desks.desk, &desks.person),
-        Some(MemberRole::Moderator),
+        Some(Role::Moderator),
         "this desk's workspace has her as a moderator"
     );
     let policy = desks
@@ -378,7 +377,7 @@ fn the_workspace_takes_the_people_its_settings_change() {
     let membership = Membership::of(&engine, workspace.id());
     assert_eq!(
         role_of(&engine, &person),
-        Some(MemberRole::Editor),
+        Some(Role::Editor),
         "the workspace has her as an editor"
     );
 
@@ -408,7 +407,7 @@ fn the_workspace_takes_the_people_its_settings_change() {
         .expect("the workspace takes the change");
     assert_eq!(
         role_of(&engine, &person),
-        Some(MemberRole::Moderator),
+        Some(Role::Moderator),
         "the workspace has made her a moderator"
     );
 
@@ -464,7 +463,7 @@ fn the_workspace_takes_the_people_its_settings_change() {
         .expect("the workspace takes her back");
     assert_eq!(
         role_of(&engine, &person),
-        Some(MemberRole::Editor),
+        Some(Role::Editor),
         "the workspace has her again"
     );
 }
@@ -864,7 +863,7 @@ fn a_role_the_people_tab_sets_reaches_the_other_members_device() {
             &desk.ada,
             desk.now
         ),
-        Some(MemberRole::Commenter),
+        Some(Role::Commenter),
         "her device takes the role the person set here"
     );
 }
@@ -1436,7 +1435,7 @@ fn her_device_takes(
     hers: &Engine,
     person: &str,
     now: tilo_clock::time::SystemTime,
-) -> Option<MemberRole> {
+) -> Option<Role> {
     let mine = Engine::open(
         identity(cert, key),
         Some(state),
@@ -1534,10 +1533,7 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
                 &her_person,
                 now
             ),
-            expected.map(|role| match role {
-                Role::Moderator => MemberRole::Moderator,
-                other => panic!("the test set {other:?}"),
-            }),
+            expected,
             "her device has her as the workspace does"
         );
     }
@@ -1665,7 +1661,7 @@ fn invite_from_this_device(
     let now = tilo_clock::wall();
     let request = IssueInvitationRequest {
         request_id: [0x71; 32],
-        role: MemberRole::Editor,
+        role: Role::Editor,
         recipient_user_public_key: None,
         invitee_name: Some("Ada".into()),
         expires_at_ns: tilo_clock::unix_now_ns()

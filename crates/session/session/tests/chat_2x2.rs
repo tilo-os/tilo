@@ -19,7 +19,7 @@
 )]
 
 use crate::common::people::{Device, Person, Site};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 
 /// A studio and the two people in it, each on a laptop and a phone: Ada's site hosts the workspace
 /// and lets Chat author its records, Ada and Bob join as editors, and Chat is installed and open on
@@ -40,7 +40,7 @@ impl Studio {
         let ada = Person::new("Ada");
         let bob = Person::new("Bob");
         let site = Site::start(&ada, "Studio");
-        site.publish(WorkspaceRole::Editor);
+        site.publish(Role::Editor);
         // The workspace's host lets Chat author its records, as the host of a workspace does before
         // its people open apps there: Chat writes the people who introduced themselves into its own
         // record, and a member's device cannot grant that for itself.

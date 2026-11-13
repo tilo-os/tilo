@@ -497,16 +497,6 @@ pub(crate) use governed_rows::WorkspaceDelegationPermissions;
 pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
 pub(crate) use invitation_ledger::LedgerReceipt;
 
-fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
-    match role {
-        Role::Viewer => Some(crate::join::MemberRole::Viewer),
-        Role::Commenter => Some(crate::join::MemberRole::Commenter),
-        Role::Editor => Some(crate::join::MemberRole::Editor),
-        Role::Moderator => Some(crate::join::MemberRole::Moderator),
-        Role::Owner => None,
-    }
-}
-
 /// The map at `key` of a governed workspace document.
 fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
     doc.get(ROOT, key)

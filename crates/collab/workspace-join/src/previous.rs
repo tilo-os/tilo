@@ -10,7 +10,7 @@
 //! module because the challenge version names it, never by guessing.
 
 use super::{
-    DeviceCert, InviteGrant, Inviter, JoinChallengeRequest, MemberRole, MembershipChallengeRequest,
+    DeviceCert, InviteGrant, Inviter, JoinChallengeRequest, Role, MembershipChallengeRequest,
     MembershipCompleteRequest, TransportHint, VerifiedJoin, VerifiedRedemption, tagged_digest,
     validate_certificate, validate_inviter,
 };
@@ -41,7 +41,7 @@ struct Grant {
     authority: Cert,
     issuer: Cert,
     delegation: Option<Delegation>,
-    role: MemberRole,
+    role: Role,
     nonce: [u8; 16],
     recipient_user_public_key: Option<[u8; 32]>,
     invitee_name: Option<String>,

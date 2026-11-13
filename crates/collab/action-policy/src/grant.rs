@@ -126,6 +126,43 @@ impl Role {
             Self::Owner => "Owner",
         }
     }
+
+    /// The roles a member can be given, least to most. The owner's authority is
+    /// the workspace's own and is never handed out.
+    pub const ASSIGNABLE: [Self; 4] =
+        [Self::Viewer, Self::Commenter, Self::Editor, Self::Moderator];
+
+    /// Whether a member can be given this role ([`Self::ASSIGNABLE`]).
+    #[must_use]
+    pub const fn assignable(self) -> bool {
+        !matches!(self, Self::Owner)
+    }
+
+    /// The name a role is stored and asked for by: `viewer`, `commenter`,
+    /// `editor`, `moderator`, `owner`.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Viewer => "viewer",
+            Self::Commenter => "commenter",
+            Self::Editor => "editor",
+            Self::Moderator => "moderator",
+            Self::Owner => "owner",
+        }
+    }
+
+    /// The role named by [`Self::key`].
+    #[must_use]
+    pub fn parse(key: &str) -> Option<Self> {
+        match key.trim() {
+            "viewer" => Some(Self::Viewer),
+            "commenter" => Some(Self::Commenter),
+            "editor" => Some(Self::Editor),
+            "moderator" => Some(Self::Moderator),
+            "owner" => Some(Self::Owner),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Role {

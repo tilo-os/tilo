@@ -12,7 +12,7 @@
 use super::super::{Browser, CatalogueQuery, DeviceCapabilities, Duration, Path, Replica, Seed};
 use super::super::{enrol, record_provider, start_browser};
 use tilo_agent_participant::ReplicaActor;
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -237,7 +237,7 @@ pub async fn run(bundle: &str) {
         &host,
         &workspace.workspace,
         &reader,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
 
@@ -249,7 +249,7 @@ pub async fn run(bundle: &str) {
         &host,
         &workspace.workspace,
         &probe_device,
-        MemberRole::Viewer,
+        Role::Viewer,
     )
     .await;
     let mut probe = open_admitted_peer(&hosted, &probe_device, &host, &workspace.workspace).await;

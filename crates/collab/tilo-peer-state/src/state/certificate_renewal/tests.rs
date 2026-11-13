@@ -3,7 +3,7 @@
 use crate::StatePeer;
 use crate::admission_tests::seeded;
 use crate::join::{
-    InviteGrant, JoinChallenge, MemberRole, MembershipChallengeRequest, MembershipCompleteRequest,
+    InviteGrant, JoinChallenge, Role, MembershipChallengeRequest, MembershipCompleteRequest,
     issue_invitation, sign_join_proof, sign_membership_proof,
 };
 use crate::join_ledger::{Governed, JoinLedger};
@@ -54,7 +54,7 @@ fn admit(
             workspace_id: 7,
             room: peer.workspace_id().into(),
             issuer: owner,
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [53; 16],
             recipient_user_public_key: Some(member.user_public_key),
             invitee_name: Some("Editor".into()),
@@ -314,6 +314,6 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         .membership_complete(&workspace, renewed.device_public_key, &request, now_ns)
         .unwrap();
     assert_eq!(bootstrap.device_cert, renewed);
-    assert_eq!(bootstrap.role, MemberRole::Editor);
+    assert_eq!(bootstrap.role, Role::Editor);
     assert!(bootstrap.certified_roster.contains(&renewed));
 }

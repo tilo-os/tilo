@@ -217,7 +217,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
             &host_device.cert,
             tilo_relay::workspaces::IssueInvitationRequest {
                 request_id: [9; 32],
-                role: tilo_peer_state::join::MemberRole::Editor,
+                role: tilo_peer_state::join::Role::Editor,
                 recipient_user_public_key: Some(user),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,

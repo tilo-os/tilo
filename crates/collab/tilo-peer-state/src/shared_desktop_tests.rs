@@ -16,7 +16,7 @@ use tilo_desktop_model::{
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
+use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
 use crate::owner::testing::member_certificate as certificate;
 use crate::owner::testing::{now, receive};
 use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, seed_workspace};
@@ -71,7 +71,7 @@ fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
 
 /// A workspace whose desktop holds the owner's window 1, and a member of another
 /// person holding `role` in it, with their device key and certificate.
-fn workspace_with(role: MemberRole) -> (StatePeer, String, SigningKey, DeviceCert) {
+fn workspace_with(role: Role) -> (StatePeer, String, SigningKey, DeviceCert) {
     let owner_root = SigningKey::from_bytes(&[1; 32]);
     let owner_key = SigningKey::from_bytes(&[2; 32]);
     let owner = certificate(&owner_root, &owner_key, "owner");
@@ -216,7 +216,7 @@ fn write_of(
 fn a_view_of_the_layout_is_its_persons_to_write() {
     use tilo_desktop_model::person_view::{PersonView, record_of};
 
-    let (mut peer, owner, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
     let view = PersonView {
         front_strip: Some(StripId(10)),
         ..PersonView::default()
@@ -251,7 +251,7 @@ fn windows(peer: &StatePeer) -> Vec<u64> {
 /// owner's.
 #[test]
 fn an_editor_closes_their_own_window_but_not_someone_elses() {
-    let (mut peer, owner, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
     let person = hex::encode(guest.user_public_key);
     let opened = write(&peer, &key, 1, &desktop(&[(1, &owner), (2, &person)]));
     receive(&mut peer, &guest, opened).expect("an editor opens a window");
@@ -270,7 +270,7 @@ fn an_editor_closes_their_own_window_but_not_someone_elses() {
 /// A moderator closes anyone's window.
 #[test]
 fn a_moderator_closes_someone_elses_window() {
-    let (mut peer, _, key, guest) = workspace_with(MemberRole::Moderator);
+    let (mut peer, _, key, guest) = workspace_with(Role::Moderator);
     let closes_owners = write(&peer, &key, 1, &desktop(&[]));
     receive(&mut peer, &guest, closes_owners).expect("a moderator closes any window");
     assert!(windows(&peer).is_empty());
@@ -355,7 +355,7 @@ fn drawn(desk: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
 /// changes it.
 #[test]
 fn another_devices_page_reaches_the_desk_and_its_rename_follows() {
-    let (mut peer, owner, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
     let person = hex::encode(guest.user_public_key);
     let (_surface, desk) = DesktopSurface::new(DesktopTree::default(), 7, Box::new(Notices));
 

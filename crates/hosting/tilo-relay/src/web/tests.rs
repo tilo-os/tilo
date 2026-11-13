@@ -7,7 +7,7 @@ use super::*;
 use crate::RelayConfig;
 use crate::peer::FetchGrants as _;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -336,7 +336,7 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
             &host.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await
@@ -735,7 +735,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
             &owner,
             crate::workspaces::IssueInvitationRequest {
                 request_id: [1; 32],
-                role: MemberRole::Viewer,
+                role: Role::Viewer,
                 recipient_user_public_key: Some(joined.user_public_key),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
@@ -1670,7 +1670,7 @@ async fn invitation_only_host(
             &host.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Coffee and tea".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

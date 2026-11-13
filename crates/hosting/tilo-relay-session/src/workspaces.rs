@@ -26,7 +26,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget,
 };
-use tilo_workspace_join::{GovernedMember, MemberRole};
+use tilo_workspace_join::{GovernedMember, Role};
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
@@ -478,7 +478,7 @@ pub struct SetMemberRoleRequest {
     /// The member's person.
     pub user_public_key: [u8; 32],
     /// Their new role.
-    pub role: MemberRole,
+    pub role: Role,
 }
 
 /// Remove a member and every device of theirs.

@@ -20,7 +20,7 @@ use super::{
 };
 use std::time::{Duration, Instant};
 use tilo_agent_participant::{ReplicaActor, Seed};
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox as _;
 
 /// The messages the chat is grown to before the timed posts: a part of about
@@ -171,7 +171,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
         &host,
         &workspace.workspace,
         &guest_device,
-        MemberRole::Editor,
+        Role::Editor,
     )
     .await;
     let mut reporter =

@@ -38,7 +38,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::workspaces::WorkspaceRole;
+use crate::workspaces::Role;
 
 /// The directory of a host, below its API prefix.
 pub const DIRECTORY_PATH: &str = "/directory";
@@ -94,7 +94,7 @@ pub struct Listing {
     /// What the workspace is, in a sentence or two.
     pub description: String,
     /// The role everyone who joins through the directory gets.
-    pub default_role: WorkspaceRole,
+    pub default_role: Role,
 }
 
 /// Why a listing cannot be published.
@@ -118,7 +118,10 @@ impl Listing {
         {
             return Err(ListingError::Description);
         }
-        if self.default_role == WorkspaceRole::Moderator {
+        if !matches!(
+            self.default_role,
+            Role::Viewer | Role::Commenter | Role::Editor
+        ) {
             return Err(ListingError::Role);
         }
         Ok(Self {
@@ -150,7 +153,7 @@ pub struct DirectoryEntry {
     #[serde(default)]
     pub description: String,
     /// The role people who join get.
-    pub default_role: WorkspaceRole,
+    pub default_role: Role,
     /// Its door, relative to the directory's address (or absolute).
     pub door: String,
     #[serde(default)]
@@ -406,7 +409,7 @@ mod tests {
             workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
             name: "Coffee".into(),
             description: String::new(),
-            default_role: WorkspaceRole::Commenter,
+            default_role: Role::Commenter,
             door: door_path("6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71"),
             here: Vec::new(),
             here_count: 0,
@@ -440,7 +443,7 @@ mod tests {
     fn a_listing_is_text_and_hands_out_no_moderators() {
         let listing = Listing {
             description: "  A place for coffee.\nAnd tea.  ".into(),
-            default_role: WorkspaceRole::Commenter,
+            default_role: Role::Commenter,
         };
         assert_eq!(
             listing.checked().map(|listing| listing.description),
@@ -448,17 +451,17 @@ mod tests {
         );
         let moderators = Listing {
             description: String::new(),
-            default_role: WorkspaceRole::Moderator,
+            default_role: Role::Moderator,
         };
         assert_eq!(moderators.checked(), Err(ListingError::Role));
         let long = Listing {
             description: "x".repeat(MAX_DESCRIPTION_CHARS + 1),
-            default_role: WorkspaceRole::Viewer,
+            default_role: Role::Viewer,
         };
         assert_eq!(long.checked(), Err(ListingError::Description));
         let control = Listing {
             description: "bell\u{7}".into(),
-            default_role: WorkspaceRole::Viewer,
+            default_role: Role::Viewer,
         };
         assert_eq!(control.checked(), Err(ListingError::Description));
     }
@@ -517,7 +520,7 @@ mod tests {
         .unwrap();
         let listed = &page.workspaces[0];
         assert!(listed.community);
-        assert_eq!(listed.default_role, WorkspaceRole::Editor);
+        assert_eq!(listed.default_role, Role::Editor);
         assert_eq!(listed.here_count, 12);
         assert!(listed.here.is_empty());
     }

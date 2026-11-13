@@ -34,7 +34,7 @@ use tilo_actions::remote::{
     workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::{
@@ -102,13 +102,7 @@ async fn subscribed(relay: &Relay, device: &TestDevice, workspace_id: u64) -> Re
 
 /// Admit `member`'s person to `room` as `role`, through an invitation the
 /// relay's own device issues and `member`'s device redeems.
-async fn admit(
-    relay: &Relay,
-    host: &TestDevice,
-    member: &TestDevice,
-    room: &str,
-    role: MemberRole,
-) {
+async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str, role: Role) {
     let issued = invitation(relay.workspaces().unwrap(), host, room, role, member).await;
     redeem(member, &issued).await.unwrap();
 }
@@ -118,7 +112,7 @@ async fn invitation(
     workspaces: &Workspaces,
     host: &TestDevice,
     room: &str,
-    role: MemberRole,
+    role: Role,
     recipient: &TestDevice,
 ) -> IssuedInvitation {
     let mut request_id = [0; 32];
@@ -425,14 +419,7 @@ impl TwoTenants {
         // Ann invites in Acme: the owner grants her the room's `invite`
         // governance action, as an owner hands a member a part of running
         // their room.
-        admit(
-            &relay,
-            &host,
-            &ann_laptop,
-            &acme.workspace,
-            MemberRole::Editor,
-        )
-        .await;
+        admit(&relay, &host, &ann_laptop, &acme.workspace, Role::Editor).await;
         let who = hex::encode(ann.user_pk);
         let grant = Grant::new(
             format!("tenant-isolation:invite:{who}"),
@@ -446,19 +433,12 @@ impl TwoTenants {
             .put_room_grants(&acme.workspace, &host.cert, [0x11; 32], vec![grant])
             .await
             .unwrap();
-        admit(
-            &relay,
-            &host,
-            &bob_phone,
-            &globex.workspace,
-            MemberRole::Editor,
-        )
-        .await;
+        admit(&relay, &host, &bob_phone, &globex.workspace, Role::Editor).await;
         let carol_invitation = invitation(
             workspaces,
             &host,
             &globex.workspace,
-            MemberRole::Editor,
+            Role::Editor,
             &carol_phone,
         )
         .await;
@@ -892,7 +872,7 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
                 &agent.cert,
                 IssueInvitationRequest {
                     request_id: [0xB1; 32],
-                    role: MemberRole::Viewer,
+                    role: Role::Viewer,
                     recipient_user_public_key: None,
                     invitee_name: None,
                     inviter_name: None,

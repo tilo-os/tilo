@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use tilo_api::{Config, Server, store::Store};
 use tilo_relay_protocol::directory::Listing;
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, SignInProof};
 
 /// A reply's status and JSON body.
@@ -156,7 +156,7 @@ pub async fn api_on_relay_limiting(
             workspaces.serving_certificate(),
             Listing {
                 description: "Everyone's".into(),
-                default_role: WorkspaceRole::Editor,
+                default_role: Role::Editor,
             },
         )
         .await

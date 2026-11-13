@@ -422,7 +422,7 @@ impl NativeWorkspaceOwner {
             if enrollment.local_device().user_public_key == bootstrap.host.user_public_key {
                 collab_types::Role::Owner
             } else {
-                enrollment.verified_join().grant().role.into()
+                enrollment.verified_join().grant().role
             };
         if role != expected {
             return Err("actual admitted role differs from signed enrollment role".into());

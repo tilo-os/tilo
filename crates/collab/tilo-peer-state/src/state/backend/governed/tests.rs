@@ -159,7 +159,7 @@ fn governed_import_preserves_real_signed_identity_admission_and_certificate_fail
         user_public_key: foreign.user_public_key,
         device_public_key: foreign.device_public_key,
         request_id: [8; 32],
-        role: crate::join::MemberRole::Viewer,
+        role: crate::join::Role::Viewer,
     });
     set_identity(
         &mut workspace,
@@ -232,7 +232,7 @@ fn governed_import_keeps_a_minted_grants_issuer() {
         user_public_key: minted.user_public_key,
         device_public_key: minted.device_public_key,
         request_id: [8; 32],
-        role: crate::join::MemberRole::Editor,
+        role: crate::join::Role::Editor,
     });
     let mut workspace = peer.admitted_workspace().unwrap().clone();
     set_identity(

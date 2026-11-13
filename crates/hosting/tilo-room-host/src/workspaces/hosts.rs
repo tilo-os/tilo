@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-use tilo_peer_state::join::{MemberRole, TransportHint};
+use tilo_peer_state::join::{Role, TransportHint};
 use tilo_relay_session::client::RelayClient;
 use tilo_relay_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedWorkspace, UNHOST_ROOM, ask_host,
@@ -224,7 +224,7 @@ impl Workspaces {
             let governed = governed.lock().await;
             let mut bootstrap = governed
                 .governed()
-                .bootstrap([0; 32], member.clone(), MemberRole::Editor)
+                .bootstrap([0; 32], member.clone(), Role::Editor)
                 .map_err(|error| error.to_string())?;
             // The host follows governance alone: records reach it over the
             // attach session, and leaving them here keeps the hand-over

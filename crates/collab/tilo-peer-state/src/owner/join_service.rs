@@ -305,7 +305,7 @@ impl NativeWorkspaceOwner {
                 }
                 view.peer().require_member_writer(key, now)?;
                 view.peer()
-                    .require_invitation_authority(key, request.role.into(), now)?;
+                    .require_invitation_authority(key, request.role, now)?;
                 let issued = {
                     let governed = Governed {
                         peer: view.peer().into(),

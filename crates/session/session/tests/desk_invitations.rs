@@ -35,10 +35,7 @@ fn a_member_whose_part_does_not_let_them_invite_is_refused() {
     let (site, _ada, bob, _ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
     let mut bob_laptop = bob.device("Bob's laptop");
     bob_laptop.install_files();
-    let invitation = site.invite(
-        bob.public,
-        tilo_relay_protocol::workspaces::WorkspaceRole::Viewer,
-    );
+    let invitation = site.invite(bob.public, tilo_relay_protocol::workspaces::Role::Viewer);
     bob_laptop.join(&invitation);
     bob_laptop.wait_holding(&site.workspace);
     site.wait_for_member(bob.public);

@@ -598,7 +598,7 @@ pub fn workspace_role_grants(workspace: &str, granted_by: &Grantee) -> Vec<Grant
 
 /// The id prefix of `role`'s built-in grants: `role:<role>`.
 fn role_grant_prefix(role: Role) -> String {
-    format!("role:{}", role.name().to_ascii_lowercase())
+    format!("role:{}", role.key())
 }
 
 /// Whether `grant` is one of a built-in role's grants: given to the role

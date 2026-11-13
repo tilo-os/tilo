@@ -8,12 +8,12 @@
 )]
 
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_protocol::AuthenticatedPeer;
 use tilo_relay_protocol::operator::WaitListStanding;
 use tilo_relay_protocol::voice::{CallOperation, CallState};
 use tilo_relay_protocol::workspaces::{
-    JoinReply, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+    JoinReply, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::{DeviceCert, sign_device_cert};
 
@@ -86,7 +86,7 @@ async fn set_role(
     workspace: &str,
     by: &DeviceCert,
     person: &DeviceCert,
-    role: MemberRole,
+    role: Role,
 ) {
     workspaces
         .set_member_role(workspace, by, role_request(person, role, rand::random()))
@@ -96,7 +96,7 @@ async fn set_role(
 
 fn role_request(
     person: &DeviceCert,
-    role: MemberRole,
+    role: Role,
     request_id: [u8; 32],
 ) -> SetMemberRoleRequest {
     SetMemberRoleRequest {
@@ -106,7 +106,7 @@ fn role_request(
     }
 }
 
-fn invitation(request_id: u8, role: MemberRole) -> IssueInvitationRequest {
+fn invitation(request_id: u8, role: Role) -> IssueInvitationRequest {
     IssueInvitationRequest {
         request_id: [request_id; 32],
         role,
@@ -237,7 +237,7 @@ fn list_entry(workspace: &str, entry: [u8; 32]) -> WorkspacesRequest {
     WorkspacesRequest::Invite {
         workspace: workspace.to_owned(),
         request_id: [41; 32],
-        role: WorkspaceRole::Editor,
+        role: Role::Editor,
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
         wait_list_entry: Some(entry),
@@ -412,7 +412,7 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
     let invite = |wait_list_entry| WorkspacesRequest::Invite {
         workspace: workspace.clone(),
         request_id: rand::random(),
-        role: WorkspaceRole::Editor,
+        role: Role::Editor,
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
         wait_list_entry: Some(wait_list_entry),
@@ -509,7 +509,7 @@ async fn assert_uncertain_invitation_mail(
                 WorkspacesRequest::Invite {
                     workspace: workspace.clone(),
                     request_id: rand::random(),
-                    role: WorkspaceRole::Editor,
+                    role: Role::Editor,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                     inviter_name: None,
                     wait_list_entry: Some(cy),
@@ -661,7 +661,7 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     // An Editor by role alone governs nothing.
     assert!(
         workspaces
-            .issue(&workspace, &ada, invitation(10, MemberRole::Viewer))
+            .issue(&workspace, &ada, invitation(10, Role::Viewer))
             .await
             .is_err()
     );
@@ -681,7 +681,7 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     // The workspace grants Ada its invite action: she invites, up to her role.
     grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
     let issued = workspaces
-        .issue(&workspace, &ada, invitation(11, MemberRole::Editor))
+        .issue(&workspace, &ada, invitation(11, Role::Editor))
         .await
         .unwrap();
     assert!(
@@ -693,7 +693,7 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
             .any(|pending| pending.invite_id == issued.invite_id)
     );
     let above = workspaces
-        .issue(&workspace, &ada, invitation(12, MemberRole::Moderator))
+        .issue(&workspace, &ada, invitation(12, Role::Moderator))
         .await
         .unwrap_err();
     assert!(above.to_string().contains("Moderator"), "{above}");
@@ -754,13 +754,13 @@ async fn roles_and_removals_follow_the_rooms_policy() {
     let dee = admit(workspaces, &workspace, &owner, 4).await;
 
     // A Moderator removes an Editor, but sets no roles.
-    set_role(workspaces, &workspace, &owner, &bo, MemberRole::Moderator).await;
+    set_role(workspaces, &workspace, &owner, &bo, Role::Moderator).await;
     assert!(
         workspaces
             .set_member_role(
                 &workspace,
                 &bo,
-                role_request(&cy, MemberRole::Viewer, [20; 32])
+                role_request(&cy, Role::Viewer, [20; 32])
             )
             .await
             .is_err()
@@ -784,19 +784,19 @@ async fn roles_and_removals_follow_the_rooms_policy() {
             .set_member_role(
                 &workspace,
                 &ada,
-                role_request(&cy, MemberRole::Viewer, [22; 32])
+                role_request(&cy, Role::Viewer, [22; 32])
             )
             .await
             .is_err()
     );
     grant(workspaces, &workspace, &owner, &ada, governance::SET_ROLE).await;
-    set_role(workspaces, &workspace, &ada, &cy, MemberRole::Viewer).await;
+    set_role(workspaces, &workspace, &ada, &cy, Role::Viewer).await;
     assert!(
         workspaces
             .set_member_role(
                 &workspace,
                 &ada,
-                role_request(&cy, MemberRole::Moderator, [23; 32])
+                role_request(&cy, Role::Moderator, [23; 32])
             )
             .await
             .is_err()
@@ -809,7 +809,7 @@ async fn roles_and_removals_follow_the_rooms_policy() {
         .set_member_role(
             &workspace,
             &ada,
-            role_request(&cy, MemberRole::Viewer, [25; 32]),
+            role_request(&cy, Role::Viewer, [25; 32]),
         )
         .await
         .unwrap_err();
@@ -818,7 +818,7 @@ async fn roles_and_removals_follow_the_rooms_policy() {
         "{administrator}"
     );
     // The owner's devices still change anyone's role.
-    set_role(workspaces, &workspace, &owner, &cy, MemberRole::Editor).await;
+    set_role(workspaces, &workspace, &owner, &cy, Role::Editor).await;
 
     // Nobody removes the owner, the owner's devices included.
     for by in [&owner, &bo] {
@@ -849,7 +849,7 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let cy = admit(workspaces, &workspace, &owner, 3).await;
-    set_role(workspaces, &workspace, &owner, &cy, MemberRole::Viewer).await;
+    set_role(workspaces, &workspace, &owner, &cy, Role::Viewer).await;
 
     workspaces
         .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key)
@@ -871,7 +871,7 @@ async fn an_administrator_invites_within_their_role(
     ada: &DeviceCert,
 ) {
     let issued = workspaces
-        .issue(workspace, ada, invitation(51, MemberRole::Editor))
+        .issue(workspace, ada, invitation(51, Role::Editor))
         .await
         .unwrap();
     assert!(
@@ -883,7 +883,7 @@ async fn an_administrator_invites_within_their_role(
             .any(|pending| pending.invite_id == issued.invite_id)
     );
     let above = workspaces
-        .issue(workspace, ada, invitation(52, MemberRole::Moderator))
+        .issue(workspace, ada, invitation(52, Role::Moderator))
         .await
         .unwrap_err();
     assert!(above.to_string().contains("Moderator"), "{above}");
@@ -909,13 +909,13 @@ async fn an_administrator_rules_those_ranked_below(
     bo: &DeviceCert,
     cy: &DeviceCert,
 ) {
-    set_role(workspaces, workspace, ada, cy, MemberRole::Commenter).await;
+    set_role(workspaces, workspace, ada, cy, Role::Commenter).await;
     assert!(
         workspaces
             .set_member_role(
                 workspace,
                 ada,
-                role_request(bo, MemberRole::Moderator, [53; 32])
+                role_request(bo, Role::Moderator, [53; 32])
             )
             .await
             .is_err()
@@ -977,14 +977,14 @@ async fn unmaking_the_administrator_takes_it_all_back(
 ) {
     assert!(
         workspaces
-            .issue(workspace, bo, invitation(56, MemberRole::Viewer))
+            .issue(workspace, bo, invitation(56, Role::Viewer))
             .await
             .is_err()
     );
-    set_role(workspaces, workspace, owner, ada, MemberRole::Editor).await;
+    set_role(workspaces, workspace, owner, ada, Role::Editor).await;
     assert!(
         workspaces
-            .issue(workspace, ada, invitation(57, MemberRole::Viewer))
+            .issue(workspace, ada, invitation(57, Role::Viewer))
             .await
             .is_err()
     );
@@ -1014,7 +1014,7 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
         .await
         .unwrap();
     workspaces
-        .issue(&workspace, &ada, invitation(61, MemberRole::Editor))
+        .issue(&workspace, &ada, invitation(61, Role::Editor))
         .await
         .unwrap();
     relay.shutdown().await;
@@ -1034,7 +1034,7 @@ async fn what_no_room_decides_stays_the_relay_persons() {
         grant(workspaces, &workspace, &owner, &ada, action).await;
     }
     workspaces
-        .issue(&workspace, &ada, invitation(30, MemberRole::Viewer))
+        .issue(&workspace, &ada, invitation(30, Role::Viewer))
         .await
         .unwrap();
 
@@ -1096,7 +1096,7 @@ async fn calls_are_run_by_the_owner_and_by_members_granted_call() {
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    set_role(workspaces, &workspace, &owner, &bo, MemberRole::Moderator).await;
+    set_role(workspaces, &workspace, &owner, &bo, Role::Moderator).await;
     // Ending a call the workspace never had: past the gate, the call itself
     // answers that it is unknown.
     let end = CallOperation::End {
@@ -1137,7 +1137,7 @@ async fn an_expired_certificate_administers_nothing_even_the_owners() {
     .unwrap();
     assert!(
         workspaces
-            .issue(&workspace, &expired, invitation(40, MemberRole::Viewer))
+            .issue(&workspace, &expired, invitation(40, Role::Viewer))
             .await
             .is_err()
     );

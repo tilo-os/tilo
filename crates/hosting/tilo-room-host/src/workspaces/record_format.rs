@@ -306,7 +306,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::Signer as _;
     use tilo_files::native::migration::assert_golden_bytes;
-    use tilo_peer_state::join::{MemberRole, TransportHint};
+    use tilo_peer_state::join::{Role, TransportHint};
     use tilo_user_identity::DeviceCapabilities;
 
     /// The capabilities the kept records' host certificate carries: a host as
@@ -348,7 +348,7 @@ mod tests {
         authority: DeviceCert,
         issuer: DeviceCert,
         delegation: Option<()>,
-        role: MemberRole,
+        role: Role,
         nonce: [u8; 16],
         recipient_user_public_key: Option<[u8; 32]>,
         invitee_name: Option<String>,
@@ -466,7 +466,7 @@ mod tests {
             workspace_id: 7,
             room: KEPT_WORKSPACE.into(),
             issuer: kept_cert(1).1,
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [4; 16],
             recipient_user_public_key: Some([5; 32]),
             invitee_name: None,

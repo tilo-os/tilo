@@ -2,7 +2,7 @@
 
 use crate::StatePeer;
 use crate::join::{
-    InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, issue_invitation, sign_join_proof,
+    InviteGrant, JoinChallenge, Role, VerifiedRedemption, issue_invitation, sign_join_proof,
     verify_join_proof,
 };
 use ed25519_dalek::SigningKey;
@@ -48,7 +48,7 @@ pub(crate) fn redemption(
             workspace_id: 7,
             room: peer.workspace_id().into(),
             issuer: peer.owner_certificates()[0].clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce,
             recipient_user_public_key: Some(cert.user_public_key),
             invitee_name: None,
@@ -153,7 +153,7 @@ fn every_change_reads_the_same_narrowed_as_whole() {
             "role",
             Box::new(|peer| {
                 peer.governance_mut()
-                    .set_member_role(person(2), MemberRole::Viewer, &authority, now)
+                    .set_member_role(person(2), Role::Viewer, &authority, now)
                     .unwrap();
             }),
         ),

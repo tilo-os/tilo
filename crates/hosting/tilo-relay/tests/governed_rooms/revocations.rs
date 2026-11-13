@@ -47,7 +47,7 @@ async fn join(
     person: &TestUser,
     device: &TestDevice,
 ) -> StatePeer {
-    let invitation = invite(relay, issuer, room, MemberRole::Editor, person.user_pk).await;
+    let invitation = invite(relay, issuer, room, Role::Editor, person.user_pk).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -146,7 +146,7 @@ async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_
                 &laptop.cert,
                 IssueInvitationRequest {
                     request_id: [3; 32],
-                    role: MemberRole::Editor,
+                    role: Role::Editor,
                     recipient_user_public_key: Some(bob.user_pk),
                     invitee_name: None,
                     expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,

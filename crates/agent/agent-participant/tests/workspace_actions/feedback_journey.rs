@@ -344,7 +344,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     use super::resource_support::{admit_person, open_admitted_peer};
-    use tilo_peer_state::join::MemberRole;
+    use tilo_peer_state::join::Role;
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Feedback host", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Feedback guest", 1);
     let host = enrol(
@@ -391,7 +391,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         &host,
         &workspace.workspace,
         &guest_device,
-        MemberRole::Commenter,
+        Role::Commenter,
     )
     .await;
     let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.workspace).await;

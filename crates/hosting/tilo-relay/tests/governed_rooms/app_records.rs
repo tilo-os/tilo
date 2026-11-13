@@ -40,7 +40,7 @@ async fn admit_viewer(relay: &Relay, host: &TestDevice, member: &TestDevice, roo
             &host.cert,
             tilo_relay::workspaces::IssueInvitationRequest {
                 request_id: *blake3::hash(&member.device_pubkey()).as_bytes(),
-                role: MemberRole::Viewer,
+                role: Role::Viewer,
                 recipient_user_public_key: Some(member.cert.user_public_key),
                 invitee_name: None,
                 inviter_name: None,

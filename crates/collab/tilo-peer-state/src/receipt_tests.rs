@@ -14,7 +14,7 @@ use tilo_actions::{
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
+use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
 use crate::owner::testing::member_certificate as certificate;
 use crate::owner::testing::{now, receive};
 use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
@@ -84,13 +84,13 @@ impl SurfaceSource for Source {
 
 /// A workspace whose record keeps its comments as units, and a member of
 /// another person holding `role` in it.
-fn workspace_with(role: MemberRole) -> (StatePeer, SigningKey, DeviceCert) {
+fn workspace_with(role: Role) -> (StatePeer, SigningKey, DeviceCert) {
     workspace_keeping(role, &["comments/*"])
 }
 
 /// A workspace whose record keeps the units `units` (an index only when there
 /// are any), and a member of another person holding `role` in it.
-fn workspace_keeping(role: MemberRole, units: &[&str]) -> (StatePeer, SigningKey, DeviceCert) {
+fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, DeviceCert) {
     let owner_key = SigningKey::from_bytes(&[2; 32]);
     let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
     let mut peer = StatePeer::new(
@@ -361,7 +361,7 @@ fn moderation() -> Did {
 /// ([`StatePeer::receive_from`]) refuse the same change the same way.
 #[test]
 fn a_refused_change_leaves_the_rest_of_the_record() {
-    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
     let first = guest_write_at(&peer, &key, comment_on("c1"), comment(), Some("c1"), 1);
     receive(&mut peer, &guest, first).expect("an editor may comment");
     let after_first = recorded_heads(&peer);
@@ -434,7 +434,7 @@ fn a_refused_change_leaves_the_rest_of_the_record() {
 /// A commenter's comment is granted; their edit of the record is not.
 #[test]
 fn a_change_is_refused_when_its_action_is_not_granted_to_its_author() {
-    let (mut peer, key, guest) = workspace_with(MemberRole::Commenter);
+    let (mut peer, key, guest) = workspace_with(Role::Commenter);
     let commented = guest_write(&peer, &key, comment_on("c1"), comment(), Some("c1"));
     receive(&mut peer, &guest, commented).expect("a commenter may comment");
     let edited = guest_write(
@@ -447,7 +447,7 @@ fn a_change_is_refused_when_its_action_is_not_granted_to_its_author() {
     let refused = receive(&mut peer, &guest, edited).unwrap_err();
     assert!(refused.contains("not granted"), "{refused}");
 
-    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
     let edited = guest_write(
         &peer,
         &key,
@@ -463,7 +463,7 @@ fn a_change_is_refused_when_its_action_is_not_granted_to_its_author() {
 /// unit it wrote or hides it.
 #[test]
 fn a_granted_action_writing_another_unit_is_refused() {
-    let (mut peer, key, guest) = workspace_with(MemberRole::Commenter);
+    let (mut peer, key, guest) = workspace_with(Role::Commenter);
     // The change itself says what it wrote: c2, which commenting on c1 may
     // not write.
     let wrote_other = guest_write(&peer, &key, comment_on("c2"), comment(), Some("c1"));
@@ -518,7 +518,7 @@ fn a_granted_action_writing_another_unit_is_refused() {
 /// unit, not the whole record its claim could not name.
 #[test]
 fn changes_after_the_first_unit_index_are_read_by_it() {
-    let (mut peer, key, guest) = workspace_keeping(MemberRole::Editor, &[]);
+    let (mut peer, key, guest) = workspace_keeping(Role::Editor, &[]);
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
@@ -562,7 +562,7 @@ fn an_item_stored_as_its_order_key_writes_its_own_unit() {
             doc.put(&comments, id, "a0").unwrap();
         }
     };
-    let (mut peer, key, guest) = workspace_with(MemberRole::Commenter);
+    let (mut peer, key, guest) = workspace_with(Role::Commenter);
     let own = guest_write(&peer, &key, order_key("c1"), comment(), Some("c1"));
     receive(&mut peer, &guest, own).expect("commenting on c1 may write c1");
     let other = guest_write(&peer, &key, order_key("c2"), comment(), Some("c1"));
@@ -574,7 +574,7 @@ fn an_item_stored_as_its_order_key_writes_its_own_unit() {
 /// decided once the surface is here.
 #[test]
 fn a_change_whose_app_surface_has_not_arrived_is_held_until_it_has() {
-    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
     peer.set_surfaces(Surfaces::from_source(Arc::new(Source(false))));
     let edited = guest_write(
         &peer,
@@ -610,7 +610,7 @@ fn a_change_whose_app_surface_has_not_arrived_is_held_until_it_has() {
 /// the change naming a newer one for the record is decided as an upgrade.
 #[test]
 fn an_op_naming_another_surface_than_its_record_is_refused() {
-    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
     let resurfaced = |message: NeighbourMsg| {
         let NeighbourMsg::AppDocument {
             peer: handle,
@@ -684,7 +684,7 @@ fn an_op_naming_another_surface_than_its_record_is_refused() {
 /// bot allowed it may, is refused by every receiver.
 #[test]
 fn a_persons_change_showing_another_name_is_refused() {
-    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
     let impostor = tilo_actions::ActionInvoker::actor("person:guest").with_appearance(Some(
         tilo_actions::Appearance::new("Owner", None, None).unwrap(),
     ));
@@ -731,7 +731,7 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
         (crate::AppearancePolicy::Personas, true),
         (crate::AppearancePolicy::Own, false),
     ] {
-        let (mut peer, _, _) = workspace_with(MemberRole::Viewer);
+        let (mut peer, _, _) = workspace_with(Role::Viewer);
         let owner_key = SigningKey::from_bytes(&[2; 32]);
         let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
         let (key, device) = crate::state::bot_members_tests::installed_bot(
@@ -780,7 +780,7 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
 fn a_change_made_with_another_version_than_the_workspace_runs_waits_for_its_author_to_update() {
     use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
     const NEWER: [u8; 32] = [8; 32];
-    let (mut peer, key, guest) = workspace_with(MemberRole::Editor);
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
     let owner_key = SigningKey::from_bytes(&[2; 32]);
     let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
     let release = AppRelease {

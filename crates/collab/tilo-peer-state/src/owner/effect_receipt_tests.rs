@@ -227,7 +227,7 @@ fn enroll_remote_history_member(
     let now_ns = crate::owner::testing::ns(fixture.now).unwrap();
     let invitation = fixture.governor.issue(
         vec![hint.clone()],
-        join::MemberRole::Editor,
+        join::Role::Editor,
         Some(member.user_public_key),
         None,
         now_ns.checked_add(60_000_000_000).unwrap(),

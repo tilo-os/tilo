@@ -214,12 +214,12 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
 mod tests {
     use super::*;
     use tilo_files::native::migration::assert_golden_bytes;
-    use tilo_relay_protocol::workspaces::WorkspaceRole;
+    use tilo_relay_protocol::workspaces::Role;
 
     fn grant(token: &[u8], expires_at_ns: u64) -> PreAdmission {
         PreAdmission {
             workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
-            role: WorkspaceRole::Editor,
+            role: Role::Editor,
             token_sha256: Sha256::digest(token).into(),
             label: "cy@example.com".into(),
             expires_at_ns,
@@ -245,7 +245,7 @@ mod tests {
                 user_public_key: [2; 32],
                 name: "Cy".into(),
                 label: "cy@example.com".into(),
-                role: WorkspaceRole::Editor,
+                role: Role::Editor,
                 at_ns: 9,
             }],
             path: PathBuf::new(),
@@ -319,7 +319,7 @@ mod tests {
             user_public_key: [2; 32],
             name: "Cy".into(),
             label: "cy@example.com".into(),
-            role: WorkspaceRole::Editor,
+            role: Role::Editor,
             at_ns: 1,
         };
         admissions.spend(vec![([7; 32], notice.clone())]).unwrap();

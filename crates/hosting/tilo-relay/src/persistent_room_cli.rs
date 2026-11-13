@@ -27,7 +27,7 @@ use tilo_relay::web::WebHandle;
 use tilo_relay::workspaces::{WaitListed, Workspaces};
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
@@ -142,7 +142,7 @@ pub struct PersistentArgs {
         requires = "listing_description",
         value_parser = parse_role
     )]
-    pub default_role: Option<WorkspaceRole>,
+    pub default_role: Option<Role>,
     /// Take people by invitation: an unlisted workspace's door lets nobody new
     /// in, and members may invite someone with an invitation of their own,
     /// which they let in. Settled at every start. A listed workspace lets anyone
@@ -444,13 +444,11 @@ fn input_value(text: &str) -> serde_json::Value {
 
 /// `--default-role`: `viewer`, `commenter` or `editor`. A moderator is chosen,
 /// never handed out at the door.
-fn parse_role(role: &str) -> Result<WorkspaceRole, String> {
-    match role {
-        "viewer" => Ok(WorkspaceRole::Viewer),
-        "commenter" => Ok(WorkspaceRole::Commenter),
-        "editor" => Ok(WorkspaceRole::Editor),
-        other => Err(format!(
-            "{other:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
+fn parse_role(role: &str) -> Result<Role, String> {
+    match Role::parse(role) {
+        Some(role) if matches!(role, Role::Viewer | Role::Commenter | Role::Editor) => Ok(role),
+        _ => Err(format!(
+            "{role:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
         )),
     }
 }
@@ -1181,7 +1179,7 @@ async fn settle_listing(
             host_cert,
             Listing {
                 description: description.clone(),
-                default_role: persistent.default_role.unwrap_or(WorkspaceRole::Viewer),
+                default_role: persistent.default_role.unwrap_or(Role::Viewer),
             },
         )
         .await
@@ -1922,7 +1920,7 @@ mod tests {
     fn member(key: u8, administrator: bool) -> tilo_peer_state::GovernedMember {
         tilo_peer_state::GovernedMember {
             user_public_key: [key; 32],
-            role: tilo_peer_state::join::MemberRole::Editor,
+            role: tilo_peer_state::join::Role::Editor,
             display_name: None,
             active_device_keys: Vec::new(),
             removed: false,
@@ -2206,7 +2204,7 @@ mod tests {
                 WorkspacesRequest::Invite {
                     workspace: workspace.to_owned(),
                     request_id: rand::random(),
-                    role: WorkspaceRole::Editor,
+                    role: Role::Editor,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3600 * NS_PER_SEC),
                     inviter_name: Some("Member".into()),
                     wait_list_entry: None,
@@ -2266,7 +2264,7 @@ mod tests {
                 &host_cert,
                 Listing {
                     description: "A plaza".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -2367,7 +2365,7 @@ mod tests {
                 &host_cert,
                 Listing {
                     description: "A plaza".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -2453,7 +2451,7 @@ mod tests {
                 &host_cert,
                 Listing {
                     description: "A plaza".into(),
-                    default_role: WorkspaceRole::Editor,
+                    default_role: Role::Editor,
                 },
             )
             .await
@@ -2483,7 +2481,7 @@ mod tests {
                 tilo_relay_session::workspaces::SetMemberRoleRequest {
                     request_id: [2; 32],
                     user_public_key: people[1].1.user_public_key,
-                    role: tilo_peer_state::join::MemberRole::Moderator,
+                    role: tilo_peer_state::join::Role::Moderator,
                 },
             )
             .await

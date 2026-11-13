@@ -16,7 +16,7 @@ use tilo_actions::remote::{
     InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
-use tilo_peer_state::join::MemberRole;
+use tilo_peer_state::join::Role;
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
@@ -215,7 +215,7 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
             SetMemberRoleRequest {
                 request_id: [30; 32],
                 user_public_key: bo.user_public_key,
-                role: MemberRole::Moderator,
+                role: Role::Moderator,
             },
         )
         .await
@@ -277,7 +277,7 @@ async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
         .into_iter()
         .find(|pending| hex::encode(pending.invite_id) == timed_id)
         .expect("the timed invitation is pending");
-    assert_eq!(timed.role, MemberRole::Viewer);
+    assert_eq!(timed.role, Role::Viewer);
     assert_eq!(timed.recipient_user_public_key, Some(guest));
     assert_eq!(timed.invitee_name.as_deref(), Some("Ada"));
     let lifetime: u64 = 600_000_000_000;
@@ -438,7 +438,7 @@ async fn destructive_governance_waits_for_the_person() {
             SetMemberRoleRequest {
                 request_id: [31; 32],
                 user_public_key: bo.user_public_key,
-                role: MemberRole::Moderator,
+                role: Role::Moderator,
             },
         )
         .await

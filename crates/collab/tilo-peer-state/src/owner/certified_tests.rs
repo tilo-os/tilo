@@ -1,5 +1,5 @@
 use super::*;
-use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, MemberRole};
+use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, Role};
 use crate::owner::testing::member_certificate as certificate;
 use crate::{SeedState, StatePeer, seed_workspace};
 use ed25519_dalek::SigningKey;
@@ -72,7 +72,7 @@ fn actual_redemption_at(
             workspace_id,
             room: workspace.into(),
             issuer: governor.clone(),
-            role: MemberRole::Editor,
+            role: Role::Editor,
             nonce: [75; 16],
             recipient_user_public_key: Some(device.user_public_key),
             invitee_name: Some("Guest".into()),
@@ -132,7 +132,7 @@ fn actual_redemption_at(
         version: 1,
         invite_id: join.invite_id(),
         device_cert: device.clone(),
-        role: MemberRole::Editor,
+        role: Role::Editor,
         room: workspace.into(),
         workspace_id,
         host: governor,
@@ -181,7 +181,7 @@ fn native_enrollment_refuses_bootstrap_scope_and_identity_substitution() {
             1 => bootstrap.workspace_id ^= 1,
             2 => bootstrap.room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
             3 => bootstrap.device_cert = bootstrap.host.clone(),
-            4 => bootstrap.role = MemberRole::Viewer,
+            4 => bootstrap.role = Role::Viewer,
             _ => bootstrap.generation = 0,
         }
         let intent =

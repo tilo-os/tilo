@@ -8,7 +8,7 @@ use iroh::protocol::Router;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceHostTrust;
-use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_relay::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::{
@@ -162,7 +162,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
             &laptop.cert,
             IssueInvitationRequest {
                 request_id: [3; 32],
-                role: MemberRole::Editor,
+                role: Role::Editor,
                 recipient_user_public_key: Some(bob.user_pk),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns()

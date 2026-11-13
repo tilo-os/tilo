@@ -1758,7 +1758,7 @@ impl Workspaces {
                 0,
                 tilo_peer_state::GovernedMember {
                     user_public_key: owner,
-                    role: tilo_peer_state::join::MemberRole::Editor,
+                    role: tilo_peer_state::join::Role::Editor,
                     display_name: None,
                     active_device_keys: Vec::new(),
                     removed: false,
@@ -1812,12 +1812,7 @@ impl Workspaces {
                 let role = if member.administrator {
                     "owner"
                 } else {
-                    match member.role {
-                        tilo_peer_state::join::MemberRole::Viewer => "viewer",
-                        tilo_peer_state::join::MemberRole::Commenter => "commenter",
-                        tilo_peer_state::join::MemberRole::Editor => "editor",
-                        tilo_peer_state::join::MemberRole::Moderator => "moderator",
-                    }
+                    member.role.key()
                 };
                 let mark = MemberMark {
                     role: role.to_owned(),
@@ -2923,9 +2918,7 @@ pub(crate) fn member_bootstrap(
     generation: u64,
     device: &DeviceCert,
 ) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
-    use tilo_peer_state::join::{
-        JoinBootstrap, JoinTransportResponse, MemberRole, OwnerBootstrapV1,
-    };
+    use tilo_peer_state::join::{JoinBootstrap, JoinTransportResponse, OwnerBootstrapV1};
     let now = tilo_clock::wall();
     let role = peer
         .permissions(device.device_public_key, now)
@@ -2955,12 +2948,7 @@ pub(crate) fn member_bootstrap(
             version: 1,
             invite_id: [0; 32],
             device_cert: device.clone(),
-            role: match role {
-                collab_types::Role::Commenter => MemberRole::Commenter,
-                collab_types::Role::Editor => MemberRole::Editor,
-                collab_types::Role::Moderator => MemberRole::Moderator,
-                _ => MemberRole::Viewer,
-            },
+            role,
             room: peer.workspace_id().to_owned(),
             workspace_id,
             host: host.clone(),

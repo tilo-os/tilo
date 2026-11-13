@@ -101,7 +101,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
             &host_device.cert,
             tilo_relay_protocol::directory::Listing {
                 description: "Everyone".into(),
-                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
             },
         )
         .await

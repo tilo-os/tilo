@@ -6,7 +6,7 @@
 //! itself: what it reads is what the release wrote.
 
 use super::*;
-use tilo_relay_protocol::workspaces::{WorkspaceRole, WorkspacesReply, WorkspacesRequest};
+use tilo_relay_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
 use tilo_session_client::Event;
 
 /// What the release's seed wrote beside its state, `seed.json`.
@@ -238,7 +238,7 @@ async fn listed_as_it_was(plain: std::net::SocketAddr, seed: &Seed) {
         lounge.description,
         "The Tilo community: chat, notes and a shared desktop"
     );
-    assert_eq!(lounge.default_role, WorkspaceRole::Editor);
+    assert_eq!(lounge.default_role, Role::Editor);
     // Everyone the release had: its owner, the owner and moderator the
     // operator declared, and the people who came in through the door. (The
     // release's own directory counted `listed_members` of them.)
@@ -262,7 +262,7 @@ async fn listed_as_it_was(plain: std::net::SocketAddr, seed: &Seed) {
             )
         });
     assert_eq!(own.description, seed.own_workspace.description);
-    assert_eq!(own.default_role, WorkspaceRole::Viewer);
+    assert_eq!(own.default_role, Role::Viewer);
 }
 
 /// The owner the operator declared lists the Lounge and its people at their
@@ -296,9 +296,9 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
             .role
     };
     role_of(&seed.declared_owner);
-    assert_eq!(role_of(&seed.declared_moderator), WorkspaceRole::Moderator);
+    assert_eq!(role_of(&seed.declared_moderator), Role::Moderator);
     for member in &seed.members {
-        assert_eq!(role_of(member), WorkspaceRole::Editor, "{}", member.name);
+        assert_eq!(role_of(member), Role::Editor, "{}", member.name);
     }
 
     let WorkspacesReply::Pending(pending) = administer(
@@ -323,7 +323,7 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
         WorkspacesRequest::Invite {
             workspace: seed.workspace.clone(),
             request_id: rand::random(),
-            role: WorkspaceRole::Editor,
+            role: Role::Editor,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
             inviter_name: Some(seed.declared_owner.name.clone()),
             wait_list_entry: None,

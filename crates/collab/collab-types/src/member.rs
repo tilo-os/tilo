@@ -93,8 +93,9 @@ impl Person {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub id: MemberId,
-    /// The role preset they hold; `None` where the list knows none (an agent
-    /// holds grants rather than a preset).
+    /// The role preset they hold: none for software, which acts on the grants
+    /// its members gave it, and none for a person this list has no policy row
+    /// for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
     pub name: String,
@@ -131,13 +132,12 @@ impl Member {
     pub fn of_software(
         id: MemberId,
         name: impl Into<String>,
-        role: Option<Role>,
         for_person: Option<&PersonId>,
     ) -> Self {
         Self {
             colour: assigned_colour(&id, for_person),
             id,
-            role,
+            role: None,
             name: name.into(),
             avatar: None,
             joined_at: None,
@@ -203,12 +203,12 @@ mod tests {
                 .colour,
             PresenceHue::Violet
         );
-        let helper = Member::of_software(MemberId::agent("helper"), "Helper", None, Some(&ada.id));
+        let helper = Member::of_software(MemberId::agent("helper"), "Helper", Some(&ada.id));
         assert_eq!(helper.colour, assigned_colour(&helper.id, Some(&ada.id)));
         assert_ne!(helper.colour, ada.colour);
         assert_eq!(
             helper.colour,
-            Member::of_software(MemberId::agent("helper"), "Helper", None, Some(&ada.id)).colour,
+            Member::of_software(MemberId::agent("helper"), "Helper", Some(&ada.id)).colour,
             "the same agent is one colour however often it is worked out"
         );
     }

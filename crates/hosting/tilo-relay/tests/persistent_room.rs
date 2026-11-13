@@ -790,7 +790,7 @@ async fn directory_page(
 /// and the directory counts both.
 #[test]
 fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
-    use tilo_relay_protocol::workspaces::WorkspaceRole;
+    use tilo_relay_protocol::workspaces::Role;
 
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
@@ -818,7 +818,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
     assert_eq!(before.workspaces[0].description, "Coffee and tea");
     assert_eq!(
         before.workspaces[0].default_role,
-        WorkspaceRole::Editor,
+        Role::Editor,
         "the listing the operator asked for"
     );
 
@@ -833,7 +833,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
                 name,
             ))
             .unwrap_or_else(|refused| panic!("{name} {index} was not admitted: {refused:?}"));
-        assert_eq!(admitted.role, WorkspaceRole::Editor);
+        assert_eq!(admitted.role, Role::Editor);
         people.push(cert.user_public_key);
     }
     assert_ne!(people[0], people[1], "two people, not one");
