@@ -2506,6 +2506,19 @@ outputs = ["/target/nested-session/**"]
 timeout_secs = 5400
 default = false
 
+# Typing into a note on the web page shown as HTML stays within one frame of typing into a plain page
+# in the same browser, at p50 and p90 (tools/web/html-renderer/typing-budget.mjs). The nodes have no
+# GPU, where the canvas's frames wait on a software raster: its one frame per key is held by the
+# Notes tests, and its time on screen by the same tool run on a machine with a GPU.
+[[check]]
+name = "web-typing-latency"
+run = "set -euo pipefail\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode tools/web/html-renderer/typing-budget.mjs /target/publish/web-desktop/bundle --render dom --keys 60 --attempts 3 --budget\n"
+needs = ["web-desktop-bundle"]
+env = { npm_config_cache = "/tmp/npm-cache" }
+requires = ["arch=x86_64"]
+timeout_secs = 1800
+on = ["idle"]
+
 [[check]]
 name = "site-door-acceptance"
 run = "export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nbash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --bundle /target/publish/web-desktop/bundle --out /target/site-door-acceptance\n"
