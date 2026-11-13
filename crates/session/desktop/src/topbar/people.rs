@@ -104,7 +104,11 @@ impl TopBarChrome {
 
     /// The people button's chip: the people glyph in a round seat, plain at rest and lifting
     /// under the pointer like the bar's other controls.
-    fn people_chip<'a>(&self, name: &'a str, hovered: bool) -> ui::widget::BarChipFace<'a> {
+    pub(super) fn people_chip<'a>(
+        &self,
+        name: &'a str,
+        hovered: bool,
+    ) -> ui::widget::BarChipFace<'a> {
         ui::widget::BarChipFace::new(name, &[])
             .icons(USERS_GLYPH)
             .at_height(BAR_CONTROL_PX)
@@ -185,7 +189,7 @@ impl TopBarChrome {
 
     /// The invite button's chip: a person-plus glyph in the seat the next person takes, lifting
     /// under the pointer like every other bar control. Its words are its accessible name.
-    fn invite_chip<'a>(&self, name: &'a str) -> ui::widget::BarChipFace<'a> {
+    pub(super) fn invite_chip<'a>(&self, name: &'a str) -> ui::widget::BarChipFace<'a> {
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_INVITE);
         ui::widget::BarChipFace::new(name, &[])
             .icons(INVITE_GLYPH)
@@ -450,7 +454,11 @@ impl TopBarChrome {
 
     /// The watching count's chip showing `label`: a bar chip with its words and no glyph, so it
     /// stands and lifts like every other control while it opens who is here too.
-    fn watching_chip<'a>(&self, label: &'a str, right_x: f64) -> ui::widget::BarChipFace<'a> {
+    pub(super) fn watching_chip<'a>(
+        &self,
+        label: &'a str,
+        right_x: f64,
+    ) -> ui::widget::BarChipFace<'a> {
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_COLLABORATORS)
             && self.last_cursor.is_some_and(|point| point.x <= right_x);
         ui::widget::BarChipFace::new(label, &[])

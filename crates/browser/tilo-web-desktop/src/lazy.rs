@@ -150,9 +150,13 @@ split_code! {
 }
 
 split_code! {
-    /// The code that shows a mount as HTML: a page that mounts with
-    /// `dom: true` asks for it.
-    mod dom_presenter: tilo_browser_runtime::DomCode = tilo_browser_runtime::builtin_dom()
+    /// The code that shows a mount as HTML, with the desktop's own HTML
+    /// renderings (its top bar): a page that mounts with `dom: true` asks for
+    /// it.
+    mod dom_presenter: tilo_browser_runtime::DomCode = {
+        tilo_desktop::topbar::TOPBAR_HTML.install(tilo_desktop::topbar::builtin_topbar_html());
+        tilo_browser_runtime::builtin_dom()
+    }
         => tilo_browser_runtime::DOM_CODE, module = "dom_presenter", hash = "6c2f8a1d93e5b047";
 }
 

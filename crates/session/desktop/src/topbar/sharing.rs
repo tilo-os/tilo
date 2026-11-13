@@ -404,7 +404,7 @@ impl TopBarChrome {
     /// The sharing disclosure's chip showing `label` in `available` room: the eye, the words, and
     /// the state's tone washed into the chip's body — warning where someone controls the
     /// windows, the accent while they only view.
-    fn sharing_chip<'a>(
+    pub(super) fn sharing_chip<'a>(
         &self,
         theme: &Theme,
         label: &'a str,

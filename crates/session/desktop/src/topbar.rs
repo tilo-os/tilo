@@ -42,6 +42,8 @@ mod arrival_notice;
 mod avatar_ask;
 mod clock;
 mod controls;
+mod html;
+pub use html::{TOPBAR_HTML, TopBarHtml, builtin_topbar_html};
 mod people;
 mod placed;
 pub mod reveal;
@@ -470,6 +472,8 @@ pub struct TopBarChrome {
     people_left_x: f64,
     /// What the bar's layout decided each part shows ([`Self::lay_out_bar`]).
     placed: placed::BarPlaced,
+    /// Bumped each time the bar paints anew: what a page's pictures of its parts are versioned by.
+    paint_generation: u64,
     /// The open ask's words as laid out, and its answer.
     ask_words: Option<(avatar_ask::AskWords, String)>,
     /// Persistent trusted-chrome disclosure of active screen viewers.
@@ -590,6 +594,7 @@ impl TopBarChrome {
             arrival_pressable: false,
             people_left_x: 0.0,
             placed: placed::BarPlaced::default(),
+            paint_generation: 0,
             ask_words: None,
             sharing_indicator_rect: Rect::ZERO,
             continuity_rect: Rect::ZERO,
@@ -1525,6 +1530,13 @@ impl Widget for TopBarChrome {
         rects
     }
 
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        match html::TOPBAR_HTML.get() {
+            Some(compose) => compose(self, cx),
+            None => cx.picture(),
+        }
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut children: Vec<AccessNode> = self
@@ -1896,6 +1908,7 @@ impl TopBarChrome {
         self.cached = local;
         self.cached_parts = parts;
         self.cache_fp = fp;
+        self.paint_generation = self.paint_generation.wrapping_add(1);
         self.cache_theme = Some(theme.clone());
         text_renderer.set_text_scale(renderer_scale);
     }
@@ -1910,6 +1923,9 @@ mod tests;
 
 #[cfg(test)]
 mod fixture;
+
+#[cfg(test)]
+mod html_tests;
 
 #[cfg(test)]
 mod narrow_tests;

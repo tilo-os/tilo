@@ -253,8 +253,6 @@ widget-without-html 1 crates/session/desktop/src/osd.rs
 widget-without-html 1 crates/session/desktop/src/overview_panel.rs
 widget-without-html 3 crates/session/desktop/src/profile_card.rs
 widget-without-html 1 crates/session/desktop/src/search_overlay.rs
-widget-without-html 1 crates/session/desktop/src/topbar.rs
-widget-without-html 1 crates/session/desktop/src/topbar/space.rs
 widget-without-html 1 crates/session/desktop/src/workspace_menu.rs
 widget-without-html 2 crates/session/greeter/src/greeter_app.rs
 widget-without-html 1 crates/session/greeter/src/greeter_app/touch_keyboard.rs

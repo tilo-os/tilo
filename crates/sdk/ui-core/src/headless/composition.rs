@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::Affine;
+use vello::kurbo::{Affine, Rect};
 
 use super::FrameHarness;
 use crate::composition::{Composed, Composition, HtmlCx, css};
@@ -293,7 +293,13 @@ impl FrameHarness {
         if path == super::slot_row::WINDOW_SLOTS {
             return self.paint_slot_row(scale);
         }
-        let node = *self.named_target_nodes().get(path)?;
+        // A widget's own part ([`HtmlCx::part`]): the widget's paint, within
+        // the part's rect.
+        let (widget_path, part) = match path.split_once('#') {
+            Some((widget, _)) => (widget, Some(self.composed_rect(path)?)),
+            None => (path, None),
+        };
+        let node = *self.named_target_nodes().get(widget_path)?;
         let text = &mut self.text;
         let theme = &self.theme;
         let presence = &self.presence;
@@ -305,7 +311,7 @@ impl FrameHarness {
                 &self.node_map,
                 node,
                 |widget| {
-                    let rect = widget.get_rect();
+                    let rect = part.unwrap_or_else(|| widget.get_rect());
                     let mut scene = Scene::new();
                     let transform = Affine::scale(scale) * Affine::translate((-rect.x0, -rect.y0));
                     crate::widget::DrawChild::draw_child(
@@ -316,6 +322,22 @@ impl FrameHarness {
             )
         }
         .ok()
+    }
+
+    /// Where the composed node at `path` stands in the window, as the
+    /// window's composition places it now.
+    fn composed_rect(&self, path: &str) -> Option<Rect> {
+        fn find(node: &Composed, path: &str) -> Option<[f64; 4]> {
+            if node.path == path {
+                return Some(node.rect);
+            }
+            node.children.iter().find_map(|child| find(child, path))
+        }
+        let composition = self.composition();
+        let [x, y, width, height] = std::iter::once(&composition.root)
+            .chain(&composition.layers)
+            .find_map(|root| find(root, path))?;
+        Some(Rect::new(x, y, x + width, y + height))
     }
 
     /// Scroll the widget at `path` to `offset` logical pixels, as a host

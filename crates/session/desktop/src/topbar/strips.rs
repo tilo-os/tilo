@@ -120,7 +120,11 @@ impl TopBarChrome {
     }
 
     /// The strip's chip showing `name` with `label_width` of room for it.
-    fn strip_chip<'a>(&self, name: &'a str, label_width: f64) -> ui::widget::BarChipFace<'a> {
+    pub(super) fn strip_chip<'a>(
+        &self,
+        name: &'a str,
+        label_width: f64,
+    ) -> ui::widget::BarChipFace<'a> {
         ui::widget::BarChipFace::new(name, &[])
             .icons(STRIP_GLYPH)
             .label(name)

@@ -26,6 +26,16 @@ use serde::Serialize;
 #[derive(Clone, Copy)]
 pub struct HtmlCode {
     pub(crate) button: fn(&crate::widget::Button, &crate::theme::Theme) -> Option<Face>,
+    pub(crate) bar_control: fn(
+        &crate::widget::BarControlFace<'_>,
+        &crate::theme::Theme,
+        vello::peniko::Color,
+    ) -> Option<Face>,
+    pub(crate) bar_chip: fn(
+        &crate::widget::BarChipFace<'_>,
+        &crate::theme::Theme,
+        vello::peniko::Color,
+    ) -> Option<Face>,
 }
 
 /// The code this build links; only the HTML presenter names it.
@@ -33,7 +43,32 @@ pub struct HtmlCode {
 pub fn builtin_html() -> HtmlCode {
     HtmlCode {
         button: crate::widget::Button::composed_face,
+        bar_control: |face, theme, ground| face.composed(theme, ground),
+        bar_chip: |face, theme, ground| face.composed(theme, ground),
     }
+}
+
+/// A bar control's face as a page shows it, standing on `ground`; `None`
+/// while the code that composes faces is still to come.
+#[must_use]
+pub fn bar_control_face(
+    face: &crate::widget::BarControlFace<'_>,
+    theme: &crate::theme::Theme,
+    ground: vello::peniko::Color,
+) -> Option<Face> {
+    (HTML_CODE.get()?.bar_control)(face, theme, ground)
+}
+
+/// A bar chip's face as a page shows it, standing on `ground`; `None` for
+/// a chip that shows as its paint, or while the code that composes faces
+/// is still to come.
+#[must_use]
+pub fn bar_chip_face(
+    face: &crate::widget::BarChipFace<'_>,
+    theme: &crate::theme::Theme,
+    ground: vello::peniko::Color,
+) -> Option<Face> {
+    (HTML_CODE.get()?.bar_chip)(face, theme, ground)
 }
 
 crate::lazy_code! {
@@ -436,6 +471,51 @@ impl Composed {
     }
 }
 
+impl Composed {
+    /// The part shows as a picture of the widget's paint within its rect,
+    /// fetched again when `version` changes: for what is genuinely drawn
+    /// (a face's ring, a battery gauge, a brand mark).
+    pub fn painted(&mut self, version: u64) {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        version.hash(&mut hash);
+        self.rect[2].to_bits().hash(&mut hash);
+        self.rect[3].to_bits().hash(&mut hash);
+        self.own = Some(Own::Painted {
+            version: hash.finish(),
+        });
+    }
+}
+
+/// `widget`, laid out and drawn, composed alone at `path` as a host would
+/// compose it in its window, without children of its own: for a widget that
+/// composes its parts itself, and for its tests.
+#[must_use]
+pub fn compose_alone(
+    widget: &dyn crate::widget::Widget,
+    theme: &crate::Theme,
+    path: &str,
+) -> Composed {
+    let rect = widget.get_rect();
+    let mut composed = Composed::new(
+        path.to_owned(),
+        widget.name(),
+        [rect.x0, rect.y0, rect.width(), rect.height()],
+    );
+    composed.semantics = widget
+        .accessibility()
+        .map(|access| crate::a11y::with_synthetic_bounds(access, widget));
+    composed.focusable = widget.is_focusable();
+    let mut none = || (Vec::new(), false);
+    let mut cx = HtmlCx {
+        composed,
+        theme,
+        compose_children: &mut none,
+    };
+    widget.html(&mut cx);
+    cx.composed
+}
+
 /// A window's whole composition.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Composition {
@@ -485,6 +565,27 @@ impl HtmlCx<'_> {
     /// The widget shows words, set as `look` sets them.
     pub fn text(&mut self, look: TextLook) {
         self.composed.own = Some(Own::Text(look));
+    }
+
+    /// One of the widget's own parts, which it lays out and paints itself
+    /// rather than holding as a widget of its own (a bar's controls): keyed
+    /// `key` under the widget's path, standing at `rect` in the window. The
+    /// widget says what it shows ([`Composed::own`], or
+    /// [`Composed::painted`] for a part that is drawn) and what it is.
+    pub fn part(&mut self, key: &str, widget: &str, rect: vello::kurbo::Rect) -> &mut Composed {
+        let path = format!("{}#{key}", self.composed.path);
+        let index = self.composed.children.len();
+        self.composed.children.push(Composed::new(
+            path,
+            widget,
+            [rect.x0, rect.y0, rect.width(), rect.height()],
+        ));
+        &mut self.composed.children[index]
+    }
+
+    /// The part composed last ([`Self::part`]), to say what it shows.
+    pub fn last_part(&mut self) -> Option<&mut Composed> {
+        self.composed.children.last_mut()
     }
 
     /// The widget is a control showing `face`.
