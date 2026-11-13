@@ -63,9 +63,14 @@ const hostOrigin = new URL(relay).origin;
 /** The site's own origin: what its storage belongs to. */
 const siteOrigin = new URL(site).origin;
 
+// A person's tabs share one browser and the flow reads the one behind: the
+// second tab must be let in without the first losing the workspace. A
+// browser freezes or throttles a tab nobody looks at, and a starved machine
+// does it at once, so every tab here answers as the front one does.
 const browserArgs = [
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
+  '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
 
