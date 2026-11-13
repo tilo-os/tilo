@@ -287,7 +287,6 @@ fn assert_shows_source_frame(
     );
 }
 
-/// Mean absolute per-channel difference between two frames, 0 = identical.
 fn mean_abs_diff(a: &[[u8; 3]], b: &[[u8; 3]]) -> f64 {
     let total: f64 = a
         .iter()
@@ -986,7 +985,6 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
 // there is nothing to blame a mismatch on but the export.
 // ---------------------------------------------------------------------------
 
-/// A project holding one title over `len` seconds, and the ids to edit it.
 fn title_project(name: &str, words: &str) -> (Project, uuid::Uuid, uuid::Uuid) {
     let mut p = Project::new(name);
     p.width = 1280;
@@ -1021,8 +1019,6 @@ fn title_project(name: &str, words: &str) -> (Project, uuid::Uuid, uuid::Uuid) {
     (p, mid, cid)
 }
 
-/// How much of the decoded grid is bright, as a fraction. A white title on
-/// black is exactly this measurement.
 fn bright_fraction(px: &[[u8; 3]]) -> f64 {
     let lit = px
         .iter()
@@ -1059,7 +1055,6 @@ const FIXTURE_RATE: u32 = 48_000;
 /// engages and the encoded peak is the tone's own.
 const TONE_AMPLITUDE: f64 = 0.45;
 
-/// The fixture's left-channel tone, constant for its whole length.
 const LEFT_HZ: f64 = 440.0;
 /// The right channel's tone before [`SWITCH_SECS`] …
 const RIGHT_HZ_EARLY: f64 = 880.0;
@@ -1069,7 +1064,6 @@ const RIGHT_HZ_LATE: f64 = 1760.0;
 /// cycles by this instant, so the change happens at a zero crossing and adds
 /// no click for a codec to smear.
 const SWITCH_SECS: f64 = 1.0;
-/// The fixture's length.
 const FIXTURE_SECS: f64 = 2.0;
 
 fn fixture_sample(channel: usize, t: f64) -> f64 {
@@ -1152,12 +1146,10 @@ fn audio_fixture() -> std::path::PathBuf {
     path
 }
 
-/// One channel of an interleaved stereo block.
 fn channel(pcm: &[f32], ch: usize) -> Vec<f32> {
     pcm.iter().skip(ch).step_by(2).copied().collect()
 }
 
-/// The largest absolute sample in a block.
 fn peak(block: &[f32]) -> f64 {
     block.iter().fold(0.0f64, |m, s| m.max(s.abs() as f64))
 }
@@ -1180,7 +1172,6 @@ fn goertzel(block: &[f32], hz: f64) -> f64 {
     power.max(0.0).sqrt() / block.len() as f64
 }
 
-/// What a file's audio track turned out to be.
 struct DecodedAudio {
     /// Interleaved stereo `f32` at [`FIXTURE_RATE`] — converted, so it can be
     /// compared with the fixture whatever the file held.
@@ -1328,8 +1319,6 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
     DecodedAudio { pcm: out, native }
 }
 
-/// Both branches of the export graph therefore have real content to carry, which is the
-/// configuration the audio branch exists for.
 fn av_project(name: &str, video: &std::path::Path, audio: &std::path::Path) -> Project {
     let mut p = project_over(video, FIXTURE_SECS, name);
     let aid = uuid::Uuid::new_v4();
@@ -1657,17 +1646,13 @@ fn tone_switch_secs(right: &[f32]) -> Option<f64> {
 // statement about nothing.
 // ---------------------------------------------------------------------------
 
-/// The plate colour, matching the editor's own "Green" key preset.
 const PLATE_RGB: [u8; 3] = [15, 184, 51];
-/// The subject standing on it: a horizontal orange band across the middle
-/// third, nothing like the plate in hue.
 const SUBJECT_RGB: [u8; 3] = [235, 130, 30];
 const PLATE_W: u32 = 320;
 const PLATE_H: u32 = 180;
 const PLATE_SECS: f64 = 1.2;
 const PLATE_FPS: u32 = 30;
 
-/// Rows `[0.4, 0.6)` of the frame carry the subject; the rest is plate.
 fn plate_pixel(v: f64) -> [u8; 3] {
     if (0.4..0.6).contains(&v) {
         SUBJECT_RGB
@@ -1837,7 +1822,6 @@ fn plate_stack(name: &str) -> (Project, uuid::Uuid) {
     (p, over)
 }
 
-/// Sample the decoded grid at a fractional position.
 fn sample(px: &[[u8; 3]], u: f64, v: f64) -> [u8; 3] {
     let x = ((u * GRID_W as f64) as usize).min(GRID_W - 1);
     let y = ((v * GRID_H as f64) as usize).min(GRID_H - 1);
@@ -1847,7 +1831,6 @@ fn sample(px: &[[u8; 3]], u: f64, v: f64) -> [u8; 3] {
 fn is_greenish(q: [u8; 3]) -> bool {
     q[1] > 90 && q[1] as i32 > q[0] as i32 + 40 && q[1] as i32 > q[2] as i32 + 40
 }
-/// Inverted green: strong red and blue, weak green.
 fn is_magentaish(q: [u8; 3]) -> bool {
     q[0] as i32 > q[1] as i32 + 40 && q[2] as i32 > q[1] as i32 + 40
 }
@@ -2182,7 +2165,6 @@ fn exported_keys_masks_and_curves_reach_the_encoded_file() {
 // the green plate is.
 // ---------------------------------------------------------------------------
 
-/// The eight grey levels of the wedge, one vertical band each.
 const WEDGE: [u8; 8] = [16, 48, 80, 112, 144, 176, 208, 240];
 const WEDGE_W: u32 = 320;
 const WEDGE_H: u32 = 180;
@@ -2290,7 +2272,6 @@ fn grey_wedge() -> std::path::PathBuf {
     path
 }
 
-/// A one-clip project over the wedge, at the wedge's own frame size.
 fn wedge_project(name: &str) -> (Project, uuid::Uuid) {
     let wedge = grey_wedge();
     let mut p = Project::new(name);

@@ -453,8 +453,6 @@ pub(crate) fn decode_pcm(source: &media::Source) -> Option<Vec<f32>> {
 /// and a DAW's near-instant fall.
 const METER_RELEASE_DB_PER_SEC: f64 = 24.0;
 
-/// Without it a second of sustained clipping is 47 entries, and a count that says
-/// "47 places" about one place.
 const OVER_MERGE_SECS: f64 = 0.5;
 
 /// Past this the list stops growing rather than dropping the oldest: the *first*
@@ -534,8 +532,6 @@ struct MeterState {
     monitored: bool,
 }
 
-/// Shared between the thread that mixes and the one that draws. Nothing here
-/// re-analyses anything: the mixer hands over what it already computed.
 #[derive(Default)]
 pub struct MixMeters {
     state: Mutex<MeterState>,
@@ -677,7 +673,6 @@ pub fn mix_signature(project: &Project) -> u64 {
 pub const MONITOR_BLOCK: usize = 1024;
 
 pub trait MonitorSink: Send {
-    /// Returning `false` stops the monitor: the device went away.
     fn push(&mut self, block: &[f32]) -> bool;
 }
 
@@ -702,11 +697,9 @@ pub fn open_output() -> Box<dyn MonitorSink> {
 
 struct MonitorState {
     project: Mutex<Project>,
-    /// Where the next block is mixed from, in timeline seconds.
     position: Mutex<f64>,
     playing: AtomicBool,
     stop: AtomicBool,
-    /// Turns the monitor thread took through its paused branch.
     #[cfg(test)]
     paused_turns: std::sync::atomic::AtomicUsize,
 }
@@ -787,13 +780,11 @@ impl AudioMonitor {
         }
     }
 
-    /// Start playing from `secs`.
     pub fn play(&self, secs: f64) {
         self.seek(secs);
         self.shared.playing.store(true, AtomicOrdering::Relaxed);
     }
 
-    /// Stop playing, leaving the position where it is.
     pub fn pause(&self) {
         self.shared.playing.store(false, AtomicOrdering::Relaxed);
     }
@@ -808,7 +799,6 @@ impl AudioMonitor {
         self.shared.playing.load(AtomicOrdering::Relaxed)
     }
 
-    /// Where the monitor has mixed up to, in timeline seconds.
     pub fn position(&self) -> f64 {
         self.shared.position.lock().map_or(0.0, |p| *p)
     }
@@ -837,7 +827,6 @@ const _: () = assert!(
     SAMPLE_RATE == media::audio_output::RATE && CHANNELS == media::audio_output::CHANNELS as usize
 );
 
-/// A [`MonitorSink`] that plays through the host's audio output.
 #[cfg(any(feature = "gst", feature = "decode"))]
 impl MonitorSink for media::pcm::Playback {
     fn push(&mut self, block: &[f32]) -> bool {

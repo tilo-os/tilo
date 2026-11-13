@@ -406,7 +406,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Draw the in-flight inline rename field over its bin row's name band.
     pub(super) fn draw_bin_rename(
         &mut self,
         scene: &mut Scene,

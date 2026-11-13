@@ -19,7 +19,6 @@ pub(super) struct Regions {
     pub(super) ruler: Rect,
     pub(super) gutter: Rect,
     pub(super) lanes: Rect,
-    /// Zero-sized while docked or while the flap is fully closed.
     pub(super) scrim: Rect,
     /// `true` when the bin is collapsed to an overlay flap (narrow window).
     pub(super) bin_overlay: bool,
@@ -45,7 +44,6 @@ impl VideoEditorApp {
         (x0, x1.max(x0))
     }
 
-    /// The room around the picture inside the preview.
     pub(super) fn preview_inset(&self) -> f64 {
         S2 * self.chrome_scale()
     }

@@ -19,7 +19,6 @@ use crate::media::MediaSource;
 use crate::model::MediaId;
 use ui::lock::MutexRecover as _;
 
-/// Peak resolution per source; the renderer samples this to fit a clip.
 pub const WAVE_BUCKETS: usize = 512;
 
 /// Peaks cover only the read prefix, so a very long source cannot stall the
@@ -171,11 +170,8 @@ enum Slot {
 /// plausible" case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveformState {
-    /// Nothing has been asked for yet.
     Unrequested,
-    /// Draw the same flat line as [`WaveformState::Unavailable`].
     Pending,
-    /// Fetch the peaks with [`WaveformCache::peaks`].
     Ready,
     /// No samples: an un-hydrated reference, no audio, or no decoder linked.
     Unavailable,
@@ -221,7 +217,6 @@ impl WaveformCache {
         }
     }
 
-    /// Called each sync.
     pub fn drain(&mut self) {
         while let Ok((id, res)) = self.rx.try_recv() {
             let slot = match res {
@@ -261,7 +256,6 @@ impl WaveformCache {
         cv.notify_one();
     }
 
-    /// Synchronous, for deterministic captures and tests.
     pub fn warm_blocking(&mut self, id: MediaId, source: &MediaSource) {
         if matches!(self.map.get(&id), Some(Slot::Ready(_) | Slot::Missing)) {
             return;

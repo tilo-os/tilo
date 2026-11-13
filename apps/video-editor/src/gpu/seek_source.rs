@@ -39,7 +39,6 @@ struct Held {
     texture: Option<SourceTexture>,
     frame_in_texture: Option<u64>,
     asked: Option<(f64, ui::time::Instant)>,
-    /// Source seconds per second, smoothed over a few frames.
     rate: Option<f64>,
     used: ui::time::Instant,
 }
@@ -55,7 +54,6 @@ struct Indexed {
 pub struct SeekFrameSource {
     fetch: Fetch,
     strict: bool,
-    /// The largest picture side read back, in pixels.
     max_side: u32,
     sources: HashMap<MediaId, Indexed>,
     /// One per source per layer slot: two layers of one source at two instants (a

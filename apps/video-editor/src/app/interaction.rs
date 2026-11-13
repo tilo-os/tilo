@@ -670,8 +670,6 @@ impl VideoEditorApp {
         self.selection.set(hits);
     }
 
-    /// The clip under `p`, as `(clip id, its lane rect)`. `None` over empty
-    /// lane space.
     pub(super) fn clip_at(&self, r: &Regions, p: Point) -> Option<(ClipId, Rect)> {
         for (tid, _kind, lane) in self.lane_rects(r) {
             if p.y < lane.y0 || p.y > lane.y1 {

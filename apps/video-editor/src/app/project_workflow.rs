@@ -13,7 +13,6 @@ impl VideoEditorApp {
     // A project file is a projection: Export writes one wherever the person chooses, and
     // Open brings one in as the project, one edit Undo takes back.
 
-    /// The project's name, as the window bar's location says it.
     pub(super) fn project_label(&self) -> String {
         if self.project.name.trim().is_empty() {
             crate::resource::CATALOG.t("video-editor-untitled")
@@ -235,7 +234,6 @@ impl VideoEditorApp {
         self.export_dest_rx = Some(portal::request_export_destination(&name, ext));
     }
 
-    /// Begin the render at `destination` on a worker thread.
     pub(super) fn begin_export_to(&mut self, destination: PathBuf) {
         self.export_notice = None;
         self.export_status = ExportStatus::Rendering { progress: 0.0 };
@@ -347,7 +345,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// A render run a step at a time, saved to `destination`.
     #[cfg(not(any(feature = "gst", feature = "decode")))]
     fn stepped_export(
         project: &crate::model::Project,
@@ -410,7 +407,6 @@ impl VideoEditorApp {
     }
 }
 
-/// Whether `project` holds nothing a user would mind losing.
 fn holds_nothing(project: &crate::model::Project) -> bool {
     project.clips.is_empty() && project.media.is_empty() && project.tracks.is_empty()
 }

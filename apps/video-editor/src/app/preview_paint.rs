@@ -24,7 +24,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Whether [`Self::preview_pixel`] has a decoded picture to sample.
     pub fn has_preview_pixel(&self) -> bool {
         #[cfg(feature = "decode")]
         {

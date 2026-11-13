@@ -25,8 +25,6 @@ use crate::model::ClipId;
 
 pub const TIMELINE: &str = "ve_timeline";
 pub const CLIP: &str = "ve_clip";
-/// One editable field, followed by the field's name and the uuid of what it
-/// edits.
 pub const FIELD: &str = "ve_field";
 
 /// A title clip's words: the inspector's inline editor and the only field here
@@ -42,8 +40,6 @@ fn widget_key(parts: &[&str]) -> PresenceKey {
     }
 }
 
-/// Where a playhead is published, and where an empty selection says "nothing
-/// selected".
 pub fn timeline_key() -> PresenceKey {
     widget_key(&[TIMELINE])
 }
@@ -52,7 +48,6 @@ pub fn clip_key(id: ClipId) -> PresenceKey {
     widget_key(&[CLIP, &id.to_string()])
 }
 
-/// `field` names the field, `subject` the object it edits.
 pub fn field_key(field: &str, subject: Uuid) -> PresenceKey {
     widget_key(&[FIELD, field, &subject.to_string()])
 }
@@ -90,8 +85,6 @@ pub fn seconds(ticks: usize) -> f64 {
     ticks as f64 / TICKS_PER_SECOND
 }
 
-/// One point and one range: the two slots the presence stores hold per
-/// participant.
 const FACETS: usize = 2;
 
 /// Publishes the local participant's place one frame at a time.
@@ -109,7 +102,6 @@ pub struct LocalPresence {
 }
 
 impl LocalPresence {
-    /// `[point, range]`, answering the one to publish this poll.
     pub fn next(
         &self,
         facets: [(PresenceKey, PresencePayload); FACETS],
@@ -152,8 +144,6 @@ pub fn point_frame(
     }
 }
 
-/// The range. With nothing selected this is an empty range on the timeline key,
-/// which is what takes a published outline back off a peer's screen.
 pub fn range_frame(selected: Option<(ClipId, f64, f64)>) -> (PresenceKey, PresencePayload) {
     match selected {
         Some((id, start, end)) => (
@@ -266,7 +256,6 @@ impl<'a> PeerPaintCtx<'a> {
 pub struct PeerTag {
     pub peer: usize,
     pub x: f64,
-    /// 0 is the ruler; every further row is one chip down into the lanes.
     pub row: u32,
     pub top: f64,
     /// Kept clear of the ruler's readings when the chip hangs in the ruler.

@@ -23,11 +23,9 @@ type Cx = EffectCx<Project>;
 #[derive(Clone, Default)]
 pub(crate) struct Later(Rc<RefCell<Vec<Work>>>);
 
-/// One piece of work [`Later`] holds for the window.
 type Work = Box<dyn FnOnce(&mut VideoEditorApp)>;
 
 impl Later {
-    /// Run `work` on the window at its next sync, which `cx` wakes it for.
     pub(super) fn run(&self, cx: &Cx, work: impl FnOnce(&mut VideoEditorApp) + 'static) {
         self.push(work);
         cx.waker().wake();
@@ -52,7 +50,6 @@ pub(crate) struct Published {
 }
 
 impl Published {
-    /// The edits bound to the playhead and the measured mix over `project`.
     pub(crate) fn declarations(
         &self,
         project: &Project,
@@ -111,12 +108,10 @@ impl VideoEditorApp {
         app
     }
 
-    /// What the view's publications read of this window.
     pub(crate) fn published(&self) -> Rc<RefCell<Published>> {
         Rc::clone(&self.published)
     }
 
-    /// Where work for this window goes from outside it.
     pub(crate) fn later(&self) -> Later {
         self.later.clone()
     }
@@ -149,14 +144,12 @@ impl VideoEditorApp {
         }
     }
 
-    /// Run what was left for the window since its last sync.
     pub(super) fn run_later(&mut self) {
         for work in self.later.take() {
             work(self);
         }
     }
 
-    /// Bring what the view publishes in step with the window.
     pub(crate) fn publish_shown(&self) {
         let mut published = self.published.borrow_mut();
         published.playhead = self.playhead;
@@ -164,7 +157,6 @@ impl VideoEditorApp {
         published.exporting = self.export_job.is_some();
     }
 
-    /// Answer `effect` on the window as it shows the document now.
     pub(crate) fn effect(&mut self, effect: VideoEditorEffect, cx: &mut Cx) -> EffectAnswer {
         self.follow_document();
         let answer = crate::agent_timeline::effect(&effect, self.content.as_ref(), cx)

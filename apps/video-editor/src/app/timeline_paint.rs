@@ -4,8 +4,6 @@
 )]
 use super::*;
 
-/// The labels along the ruler, on the clips and in the track heads: captions,
-/// in tabular figures wherever they carry a time or a level.
 fn caption(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
 }
@@ -637,7 +635,6 @@ impl VideoEditorApp {
         )
     }
 
-    /// What the zoom chip says: how many pixels a second of timeline takes.
     pub(super) fn zoom_words(&self) -> String {
         if self.zoom >= 100.0 {
             format!("{:.0} px/s", self.zoom)
@@ -1026,7 +1023,6 @@ impl VideoEditorApp {
     }
 }
 
-/// What an add-track button says.
 pub(super) fn add_track_label(kind: TrackKind) -> String {
     crate::resource::CATALOG.t(if kind == TrackKind::Video {
         "video-editor-video-track"

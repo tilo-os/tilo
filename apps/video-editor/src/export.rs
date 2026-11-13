@@ -12,13 +12,9 @@ use media::encode::{AudioCodec, EncodeReport, HwEncPolicy, Selection, VideoCodec
 
 use crate::model::Project;
 
-/// The render of a build without the `GStreamer` encoder (a browser page):
-/// a step at a time on the UI thread, saved by contents.
 #[cfg(not(any(feature = "gst", feature = "decode")))]
 mod stepped;
 
-/// Output resolution presets. Stored as the long edge; the project's
-/// aspect is preserved at encode time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resolution {
     P720,
@@ -35,7 +31,6 @@ impl Resolution {
             Resolution::P2160 => "2160p",
         }
     }
-    /// (width, height) for a 16:9 frame at this preset.
     pub fn dims(self) -> (u32, u32) {
         match self {
             Resolution::P720 => (1280, 720),
@@ -121,7 +116,6 @@ impl FrameRate {
     }
 }
 
-/// The full export job description, as chosen in the dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportSettings {
     pub resolution: Resolution,
@@ -229,8 +223,6 @@ pub fn video_codec(container: Container) -> VideoCodec {
     }
 }
 
-/// The audio codec each container carries. MP4 and MOV take AAC; `WebM` takes
-/// Opus, which is its companion codec the way VP8 is its video one.
 pub fn audio_codec(container: Container) -> AudioCodec {
     match container {
         Container::Mp4 | Container::Mov => AudioCodec::Aac,
@@ -347,8 +339,6 @@ impl FlushWatch {
         }
     }
 
-    /// Record the output's current length. Returns whether it had grown,
-    /// which is also what resets the clock.
     fn observe_len(&mut self, len: u64, now: ui::time::Instant) -> bool {
         if len == self.last_len {
             return false;
@@ -358,7 +348,6 @@ impl FlushWatch {
         true
     }
 
-    /// Anything on the pipeline's bus is the pipeline being alive.
     fn observe_activity(&mut self, now: ui::time::Instant) {
         self.last_progress = now;
     }
@@ -435,15 +424,12 @@ pub fn output_dims(settings: &ExportSettings, project: &Project) -> (u32, u32) {
 /// Split out of the encode loop so what gets rendered can be asserted without an encoder.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderPlan {
-    /// Timeline seconds of the render's first frame.
     pub start: f64,
-    /// Frames the render writes.
     pub total: u64,
     fps: f64,
 }
 
 impl RenderPlan {
-    /// The plan for `project` at `fps`, honouring its in / out marks.
     #[must_use]
     pub fn new(project: &Project, fps: f64) -> Self {
         let fps = if fps.is_finite() && fps > 0.0 {
@@ -511,26 +497,19 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
     dir.join(settings.suggested_filename(&project.name))
 }
 
-/// Export used to run inline on the UI thread, freezing the window for the whole encode. A job
-/// owns the thread, publishes progress as it encodes, and can be told to stop.
 pub struct ExportJob {
     shared: Arc<JobState>,
     handle: Option<std::thread::JoinHandle<()>>,
-    /// A render run a step at a time by [`Self::pump`] instead of on a
-    /// worker thread.
     #[cfg(not(any(feature = "gst", feature = "decode")))]
     stepped: Option<stepped::SteppedRender>,
 }
 
-/// What the worker publishes and the UI reads. Small enough to poll every
-/// frame without ceremony.
 struct JobState {
     /// Frames written so far, and how many there are in total.
     done: AtomicU64,
     total: AtomicU64,
     cancel: Arc<AtomicBool>,
     outcome: Mutex<Option<ExportStatus>>,
-    /// Told each frame written, and how many there are.
     report: Option<Box<dyn Fn(u64, u64) + Send + Sync>>,
     /// How long one frame may go without every source's real picture before
     /// the export fails rather than write a stand-in.
@@ -575,8 +554,6 @@ impl ExportJob {
         }
     }
 
-    /// Advance a render that runs a step at a time; nothing for one on a
-    /// worker thread. Called every frame while the job runs.
     pub fn pump(&mut self) {
         #[cfg(not(any(feature = "gst", feature = "decode")))]
         if let Some(render) = self.stepped.as_mut()
@@ -586,8 +563,6 @@ impl ExportJob {
         }
     }
 
-    /// Where the render has got to. `Rendering { progress }` while the
-    /// worker is encoding, then whatever it finished as.
     pub fn status(&self) -> ExportStatus {
         if let Some(done) = self.shared.outcome.lock().ok().and_then(|o| o.clone()) {
             return done;
@@ -599,7 +574,6 @@ impl ExportJob {
         }
     }
 
-    /// Whether the worker is still going.
     pub fn is_running(&self) -> bool {
         self.shared.outcome.lock().is_ok_and(|o| o.is_none())
     }
@@ -612,8 +586,6 @@ impl ExportJob {
         self.shared.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Block until the worker finishes, returning its outcome. Mostly for
-    /// tests; the UI polls [`Self::status`] instead.
     pub fn join(mut self) -> ExportStatus {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
@@ -636,7 +608,6 @@ impl Drop for ExportJob {
 }
 
 impl JobState {
-    /// `done` frames are written.
     #[cfg_attr(
         not(feature = "gst"),
         allow(dead_code, reason = "only the GStreamer render writes frames")
@@ -672,7 +643,6 @@ pub fn render_to(
     render(project, settings, destination, &state)
 }
 
-/// The message a cancelled render reports.
 pub const CANCELLED: &str = "Export cancelled";
 
 /// How long one request for a source's frame waits before the export checks
@@ -883,7 +853,6 @@ pub fn renders_by_steps() -> bool {
     cfg!(not(any(feature = "gst", feature = "decode"))) && media::edit::ClipEncoder::available()
 }
 
-/// The audio frame video frame `i` starts at.
 #[cfg(any(feature = "gst", not(feature = "decode")))]
 fn audio_frame_at(i: u64, fps: f64) -> u64 {
     #[expect(
@@ -924,12 +893,9 @@ pub trait HandedOutput {
     /// How many bytes have been written so far, when that can be told.
     fn written(&self) -> Option<u64>;
 
-    /// Throw away what was written.
     fn discard(&self);
 }
 
-/// Where a render's file goes: a path it creates, or a file it was handed
-/// open.
 #[cfg(feature = "gst")]
 pub(crate) enum Output<'a> {
     Path(&'a std::path::Path),
@@ -954,8 +920,6 @@ impl Output<'_> {
     }
 }
 
-/// One encode: the frame size and rate the timeline is composited at, and
-/// the graph (its sink writing [`Output`]) the frames are pushed into.
 #[cfg(feature = "gst")]
 pub(crate) struct Encode<'a> {
     pub width: u32,
@@ -1657,7 +1621,6 @@ mod tests {
         );
     }
 
-    /// `project_over` plus an audio lane carrying `tone`.
     #[cfg(feature = "gst")]
     fn project_with_tone(
         clip: &std::path::Path,
@@ -2215,8 +2178,6 @@ mod tests {
         }
     }
 
-    /// A project holding one clip of `path`, which is exactly what the
-    /// export probe and a hand-built project look like.
     fn one_clip_over(path: &str) -> Project {
         use crate::model::{MediaItem, MediaKind, Track, TrackKind};
         use uuid::Uuid;
@@ -2564,14 +2525,11 @@ mod tests {
         }
     }
 
-    /// Deterministic moving footage encoded by the same `GStreamer` stack the
-    /// export tests exercise. Generation remains fail-loud.
     #[cfg(feature = "gst")]
     fn demo_clip() -> std::path::PathBuf {
         generated_clip::encoded_video()
     }
 
-    /// A one-clip project sourcing `path` from `in_point` for `len` seconds.
     #[cfg(feature = "gst")]
     fn project_over(path: &std::path::Path, in_point: f64, len: f64) -> Project {
         use crate::model::{MediaItem, MediaKind, Track, TrackKind};

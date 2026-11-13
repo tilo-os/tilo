@@ -153,7 +153,6 @@ impl HeadlessCompositor {
         })
     }
 
-    /// A tightly-packed `width * height * 4` RGBA frame.
     pub fn frame(
         &mut self,
         project: &crate::model::Project,

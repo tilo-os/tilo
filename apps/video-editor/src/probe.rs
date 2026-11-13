@@ -39,7 +39,6 @@ pub struct ProbedMedia {
 pub enum ProbeError {
     Io(String),
     Empty,
-    /// The bytes are something other than media; `detected` names what.
     NotMedia {
         detected: &'static str,
     },
@@ -335,13 +334,10 @@ fn le_u32(d: &[u8], at: usize) -> Option<u32> {
 }
 
 pub(crate) struct WavLayout {
-    /// `1` integer PCM, `3` float, `0xFFFE` extensible.
     pub format: u16,
     pub channels: u16,
     pub bits: u16,
     pub byte_rate: u32,
-    /// Where the `data` chunk's samples start, and the size it declares
-    /// (which may run past a prefix read of the file).
     pub data: Option<(usize, usize)>,
 }
 
@@ -580,7 +576,6 @@ fn timescale_and_duration(body: &[u8]) -> Option<(u32, u64)> {
     }
 }
 
-/// The last two 16.16 fixed-point u32s of the payload, in either version.
 fn tkhd_dims(body: &[u8]) -> Option<(u32, u32)> {
     if body.len() < 8 {
         return None;
@@ -641,7 +636,6 @@ const EBML_TRACK_TYPE: u64 = 0x83;
 const EBML_VIDEO: u64 = 0xE0;
 const EBML_PIXEL_WIDTH: u64 = 0xB0;
 const EBML_PIXEL_HEIGHT: u64 = 0xBA;
-/// Nanoseconds per frame, stated by the track itself.
 const EBML_DEFAULT_DURATION: u64 = 0x23_E383;
 
 /// `(value, byte_len)`. For an id the leading length-descriptor bits are kept so
@@ -672,8 +666,6 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
     Some((value, len))
 }
 
-/// Tolerates truncation and the unknown-size vint a streamed Segment uses, whose
-/// data then runs to the end of the buffer.
 fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
     let mut out = Vec::new();
     let mut i = 0usize;

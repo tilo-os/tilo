@@ -341,7 +341,6 @@ impl VideoCompositor {
         Some(tex)
     }
 
-    /// The accumulation index holding the finished frame.
     #[expect(
         clippy::expect_used,
         reason = "the pipelines, accumulation and uniform buffer are ensured at the top"

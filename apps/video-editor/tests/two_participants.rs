@@ -36,7 +36,6 @@ use video_editor::{VideoEditor, shot};
 const W: u32 = 1280;
 const H: u32 = 800;
 
-/// One editor and the record it holds, hosted as the app runs.
 struct Participant {
     app: TestApp<VideoEditor>,
 }
@@ -71,7 +70,6 @@ impl Participant {
         Participant { app }
     }
 
-    /// The project this participant's record holds.
     fn project(&self) -> Project {
         self.app.state()
     }
@@ -90,7 +88,6 @@ impl Participant {
         harness.scene().clone()
     }
 
-    /// Press a key, the way the host delivers one.
     fn press(&mut self, key: &str) {
         self.app.harness().key(key);
     }
@@ -125,7 +122,6 @@ fn clip_ids(p: &Participant) -> Vec<ClipId> {
     ids
 }
 
-/// How long the shared project runs.
 fn duration(p: &Participant) -> f64 {
     p.project().duration()
 }
@@ -142,7 +138,6 @@ fn drawn_colour(ctx: &PresenceCtx, who: &str) -> (u8, u8, u8) {
     (colour.r, colour.g, colour.b)
 }
 
-/// Rasterise, and count how many pixels carry a colour.
 fn pixels_of_colour(rgba: &[u8], rgb: (u8, u8, u8)) -> usize {
     rgba.chunks_exact(4)
         .filter(|p| p[0] == rgb.0 && p[1] == rgb.1 && p[2] == rgb.2 && p[3] > 0)

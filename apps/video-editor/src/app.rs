@@ -96,7 +96,6 @@ const GOTO_CARD_W: f64 = 260.0;
 /// opens: about a 360 px timeline in an ordinary window, more preview in a
 /// small one. The person drags the divider; the lanes scroll.
 const PREVIEW_SHARE: f32 = 0.52;
-/// The preview / timeline divider's action target.
 const TIMELINE_SPLIT_TARGET: &str = "video-editor.timeline-split";
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
@@ -113,12 +112,10 @@ const SCROLLBAR_INSET: f64 = 3.0;
 /// Below this (logical px, either axis) the letterboxed preview canvas has no
 /// room to show a frame and the pane says so instead.
 const MIN_CANVAS: f64 = 48.0;
-/// Below this the transport has no room for a scrubber and draws none.
-/// Where the history buttons sit, as an offset into the transport strip:
-/// just past the five transport circles, which end at +205.
+/// Where the history buttons sit, as an offset into the transport strip: just
+/// past the five transport circles, which end at +205.
 const HISTORY_X: f64 = 214.0;
 const HISTORY_W: f64 = 30.0;
-/// Where everything right of the history buttons begins.
 const TRANSPORT_RIGHT_X: f64 = HISTORY_X + HISTORY_W * 2.0 + 14.0;
 /// And where it begins when the strip is too narrow to hold them.
 const TRANSPORT_PLAIN_X: f64 = 220.0;
@@ -126,6 +123,7 @@ const TRANSPORT_PLAIN_X: f64 = 220.0;
 /// reading the user cannot get elsewhere, and undo has a keyboard shortcut.
 const HISTORY_MIN_STRIP_W: f64 = TRANSPORT_RIGHT_X + 100.0;
 
+/// Below this the transport has no room for a scrubber and draws none.
 const MIN_SCRUBBER_W: f64 = 90.0;
 /// Above this a longer bar buys no precision and just looks stretched.
 const MAX_SCRUBBER_W: f64 = 560.0;
@@ -140,7 +138,6 @@ const MEDIA_NOT_LOCAL_SHORT: &str = "Not on device";
 /// What the editor says when the bytes are here but are not media. Distinct from
 /// [`MEDIA_NOT_LOCAL`]: fetching it again will not help.
 const MEDIA_UNREADABLE: &str = "Unreadable media";
-/// The compact form, for the media bin's fixed-width column.
 const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 
 /// A title has no file to miss, and a clip imported by its contents has its bytes
@@ -152,14 +149,14 @@ fn media_missing_here(m: &MediaItem) -> bool {
     !m.source().hydration.is_local()
 }
 
-/// Below this the media bin collapses into an overlay flap; above it the bin is
-/// docked beside the editor.
 /// Height of a collapsible inspector section header.
 const SECTION_H: f64 = 24.0;
 const PIP_SCALE: f64 = 0.32;
 const PIP_INSET: f64 = 0.04;
 const KEY_BOX: f64 = 20.0;
 
+/// Below this the media bin collapses into an overlay flap; above it the bin is
+/// docked beside the editor.
 const BIN_BREAKPOINT: f64 = 900.0;
 
 /// Catalogue messages, so a German window says them in German.
@@ -209,17 +206,14 @@ struct BinPaintCtx<'a> {
 /// happened to be written in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NoticeLevel {
-    /// It happened, and there is nothing left over.
     Ok,
     /// It happened, but not wholly — neither a success nor a failure, and it
     /// must not be dressed as either.
     Warning,
-    /// It did not happen.
     Failed,
 }
 
 impl NoticeLevel {
-    /// The kind of bar notice this level is told in.
     fn toast_kind(self) -> ui::widget::toast::ToastKind {
         use ui::widget::toast::ToastKind;
         match self {
@@ -249,7 +243,6 @@ impl ImportReport {
     }
 }
 
-/// One line of standing feedback, carrying the severity it was created with.
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct Notice {
     level: NoticeLevel,
@@ -283,7 +276,6 @@ impl Notice {
         }
     }
 
-    /// The notice with `action` beside it in the bar.
     fn with_action(mut self, action: notices::NoticeAction) -> Self {
         self.action = Some(action);
         self
@@ -307,22 +299,16 @@ enum TransportAction {
 /// accessibility tree's active descendant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum Pane {
-    /// The media bin's rows.
     Bin,
-    /// The five transport buttons.
     Transport,
-    /// Tracks and the clips on them.
     #[default]
     Timeline,
-    /// The inspector's section headers and controls.
     Inspector,
 }
 
 impl Pane {
-    /// Tab order, left to right and top to bottom as the panes are painted.
     const ORDER: [Pane; 4] = [Pane::Bin, Pane::Transport, Pane::Timeline, Pane::Inspector];
 
-    /// The catalogue message a reader hears for this pane.
     fn message(self) -> &'static str {
         match self {
             Pane::Bin => "video-editor-pane-bin",
@@ -395,7 +381,6 @@ enum Section {
 }
 
 impl Section {
-    /// The catalogue message the header paints and a reader hears.
     fn message(self) -> &'static str {
         match self {
             Section::Curves => "video-editor-section-curves",
@@ -445,7 +430,6 @@ enum NumField {
     Saturation,
     FadeIn,
     FadeOut,
-    /// How long the incoming transition ramps for.
     TransitionLen,
     ScaleX,
     ScaleY,
@@ -468,7 +452,6 @@ enum NumField {
     Speed,
     TitleSize,
     TitleBackdrop,
-    /// How much of the clip's tone curve is mixed in.
     CurveMix,
     /// The track's fader in decibels and its place across the stereo field: the
     /// only knobs that edit the lane rather than the clip — see
@@ -728,9 +711,7 @@ impl NumField {
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct MarkerRef {
     id: Uuid,
-    /// `Some` for a marker pinned to a clip, `None` for a timeline one.
     clip: Option<ClipId>,
-    /// Absolute timeline seconds, already rebased for a clip marker.
     at: f64,
 }
 
@@ -768,9 +749,7 @@ enum Drag {
     Saturation,
     FadeIn,
     FadeOut,
-    /// Dragging the incoming transition's length.
     TransitionLen,
-    /// Dragging the intensity slider of the effect at `idx` on the selected clip.
     EffectAmount {
         idx: usize,
         /// The durable effect target prevents an old drag from applying to the
@@ -807,17 +786,12 @@ const BIN_RENAME_WINDOW_MS: u128 = 2_000;
 /// lets one press / drag / wheel arm serve all three.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ScrollPane {
-    /// The timeline's horizontal axis (seconds).
     Timeline,
-    /// The inspector body's vertical axis (px).
     Inspector,
-    /// The media bin's vertical axis (px).
     Bin,
-    /// The timeline's lanes, vertically (px).
     Lanes,
 }
 
-/// What this editor instance is built for, and its initial selection policy.
 #[derive(Default)]
 struct SeedState {
     /// Built for a screenshot or a past version rather than a window someone uses:
@@ -830,14 +804,12 @@ struct SeedState {
     selection_initialised: bool,
 }
 
-/// Transport-owned presentation state, kept separate from durable project time.
 #[derive(Default)]
 struct PlaybackState {
     playing: bool,
     chase_playhead: bool,
 }
 
-/// Immediate UI overlays and host focus, all local to this participant.
 #[derive(Default)]
 struct PresentationState {
     export_open: bool,
@@ -853,7 +825,6 @@ struct NavigationState {
     flap_settled: bool,
 }
 
-/// Import and audio-monitor lifecycle, independent of the render pipeline.
 #[derive(Default)]
 struct MediaPipelineState {
     auto_place_imports: bool,
@@ -873,14 +844,12 @@ struct CompositeInputs {
     project: Project,
 }
 
-/// Preview-renderer lifecycle and deterministic capture warm-up policy.
 #[derive(Default)]
 struct RenderPipelineState {
     compositor_tried: bool,
     warm_waveforms_sync: bool,
 }
 
-/// Project work deferred until the next `sync`.
 #[derive(Default)]
 struct ProjectSyncState {
     /// A project the host presented during a drag still waits to replace
@@ -895,14 +864,10 @@ pub struct VideoEditorApp {
     /// and clips submitted since: what the next edit is the difference from, and
     /// what the optimistic `project` returns to once a drag lets go.
     stored: std::rc::Rc<Project>,
-    /// The document the view follows, and the revision of it last presented.
     live: Option<ui::framework::Live<Project>>,
     presented: Option<(u64, u64)>,
-    /// Work left for the window by the view's effect handler and stage.
     later: hosting::Later,
-    /// What the view publishes of the window, as it last showed it.
     published: std::rc::Rc<std::cell::RefCell<hosting::Published>>,
-    /// The inspector's switches, sliding as a click turns them.
     faces: ui::widget::FaceMotions,
     content: Option<ui::framework::content::ContentStore>,
     /// Optimistic actions diff this against the local result, then check only those
@@ -924,7 +889,6 @@ pub struct VideoEditorApp {
     /// so a large-text desktop promotes them to their existing overlay modes
     /// before they crush the preview or overlap inspector controls.
     text_scale: f64,
-    /// UI zoom is independent from the additional accessibility text scale.
     ui_scale: f64,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
@@ -937,7 +901,6 @@ pub struct VideoEditorApp {
     bin_bar: ui::widget::Scrollbar,
     lanes_bar: ui::widget::Scrollbar,
     lane_scroll: f64,
-    /// The divider between the preview and the timeline.
     timeline_split: ui::widget::SplitHandle,
     selection: Selection,
     selected_media: Option<MediaId>,
@@ -948,7 +911,6 @@ pub struct VideoEditorApp {
     // --- ui state ---
     export: ExportSettings,
     export_status: ExportStatus,
-    /// A media-import portal request in flight, drained each `sync`.
     import_rx: Option<ImportChannel>,
     /// A contents chooser, where files have no path (a browser page).
     import_contents_rx: Option<ui::portal::ContentsChannel>,
@@ -966,15 +928,12 @@ pub struct VideoEditorApp {
     /// would do now, and a channel to ask. The stacks stay with the host, so a
     /// control drawn from this can never offer an undo Ctrl+Z would decline.
     undo: ui::UndoAccess,
-    /// The window bar's entries, each carrying what it runs.
     bar_entries: ui::framework::BarCommands<window_bar::BarCommand>,
     /// It owns the decode sessions and one YUV converter per layer slot, so
     /// rebuilding it per frame would re-open a pipeline every frame. It is
     /// re-indexed, not rebuilt, when the media bin changes.
     frame_source: Option<crate::gpu::MediaFrameSource>,
-    /// Signature of the media the frame source was last indexed against.
     frame_source_sig: u64,
-    /// Frames since the frame source last dropped its idle sessions.
     prune_countdown: u32,
     /// Audio monitoring: the mixed timeline, played while the transport
     /// runs. `None` until the first frame builds it, and it holds a
@@ -1071,7 +1030,6 @@ pub struct VideoEditorApp {
     /// Delete). Owned as a field and driven directly (`open_at` / `item_at` /
     /// `take_selection`) because the editor is a canvas, not a taffy tree.
     bin_menu: ContextMenu,
-    /// The segmented strips painted folded, and the one whose menu is open.
     strips: strip_menu::Strips,
     menu_target: Option<MenuTarget>,
     /// Inspector sections the reader has folded away. Presentation, never in
@@ -1100,7 +1058,6 @@ pub struct VideoEditorApp {
     /// lines as often as one. The words are committed through the media action like
     /// every other title property.
     title_edit: Option<(MediaId, ui::widget::TextInput)>,
-    /// In-flight inline edit of a marker in the inspector's list.
     marker_rename: Option<(MarkerRef, EditableLabel)>,
     /// Which of the marker's two texts that editor is on. A marker carries a
     /// name and a free-text note; one inline editor serves both, because the
@@ -1139,7 +1096,6 @@ pub struct VideoEditorApp {
     /// Set when the typed timecode could not be read, so the field can say so
     /// instead of closing and going nowhere.
     thumbnails: crate::thumbnail::ThumbnailCache,
-    /// Real audio waveform peaks per source, computed off-thread and cached.
     waveforms: crate::waveform::WaveformCache,
     /// Compute waveforms synchronously, so a single-frame capture has them.
     /// Sources whose bytes are **not** on this device: the reference replicated but
@@ -1186,11 +1142,9 @@ pub struct VideoEditorApp {
     dirty: bool,
 }
 
-/// A drag that started on a media-bin item and is heading for the timeline.
 #[derive(Clone, Copy)]
 struct BinDrag {
     media: MediaId,
-    /// Pointer position where the press began, to measure the drag threshold.
     origin: Point,
     /// `true` once the pointer has moved past the threshold — only then does a
     /// ghost follow the cursor and a drop place a clip.
@@ -1201,20 +1155,13 @@ struct BinDrag {
 /// timeline, so a plain click never jitters into a placement.
 const BIN_DRAG_THRESHOLD: f64 = 6.0;
 
-/// What an open context menu acts on.
 #[derive(Clone, Copy, PartialEq)]
 enum MenuTarget {
-    /// A media-bin item: Add to timeline / Rename / Delete.
     Media(MediaId),
-    /// A timeline track header: mute / lock / add / delete track.
     Track(TrackId),
-    /// A timeline clip: cut / copy / duplicate / split / delete.
     Clip(ClipId),
-    /// The inspector's "Add effect" picker for the selected clip.
     AddEffect,
-    /// A key control's menu: what to do with `param`'s curve at the playhead.
     Keyframe(Param),
-    /// A folded segmented strip's menu of segments ([`strip_menu`]).
     Strip,
 }
 
@@ -1461,7 +1408,6 @@ impl VideoEditorApp {
         })
     }
 
-    /// The selected clip's four facts as the property list draws them.
     fn inspector_property_values(clip: &Clip, fps: f64) -> [String; 4] {
         [
             timecode(clip.start, fps),
@@ -1503,7 +1449,6 @@ impl VideoEditorApp {
         (below_header + extent).round()
     }
 
-    /// Hand the divider its room and the most the preview can use.
     fn place_timeline_split(&mut self) {
         let bounds = self.timeline_split_bounds();
         let most = self.preview_fill_height();
@@ -1511,7 +1456,6 @@ impl VideoEditorApp {
         self.timeline_split.set_rect(bounds, &self.chrome_theme);
     }
 
-    /// The room the divider moves in: the whole editor.
     fn timeline_split_bounds(&self) -> Rect {
         self.rect
     }
@@ -1596,7 +1540,6 @@ impl VideoEditorApp {
         (self.scroll + (x - lanes.x0) / self.zoom).max(0.0)
     }
 
-    /// How many seconds fit across the lane area at the current zoom.
     fn visible_seconds(&self, r: &Regions) -> f64 {
         (r.lanes.width() / self.zoom.max(0.001)).max(0.0)
     }
@@ -1631,7 +1574,6 @@ impl VideoEditorApp {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll(r));
     }
 
-    /// Pan by `dt` seconds (positive = later), clamped to the content.
     fn scroll_by(&mut self, dt: f64, r: &Regions) {
         self.scroll += dt;
         self.clamp_scroll(r);
@@ -1769,7 +1711,6 @@ impl VideoEditorApp {
         Rect::new(r.timeline.x0, r.timeline.y0, r.gutter.x1, r.ruler.y1)
     }
 
-    /// The clip flag inside it: what is clicked to walk the overloads.
     fn clip_flag_rect(&self, r: &Regions) -> Rect {
         let m =
             chrome_layout::master_strip(VideoEditorApp::master_strip_rect(r), self.chrome_scale());
@@ -1894,7 +1835,6 @@ impl VideoEditorApp {
         Rect::new(left, y0, left + w, y0 + 8.0 * scale)
     }
 
-    /// Whether the transport currently has room for a scrubber.
     fn has_scrubber(&self, r: &Regions) -> bool {
         self.scrubber_rect(r).width() > 1.0
     }
@@ -1939,7 +1879,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// How long a bin source runs.
     fn bin_length(m: &MediaItem) -> String {
         if m.duration > 0.0 {
             clock(m.duration)
@@ -1962,7 +1901,6 @@ impl VideoEditorApp {
         v.into_iter().map(|m| m.id).collect()
     }
 
-    /// Row pitch of the media bin list, and where the first row starts.
     const BIN_ROW_BODY: f64 = 56.0;
     const BIN_ROW_H: f64 = Self::BIN_ROW_BODY + S2;
     const BIN_LIST_TOP: f64 = 40.0;
@@ -2018,7 +1956,6 @@ impl VideoEditorApp {
         out
     }
 
-    /// Whether the media bin is on screen: docked, or an open overlay flap.
     fn bin_is_visible(&self, r: &Regions) -> bool {
         r.bin.width() > 1.0 && (!r.bin_overlay || self.bin_flap.is_open(self.bin_layout()))
     }
@@ -2033,7 +1970,6 @@ impl VideoEditorApp {
         )
     }
 
-    /// Total height the bin list wants, in px.
     fn bin_content_height(&self) -> f64 {
         self.project.media.len() as f64 * self.bin_row_height() + (self.bin_list_top() - 30.0) + 8.0
     }
@@ -2128,7 +2064,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Apply an absolute offset (in the bar's own px units) to `pane`.
     fn set_scroll_offset(&mut self, pane: ScrollPane, offset: f64, r: &Regions) {
         match pane {
             ScrollPane::Timeline => self.set_scroll_px(offset, r),
@@ -2147,7 +2082,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Every pane that currently shows a bar, for the hover / press sweeps.
     const SCROLL_PANES: [ScrollPane; 4] = [
         ScrollPane::Inspector,
         ScrollPane::Bin,
@@ -2420,7 +2354,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Whether either flap is animating and the host should keep painting.
     fn flap_animating(&self) -> bool {
         self.bin_flap.is_animating(self.bin_layout())
             || self.inspector_flap.is_animating(self.inspector_split())
@@ -2668,7 +2601,6 @@ impl VideoEditorApp {
             .any(|id| !self.project.clip_editable(*id))
     }
 
-    /// Select every clip on the timeline (Ctrl+A), in display order.
     fn select_all(&mut self) {
         let ids: Vec<ClipId> = self
             .project
@@ -3065,7 +2997,6 @@ impl VideoEditorApp {
             .map(|_| LinkAffordance::SplitAudio)
     }
 
-    /// Do whichever of link / unlink the selection currently offers.
     fn toggle_link_selected(&mut self) {
         match self.link_affordance() {
             Some(LinkAffordance::Unlink) => self.unlink_selected(),
@@ -3220,7 +3151,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Dispatch a whole-track write for the lane the selection sits on.
     fn dispatch_selected_track(&mut self) {
         if let Some(t) = self.selected_track().cloned() {
             self.submit_track(&t);
@@ -3279,7 +3209,6 @@ impl VideoEditorApp {
         self.dispatch_selected_track();
     }
 
-    /// Dispatch a whole-media write for the selected clip's source.
     fn dispatch_selected_media(&mut self) {
         if let Some(m) = self.selected_media_item().cloned() {
             self.submit_media(&m);
@@ -3697,7 +3626,6 @@ impl VideoEditorApp {
         self.submit_marks();
     }
 
-    /// Drop both marks, putting the render back to the whole timeline.
     fn clear_marks(&mut self) {
         if !self.project.has_marks() {
             return;
@@ -3803,7 +3731,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Open the inline editor on one of a marker's two texts.
     fn begin_marker_edit(&mut self, m: MarkerRef, field: MarkerField) {
         let current = self
             .project
@@ -4089,7 +4016,6 @@ impl VideoEditorApp {
             up,
         ))]);
     }
-    /// Open the "Add effect" picker (the shared context menu) at `at`.
     fn open_effect_menu(&mut self, at: Point) {
         let mut menu = ContextMenu::new();
         for k in EffectKind::ALL {
@@ -4293,7 +4219,6 @@ impl VideoEditorApp {
         Rect::new(x0, row.y0 + 4.0, row.x1 - 8.0, row.y0 + 30.0)
     }
 
-    /// Open the bin context menu for `mid` at logical point `at`.
     fn open_bin_menu(&mut self, mid: MediaId, at: Point) {
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action(
@@ -4419,7 +4344,6 @@ impl VideoEditorApp {
         self.menu_target = Some(MenuTarget::Clip(cid));
     }
 
-    /// If the cursor is over a timeline clip, open its context menu there.
     fn open_clip_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
         if !r.lanes.contains(p) {
@@ -4432,7 +4356,6 @@ impl VideoEditorApp {
         true
     }
 
-    /// If the cursor is over a visible bin item, open its context menu there.
     fn open_bin_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
         let bin_visible = self.bin_is_visible(r);
@@ -4545,7 +4468,6 @@ impl VideoEditorApp {
         id
     }
 
-    /// Delete a track and every clip on it, as one action.
     fn delete_track(&mut self, tid: TrackId) {
         let clip_ids: Vec<ClipId> = self
             .project
@@ -4558,7 +4480,6 @@ impl VideoEditorApp {
         self.submit(vec![Project::DELETE_TRACK.with(key(tid))]);
     }
 
-    /// Toggle a track's mute flag (the header pill), dispatched as an action.
     fn toggle_track_mute(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
@@ -4622,7 +4543,6 @@ impl VideoEditorApp {
         self.selected_media = Some(mid);
     }
 
-    /// Commit an inline rename: dispatch a whole-media write with the new name.
     fn commit_rename(&self, mid: MediaId, name: &str) {
         let trimmed = name.trim();
         if trimmed.is_empty() {
@@ -4638,7 +4558,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Delete a bin media and every clip that placed it, as one action.
     fn delete_media(&mut self, mid: MediaId) {
         let clip_ids: Vec<ClipId> = self
             .project
@@ -5472,7 +5391,6 @@ struct GeometryNow {
 }
 
 impl GeometryNow {
-    /// Whether the picture is anywhere other than the plain aspect-fit.
     fn is_placed(self) -> bool {
         (self.scale_x - 1.0).abs() > 1e-6
             || (self.scale_y - 1.0).abs() > 1e-6
@@ -5492,7 +5410,6 @@ enum KeyState {
     OnKey,
 }
 
-/// Which of a marker's two texts an inline edit is on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum MarkerField {
     #[default]
@@ -5538,7 +5455,6 @@ const TITLE_COLORS: [[f64; 4]; 8] = [
     [0.60, 0.62, 0.66, 1.0],
 ];
 
-/// Rate presets offered as a segmented row beside the rate slider.
 const SPEED_PRESETS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
 /// The shapes people actually shoot, not a resolution ladder: two landscape sizes,
@@ -5588,7 +5504,6 @@ fn format_words(width: u32, height: u32, fps: f64) -> String {
     )
 }
 
-/// A speed preset as its segment says it: "2×", "0.5×".
 fn speed_words(rate: f64) -> String {
     if (rate - rate.round()).abs() < 1e-6 {
         format!("{}\u{d7}", rate.round() as i64)
@@ -5612,17 +5527,13 @@ fn rate_words(fps: f64) -> String {
 
 #[derive(Clone, Debug, PartialEq)]
 struct DialogType {
-    /// `Body`: the sheets' lines and their segment labels.
     sm: TextStyle,
-    /// `Caption`: captions, status lines, hints.
     xs: TextStyle,
-    /// `Title`, in tabular figures: the go-to field's timecode.
     xl: TextStyle,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct InspectorHeader {
-    /// From the panel's top edge to where the scrolling body starts.
     pub(super) height: f64,
 }
 
@@ -5641,7 +5552,6 @@ fn inspector_property_rows(values: &[String; 4]) -> [ui::widget::PropertyRow<'_>
 
 #[derive(Clone, Debug, PartialEq)]
 struct ExportLayout {
-    /// The shared frame: scrim, card, title band, close control, action row.
     modal: ModalLayout,
     type_sizes: DialogType,
     filename_top: f64,
@@ -5652,7 +5562,6 @@ struct ExportLayout {
     resolution: Vec<(Resolution, Rect)>,
     container: Vec<(Container, Rect)>,
     fps: Vec<(FrameRate, Rect)>,
-    /// Top of the size / frame / duration line.
     info_top: f64,
     /// The status slot: a progress bar over its line, a two-line failure,
     /// or a one-line outcome. Sized for the tallest of those so the slot
@@ -5661,9 +5570,7 @@ struct ExportLayout {
     /// Top of the flow's own notice line — under the status, never in it,
     /// and reserved whether or not a notice is showing.
     notice_top: f64,
-    /// Close, or Cancel while a render is running: the first action.
     cancel: Rect,
-    /// Export: the second action, absent (zero) while a render is running.
     confirm: Rect,
 }
 
@@ -5671,9 +5578,7 @@ struct ExportLayout {
 struct HelpLayout {
     modal: ModalLayout,
     type_sizes: DialogType,
-    /// Top of the "Esc or ? to close" line.
     hint_top: f64,
-    /// One entry per group, in [`shortcuts`] order.
     groups: Vec<HelpGroupLayout>,
     /// Where a row's description starts, measured from its column's left
     /// edge: the widest row of keycaps in the table plus one spacing step,
@@ -5689,9 +5594,7 @@ struct HelpLayout {
 
 #[derive(Clone, Debug, PartialEq)]
 struct HelpGroupLayout {
-    /// The group's heading band, spanning its column.
     heading: Rect,
-    /// One band per shortcut row, in table order.
     rows: Vec<Rect>,
 }
 
@@ -5700,16 +5603,13 @@ struct GotoLayout {
     card: Rect,
     type_sizes: DialogType,
     label_top: f64,
-    /// The text field the timecode is typed into.
     entry: Rect,
     hint_top: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HelpMetrics {
-    /// A group heading's line and the step down to its first row.
     header_h: f64,
-    /// One shortcut row: its line or its keycaps, and the step to the next.
     row_h: f64,
     /// The gap after a group's last row.
     group_gap: f64,
@@ -6996,7 +6896,6 @@ impl Widget for VideoEditorApp {
 }
 
 impl ui::presence::capability::PublishesPresence for VideoEditorApp {
-    /// This editor publishes about the timeline it holds.
     fn presence_key(&self) -> Option<PresenceKey> {
         Some(crate::presence::timeline_key())
     }
@@ -7091,13 +6990,11 @@ impl VideoEditorApp {
     }
 }
 
-/// One row of the shortcut sheet: the keys that run it and what it does.
 pub(crate) struct ShortcutRow {
     /// The key or chord templates that run it, spelled for this platform and
     /// the person's keyboard. Two or more are alternatives, which the sheet
     /// paints as separate keycaps — never as one string joined by a separator.
     pub keys: &'static [&'static str],
-    /// What pressing them does.
     pub what: String,
 }
 
@@ -7195,7 +7092,6 @@ pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<ShortcutRow>)> {
     ]
 }
 
-/// How tall each shortcut group draws.
 fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
     m.header_h + rows as f64 * m.row_h + m.group_gap
 }
@@ -7252,9 +7148,7 @@ fn help_columns(two_col: bool, m: HelpMetrics) -> (usize, f64) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PickField {
     Frame(usize),
-    /// One project frame-rate preset, by index into [`RATE_PRESETS`].
     Rate(usize),
-    /// Take the frame of the source `format_source` names.
     MatchFormat,
     /// The chroma key's enable switch. The catch-22 control: the key's three
     /// sliders are only laid out once it is on, so a user who could not reach
@@ -7264,9 +7158,7 @@ enum PickField {
     /// One mask shape button. Same catch-22: the mask's geometry rows appear
     /// only once a shape is chosen.
     MaskShape(crate::model::MaskShape),
-    /// One transition at the clip's head cut.
     Transition(Transition),
-    /// One label colour, by palette slot.
     Label(u8),
     /// The link / unlink button. Which of the two it is depends on the
     /// selection — see [`LinkAffordance`] — so the row is one stop whichever
@@ -7319,9 +7211,7 @@ impl PickField {
 /// swap places.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum LinkAffordance {
-    /// Break the link on the selection's clips.
     Unlink,
-    /// Tie the selected clips into one group.
     Link,
     /// Give a picture clip that carries sound its own audio clip. This is what
     /// a project saved before linked audio existed is offered, and what a shot
@@ -7341,7 +7231,6 @@ impl LinkAffordance {
         })
     }
 
-    /// What is true now, above the button.
     fn state(self) -> String {
         crate::resource::CATALOG.t(match self {
             LinkAffordance::Unlink => "video-editor-link-state-linked",
@@ -7364,7 +7253,6 @@ enum InspectorRow {
     /// its own stop: a reader that could only ever land on knobs could not
     /// reach a marker at all.
     Marker(MarkerRef),
-    /// The button that closes the marker list.
     AddMarker,
 }
 
@@ -8350,7 +8238,6 @@ impl VideoEditorApp {
     }
 }
 
-/// What the export dialog's buttons say, in the window's language.
 struct ExportLabels {
     title: String,
     cancel: String,

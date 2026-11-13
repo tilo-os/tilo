@@ -5,14 +5,10 @@ use super::strip_menu::StripHost;
 )]
 use super::*;
 
-/// A control's label above it, and the readout beside it: `Label`, the role
-/// the system sets every control label in.
 fn label_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Label)
 }
 
-/// One caption line above a control, its line box's top `line_h` plus a
-/// tight step above `y`, where `y` is the top of the control it labels.
 fn caption_above(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -158,8 +154,6 @@ impl VideoEditorApp {
         );
     }
 
-    /// Paint the project's format section: what the frame is now, the size
-    /// and rate presets with the one in force marked, and the match button.
     fn draw_project_section(
         &self,
         scene: &mut Scene,
@@ -1599,8 +1593,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// The summary is the point: a fold that hid "this clip plays at 4× in reverse" would
-    /// turn a view choice into missing state.
     fn draw_section_header(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1697,8 +1689,6 @@ impl VideoEditorApp {
         Some(parts.join(", "))
     }
 
-    /// "On" and "removing something" are different states, and a fold reporting neither
-    /// would hide both. The tolerance is read at the playhead, being animatable.
     fn key_summary(&self, clip: &Clip) -> String {
         let tolerance = clip.param_at(Param::KeyTolerance, self.playhead);
         if tolerance <= 1e-6 {

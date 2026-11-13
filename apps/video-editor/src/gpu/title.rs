@@ -29,7 +29,6 @@ pub struct TitleRaster {
     unavailable: bool,
 }
 
-/// Beyond this the oldest go: every entry costs a frame-sized buffer.
 const CACHE_LIMIT: usize = 12;
 
 impl TitleRaster {

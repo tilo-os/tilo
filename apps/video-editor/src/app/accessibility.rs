@@ -48,7 +48,6 @@ const TRANSPORT_NAMES: [(TransportAction, &str, &str); 5] = [
 ];
 
 impl VideoEditorApp {
-    /// The media rows the bin currently lists, in painted order.
     pub(super) fn a11y_bin_items(&self) -> Vec<MediaId> {
         // `bin_order`, not the project's own order: that is the order the rows
         // are painted in, and a reader walking a differently-ordered list
@@ -251,7 +250,6 @@ impl VideoEditorApp {
         v
     }
 
-    /// The numeric knobs inside a section, in painted order.
     pub(super) fn a11y_section_fields(section: Section, clip: Option<&Clip>) -> Vec<NumField> {
         let Some(c) = clip else {
             return Vec::new();
@@ -344,7 +342,6 @@ impl VideoEditorApp {
             .with_children(children)
     }
 
-    /// The media bin's rows.
     pub(super) fn a11y_bin(&self) -> AccessNode {
         let items = self.a11y_bin_items();
         let n = items.len();
@@ -395,7 +392,6 @@ impl VideoEditorApp {
         VideoEditorApp::a11y_pane(Pane::Bin, rows)
     }
 
-    /// The five transport buttons, named.
     pub(super) fn a11y_transport(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Transport;
         let mut buttons: Vec<AccessNode> = TRANSPORT_NAMES
@@ -453,7 +449,6 @@ impl VideoEditorApp {
         node
     }
 
-    /// A lane's mute, solo and lock toggles, in painted order.
     fn a11y_track_toggles(track: &crate::model::Track) -> Vec<AccessNode> {
         TRACK_TOGGLES
             .into_iter()
@@ -1044,7 +1039,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// What a clip's key is removing, in the three numbers that decide it.
     fn a11y_key_summary(c: &Clip, at: f64) -> String {
         let tolerance = c.param_at(Param::KeyTolerance, at);
         if !c.key.enabled {
@@ -1619,8 +1613,6 @@ impl VideoEditorApp {
         self.perform_action(&Action::Activate, &path, state, &root)
     }
 
-    /// What a history button is called and what it would do, in the window's
-    /// language: the toolkit's own title is its source language.
     pub(super) fn history_words(&self, which: ui::UndoRequest) -> (String, String) {
         let name = crate::resource::CATALOG.t(match which {
             ui::UndoRequest::Undo => "video-editor-undo",
@@ -2069,7 +2061,6 @@ fn step_index(i: usize, n: usize, up: bool) -> usize {
     }
 }
 
-/// What an empty timeline says, as the one node the pane carries.
 fn timeline_empty_node() -> AccessNode {
     use ui::a11y::Role;
     AccessNode::new(Role::StaticText)

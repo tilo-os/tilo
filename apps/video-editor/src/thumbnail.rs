@@ -31,10 +31,8 @@ const THUMB_SIZE: ThumbSize = ThumbSize::new(THUMB_W, THUMB_H);
 /// cells share a decode and a small zoom change reuses what is decoded.
 pub const STRIP_BUCKET_SECS: f64 = 0.25;
 
-/// The least-recently-looked-up bucket goes first.
 const MAX_FRAMES_PER_SOURCE: usize = 96;
 
-/// The cap on live `GStreamer` pipelines.
 const MAX_WORKERS: usize = 2;
 
 /// How far [`ThumbnailCache::frame_at`] reaches for a decoded neighbour while
@@ -58,7 +56,6 @@ fn millis(t: f64) -> u64 {
     (t.max(0.0) * 1000.0).round().min(u64::MAX as f64) as u64
 }
 
-/// Tightly packed `width*height*4` RGBA.
 #[derive(Clone, Debug)]
 pub struct Thumb {
     pub width: u32,
@@ -174,21 +171,16 @@ impl Slot {
     }
 }
 
-/// Keyed by time bucket, with the LRU stamps that bound how many are kept.
 #[derive(Default)]
 struct SourceFrames {
     slots: BTreeMap<u32, Slot>,
     touched: HashMap<u32, u64>,
 }
 
-/// A representative frame is generated on first request; decoded frames replace
-/// it per time bucket.
 pub struct ThumbnailCache {
     swatch: HashMap<MediaId, Arc<Thumb>>,
     frames: HashMap<MediaId, SourceFrames>,
     swatch_pending: HashMap<MediaId, ThumbKey>,
-    /// Written off: nothing is requested for these again, which is what lets
-    /// `has_pending` go quiet.
     undecodable: HashSet<MediaId>,
     failures: HashMap<MediaId, u32>,
     #[cfg(feature = "decode")]
@@ -504,8 +496,6 @@ impl ThumbnailCache {
                 .any(|f| f.slots.values().any(|s| s.pending_key().is_some()))
     }
 
-    /// Drop the least-recently-looked-at settled frames past the cap, and forget
-    /// stamps for buckets holding nothing: scrubbing visits unboundedly many.
     fn evict(&mut self, id: MediaId) {
         let Some(f) = self.frames.get_mut(&id) else {
             return;

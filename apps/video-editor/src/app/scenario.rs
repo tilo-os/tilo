@@ -11,60 +11,31 @@ use super::*;
 /// a specific feature (filters, a fresh split). `None` is the live editor.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum ShotScenario {
-    /// Default: the live editor with its auto-selected clip.
     #[default]
     Live,
     /// The graded drone clip selected, filters + fades visible in the
     /// inspector, playhead inside the clip.
     SelectedFilters,
-    /// A split performed at the playhead, leaving two contiguous clips.
     JustSplit,
-    /// A bin item's context menu open (Add to timeline / Rename / Delete).
     BinMenu,
-    /// A bin item being renamed in place through the shared editable label.
     BinRename,
-    /// A bin clip mid-drag over a timeline lane, with the ghost + drop marker.
     DragToTimeline,
-    /// The graded drone selected with its effects stack scrolled into view.
     Effects,
-    /// Several clips selected at once, showing the anchor's full outline
-    /// against the lighter outlines of the rest and the inspector's count.
     MultiSelect,
-    /// A locked video track: the header's lock pill lit, the lane hatched
-    /// over its clips, and the inspector naming the lock.
     LockedTrack,
     /// Zoomed in and scrolled into the middle of the timeline, so the
     /// horizontal scrollbar is showing part-way along its track.
     Scrolled,
-    /// The keyboard-shortcut sheet open over the editor.
     HelpSheet,
-    /// The go-to-timecode field open with a partly-typed time.
     GotoTimecode,
-    /// A timeline clip's context menu open (cut / copy / duplicate / split /
-    /// delete).
     ClipMenu,
-    /// A rubber-band selection mid-sweep across a lane.
     Marquee,
-    /// A composed frame: a clip inset into a corner, a title in the lower
-    /// third, named markers on the ruler.
     Composed,
-    /// The inspector scrolled to the geometry and rate sections, on a clip
-    /// that is inset, re-timed and keyframed.
     Geometry,
-    /// A keyed and masked clip with both sections open: the key's colour
-    /// swatches and its three sliders, and an ellipse mask's geometry.
     KeyAndMask,
-    /// A title clip selected, with its words, size, alignment and colour
-    /// showing, and the marker list under them.
     TitleClip,
-    /// A keyframed clip with the playhead sitting on a key: the key control
-    /// filled, the curve's diamonds on the clip body.
     Keyframes,
-    /// The marker list, holding timeline markers and a clip's own, with the
-    /// ruler flags they correspond to.
     Markers,
-    /// The keyframe menu open on a key under the playhead: remove, the three
-    /// shapes with the one in force ticked, and the steps either side.
     KeyMenu,
     /// The window while the OS is hovering a file over it, so the drop
     /// invitation can be seen to cover everything a drop actually reaches.
@@ -73,8 +44,6 @@ pub enum ShotScenario {
     /// keyed, so the box, the channel chooser, the amount slider and its
     /// key control are all on screen at once.
     Curves,
-    /// Their playheads and names down the lanes, and the clips they hold outlined in
-    /// their colours beside this participant's own selection.
     Collaborators,
     /// The export dialog open over the editor, before a render starts.
     ExportDialog,
@@ -225,13 +194,9 @@ impl ShotScenario {
     }
 }
 
-/// The capture of the live app on a blank project, as a fresh machine shows.
 pub const EMPTY_CAPTURE: &str = "empty";
-/// The capture of the collapsed media bin revealed at a narrow width.
 pub const NARROW_CAPTURE: &str = "narrow";
 
-/// The demo project with an inset over the spine, a title in the lower third and markers
-/// on the ruler, arranged through the production model.
 pub(crate) fn composed_project() -> Project {
     let mut project = crate::seed::sample_project();
     if let Some(cid) = project.top_video_clip_at(23.0).map(|c| c.id)
@@ -277,8 +242,6 @@ pub(crate) fn composed_project() -> Project {
     project
 }
 
-/// The screenshot scenario staged on an editor, applied once its project
-/// has loaded, and its interaction once the editor is laid out.
 #[derive(Default)]
 pub(super) struct CaptureStaging {
     scenario: ShotScenario,
@@ -357,7 +320,6 @@ impl VideoEditorApp {
         self.mix = self.mix_meters.snapshot();
     }
 
-    /// Dispatch a whole-media write for one bin source.
     fn dispatch_media(&mut self, mid: MediaId) {
         if let Some(m) = self.project.media(mid).cloned() {
             self.submit_media(&m);

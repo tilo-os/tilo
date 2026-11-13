@@ -21,7 +21,6 @@ pub(super) fn text_baseline(rect: Rect, style: &TextStyle, tr: &mut TextRenderer
     rect.center().y - line_height(tr, style) / 2.0
 }
 
-/// Top-left corner for `s` drawn centred both ways inside `rect`.
 pub(super) fn text_centre(rect: Rect, s: &str, style: &TextStyle, tr: &mut TextRenderer) -> Point {
     let (w, h) = tr.measure_style(s, None, style);
     Point::new(
@@ -225,7 +224,6 @@ pub(super) fn stroke_line(
         &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
     );
 }
-/// One line of `s` in `style`, its line box's top-left at (`x`, `y`).
 pub(super) fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -297,8 +295,6 @@ pub(super) fn draw_icon_button(
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
-/// A labelled button standing on the selection lift while it is on, as a toolbar
-/// toggle is drawn.
 pub(super) fn draw_toggle_button(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -350,7 +346,6 @@ pub(super) fn draw_switch_row(
     ui::widget::Toggle::paint(ctx.scene, ctx.transform, theme, &face);
 }
 
-/// Trailing, vertically centred, in the retained switch's 44×24 proportions.
 pub(super) fn switch_rect(rect: Rect, theme: &Theme) -> Rect {
     let knob = f64::from(theme.tokens.metrics.icon_md);
     let h = (knob * 1.2).min(rect.height());
@@ -558,7 +553,6 @@ pub(super) fn title_edit_verdict(
     }
 }
 
-/// The three positions each anchor axis can take, in source uv.
 pub(super) const ANCHOR_STOPS: [f64; 3] = [0.0, 0.5, 1.0];
 
 /// One function, so the folded header and the reader's summary cannot drift apart.
@@ -657,7 +651,6 @@ pub(super) fn meter_frac(db: f64) -> f64 {
     ((db - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0)
 }
 
-/// A linear amplitude as that fraction.
 pub(super) fn meter_frac_linear(level: f32) -> f64 {
     if level <= 0.0 {
         return 0.0;
@@ -812,7 +805,6 @@ pub(super) fn draw_chain(scene: &mut Scene, tf: Affine, color: Color, x: f64, y:
     }
 }
 
-/// The width the chain glyph reserves at the head of a clip's header.
 pub(super) const CHAIN_W: f64 = 16.0;
 
 pub(super) fn triangle_corner(x: f64, y: f64, s: f64) -> BezPath {
@@ -835,8 +827,6 @@ pub(super) fn with_alpha(c: Color, a: f64) -> Color {
     c.with_alpha(alpha)
 }
 
-/// Keeping the source interval and the media duration together stops the three
-/// adjacent time values at call sites from being transposed.
 #[derive(Clone, Copy)]
 pub(super) struct WaveformPaint<'a> {
     pub(super) area: Rect,
@@ -895,7 +885,6 @@ pub(super) fn draw_flat_signal(scene: &mut Scene, tf: Affine, area: Rect, color:
     );
 }
 
-/// Fit a w:h aspect rect centered inside `area`.
 pub(super) fn fit_aspect(area: Rect, w: f64, h: f64) -> Rect {
     if area.width() <= 0.0 || area.height() <= 0.0 {
         return area;
@@ -930,7 +919,6 @@ pub(super) fn nice_tick(px_per_sec: f64) -> f64 {
     600.0
 }
 
-/// The roles the editor's sheets set their text in.
 pub(super) fn dialog_type(theme: &Theme) -> DialogType {
     DialogType {
         sm: theme.text(TextRole::Body),
@@ -975,13 +963,10 @@ pub(super) fn modal_layout_with_stacking_actions(
     layout
 }
 
-/// A well inside content (the curve box, an effect row, the title's words):
-/// the raised surface with the edge derived from it.
 pub(super) fn well(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, radius: f64) {
     ui::surface::card(scene, tf, rect, radius, theme.tokens.colors.surfaces.raised);
 }
 
-/// The hover and selection lift of a row in one of the editor's lists.
 pub(super) fn selection_row(
     scene: &mut Scene,
     tf: Affine,

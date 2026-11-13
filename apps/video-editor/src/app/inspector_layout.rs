@@ -7,8 +7,6 @@ use super::*;
 #[derive(Default)]
 pub(super) struct InspectorLayout {
     pub(super) valid: bool,
-    /// The selected clip's facts (position, duration, source in and out),
-    /// at the head of the body.
     pub(super) properties: Option<Rect>,
     pub(super) opacity: Option<Rect>,
     pub(super) volume: Option<Rect>,
@@ -27,33 +25,24 @@ pub(super) struct InspectorLayout {
     /// one thing or the other to offer — a control that is present and inert
     /// says nothing.
     pub(super) link: Option<Rect>,
-    /// Baseline of the caption above it.
     pub(super) link_label_y: f64,
     pub(super) colors: Vec<(u8, Rect)>,
-    /// y of the "EFFECTS" label; each row rect is a full-width effect row.
     pub(super) effects_label_y: f64,
     pub(super) effect_rows: Vec<Rect>,
     pub(super) add_effect: Rect,
     pub(super) split: Rect,
     pub(super) delete: Rect,
-    /// Section header rows, in draw order. Clicking one folds or unfolds it.
     pub(super) sections: Vec<(Section, Rect)>,
-    /// Every ranged control currently laid out, with the track to drag.
     pub(super) nums: Vec<(NumField, Rect)>,
-    /// Picture-in-picture presets: label, corner in `-1..1`, and the button.
     pub(super) pip: Vec<(&'static str, (f64, f64), Rect)>,
     /// The two halves of the frame, as the buttons that put a picture in
     /// one — the arrangement two camera angles of one moment need.
     pub(super) sides: Vec<(&'static str, Side, Rect)>,
     /// "Fill frame" — clears the transform back to the plain aspect-fit.
     pub(super) reset_transform: Option<Rect>,
-    /// Baseline y of the "Crop" caption above the two crop rows.
     pub(super) crop_label_y: f64,
-    /// Baseline y of the "Anchor" caption above the 3×3 grid.
     pub(super) anchor_label_y: f64,
-    /// The nine anchor presets: the point in source uv, and its cell.
     pub(super) anchor: Vec<((f64, f64), Rect)>,
-    /// Rate presets (`0.5×`, `1×`, …) as a segmented row.
     pub(super) speed_presets: Vec<(f64, Rect)>,
     /// Baseline y of the line naming which lane these two knobs belong to.
     /// The panel is otherwise entirely about one clip, so a control that
@@ -66,45 +55,29 @@ pub(super) struct InspectorLayout {
     /// else, because a reset that resets nothing is a control that lies about
     /// having something to undo.
     pub(super) mix_reset: Option<Rect>,
-    /// The reverse toggle.
     pub(super) reverse: Option<Rect>,
     /// Switches the key on and off. The sliders below it only appear once it
     /// is on, so an unkeyed clip does not carry four dead controls.
     pub(super) key_enable: Option<Rect>,
-    /// Baseline y of the "Key colour" caption over the swatches.
     pub(super) key_color_y: f64,
-    /// Preset key colours, and the swatch each is picked from.
     pub(super) key_colors: Vec<([f64; 3], Rect)>,
-    /// Samples the key colour out of the frame under the playhead.
     pub(super) key_pick: Option<Rect>,
-    /// Shape choice, as a segmented row: Off / Rect / Ellipse.
     pub(super) mask_shapes: Vec<(crate::model::MaskShape, Rect)>,
-    /// Snaps the mask onto whatever the transform currently puts on screen.
     pub(super) mask_fit: Option<Rect>,
     /// Keep the outside rather than the inside.
     pub(super) mask_invert: Option<Rect>,
-    /// The words, edited inline through the shared editable label.
     pub(super) title_text: Option<Rect>,
     pub(super) title_align: Vec<(TextAlign, Rect)>,
-    /// The font-family chooser: a button that opens the shared dropdown.
     pub(super) title_font: Option<Rect>,
-    /// Preset colours for the title's own (authored, non-palette) colour.
     pub(super) title_colors: Vec<([f64; 4], Rect)>,
     pub(super) title_bold: Option<Rect>,
     pub(super) title_italic: Option<Rect>,
-    /// Which channel the editor is showing, as a segmented row.
     pub(super) curve_channels: Vec<(crate::curve::Channel, Rect)>,
-    /// The square the curve is drawn and dragged in.
     pub(super) curve_canvas: Option<Rect>,
-    /// Puts the shown channel back to the straight line.
     pub(super) curve_reset: Option<Rect>,
-    /// The key control at the head of each animatable row.
     pub(super) keys: Vec<(Param, Rect)>,
-    /// Baseline y of the readout that states the project's current format.
     pub(super) project_format_y: f64,
-    /// Frame-size presets as a segmented row: the dimensions each writes.
     pub(super) project_frames: Vec<((u32, u32), Rect)>,
-    /// Baseline y of the "Rate" caption over the rate row.
     pub(super) project_rate_y: f64,
     pub(super) project_rates: Vec<(f64, Rect)>,
     /// Takes the selected source's shape as the project's -- the button
@@ -112,9 +85,7 @@ pub(super) struct InspectorLayout {
     /// footage actually is.
     pub(super) project_match: Option<Rect>,
     pub(super) marker_rows: Vec<(MarkerRef, Rect)>,
-    /// Sub-rects of the row above: the name (click to rename) and the delete.
     pub(super) add_marker: Option<Rect>,
-    /// Total content extent (px) from the inspector top, for scroll clamping.
     pub(super) content_height: f64,
     /// Where the scrolled body may be cut: the top of every row and the foot
     /// of the last. The body shows whole rows only, so its edges land on
