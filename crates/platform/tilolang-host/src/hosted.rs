@@ -280,10 +280,11 @@ impl Surface {
     }
 
     /// What an invocation of `address` runs, and the resources it resolves against: the first
-    /// resource carrying it among `resources`, or — where the address names no resource there —
-    /// among every resource the workspace holds, since what a window's control says it does names
-    /// a kind of resource rather than the record a window shows. `address` itself answers when
-    /// this app publishes nothing of it, so an action it does not offer is refused as it was.
+    /// resource carrying it, in reading order, among `resources` ([`carried`]), or — where the
+    /// address names no resource there — among every resource the workspace holds, since what a
+    /// window's control says it does names a kind of resource rather than the record a window
+    /// shows. `address` itself answers when this app publishes nothing of it, so an action it does
+    /// not offer is refused as it was.
     fn naming(
         &self,
         resources: Vec<ResourceSpec>,
@@ -355,8 +356,6 @@ fn carried(spec: &ResourceSpec, address: &ActionAddress) -> Option<ActionAddress
         .find_map(|child| carried(child, address))
 }
 
-/// What the resources `resources` publish of `address` ([`carried`]), in reading order: the first
-/// one, which is what a press names, answers for all of them.
 /// The instance's hold on its surface: while the instance publishes, it is the instance's.
 struct Held(Rc<Surface>);
 
