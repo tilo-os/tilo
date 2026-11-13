@@ -1,33 +1,12 @@
-//! Expression engine for the calculator.
-//!
-//! A compact, dependency-free math evaluator: tokenizer → Pratt parser →
-//! AST → tree-walking evaluator. We own this rather than pulling a crate so
-//! the build stays green offline AND so we get exact control over the
-//! features a graphing calculator actually needs:
-//!
-//!   * a **degrees/radians** toggle that affects `sin/cos/tan` and their
-//!     inverses (the popular crates hard-wire trig to radians), and
-//!   * a **compiled** form that binds `x` (and `x,y`) so the 2D/3D plotters
-//!     can sample a parsed expression thousands of times without re-parsing,
-//!     and
-//!   * **definite integration** with `int(expr,x,a,b)` (or `∫`), scoped `x`/`y`
-//!     bindings, and bounded adaptive quadrature over finite intervals.
-//!
-//! Grammar (informally):
-//!   expr   := term (('+' | '-') term)*
-//!   term   := power (('*' | '/') power | implicit-mult)*
-//!   power  := unary ('^' power)?        // right associative
-//!   unary  := ('-' | '+')* postfix
-//!   postfix:= atom ('!' | '%')*
-//!   atom   := number | const | var | name '(' args ')' | '(' expr ')'
-//!
-//! Implicit multiplication binds at `*` precedence: `2pi`, `3(x+1)`, `2x`.
+//! The calculator's expression engine: tokenizer, Pratt parser and
+//! tree-walking evaluator. It is ours rather than a crate's so the build stays
+//! offline and trig follows the degree/radian toggle, with a compiled form the
+//! plotters sample and bounded adaptive integration.
 
 use std::f64::consts::{E, FRAC_PI_2, PI, TAU};
 use std::iter::Peekable;
 use std::str::Chars;
 
-/// Parsed expression node.
 #[derive(Clone, Debug)]
 pub enum Expr {
     Num(f64),
@@ -39,7 +18,6 @@ pub enum Expr {
     Call(String, Vec<Expr>),
 }
 
-/// Evaluation context: angle mode + bound variables.
 #[derive(Clone, Copy, Default)]
 pub struct Ctx {
     pub deg: bool,
@@ -73,7 +51,7 @@ fn tokenize(input: &str) -> Result<Vec<Tok>, String> {
         match c {
             '0'..='9' | '.' => out.push(Tok::Num(scan_number(c, &mut chars)?)),
             'a'..='z' | 'A'..='Z' | '_' => out.push(Tok::Ident(scan_ident(c, &mut chars))),
-            // Unicode niceties accepted in case they leak in from a paste.
+            // Unicode from a paste.
             'π' => out.push(Tok::Ident("pi".into())),
             '×' => out.push(Tok::Op('*')),
             '÷' => out.push(Tok::Op('/')),
@@ -90,13 +68,9 @@ fn tokenize(input: &str) -> Result<Vec<Tok>, String> {
     Ok(out)
 }
 
-/// Scan the rest of a number whose first character `first` is already
-/// consumed: digits and dots, then an optional scientific exponent.
-///
-/// The exponent needs two characters of lookahead (`e`, an optional sign, then
-/// at least one digit), so it is scanned on a cloned iterator and only
-/// committed once a digit confirms it — otherwise the `e` starts the next
-/// token, which is what makes `2e` parse as `2 * e`.
+/// The rest of a number whose first character is consumed: digits and dots,
+/// then an optional exponent. The exponent is scanned on a clone and committed
+/// only once a digit confirms it, so `2e` parses as `2 * e`.
 fn scan_number(first: char, chars: &mut Peekable<Chars<'_>>) -> Result<f64, String> {
     let mut s = String::from(first);
     take_while_into(&mut s, chars, |c| c.is_ascii_digit() || c == '.');
@@ -122,14 +96,12 @@ fn scan_number(first: char, chars: &mut Peekable<Chars<'_>>) -> Result<f64, Stri
     s.parse().map_err(|_| format!("bad number `{s}`"))
 }
 
-/// Scan the rest of an identifier whose first character is already consumed.
 fn scan_ident(first: char, chars: &mut Peekable<Chars<'_>>) -> String {
     let mut s = String::from(first);
     take_while_into(&mut s, chars, |c| c.is_ascii_alphanumeric() || c == '_');
     s.to_ascii_lowercase()
 }
 
-/// Append every leading character matching `keep` to `out`, consuming them.
 fn take_while_into(out: &mut String, chars: &mut Peekable<Chars<'_>>, keep: impl Fn(char) -> bool) {
     while let Some(&c) = chars.peek() {
         if !keep(c) {
@@ -145,7 +117,7 @@ fn take_while_into(out: &mut String, chars: &mut Peekable<Chars<'_>>, keep: impl
 // ---------------------------------------------------------------------------
 
 /// Reserved operands cannot be function names: `pi(2)` and `x(x+1)` are
-/// implicit products, while an identifier such as `sin` introduces a call.
+/// products, while `sin` introduces a call.
 fn is_value_name(name: &str) -> bool {
     matches!(
         name,
@@ -153,9 +125,8 @@ fn is_value_name(name: &str) -> bool {
     )
 }
 
-/// The token stream still to be parsed. Consuming from the front of a slice
-/// (rather than advancing an index into a `Vec`) keeps "how much is left" and
-/// "what comes next" the same question, so neither can run past the end.
+/// The tokens still to parse; taking them off the front makes "how much is
+/// left" and "what comes next" one question.
 struct Parser<'t> {
     toks: &'t [Tok],
 }
@@ -197,8 +168,7 @@ impl Parser<'_> {
                     let rhs = self.parse_bp(11)?;
                     lhs = Expr::Bin(op, Box::new(lhs), Box::new(rhs));
                 }
-                // Implicit multiplication: a value-start token directly
-                // following an operand (`2pi`, `3(x+1)`, `2sin(x)`).
+                // Implicit multiplication: a value-start token after an operand.
                 Tok::Num(_) | Tok::Ident(_) | Tok::LParen if 20 >= min_bp => {
                     let rhs = self.parse_bp(21)?;
                     lhs = Expr::Bin('*', Box::new(lhs), Box::new(rhs));
@@ -210,9 +180,8 @@ impl Parser<'_> {
     }
 
     fn parse_prefix(&mut self) -> Result<Expr, String> {
-        // This reaches the result line verbatim while a person is typing. A
-        // next-step hint is more useful than the parser-internal "unexpected
-        // end" for an unfinished call, parenthesis, or operator.
+        // Reaches the result line while a person is typing, so it reads as a
+        // hint rather than the parser's "unexpected end".
         let tok = self.next().ok_or_else(|| "enter a value".to_string())?;
         match tok {
             Tok::Num(n) => Ok(Expr::Num(n)),
@@ -248,8 +217,7 @@ impl Parser<'_> {
                     Ok(Expr::Var(name))
                 }
             }
-            // An operator or closer with nothing before it names the key
-            // a person pressed, not the parser's token.
+            // Names the key a person pressed, not the parser's token.
             Tok::Op(op) => Err(format!(
                 "enter a value before `{}`",
                 prettify(&op.to_string())
@@ -260,13 +228,9 @@ impl Parser<'_> {
     }
 }
 
-/// Parse `input` into an AST.
-///
 /// # Errors
-/// A human-readable message (which the UI shows in the result line) when the
-/// input is empty, holds a character the tokenizer does not accept, or is not
-/// a complete expression — an unbalanced `(`, a dangling operator, or trailing
-/// tokens after one.
+/// A message the UI shows in the result line: empty input, a character the
+/// tokenizer rejects, or an incomplete expression.
 pub fn parse(input: &str) -> Result<Expr, String> {
     let toks = tokenize(input)?;
     if toks.is_empty() {
@@ -285,8 +249,7 @@ pub fn parse(input: &str) -> Result<Expr, String> {
 // ---------------------------------------------------------------------------
 
 fn eval_node(expr: &Expr, ctx: &Ctx) -> Result<f64, String> {
-    // Nested integrals share this budget rather than multiplying independent
-    // limits and potentially blocking the calculator for unbounded work.
+    // Nested integrals share this budget, so the work stays bounded.
     eval_with_budget(expr, ctx, &mut 32_768)
 }
 
@@ -325,7 +288,7 @@ fn eval_with_budget(expr: &Expr, ctx: &Ctx, budget: &mut usize) -> Result<f64, S
 }
 
 fn eval_call(name: &str, args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result<f64, String> {
-    // Integration binds an unevaluated expression, unlike ordinary functions.
+    // Integration binds an unevaluated expression.
     if name == "int" {
         return eval_integral(args, ctx, budget);
     }
@@ -333,8 +296,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result
     for arg in args {
         vals.push(eval_with_budget(arg, ctx, budget)?);
     }
-    // Arity is checked by matching the argument slice, so every argument that
-    // reaches a function is one the slice pattern proved is there.
+    // The argument slice pattern has already proved the arity.
     let only = || -> Result<f64, String> {
         match vals.as_slice() {
             [v] => Ok(*v),
@@ -348,8 +310,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result
             _ => Err(format!("{sig} takes 2 arguments")),
         }
     };
-    // Degree-aware trig: the inverse functions answer in degrees when
-    // `ctx.deg`.
+    // Inverse trig answers in degrees when `ctx.deg`.
     let from_rad = if ctx.deg { 180.0 / PI } else { 1.0 };
     Ok(match name {
         "sin" | "cos" | "tan" => return only().and_then(|v| trig(name, v, ctx.deg)),
@@ -386,8 +347,8 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result
         },
         "root" => {
             let (degree, radicand) = pair("root(n, x)")?;
-            // Fractional powf rejects a negative base even when an odd
-            // integer root has a real solution. Evaluate its magnitude first.
+            // powf rejects a negative base even when an odd integer root has a
+            // real solution, so take the magnitude first.
             if radicand < 0.0 && degree.is_finite() && degree.fract() == 0.0 && degree % 2.0 != 0.0
             {
                 -(-radicand).powf(1.0 / degree)
@@ -427,8 +388,8 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result
     })
 }
 
-/// `sin`, `cos` or `tan` (`name`) of `angle`, in degrees when `deg`: exact
-/// at whole right angles ([`right_angles`]).
+/// `angle` in degrees when `deg`, exact at whole right angles
+/// ([`right_angles`]).
 fn trig(name: &str, angle: f64, deg: bool) -> Result<f64, String> {
     let radians = if deg { angle.to_radians() } else { angle };
     let quadrant = right_angles(angle, deg);
@@ -451,12 +412,9 @@ fn trig(name: &str, angle: f64, deg: bool) -> Result<f64, String> {
     })
 }
 
-/// Where `angle` (degrees when `deg`, else radians) is a whole number of
-/// right angles, which of the four it lands on (0 to 3). Sine, cosine and
-/// tangent answer exactly there: `sin(π)` is 0, not the 1.22e-16 that
-/// rounding π to a float leaves, which the display would show as a real
-/// number. A radian angle counts when it is within a few ulps of the
-/// multiple, as π and its multiples as floats are.
+/// Which quarter turn `angle` (degrees when `deg`, else radians) is at, if
+/// any. Sine, cosine and tangent answer exactly there: `sin(π)` is 0, not the
+/// 1.22e-16 that π as an f64 leaves. A radian angle counts within a few ulps.
 fn right_angles(angle: f64, deg: bool) -> Option<usize> {
     let quarters = if deg { angle / 90.0 } else { angle / FRAC_PI_2 };
     if !quarters.is_finite() || quarters.abs() > 1e12 {
@@ -506,8 +464,8 @@ fn integral_args(args: &[Expr]) -> Result<Integral<'_>, String> {
 
 fn eval_integral(args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result<f64, String> {
     let integral = integral_args(args)?;
-    // Both bounds see the caller's bindings, even when this integral shadows
-    // the same variable. Each sample gets its own copy, so nothing leaks out.
+    // Both bounds see the caller's bindings even when this integral shadows the
+    // variable; each sample gets its own copy.
     let lower = eval_with_budget(integral.lower, ctx, budget)?;
     let upper = eval_with_budget(integral.upper, ctx, budget)?;
     if !lower.is_finite() || !upper.is_finite() {
@@ -539,8 +497,8 @@ fn eval_integral(args: &[Expr], ctx: &Ctx, budget: &mut usize) -> Result<f64, St
     adaptive_integral([lower, upper], &mut sample)
 }
 
-/// A cached Simpson panel; halving its tolerance apportions the absolute
-/// error allowance between its children without resampling their endpoints.
+/// A cached Simpson panel; halving its tolerance apportions the error
+/// allowance between its children without resampling their endpoints.
 #[derive(Clone, Copy)]
 struct IntegralPanel {
     bounds: [f64; 2],
@@ -560,19 +518,17 @@ fn simpson(bounds: [f64; 2], samples: [f64; 3]) -> Result<f64, String> {
     Ok(result)
 }
 
-/// Adaptive Simpson quadrature with absolute and relative tolerance of 1e-9,
-/// a maximum of 20 subdivisions along any branch, and a shared sample limit.
-/// Two nonuniform initial panels avoid the dyadic aliasing that can make
-/// oscillatory functions look constant at a single panel's five samples.
-/// Endpoint singularities and other sampled nonfinite values are rejected;
-/// this evaluates proper finite integrals, not improper integrals or limits.
+/// Adaptive Simpson quadrature: absolute and relative tolerance of 1e-9, at
+/// most 20 subdivisions along a branch, and a shared sample limit. Nonfinite
+/// samples and endpoint singularities are rejected, so this does proper finite
+/// integrals only.
 fn adaptive_integral(
     bounds: [f64; 2],
     sample: &mut impl FnMut(f64) -> Result<f64, String>,
 ) -> Result<f64, String> {
     let [a, b] = bounds;
-    // An irrational split keeps the two panels off the same periodic grid;
-    // merely requiring more uniform subdivisions still aliases higher harmonics.
+    // An irrational split keeps the two panels off one periodic grid; more
+    // uniform subdivisions still alias higher harmonics.
     let fraction = (5.0f64.sqrt() - 1.0) / 2.0;
     let split = a * (1.0 - fraction) + b * fraction;
     let left = sample(a)?;
@@ -660,20 +616,16 @@ fn refine_integral(
     Ok(result)
 }
 
-/// Parse and evaluate `input` in one shot. Used by the `=` key.
-///
 /// # Errors
-/// The parse error for malformed input, or an evaluation error: an unknown
-/// name or function, or a call with the wrong number of arguments. A domain
-/// problem is normally a value, not an error — `1/0` evaluates to infinity.
-/// Integration instead rejects nonfinite bounds/integrand values and reports
-/// an error when its bounded adaptive quadrature cannot converge.
+/// The parse error, or an unknown name or function or a call with the wrong
+/// number of arguments. A domain problem is a value, not an error: `1/0` is
+/// infinity. Integration rejects nonfinite bounds and reports when its
+/// quadrature cannot converge.
 pub fn evaluate(input: &str, ctx: &Ctx) -> Result<f64, String> {
     let e = parse(input)?;
     eval_node(&e, ctx)
 }
 
-/// A parsed expression bound for fast repeated sampling by the plotters.
 #[derive(Clone)]
 pub struct Compiled {
     ast: Expr,
@@ -681,7 +633,6 @@ pub struct Compiled {
 }
 
 impl Compiled {
-    /// Sample with a single free variable `x`.
     pub fn eval1(&self, x: f64) -> f64 {
         let ctx = Ctx {
             deg: self.deg,
@@ -690,7 +641,6 @@ impl Compiled {
         };
         eval_node(&self.ast, &ctx).unwrap_or(f64::NAN)
     }
-    /// Sample with two free variables `x`, `y`.
     pub fn eval2(&self, x: f64, y: f64) -> f64 {
         let ctx = Ctx {
             deg: self.deg,
@@ -702,26 +652,23 @@ impl Compiled {
     }
 }
 
-/// Parse + structurally validate an expression for plotting without evaluating
-/// it. Domain failures, including nonfinite integrands or bounds, belong to
-/// individual samples and become NaN rather than rejecting the whole plot.
-///
-/// # Errors
-/// The parse error for malformed input, a variable the plot cannot supply
-/// (`y` in a 2D plot, or any typo), or an unknown function / wrong arity.
-/// Whether a plot reads its axes as degrees: never. A graph's axes are plain
-/// numbers, so `sin(x)` waves across a few units in 2D and 3D alike; the angle
-/// unit is for angles typed into a calculation.
+/// A graph's axes are plain numbers, so `sin(x)` waves across a few units in 2D
+/// and 3D alike; the angle unit is for angles typed into a calculation.
 pub const PLOT_IN_DEGREES: bool = false;
 
+/// Parse and validate for plotting without evaluating: a domain failure belongs
+/// to one sample and becomes NaN, not a rejected plot.
+///
+/// # Errors
+/// The parse error, a variable the plot cannot supply (`y` in 2D, or a typo), or
+/// an unknown function or wrong arity.
 pub fn compile(input: &str, deg: bool, two_var: bool) -> Result<Compiled, String> {
     let ast = parse(input)?;
     validate(&ast, two_var)?;
     Ok(Compiled { ast, deg })
 }
 
-/// Reject references to variables a plot can't supply (so a typo like
-/// `z` in a 2D plot is reported instead of silently erroring per-sample).
+/// A typo like `z` in a 2D plot is reported, not silently errored per sample.
 fn validate(e: &Expr, two_var: bool) -> Result<(), String> {
     match e {
         Expr::Num(_) => Ok(()),
@@ -748,8 +695,8 @@ fn validate(e: &Expr, two_var: bool) -> Result<(), String> {
     }
 }
 
-/// Validate ordinary calls without evaluating their arguments: a domain
-/// failure in a nested integral must not hide a misspelled function or arity.
+/// Calls are checked without evaluating their arguments, so a domain failure in
+/// a nested integral cannot hide a misspelled function.
 fn validate_function(name: &str, count: usize) -> Result<(), String> {
     let (valid, expected) = match name {
         "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" | "asinh"
@@ -772,7 +719,7 @@ fn validate_function(name: &str, count: usize) -> Result<(), String> {
 // Special functions + formatting
 // ---------------------------------------------------------------------------
 
-/// Lanczos approximation of the gamma function (g=7, n=9).
+/// Lanczos approximation, g=7, n=9.
 pub fn gamma(x: f64) -> f64 {
     const G: f64 = 7.0;
     const C: [f64; 9] = [
@@ -792,28 +739,24 @@ pub fn gamma(x: f64) -> f64 {
     } else {
         let x = x - 1.0;
         let t = x + G + 0.5;
-        // The series is `C[0] + sum(C[i] / (x + i))` for i = 1.., so split the
-        // head off the table (an irrefutable destructure — no index) and pair
-        // the tail with its term number.
+        // The series is `C[0] + sum(C[i] / (x + i))`, so split the head off
+        // without indexing and pair the tail with its term number.
         let [head, tail @ ..] = C;
         let mut a = head;
         for (i, coef) in (1u32..).zip(tail) {
             a += coef / (x + f64::from(i));
         }
-        // Combine the power and exponential in log space: the power alone
-        // overflows well before gamma's result exceeds f64's finite range.
+        // In log space: the power alone overflows before gamma's result does.
         ((x + 0.5) * t.ln() - t + (TAU.sqrt() * a).ln()).exp()
     }
 }
 
-/// Factorial via gamma, exact for small non-negative integers.
 pub fn factorial(n: f64) -> f64 {
     if n.fract() == 0.0 && n < 0.0 {
         return f64::NAN; // poles at non-positive integers
     }
     if n.fract() == 0.0 && (0.0..=170.0).contains(&n) {
-        // Count in integers: a float counter accumulates error, and 170! is the
-        // last factorial that fits an f64 (171! overflows to infinity).
+        // A float counter accumulates error; 170! is the last that fits an f64.
         let mut r = 1.0f64;
         for i in 2..=170u32 {
             let factor = f64::from(i);
@@ -827,7 +770,6 @@ pub fn factorial(n: f64) -> f64 {
     gamma(n + 1.0)
 }
 
-/// Human-friendly number formatting for the display + history.
 pub fn format_number(v: f64) -> String {
     if v.is_nan() {
         return crate::resource::CATALOG.t("calculator-error");
@@ -840,7 +782,7 @@ pub fn format_number(v: f64) -> String {
     }
     let a = v.abs();
     if !(1e-6..1e12).contains(&a) {
-        // Scientific, ~10 significant digits, tidy mantissa.
+        // Scientific, about 10 significant digits.
         let s = format!("{v:.6e}");
         return tidy_sci(&s);
     }
@@ -863,9 +805,8 @@ fn tidy_sci(s: &str) -> String {
     }
 }
 
-/// Replace ASCII operators / function names with their pretty unicode
-/// forms for the expression display line. The stored expression stays
-/// ASCII so the parser never sees unicode.
+/// ASCII operators and function names as their unicode forms for the display
+/// line. The stored expression stays ASCII, so the parser never sees unicode.
 pub fn prettify(expr: &str) -> String {
     let mut s = expr.to_string();
     s = s.replace("sqrt(", "√(");
@@ -875,9 +816,8 @@ pub fn prettify(expr: &str) -> String {
     superscript_powers(&s)
 }
 
-/// `x^2` → `x²`: a `^` followed by a plain integer exponent (optionally
-/// negative) becomes superscript digits. A power with a bracketed or symbolic
-/// exponent keeps its `^`, since it has no single-glyph form.
+/// `x^2` → `x²` for a plain integer (optionally negative) exponent. A bracketed
+/// or symbolic exponent keeps its `^`: it has no single-glyph form.
 fn superscript_powers(expr: &str) -> String {
     const DIGITS: [char; 10] = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
     let mut out = String::with_capacity(expr.len());
@@ -928,9 +868,8 @@ mod tests {
         .unwrap()
     }
 
-    /// How a case's result is compared: `Exact` for small integers that are
-    /// exact in f64 (an approximate compare would stop proving e.g. operator
-    /// precedence or that 5! is exactly 120), `Near(tol)` otherwise.
+    /// `Exact` for small integers, which are exact in f64; `Near(tol)`
+    /// otherwise, or 5! would not have to be exactly 120.
     #[derive(Clone, Copy)]
     enum Cmp {
         Exact,
@@ -947,21 +886,16 @@ mod tests {
         }
     }
 
-    /// Evaluation (radians and degrees) and compiled sampling produce the
-    /// expected values: precedence, implicit multiplication, functions and
-    /// constants, angle modes, factorial and percent.
     #[test]
     fn evaluation_and_compiled_sampling_produce_expected_values() {
         use Cmp::{Exact, Near};
         // (group, source, degrees?, expected, comparison)
         let cases: &[(&str, &str, bool, f64, Cmp)] = &[
-            // arithmetic_precedence
             ("arithmetic_precedence", "1+2*3", false, 7.0, Exact),
             ("arithmetic_precedence", "(1+2)*3", false, 9.0, Exact),
             ("arithmetic_precedence", "2^3^2", false, 512.0, Exact), // right assoc
             ("arithmetic_precedence", "-2^2", false, -4.0, Exact),   // unary looser than power
             ("arithmetic_precedence", "10/4", false, 2.5, Near(1e-12)),
-            // implicit_multiplication
             (
                 "implicit_multiplication",
                 "2pi",
@@ -1000,7 +934,6 @@ mod tests {
                 1.0,
                 Near(1e-12),
             ),
-            // degrees_vs_radians
             ("degrees_vs_radians", "sin(90)", true, 1.0, Near(1e-9)),
             ("exact_right_angles", "sin(pi)", false, 0.0, Exact),
             ("exact_right_angles", "cos(pi/2)", false, 0.0, Exact),
@@ -1019,7 +952,6 @@ mod tests {
             ),
             ("degrees_vs_radians", "sin(pi/2)", false, 1.0, Near(1e-9)),
             ("degrees_vs_radians", "asin(1)", true, 90.0, Near(1e-9)),
-            // factorial_and_percent
             ("factorial_and_percent", "5!", false, 120.0, Exact),
             ("factorial_and_percent", "50%", false, 0.5, Near(1e-12)),
             (
@@ -1035,7 +967,6 @@ mod tests {
             check(&format!("{group}: {src} (deg={deg})"), got, want, cmp);
         }
 
-        // compiled_sampling
         let c = compile("x^2", false, false).unwrap();
         check("compiled_sampling: x^2 at 3", c.eval1(3.0), 9.0, Exact);
         let s = compile("sin(sqrt(x^2+y^2))", false, true).unwrap();
@@ -1117,8 +1048,8 @@ mod tests {
                 "{source}: got {got}, expected {expected}",
             );
         }
-        // Half-integer recurrence is independent of the Lanczos formula and
-        // also exercises the generalized factorial path outside integer inputs.
+        // The recurrence is independent of the Lanczos formula and exercises
+        // non-integer inputs.
         let expected = (0..150u32).fold(PI.sqrt(), |value, n| value * (f64::from(n) + 0.5));
         for source in ["gamma(150.5)", "149.5!", "fact(149.5)"] {
             let got = ev(source);
@@ -1169,8 +1100,8 @@ mod tests {
 
     #[test]
     fn integral_initial_samples_do_not_alias_periodic_functions() {
-        // A single Simpson panel and its first refinement sample only maxima
-        // of these cosines, falsely reporting the integral as one.
+        // One Simpson panel and its first refinement sample only maxima of these
+        // cosines, reporting the integral as one.
         for frequency in [8, 16, 32, 64] {
             for (source, expected) in [
                 (format!("int(cos({frequency}*pi*x),x,0,1)"), 0.0),
@@ -1280,8 +1211,8 @@ mod tests {
 
     #[test]
     fn compiled_calls_are_validated_without_evaluating_integrals() {
-        // A zero-width integral never samples its body. Unknown functions and
-        // malformed calls must still fail compilation, even inside that body.
+        // A zero-width integral never samples its body, so unknown functions in
+        // it must still fail at compile time.
         for source in [
             "int(typo(x),x,0,0)",
             "int(sqrt(),x,0,0)",
@@ -1358,11 +1289,8 @@ mod tests {
         assert!(error.contains("sampling limit reached"), "{error}");
     }
 
-    /// What the result line shows a person: error messages and rejections for
-    /// malformed input, and the display formatting of numbers.
     #[test]
     fn errors_and_number_formatting_render_user_facing_results() {
-        // errors_are_reported
         assert_eq!(
             evaluate("sqrt(", &Ctx::default()),
             Err("enter a value".into()),
@@ -1386,7 +1314,6 @@ mod tests {
             "errors: unknown variable in compile"
         );
 
-        // formatting
         for (x, want) in [
             (2.0, "2"),
             (0.5, "0.5"),
@@ -1402,8 +1329,8 @@ mod tests {
 mod prettify_tests {
     use super::prettify;
 
-    /// A power with a plain integer exponent reads as a superscript; one with
-    /// a bracketed or symbolic exponent keeps its caret.
+    /// A plain integer exponent reads as a superscript; a bracketed or symbolic
+    /// one keeps its caret.
     #[test]
     fn integer_powers_become_superscripts() {
         assert_eq!(prettify("2^10"), "2¹⁰");

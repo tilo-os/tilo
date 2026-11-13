@@ -1,9 +1,7 @@
-//! 3D grapher: a `z = f(x, y)` surface list (mirroring the 2D function list)
-//! plus a canvas that samples every visible surface on a grid, projects each
-//! vertex to 2D with yaw/pitch orbit + orthographic projection, merges the
-//! quads of all surfaces and depth-sorts them together (one painter's-algorithm
-//! pass so surfaces occlude each other correctly), and paints each cell in its
-//! function's series colour with a Lambert shade. Drag orbits, scroll zooms.
+//! 3D grapher: a `z = f(x, y)` surface list and a canvas that samples every
+//! visible surface, projects each vertex with the orbit and orthographic
+//! projection, and depth-sorts all their quads in one painter's-algorithm pass,
+//! so sheets occlude each other. Drag orbits, the wheel zooms.
 
 use ui::charts::ChartPalette;
 use ui::text_render::TextRenderer;
@@ -19,33 +17,27 @@ use crate::model::CalcModel;
 use crate::plot_panel::{Formulas, PlotPanel, SURFACES};
 use crate::zoom::ZoomAnim3d;
 
-/// Half-width of the sampled domain in x and y.
+/// Half-width of the sampled domain, in x and y.
 const DOM: f64 = 7.0;
-/// Grid resolution (cells per axis).
+/// Grid cells per axis.
 const N: usize = 40;
-/// Cells per axis of the floor grid.
 const FLOOR_CELLS: usize = 7;
-/// How far under the lowest surface the floor sits, as a share of the
-/// surfaces' height range.
+/// How far under the lowest surface the floor sits, as a share of their height
+/// range.
 const FLOOR_DROP: f64 = 0.6;
-/// Opacity of the floor's grid lines and of its outline.
 const FLOOR_GRID_ALPHA: u8 = 38;
 const FLOOR_OUTLINE_ALPHA: u8 = 96;
 
 pub struct Graph3dScreen {
-    /// The plot, below the header row.
     pub canvas: Rect,
-    /// The window area the screen was last laid out in.
     area: Rect,
-    /// The formula list beside (or floating over) the plot.
     pub panel: PlotPanel,
-    /// Projected + depth-sorted geometry for ALL visible surfaces, rebuilt only
-    /// when the surfaces, orbit/zoom, domain, or canvas size change — never on a
-    /// theme or tab switch. Each cell carries its function's series index; the
-    /// live colour is resolved from the theme at paint time.
+    /// Projected and depth-sorted cells for every visible surface, rebuilt only
+    /// when the surfaces, the orbit or zoom, the domain or the canvas changes;
+    /// the colour is resolved from the theme at paint time.
     surface_cache: SurfaceCache,
-    /// Smooth, non-blocking wheel zoom. While active, the cached cells are
-    /// replayed scaled about the canvas centre instead of re-projecting.
+    /// While active, the cached cells are replayed scaled about the canvas
+    /// centre instead of re-projecting.
     zoom: ZoomAnim3d,
 }
 
@@ -61,20 +53,18 @@ impl Default for Graph3dScreen {
     }
 }
 
-/// One painted quad of a surface. `series` selects the function's theme colour;
-/// `shade` is the Lambert factor. Both are theme-independent so a re-theme
-/// replays the cached geometry as `scale_rgb(palette.categorical(series), shade)`.
+/// One painted quad: the function's series index and its Lambert shade, both
+/// theme-independent, so a re-theme replays the cached geometry.
 struct SurfaceCell {
     path: BezPath,
     series: usize,
     shade: f64,
 }
 
-/// Identity of the inputs that affect 3D surface geometry. Excludes the theme
-/// so a re-theme replays the cached cells without re-sampling.
+/// The inputs that affect surface geometry, minus the theme, so a re-theme
+/// replays the cached cells.
 #[derive(Clone, PartialEq, Default)]
 struct SurfaceKey {
-    /// `(expr, visible)` for every surface, in order.
     surfaces: Vec<(String, bool)>,
     yaw: u64,
     pitch: u64,
@@ -82,13 +72,11 @@ struct SurfaceKey {
     canvas: (u64, u64, u64, u64),
 }
 
-/// The floor under the surfaces: a square grid on the domain, drawn so the
-/// plot has a scale and a ground to read heights against.
+/// A square grid on the domain, so the plot has a scale to read heights
+/// against.
 #[derive(Default)]
 struct Floor {
-    /// The grid's interior lines.
     grid: BezPath,
-    /// The domain's outline.
     outline: BezPath,
 }
 
@@ -97,25 +85,21 @@ struct SurfaceCache {
     key: Option<SurfaceKey>,
     cells: Vec<SurfaceCell>,
     floor: Floor,
-    /// World-space heights survive camera and viewport changes. Orbiting
-    /// only re-projects these samples; it never re-evaluates each expression.
+    /// World-space heights survive camera and viewport changes, so orbiting
+    /// only re-projects them.
     sampled: Vec<SampledSurface>,
     z_range: (f64, f64),
     sample_rebuilds: u32,
-    /// Counts geometry rebuilds; lets a test prove a theme/tab switch reuses
-    /// the cached surfaces instead of re-sampling + re-projecting + re-sorting.
+    /// Lets a test prove a theme switch reuses the cached surfaces.
     rebuilds: u32,
 }
 
-/// One surface's grid of sampled z-values (row-major, `zs[i][j]` is the
-/// value at grid vertex `(i, j)`), gathered by `ensure_surfaces`'s first
-/// pass before projection and depth-sorting.
+/// One surface's grid of sampled z-values, row-major.
 struct SampledSurface {
     series: usize,
     zs: Vec<[f64; N + 1]>,
 }
 
-/// One projected quad awaiting the painter's-algorithm depth sort.
 struct RankedCell {
     depth: f64,
     cell: SurfaceCell,
@@ -147,17 +131,14 @@ impl SurfaceKey {
 }
 
 impl Graph3dScreen {
-    /// Resolve the panel, the content column and the plot for the window
-    /// `area`. The plot fills the content column: its controls are the
-    /// window bar's.
+    /// The plot fills the content column: its controls are the window bar's.
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         self.area = area;
         self.panel.layout(area, model.surfaces.len());
         self.canvas = self.panel.side().content();
     }
 
-    /// Measure the formulas and lay the screen out for this frame, then
-    /// advance the eased zoom. Call once per draw, before painting.
+    /// Call once per draw, before painting.
     pub fn prepare(&mut self, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, area: Rect) {
         self.panel.fit(&model.surfaces, tr, theme);
         self.layout(area, model);
@@ -166,7 +147,6 @@ impl Graph3dScreen {
         self.layout(area, model);
     }
 
-    /// The plot: every visible surface.
     pub fn draw_content(
         &mut self,
         scene: &mut Scene,
@@ -190,7 +170,6 @@ impl Graph3dScreen {
         }
     }
 
-    /// The formula panel, over the plot.
     pub fn draw_panel(
         &mut self,
         scene: &mut Scene,
@@ -209,9 +188,8 @@ impl Graph3dScreen {
     }
 
     fn draw_surfaces(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
-        // While the zoom is animating we reuse the cached cells, scaled about
-        // the canvas centre (the projection scale is proportional to zoom), so
-        // no re-projection blocks the frame. When settled we re-project once.
+        // The projection scale is proportional to zoom, so the cached cells
+        // replay scaled about the centre; one re-projection when settled.
         let tt = if self.zoom.active() {
             t * Affine::scale_about(self.zoom.scale_factor(), self.canvas.center())
         } else {
@@ -227,12 +205,11 @@ impl Graph3dScreen {
             t,
             &self.canvas,
         );
-        // The ground shows through between cells, which reads as the mesh.
+        // The ground shows through between cells as the mesh.
         let colors = &theme.tokens.colors;
         let wire = colors.surfaces.content;
         let palette = ChartPalette::from_theme(theme);
-        // From above the floor lies behind every surface; from below it is in
-        // front of them.
+        // From above the floor is behind every surface; from below, in front.
         let floor_behind = model.view3d.pitch >= 0.0;
         if floor_behind {
             self.draw_floor(scene, tt, theme);
@@ -248,7 +225,7 @@ impl Graph3dScreen {
         scene.pop_layer();
     }
 
-    /// The floor grid, in the rule colours the 2D plane draws its grid in.
+    /// In the rule colours the 2D plane draws its grid in.
     fn draw_floor(&self, scene: &mut Scene, t: Affine, theme: &Theme) {
         let ground = theme.tokens.colors.surfaces.content;
         let floor = &self.surface_cache.floor;
@@ -257,26 +234,21 @@ impl Graph3dScreen {
         stroke_path(scene, t, 1.0, rule(FLOOR_OUTLINE_ALPHA), &floor.outline);
     }
 
-    /// Begin a smooth zoom toward the (already-updated) model zoom.
     pub fn begin_zoom(&mut self) {
         self.zoom.begin();
     }
-    /// Settle the zoom immediately (orbit / edit / mode switch, which re-project
-    /// regardless).
+    /// Orbit, edit and mode switch re-project anyway.
     pub fn settle_zoom(&mut self, z: f64) {
         self.zoom.settle(z);
     }
-    /// Whether a smooth zoom is animating (drives the app's frame pump).
+    /// Drives the app's frame pump.
     pub fn zoom_active(&self) -> bool {
         self.zoom.active()
     }
 
-    /// Sample every visible `z = f(x, y)` surface on the grid, project + merge +
-    /// depth-sort all their quads, and store the theme-independent geometry.
-    /// Only runs when the surfaces, orbit/zoom, domain, or canvas size change.
-    /// All surfaces share one z-normalisation so their relative heights are
-    /// preserved (a taller surface really sits above a lower one) and one merged
-    /// painter's-algorithm sort so overlapping sheets occlude each other.
+    /// Samples every visible surface and stores the theme-independent geometry.
+    /// One z-normalisation across surfaces keeps their relative heights, and one
+    /// merged sort makes overlapping sheets occlude each other.
     #[allow(
         clippy::similar_names,
         reason = "zmin/zmax/zmid are the standard min/max/midpoint trio for one axis's range"
@@ -331,9 +303,8 @@ impl Graph3dScreen {
         };
     }
 
-    /// First pass: sample every visible surface on the `(N+1)×(N+1)` grid,
-    /// tracking the shared z-range across all of them (used afterward to
-    /// normalise depth for the painter's algorithm).
+    /// First pass: the shared z-range across all surfaces normalises depth for
+    /// the sort.
     fn sample_surfaces(model: &CalcModel) -> (Vec<SampledSurface>, f64, f64) {
         let mut sampled: Vec<SampledSurface> = Vec::new();
         let mut zmin = f64::INFINITY;
@@ -363,10 +334,8 @@ impl Graph3dScreen {
         (sampled, zmin, zmax)
     }
 
-    /// Second pass: project every sampled surface's grid cells to screen
-    /// space with the shared depth normalisation (`zmid`/`zspan`), shade
-    /// each with a Lambert factor, and depth-sort the merged set far-to-near
-    /// for the painter's algorithm. Returns the ranked cells.
+    /// Second pass: project each cell, shade it, and sort the merged set far to
+    /// near.
     fn project_and_rank_cells(
         &self,
         sampled: &[SampledSurface],
@@ -381,7 +350,7 @@ impl Graph3dScreen {
         let cx = self.canvas.center().x;
         let cy = self.canvas.center().y;
 
-        // model coords → screen + depth (shared normalisation across surfaces)
+        // Screen point and depth, normalised across surfaces.
         let project = |x: f64, y: f64, z: f64| -> (Point, f64) {
             let zn = (z - zmid) / zspan * (DOM * 0.9);
             let x1 = x * cos_yaw - y * sin_yaw;
@@ -397,7 +366,7 @@ impl Graph3dScreen {
         for surf in sampled {
             Self::rank_surface_cells(&mut cells, surf, &project, light);
         }
-        // painter's algorithm across ALL surfaces: far (large depth) first.
+        // Far first, across all surfaces.
         cells.sort_by(|a, b| {
             b.depth
                 .partial_cmp(&a.depth)
@@ -408,7 +377,6 @@ impl Graph3dScreen {
         (cells.into_iter().map(|c| c.cell).collect(), floor)
     }
 
-    /// The floor grid at height `z`, projected like the surfaces above it.
     fn project_floor(project: &impl Fn(f64, f64, f64) -> (Point, f64), z: f64) -> Floor {
         let mut floor = Floor::default();
         for k in 0..=FLOOR_CELLS {
@@ -428,9 +396,7 @@ impl Graph3dScreen {
         floor
     }
 
-    /// Project one surface's grid into ranked quads, appending them to
-    /// `cells`. Skips any quad with a non-finite corner (asymptote/undefined
-    /// region).
+    /// A quad with a non-finite corner is skipped: an asymptote has no cell.
     fn rank_surface_cells(
         cells: &mut Vec<RankedCell>,
         surf: &SampledSurface,
@@ -485,8 +451,8 @@ impl Graph3dScreen {
     }
 
     pub fn canvas_contains(&self, p: Point) -> bool {
-        // An open floating drawer makes the canvas non-interactive (a press
-        // there dismisses the drawer instead of orbiting).
+        // An open drawer makes the canvas non-interactive: a press dismisses
+        // it instead of orbiting.
         !self.panel.floats_open() && self.canvas.contains(p)
     }
 }
@@ -531,9 +497,8 @@ mod tests {
         }
     }
 
-    /// The Surfaces panel docks when wide, floats as a drawer (button, scrim,
-    /// no orbit under the drawer) when narrow, and keeps its row buttons
-    /// apart. Fresh screen per phase.
+    /// Docks when wide, floats as a drawer when narrow, and keeps its row
+    /// buttons apart.
     #[test]
     fn surface_panel_docks_wide_floats_narrow_and_keeps_row_targets() {
         // phase wide_docks_narrow_floats_surface_panel
@@ -545,7 +510,6 @@ mod tests {
             assert!(!s.panel.side().is_overlay() && s.panel.side().is_open());
             let column = s.panel.side().column();
             assert!(column.width() > 0.0 && s.canvas.x0 >= column.x1 - 0.5);
-            // Narrow: collapsed drawer, the plot takes the full width.
             let narrow = Rect::new(0.0, 0.0, 560.0, 800.0);
             s.layout(narrow, &m);
             assert!(s.panel.side().is_overlay() && !s.panel.side().is_open());
@@ -565,7 +529,6 @@ mod tests {
             assert!(!s.canvas_contains(column.center()));
         }
 
-        // phase row_buttons_have_pointer_targets_that_stay_apart
         {
             let mut s = Graph3dScreen::default();
             let m = CalcModel::seeded();
@@ -627,9 +590,8 @@ mod tests {
         assert_eq!(screen.surface_cache.sample_rebuilds, 2);
     }
 
-    /// With Degrees chosen, a surface still reads x and y as plain numbers:
-    /// `sin(x)` waves through its full range over the plotted domain
-    /// instead of lying flat near zero.
+    /// A surface reads x and y as plain numbers whatever the angle unit, so
+    /// `sin(x)` waves through its range instead of lying flat.
     #[test]
     fn surfaces_plot_in_radians_whatever_the_angle_unit() {
         let mut model = CalcModel::seeded();
@@ -644,10 +606,8 @@ mod tests {
         assert!(zmin < -0.9 && zmax > 0.9, "sin(x) spans {zmin}..{zmax}");
     }
 
-    /// The sampled-surface cache: the first draw samples every visible surface
-    /// with theme-independent shading; theme or tab switches do not rebuild;
-    /// editing, orbiting or zooming rebuild; hiding a surface drops its cells.
-    /// Fresh screen + model per phase.
+    /// A theme switch does not rebuild; editing, orbiting or zooming does;
+    /// hiding a surface drops its cells.
     #[test]
     fn surface_cache_rebuilds_only_when_geometry_changes() {
         // phase first_draw_samples_every_visible_surface

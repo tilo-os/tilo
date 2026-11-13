@@ -1,14 +1,12 @@
-//! Text placement shared by the calculator's painted panels. Every string is
-//! set in a [`TextStyle`] taken from a [`TextRole`](ui::tokens::TextRole)
-//! (`theme.text(role)`), already scaled by the theme, so nothing here sizes
-//! text or reads a palette.
+//! Text placement shared by the calculator's painted panels. Styles come from
+//! `theme.text(role)` already scaled, so nothing here sizes text or picks a
+//! colour.
 
 use ui::paint::PaintCtx;
 use ui::text_render::TextStyle;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
-/// Horizontal text alignment for [`text_in`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Align {
     Left,
@@ -16,9 +14,7 @@ pub enum Align {
     Right,
 }
 
-/// Draw `text` inside `rect` broken at spaces into at most `max_lines`
-/// lines, each aligned, the last elided: a sentence that must not be cut off
-/// at its first line.
+/// `text` broken at spaces into at most `max_lines` lines, the last elided.
 pub fn text_block(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -43,9 +39,8 @@ pub fn text_block(
     }
 }
 
-/// Draw a single line of `text` inside `rect`, aligned and vertically
-/// centred on its measured line box, elided with an ellipsis when it is
-/// wider than the rect.
+/// One line of `text` in `rect`, vertically centred on its line box and
+/// elided when wider.
 pub fn text_in(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,

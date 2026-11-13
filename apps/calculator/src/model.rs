@@ -1,17 +1,13 @@
-//! In-memory model for the calculator. This is the render/interaction
-//! mirror of the CRDT document (see `doc.rs`); state is authored here and
-//! flushed into Automerge so undo/redo and live collaboration work.
+//! The calculator's in-memory state: authored here and committed as actions,
+//! so undo and collaboration see the same record.
 
 use crate::actions::GraphKind;
 use crate::engine::{self, Ctx};
 use ui::tilo_resource::{self, Model};
 
-/// Top-level app mode (segmented control in the header).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Calc,
-    /// Unit conversion: a quantity, two units and an amount. Offline, from a
-    /// fixed table ([`crate::convert`]).
     Convert,
     Graph2d,
     Graph3d,
@@ -30,9 +26,7 @@ impl Mode {
     pub fn all() -> [Mode; 4] {
         [Mode::Calc, Mode::Graph2d, Mode::Graph3d, Mode::Convert]
     }
-    /// The mode's place in the bar's switcher. The three the app shipped with
-    /// keep their places, so a chord or a saved view that names them still
-    /// lands where it did.
+    /// A saved view names modes by index, so these values must not move.
     pub fn index(self) -> usize {
         match self {
             Mode::Calc => 0,
@@ -49,7 +43,6 @@ impl Mode {
             _ => Mode::Calc,
         }
     }
-    /// The graph list this mode plots, if it is a graph mode.
     pub fn graph(self) -> Option<GraphKind> {
         match self {
             Mode::Calc | Mode::Convert => None,
@@ -59,11 +52,9 @@ impl Mode {
     }
 }
 
-/// The amount a capture's conversion page shows: the conversion the audit
-/// asked a calculator to be able to answer.
+/// The conversion a capture shows.
 pub const CONVERT_DEMO_AMOUNT: &str = "40";
 
-/// One evaluated entry in the calculator history.
 #[derive(Model, Clone, Debug, PartialEq)]
 pub struct HistoryEntry {
     /// Calculation
@@ -73,7 +64,6 @@ pub struct HistoryEntry {
     pub result: String,
 }
 
-/// A curve (`y = f(x)`) or surface (`z = f(x, y)`) row of a graph.
 #[derive(Model, Clone, Debug, PartialEq)]
 pub struct PlotFn {
     /// Formula
@@ -83,7 +73,7 @@ pub struct PlotFn {
     pub visible: bool,
 }
 
-/// 2D viewport: world-space center + pixels-per-unit zoom.
+/// World-space centre and pixels per unit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View2d {
     pub cx: f64,
@@ -101,7 +91,6 @@ impl Default for View2d {
     }
 }
 
-/// 3D viewport: orbit angles + zoom.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View3d {
     pub yaw: f64,
@@ -119,35 +108,25 @@ impl Default for View3d {
     }
 }
 
-/// The whole calculator state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CalcModel {
     pub mode: Mode,
     pub deg: bool,
     pub expr: String,
-    /// After `=`, the next value-key starts fresh; an operator continues.
+    /// After `=`, a value key starts fresh and an operator continues.
     pub after_equals: bool,
     pub ans: f64,
     pub memory: f64,
     pub history: Vec<HistoryEntry>,
     pub funcs: Vec<PlotFn>,
     pub active_fn: usize,
-    /// The Graph 3D surface list: each `PlotFn` is a `z = f(x, y)` surface,
-    /// mirroring how `funcs` holds the 2D `y = f(x)` curves. Multiple surfaces
-    /// render as separate, per-function-coloured sheets (visibility-toggleable).
     pub surfaces: Vec<PlotFn>,
-    /// Active surface row in `surfaces` (the one the editor edits) — the 3D
-    /// analogue of `active_fn`.
     pub active_surface: usize,
     pub view2d: View2d,
     pub view3d: View3d,
 }
 
 impl Default for CalcModel {
-    /// The live launch state: an empty calculator in Calc mode. Nothing is
-    /// pre-plotted, no history, no memory — the app boots to a blank slate the
-    /// user fills in. (A lived-in demo state lives behind [`CalcModel::seeded`],
-    /// used only by the headless screenshot + tests.)
     fn default() -> Self {
         Self {
             mode: Mode::Calc,
@@ -167,12 +146,10 @@ impl Default for CalcModel {
     }
 }
 
-/// The default `z = f(x, y)` surface a user gets when they first open Graph 3D
-/// (a starter example to explore + edit, not restored user state).
+/// The starter surface Graph 3D opens with; not restored state.
 pub const DEFAULT_SURFACE: &str = "sin(sqrt(x^2+y^2))";
 
-/// The calculations a lived-in calculator shows, newest first: the expression
-/// and the result it evaluated to.
+/// Newest first: the expression and its result.
 pub const DEMO_HISTORY: [(&str, &str); 5] = [
     ("12*(4+3)", "84"),
     ("sqrt(2)", "1.4142135624"),
@@ -181,15 +158,12 @@ pub const DEMO_HISTORY: [(&str, &str); 5] = [
     ("2^10", "1024"),
 ];
 
-/// The curves a lived-in Graph 2D shows.
 pub const DEMO_CURVES: [&str; 4] = ["(x^2+1)/(x-3)", "0.25*x^2-2", "sqrt(x+6)", "sin(x)"];
 
-/// The surfaces a lived-in Graph 3D shows: sheets at different heights that
-/// never cross, so the plot reads as several surfaces rather than a lone one.
+/// Sheets at different heights that never cross.
 pub const DEMO_SURFACES: [&str; 2] = [DEFAULT_SURFACE, "sin(x)*cos(y)-3"];
 
 impl CalcModel {
-    /// The rows of a graph list.
     pub fn graphs(&self, kind: GraphKind) -> &[PlotFn] {
         match kind {
             GraphKind::Curve2d => &self.funcs,
@@ -204,7 +178,6 @@ impl CalcModel {
         }
     }
 
-    /// The row of a graph list its editor edits.
     pub fn active_graph(&self, kind: GraphKind) -> usize {
         match kind {
             GraphKind::Curve2d => self.active_fn,
@@ -219,10 +192,7 @@ impl CalcModel {
         }
     }
 
-    /// Rich starting content for tests and offline demos: a populated,
-    /// lived-in calculator and graphs. The live app boots empty
-    /// ([`CalcModel::default`]); a capture stages the same content through
-    /// the document's actions.
+    /// Lived-in content for tests and offline demos; the live app boots empty.
     pub fn seeded() -> Self {
         let plot = |expr: &str| PlotFn {
             expr: expr.to_string(),
@@ -248,15 +218,13 @@ impl CalcModel {
         }
     }
 
-    /// The invalid-expression state a capture shows: a truthful parse error
-    /// under the expression.
+    /// The parse error a capture shows.
     pub(crate) fn apply_error_demo(&mut self) {
         self.mode = Mode::Calc;
         self.expr = "sqrt(".into();
         self.after_equals = false;
     }
 
-    /// Evaluation context derived from the current model.
     pub fn ctx(&self) -> Ctx {
         Ctx {
             deg: self.deg,
@@ -266,19 +234,14 @@ impl CalcModel {
         }
     }
 
-    /// Commit `=`: evaluate, push history, update Ans. Returns the committed
-    /// [`HistoryEntry`] (a clone) so the caller can submit the matching
-    /// `commit-history` verb — the shared, replayable, undoable path the
-    /// history list is changed through. Returns
-    /// `None` when there is nothing to commit (empty or unparseable expression),
-    /// so no action is dispatched.
+    /// Returns the entry so the caller can submit `commit-history`; `None` when
+    /// the expression is empty or unparseable, so no action is dispatched.
     pub fn commit_equals(&mut self) -> Option<HistoryEntry> {
         let trimmed = self.expr.trim().to_string();
         if trimmed.is_empty() {
             return None;
         }
-        // "=" again on a result just shown changes nothing: recording it
-        // would add a row like "-0.26 = -0.26".
+        // `=` again on a shown result would record a row like "-0.26 = -0.26".
         if self.after_equals
             && self
                 .history
@@ -300,22 +263,20 @@ impl CalcModel {
             self.after_equals = true;
             Some(entry)
         } else {
-            // Leave the expression intact; the result line shows the error.
+            // The result line shows the error; the expression stays.
             self.after_equals = false;
             None
         }
     }
 }
 
-/// A pressable key on the calculator pad.
 #[derive(Clone, Debug)]
 pub enum Key {
     Digit(char),
     Dot,
     DoubleZero,
-    /// Insert a raw ASCII fragment at the caret (operators, `(`, `sin(`…).
     Ins(&'static str),
-    /// Apply a unary wrap to the whole current expression.
+    /// Wraps the whole expression, not the caret.
     Wrap(&'static str, &'static str),
     Percent,
     ToggleSign,
@@ -327,26 +288,18 @@ pub enum Key {
     MemSub,
     MemRecall,
     MemClear,
-    /// Switch the narrow keypad between its two named pages. Only present
-    /// where one page cannot hold every key; the app turns the press into
-    /// [`KeypadPage`] state.
     Page(KeypadPage),
 }
 
-/// The two pages of the narrow keypad. A phone-width window cannot show every
-/// scientific key at once, so it shows one honest page at a time instead of
-/// silently dropping functions: the everyday number pad, or the function pad.
-/// A wide window shows the whole scientific pad and needs neither page.
+/// The two pages of the narrow keypad: a phone-width window shows one page at a
+/// time rather than dropping keys. A wide window needs neither.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeypadPage {
-    /// Digits, operators, `=`, and the everyday editing keys.
     Primary,
-    /// The scientific functions and constants the number pad leaves out.
     Functions,
 }
 
 impl Key {
-    /// Glyph shown on the keycap.
     pub fn label(&self) -> &'static str {
         match self {
             Key::Digit('0') => "0",
@@ -410,7 +363,6 @@ impl Key {
         }
     }
 
-    /// The icon a key shows in place of its label, when it has one.
     pub fn icon(&self) -> Option<ui::icons::Icon> {
         match self {
             Key::Backspace => Some(ui::icons::Icon::Delete),
@@ -418,24 +370,18 @@ impl Key {
         }
     }
 
-    /// What the key is, which decides its control role at draw time.
     pub fn role(&self) -> KeyRole {
         match self {
             Key::Digit(_) | Key::Dot | Key::DoubleZero => KeyRole::Digit,
             Key::Equals => KeyRole::Equals,
             Key::Clear => KeyRole::Clear,
-            // The page key is navigation, not a function: it gets the
-            // operator's lifted face so it reads as a place to go, not
-            // another symbol to insert.
+            // Navigation, not a function: it gets the operator's lifted face.
             Key::Backspace | Key::Ins("+" | "-" | "*" | "/") | Key::Page(_) => KeyRole::Operator,
             _ => KeyRole::Function,
         }
     }
 }
 
-/// What a keycap is: the number entry pad (digits and operators) stands out
-/// from the scientific functions, `=` is the one primary action and `AC`
-/// discards the expression.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum KeyRole {
     Digit,
@@ -445,35 +391,17 @@ pub enum KeyRole {
     Clear,
 }
 
-/// How dense the on-screen keypad is, chosen from the available body area so
-/// the calculator stays usable from a phone-narrow strip up to a wide window.
-///
-/// The layouts are strictly nested supersets — every key on a smaller layout
-/// is also present (in the same relative place) on a larger one — so the pad
-/// grows extra columns/rows of functions outward as the window widens without
-/// the core number pad ever jumping around. A "quick calculation" user always
-/// sees the digits, the four basic operators, `=`, `AC` and backspace in the same
-/// spot regardless of size, so responsiveness never gets in the way.
+/// How dense the keypad is, chosen from the body width. The layouts are nested
+/// supersets: every key on a smaller layout sits in the same relative place on a
+/// larger one, so the digits and operators never move.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeypadLayout {
-    /// Phone-narrow: a 4-column essentials pad (digits, `+ − × ÷`, `=`, a few
-    /// staples). No scientific column.
     Compact,
-    /// Default desktop: 5 columns — essentials plus the common scientific keys
-    /// (trig, powers, roots, π/e).
     Standard,
-    /// Wide window: the full 7-column scientific pad with every function key.
     Scientific,
 }
 
 impl KeypadLayout {
-    /// Choose a layout from the available keypad area `width` (in logical px).
-    /// The breakpoints are by width because the pad grows horizontally; the
-    /// thresholds bake in the per-column width the keys need to stay tappable.
-    ///
-    /// * `< 460 px`  → [`Compact`](Self::Compact)
-    /// * `< 680 px`  → [`Standard`](Self::Standard)
-    /// * `>= 680 px` → [`Scientific`](Self::Scientific)
     pub fn for_width(width: f64) -> Self {
         let compact = width < 460.0; // allow-breakpoint: re-chosen from the laid-out rect on every pass
         let standard = width < 680.0; // allow-breakpoint: re-chosen from the laid-out rect on every pass
@@ -486,7 +414,6 @@ impl KeypadLayout {
         }
     }
 
-    /// Columns in this layout's grid.
     pub fn cols(self) -> usize {
         match self {
             KeypadLayout::Compact => 4,
@@ -495,14 +422,11 @@ impl KeypadLayout {
         }
     }
 
-    /// The row-major key list for this layout's first page. Each layout is a
-    /// dense grid of `cols()` columns.
     pub fn keys(self) -> Vec<Key> {
         self.keys_on(KeypadPage::Primary)
     }
 
-    /// The row-major key list for `page`. Only the compact layout pages its
-    /// keys: the wider layouts already show every key and ignore the page.
+    /// Only the compact layout pages; the wider ones ignore the page.
     pub fn keys_on(self, page: KeypadPage) -> Vec<Key> {
         match (self, page) {
             (KeypadLayout::Compact, KeypadPage::Functions) => Self::compact_function_keys(),
@@ -512,15 +436,11 @@ impl KeypadLayout {
         }
     }
 
-    /// Whether this layout has more keys than one page can show, so the
-    /// keypad offers its second page.
     pub fn pages(self) -> bool {
         self == KeypadLayout::Compact
     }
 
-    /// 4 cols × 6 rows — the everyday essentials, and the door to the
-    /// function page. Every key the pad leaves out is on that page, so
-    /// narrowing the window changes the arrangement, never the capability.
+    /// 4 × 6: the essentials and the door to the function page.
     fn compact_keys() -> Vec<Key> {
         use Key::{Ans, Backspace, Clear, Digit, Dot, Equals, Ins, Page, Percent, ToggleSign};
         vec![
@@ -551,10 +471,7 @@ impl KeypadLayout {
         ]
     }
 
-    /// 4 cols × 7 rows — the function page. It holds every scientific key
-    /// the number page leaves out, plus the `123` key back to it. Named by
-    /// its key and announced as the second keypad page, so it is a place a
-    /// person can find, not a drawer of leftovers.
+    /// 4 × 7: every scientific key the number page leaves out, plus `123`.
     fn compact_function_keys() -> Vec<Key> {
         use Key::{Ans, DoubleZero, Ins, Page, Wrap};
         vec![
@@ -589,7 +506,7 @@ impl KeypadLayout {
         ]
     }
 
-    /// 5 cols × 7 rows — essentials + common scientific keys.
+    /// 5 × 7: essentials plus the common scientific keys.
     fn standard_keys() -> Vec<Key> {
         use Key::{
             Ans, Backspace, Clear, Digit, Dot, DoubleZero, Equals, Ins, Percent, ToggleSign, Wrap,
@@ -633,8 +550,7 @@ impl KeypadLayout {
         ]
     }
 
-    /// 7 cols × 7 rows — the full scientific pad, with a leading column
-    /// for integration, roots and additional scientific functions.
+    /// 7 × 7: the full pad, with a leading column of integration and roots.
     fn scientific_keys() -> Vec<Key> {
         use Key::{
             Ans, Backspace, Clear, Digit, Dot, DoubleZero, Equals, Ins, Percent, ToggleSign, Wrap,
@@ -693,7 +609,6 @@ impl KeypadLayout {
     }
 }
 
-/// Apply a key press to the model (calculator mode).
 pub fn apply_key(m: &mut CalcModel, key: &Key) {
     match key {
         Key::Clear => {
@@ -702,7 +617,7 @@ pub fn apply_key(m: &mut CalcModel, key: &Key) {
         }
         Key::Backspace => {
             m.after_equals = false;
-            // Pop one token-ish chunk: a trailing `name(` deletes whole.
+            // A trailing `name(` goes whole.
             pop_token(&mut m.expr);
         }
         Key::Equals => {
@@ -730,8 +645,8 @@ pub fn apply_key(m: &mut CalcModel, key: &Key) {
         Key::Dot => start_value(m, "."),
         Key::DoubleZero => start_value(m, "00"),
         Key::Ins(s) => {
-            // Operators + postfix/closers continue from a committed result;
-            // value-starters (`(`, `sin(`, `pi`, …) begin fresh after `=`.
+            // Operators and closers continue a shown result; value starters
+            // begin fresh.
             let continues = matches!(*s, "+" | "-" | "*" | "/" | "^" | "!" | ")" | ",");
             if continues {
                 m.after_equals = false;
@@ -742,13 +657,12 @@ pub fn apply_key(m: &mut CalcModel, key: &Key) {
         }
         Key::Wrap(pre, post) => {
             if m.expr.trim().is_empty() {
-                // Nothing to wrap.
             } else {
                 m.expr = format!("{pre}{}{post}", m.expr);
             }
             m.after_equals = false;
         }
-        // The page key is presentation: the screen owns which page shows.
+        // The screen owns which page shows.
         Key::Page(_) => {}
         Key::MemAdd => {
             if let Ok(v) = engine::evaluate(&m.expr, &m.ctx()) {
@@ -765,7 +679,6 @@ pub fn apply_key(m: &mut CalcModel, key: &Key) {
     }
 }
 
-/// Route a typed character through the calculator (keyboard entry).
 pub fn type_char(m: &mut CalcModel, ch: char) {
     match ch {
         '0'..='9' => apply_key(m, &Key::Digit(ch)),
@@ -786,7 +699,6 @@ pub fn type_char(m: &mut CalcModel, ch: char) {
     }
 }
 
-/// Insert a "value" fragment, clearing a just-committed result first.
 fn start_value(m: &mut CalcModel, s: &str) {
     if m.after_equals {
         m.expr.clear();
@@ -795,12 +707,10 @@ fn start_value(m: &mut CalcModel, s: &str) {
     m.expr.push_str(s);
 }
 
-/// Delete one trailing logical token from `expr`.
 fn pop_token(expr: &mut String) {
     if expr.is_empty() {
         return;
     }
-    // If it ends with `name(`, drop the whole identifier + paren.
     if expr.ends_with('(') {
         expr.pop();
         while let Some(c) = expr.chars().last() {
@@ -819,10 +729,6 @@ fn pop_token(expr: &mut String) {
 mod tests {
     use super::*;
 
-    /// Model key handling: `=` stores the evaluated value in ans/history, a digit
-    /// after `=` starts fresh while an operator continues, Backspace drops a whole
-    /// function name, M+ accumulates, and the error demo yields a renderable Calc
-    /// parse error. Fresh model per phase.
     #[test]
     fn key_entry_and_equals_update_expression_memory_and_history() {
         // phase equals_pushes_history_and_sets_ans
@@ -836,10 +742,9 @@ mod tests {
             assert_eq!(m.history[0].result, "5");
             assert_eq!(m.expr, "5");
             assert!(m.after_equals);
-            // "=" again on the result shown records nothing more.
             assert!(m.commit_equals().is_none());
             assert_eq!(m.history.len(), 1);
-            // sin(π) is exactly 0 on the display and in the history.
+            // sin(π) is exactly 0.
             m.expr = "sin(pi)".into();
             m.after_equals = false;
             m.commit_equals();
@@ -902,9 +807,6 @@ mod tests {
         }
     }
 
-    /// Keypad layouts: the default and every breakpoint layout tile their column
-    /// count exactly, widths pick the expected layout with growing column counts,
-    /// and every layout keeps the quick-calc essentials.
     #[test]
     fn keypad_layouts_are_dense_grids_chosen_by_width_with_essentials() {
         // phase every_keypad_layout_is_a_dense_grid
@@ -927,15 +829,12 @@ mod tests {
             assert_eq!(KeypadLayout::for_width(380.0), KeypadLayout::Compact);
             assert_eq!(KeypadLayout::for_width(560.0), KeypadLayout::Standard);
             assert_eq!(KeypadLayout::for_width(900.0), KeypadLayout::Scientific);
-            // wider layouts have at least as many columns
             assert!(KeypadLayout::Compact.cols() < KeypadLayout::Standard.cols());
             assert!(KeypadLayout::Standard.cols() < KeypadLayout::Scientific.cols());
         }
 
         // phase every_layout_keeps_the_quick_calc_essentials
         {
-            // A "quick calculation" user must always find the digits, the four
-            // basic operators and `=` regardless of breakpoint.
             for layout in [
                 KeypadLayout::Compact,
                 KeypadLayout::Standard,
@@ -969,8 +868,7 @@ mod tests {
             }
         }
     }
-    /// The narrow pad's two pages together hold every key the wide pad shows:
-    /// narrowing changes the arrangement, never the capability.
+    /// The two pages together hold every key the wide pad shows.
     #[test]
     fn compact_pages_together_hold_every_scientific_key() {
         let mut reachable = std::collections::HashSet::new();

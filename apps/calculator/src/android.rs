@@ -1,5 +1,4 @@
-//! The Android library: the binary's `main.rs`, entered through its
-//! `ui::android_main!()`. See `crates/sdk/ui-core/android`.
+//! The Android library: `main.rs` entered through `ui::android_main!()`.
 
 #[path = "main.rs"]
 mod app;

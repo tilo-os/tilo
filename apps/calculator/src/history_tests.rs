@@ -1,8 +1,6 @@
-// The window's History is the calculator's list of past calculations:
-// included into `app::tests`.
+// Included into `app::tests`.
 
-/// Every row History lists, as assistive technology reads it: its target
-/// and its name, with its time groups opened.
+/// Every row History lists, as assistive technology reads it, groups open.
 fn history_rows(app: &mut TestApp<CalculatorShell>) -> Vec<(String, String)> {
     fn timeline(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
         if node.test_id.as_deref() == Some("activity_timeline") {
@@ -47,17 +45,15 @@ fn history_rows(app: &mut TestApp<CalculatorShell>) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Type `expression` and press Enter in calculator mode.
+/// Types it and presses Enter in calculator mode.
 fn calculate(app: &mut TestApp<CalculatorShell>, expression: &str) {
     app.harness().type_text(expression);
     app.harness().key("Enter");
     app.settle();
 }
 
-/// Past calculations are History's rows: each reads as the calculation and
-/// its result, a graph change reads as the function it plotted, and choosing
-/// a calculation closes History and puts it back into the calculator. The
-/// calculator itself lists none of them.
+/// Each past calculation is a History row; choosing one closes History and
+/// puts it back into the calculator.
 #[test]
 fn history_lists_calculations_and_choosing_one_recalls_it() {
     fn all(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
@@ -133,10 +129,8 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
     );
 }
 
-/// The calculations are the calculator's library, one record per workspace:
-/// a second Calculator window lists the first window's calculations in its
-/// History. What a window is doing (the expression being typed, the mode,
-/// a graph's view) stays that window's own.
+/// A second window lists the first window's calculations; what a window is
+/// doing stays its own.
 #[test]
 fn a_second_window_lists_the_first_windows_calculations() {
     let mut app = hosted();
@@ -164,9 +158,7 @@ fn a_second_window_lists_the_first_windows_calculations() {
     );
 }
 
-/// The window bar's History button is the main way into the calculator's
-/// past calculations: the window offers it, and a press on it opens the
-/// window's History, listing what was done.
+/// A press on the bar's History button opens the window's History.
 #[test]
 fn the_history_button_opens_history() {
     let mut app = hosted();
@@ -195,8 +187,7 @@ fn the_history_button_opens_history() {
     );
 }
 
-/// A formula is kept whole in its change, however long: History names the
-/// whole function, and only its row elides it to fit.
+/// History names a long formula whole; only its row elides it.
 #[test]
 fn a_long_formula_reaches_history_whole() {
     let formula = ["x"; 60].join("+");
@@ -218,10 +209,8 @@ fn a_long_formula_reaches_history_whole() {
     );
 }
 
-/// What the palette, a script or an agent passes reaches History whole:
-/// a long calculation committed through the action door reads whole in its
-/// row and is put back whole, and a long function added through it reads
-/// whole too.
+/// A long calculation or function added through the action door reads whole
+/// in its row and goes back whole.
 #[test]
 fn a_long_formula_passed_to_an_action_reaches_history_whole() {
     let formula = ["x"; 60].join("+");
@@ -266,9 +255,7 @@ fn a_long_formula_passed_to_an_action_reaches_history_whole() {
     );
 }
 
-/// History opens a past version as the window shows it: in Graph 2D, a
-/// version's preview is the graph as it was, its functions drawn by the
-/// same view, not the keypad of a calculator just opened.
+/// In Graph 2D, a past version's preview is drawn with the window's view.
 #[test]
 fn a_past_version_previews_the_graph_the_window_shows() {
     fn described(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {

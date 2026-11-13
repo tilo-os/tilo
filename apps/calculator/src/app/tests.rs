@@ -55,15 +55,13 @@ fn calculator_mathfield_edits_fractions_roots_and_continues_results() {
     assert!(app.model.expr.is_empty());
 }
 
-/// A hosted calculator: the framework's live app with its resource.
 fn hosted() -> TestApp<CalculatorShell> {
     let mut app = TestApp::<CalculatorShell>::new().unwrap();
     app.harness().resize((1280, 800)).unwrap();
     app
 }
 
-/// The calculator's retained node in the inspection tree: its path, and
-/// the semantic tree it publishes.
+/// The calculator's retained node: its path and its semantic tree.
 fn calculator(app: &mut TestApp<CalculatorShell>) -> (String, ui::a11y::AccessNode) {
     fn walk(node: &ui::headless::InspectionNode) -> Option<(String, ui::a11y::AccessNode)> {
         match &node.semantics {
@@ -79,7 +77,6 @@ fn calculator(app: &mut TestApp<CalculatorShell>) -> (String, ui::a11y::AccessNo
     walk(&app.harness().inspection().root).expect("the calculator is laid out")
 }
 
-/// The semantic node the calculator publishes for `target`.
 fn node(app: &mut TestApp<CalculatorShell>, target: &str) -> ui::a11y::AccessNode {
     fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
         if node.action_target.as_deref() == Some(target) {
@@ -90,7 +87,6 @@ fn node(app: &mut TestApp<CalculatorShell>, target: &str) -> ui::a11y::AccessNod
     find(&calculator(app).1, target).unwrap_or_else(|| panic!("no semantic node {target}"))
 }
 
-/// Press the window bar's view `mode`, as a press on it does.
 fn press_mode(app: &mut TestApp<CalculatorShell>, mode: Mode) {
     let declared = ui::window_toolbar::declared().expect("the window declares its slots");
     let views = declared.views.expect("the window declares its views");
@@ -106,7 +102,6 @@ fn press_mode(app: &mut TestApp<CalculatorShell>, mode: Mode) {
     app.settle();
 }
 
-/// The view the window's bar shows as chosen, by its name.
 fn chosen_view() -> Option<String> {
     let views = ui::window_toolbar::declared()?.views?;
     views
@@ -116,8 +111,8 @@ fn chosen_view() -> Option<String> {
         .map(|view| view.label.clone())
 }
 
-/// The bar a bare window (no host) declares: its slots are the app's own, and
-/// a press on one goes to a dispatcher that never lands.
+/// The bar a window with no host declares; a press on it reaches a dispatcher
+/// that never lands.
 fn attach_bar(app: &mut CalculatorApp) {
     app.dispatch = Some(ui::framework::Dispatcher::detached(
         "so.tilo.calculator",
@@ -129,7 +124,6 @@ fn attach_bar(app: &mut CalculatorApp) {
     }
 }
 
-/// Press the window bar's slot named `name`, as a press on it does.
 fn press_slot(app: &mut TestApp<CalculatorShell>, name: &str) {
     let id = ui::window_toolbar::declared()
         .into_iter()
@@ -142,7 +136,6 @@ fn press_slot(app: &mut TestApp<CalculatorShell>, name: &str) {
     app.settle();
 }
 
-/// The outcome the window's display reads for what is typed.
 fn outcome(app: &mut TestApp<CalculatorShell>) -> String {
     fn walk(node: &ui::a11y::AccessNode) -> Option<String> {
         if node.name.as_deref() == Some("Expression") {
@@ -153,7 +146,6 @@ fn outcome(app: &mut TestApp<CalculatorShell>) -> String {
     walk(&calculator(app).1).expect("the display shows an outcome")
 }
 
-/// Click the painted control `target`, as a pointer does.
 fn click(app: &mut TestApp<CalculatorShell>, target: &str) {
     let bounds = node(app, target)
         .bounds
@@ -165,8 +157,8 @@ fn click(app: &mut TestApp<CalculatorShell>, target: &str) {
     app.settle();
 }
 
-/// A capture stages its view over the scenario's rows: the mode, an
-/// open drawer, a collaborator's pointer over the first formula.
+/// The mode, an open drawer and a collaborator's pointer over the first
+/// formula, staged over the scenario's rows.
 #[test]
 fn captures_stage_mode_drawers_and_collaborators() {
     let _calc = TestApp::<CalculatorShell>::capture(Some("calculator")).unwrap();
@@ -385,7 +377,6 @@ fn power_input_focused_calculator_enables_browser_text_editor() {
         .ime_cursor_rect()
         .expect("text entry must enable the browser editor and platform IME");
     assert!(caret.height() > 0.0 && app.area.contains(caret.center()));
-    // The keypad types it, so no soft keyboard covers the keys.
     assert_eq!(
         app.ime_content(),
         Some(ui::ime::InputContent::TEXT.own_keys())
@@ -421,12 +412,10 @@ fn power_input_paste_shortcuts_evaluate_once() {
     }
 }
 
-/// A history row's published `open` recalls exactly that row by its
-/// stable identity — surviving index shifts, refusing a deleted row —
-/// and is presentation only, open to a participant who may only view.
+/// `open` recalls its row by stable identity, surviving index shifts and
+/// refusing a deleted row; a viewer may run it.
 #[test]
 fn history_recall_by_published_action_uses_stable_identity() {
-    // A window someone uses, where effects run, over the scenario's book.
     let mut app = TestApp::<CalculatorShell>::new().unwrap();
     for invoke in <CalculatorShell as ui::framework::ResourceApp>::scenario(Some("graph3d")) {
         app.invoke(invoke).unwrap();
@@ -469,9 +458,8 @@ fn history_recall_by_published_action_uses_stable_identity() {
     );
 }
 
-/// Launch and mode-switch state: the live app boots empty in Calc, and
-/// entering an empty graph mode adds an editable starter row through
-/// the resource's action.
+/// The live app boots empty in Calc; entering an empty graph mode adds a
+/// starter row through the resource's action.
 #[test]
 fn launch_state_and_mode_switch_seeding() {
     let app = CalculatorApp::new();
@@ -502,9 +490,6 @@ fn launch_state_and_mode_switch_seeding() {
     assert_eq!(app.state().surfaces.len(), 0);
 }
 
-/// The semantic tree exposes the header, keypad, expression and graph
-/// formula controls, and activating/setting them through
-/// `perform_semantic_action` drives the model. Fresh app per phase.
 #[test]
 #[allow(
     clippy::items_after_statements,
@@ -536,8 +521,6 @@ fn accessibility_exposes_and_activates_calculator_controls() {
             siblings_are_consistently_keyed(&tree.children),
             "synthetic Calculator siblings must not mix stable and ordinal keys"
         );
-        // The modes are the window bar's: its view switcher runs these
-        // same semantic actions.
 
         let mut doc = AutoCommit::new();
         assert!(
@@ -633,17 +616,15 @@ fn accessibility_exposes_and_activates_calculator_controls() {
 }
 
 impl CalculatorApp {
-    /// Screen-space center of the Calc keypad key labelled `label`, after
-    /// the current layout. `None` if the key is absent or not laid out.
+    /// `None` when the key is absent or not laid out.
     fn key_center(&self, label: &str) -> Option<Point> {
         let i = self.calc.key_index_for_label(label)?;
         self.calc.key_center(i)
     }
 }
 
-/// The modes, the angle unit and the panel's show/hide button are the
-/// window bar's slots, and the screens start at the top of the window:
-/// no header row of the calculator's own.
+/// The modes, the angle unit and the panel button are the window bar's slots,
+/// and the screens start at the top of the window.
 #[test]
 fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
     let mut app = CalculatorApp::seeded();
@@ -684,9 +665,8 @@ fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
     );
 }
 
-/// The canvas hint teaches navigation only while the pointer is over a
-/// plot the person has not navigated yet; the trace follows the pointer
-/// over Graph 2D only.
+/// The navigation hint shows only over a plot not navigated yet; the trace
+/// follows the pointer over Graph 2D only.
 #[test]
 fn navigation_hint_shows_over_an_unnavigated_plot_only() {
     let mut app = wide(CalculatorApp::seeded()); // Graph 2D
@@ -734,9 +714,8 @@ fn navigation_hint_shows_over_an_unnavigated_plot_only() {
     assert!(app.plot_pointer().hint.is_none(), "no plot in Calculator");
 }
 
-/// A scenario stages the view a capture shows: the mode, the expression
-/// being typed, and the panel as an open floating drawer when it asks for
-/// one. A plain capture shows the lived-in 2D graph.
+/// A plain capture shows the lived-in 2D graph; a scenario adds the mode, an
+/// expression and a floating drawer.
 #[test]
 fn scenarios_stage_the_view_they_name() {
     let stage = |name: Option<&str>, w: f64| {
@@ -757,9 +736,8 @@ fn scenarios_stage_the_view_they_name() {
     assert!(drawer.g2.panel.side().is_overlay() && drawer.g2.panel.side().is_open());
 }
 
-/// The real key path (`on_key`): Ctrl+digit switches mode, typing and
-/// Backspace edit the active 2D function / 3D surface, and Enter appends and
-/// focuses a fresh row. Fresh app + state per phase.
+/// Ctrl+digit switches mode, typing and Backspace edit the active row, Enter
+/// appends and focuses a fresh one.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -804,7 +782,6 @@ fn keyboard_path_switches_mode_and_edits_graph_rows() {
         let mut app = CalculatorApp::new();
         let mut st = ui::State::new();
         app.set_mode(Mode::Graph2d);
-        // start from a clean active row
         app.model.funcs = vec![crate::model::PlotFn {
             expr: String::new(),
             visible: true,
@@ -830,7 +807,6 @@ fn keyboard_path_switches_mode_and_edits_graph_rows() {
             visible: true,
         }];
         app.model.active_surface = 0;
-        // on_key_graph resyncs the active field to the surface before editing.
         app.on_key(
             &WKey::Named(NamedKey::Backspace),
             none,
@@ -841,8 +817,7 @@ fn keyboard_path_switches_mode_and_edits_graph_rows() {
 
     // phase enter_in_graph2d_adds_and_focuses_a_new_function
     {
-        // Real key path: after editing a function, Enter appends a fresh empty
-        // row and focuses it (the "next expression" gesture).
+        // Enter appends a fresh row and focuses it.
         let mut app = CalculatorApp::new();
         let mut st = ui::State::new();
         app.set_mode(Mode::Graph2d);
@@ -909,16 +884,14 @@ fn keyboard_path_switches_mode_and_edits_graph_rows() {
     }
 }
 
-/// Typing a formula writes the document keystroke by keystroke, and the
-/// keystrokes of one row are one undo step; a collaborator's edit to the
-/// formula is presented.
+/// A formula is written keystroke by keystroke and lands as one undo step; a
+/// collaborator's edit is presented.
 #[test]
 fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
     let mut app = hosted();
     app.invoke(Calculator::ADD_FUNCTION.with("")).unwrap();
     press_mode(&mut app, Mode::Graph2d);
     click(&mut app, "calculator.graph.field:2d:0");
-    // Keyboard input goes to the focused calculator: Tab to it.
     for _ in 0..32 {
         if calculator(&mut app).1.state.focused {
             break;
@@ -937,7 +910,7 @@ fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
         "every keystroke is written"
     );
 
-    // Enter starts the next row: the typed formula is settled.
+    // Enter starts the next row, settling the typed formula.
     app.harness().key("Enter");
     app.settle();
     assert_eq!(app.state().funcs.len(), 2, "Enter adds the next row");
@@ -971,14 +944,6 @@ fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
     );
 }
 
-// -- pointer-path harness: drive the REAL production handle_event route -----
-//
-// These exercise the live pointer pipeline end-to-end — hit-testing against
-// the same rects the last layout painted, then the wired handler — rather
-// than calling the model-level `apply_key` / view mutators directly. Node /
-// taffy are unused by the (single-leaf) calculator, so a throwaway leaf is
-// fine.
-
 fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) -> bool {
     ui::testing::Dispatch::new()
         .doc(&mut st.doc)
@@ -997,14 +962,12 @@ fn wheel(y: f64) -> WindowEvent {
     ui::synthetic_input::mouse_wheel(0.0, y as f32)
 }
 
-/// A full click (move → press → release) at scene point `p`.
 fn tap(app: &mut CalculatorApp, st: &mut ui::State, p: Point) {
     send(app, st, &cursor(p));
     send(app, st, &btn(ElementState::Pressed));
     send(app, st, &btn(ElementState::Released));
 }
 
-/// A press-drag: press at `a`, move to `b` with the button held, release.
 fn drag(app: &mut CalculatorApp, st: &mut ui::State, a: Point, b: Point) {
     send(app, st, &cursor(a));
     send(app, st, &btn(ElementState::Pressed));
@@ -1012,8 +975,8 @@ fn drag(app: &mut CalculatorApp, st: &mut ui::State, a: Point, b: Point) {
     send(app, st, &btn(ElementState::Released));
 }
 
-/// An app at the wide 1280×800 area used by the pointer tests, after one
-/// real frame: the controls are measured at the size they paint at.
+/// A 1280×800 window after one real frame, so the controls are measured at the
+/// size they paint at.
 fn wide(mut app: CalculatorApp) -> CalculatorApp {
     app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.draw_child(
@@ -1027,15 +990,12 @@ fn wide(mut app: CalculatorApp) -> CalculatorApp {
     app
 }
 
-/// Calculator-mode pointer path: keycaps append, a history row recalls,
-/// Clear empties history, and memory keys accumulate/clear. Fresh app +
-/// state per phase.
+/// Keycaps append, a history row recalls, Clear empties history, and the
+/// memory keys accumulate and clear.
 #[test]
 fn calc_pointer_clicks_drive_keypad_history_and_memory() {
     // phase calc_keypad_click_appends_to_expression
     {
-        // handle_event → on_press → on_press_calc → key_at → apply_key on the
-        // real keycap rects (not a model-level apply_key shortcut).
         let mut app = wide(CalculatorApp::new()); // Calc mode, empty
         let mut st = ui::State::new();
         let seven = app.key_center("7").expect("7 keycap laid out");
@@ -1051,12 +1011,11 @@ fn calc_pointer_clicks_drive_keypad_history_and_memory() {
 
     // phase memory_button_click_accumulates_via_pointer
     {
-        // on_press_calc → mem_at → apply_key(MemAdd/MemClear) via the mem rects.
         let mut app = CalculatorApp::new();
         let mut st = ui::State::new();
         app.model.expr = "10".into();
         let mut app = wide(app);
-        // MEM_KEYS = [MC, MR, M+, M-]; index 2 is M+, index 0 is MC.
+        // MEM_KEYS = [MC, MR, M+, M-]: 2 is M+, 0 is MC.
         let m_add = app.calc.mem_center(2).expect("M+ button laid out");
         tap(&mut app, &mut st, m_add);
         assert_eq!(
@@ -1071,8 +1030,7 @@ fn calc_pointer_clicks_drive_keypad_history_and_memory() {
     }
 }
 
-/// The window bar's Degrees and Radians switch the angle unit, and trig
-/// evaluates in the unit chosen.
+/// Degrees and Radians switch the angle unit, and trig follows it.
 #[test]
 fn the_bars_angle_unit_changes_trig_output() {
     let mut app = hosted();
@@ -1097,10 +1055,8 @@ fn the_bars_angle_unit_changes_trig_output() {
     );
 }
 
-/// Graph-mode pointer path: drag pans / orbits and the wheel zooms the 2D and
-/// 3D views, the narrow Functions drawer opens from its toggle, and the row
-/// visibility toggle and delete button act on the tapped row. Fresh app + state
-/// per phase.
+/// Drag pans or orbits and the wheel zooms, the narrow Functions drawer opens
+/// from its toggle, and a row's visibility and delete buttons act on its row.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1109,7 +1065,6 @@ fn the_bars_angle_unit_changes_trig_output() {
 fn graph_pointer_path_drives_views_drawer_and_row_controls() {
     // phase graph2d_drag_pans_the_view
     {
-        // handle_event drag → on_drag → view2d center shifts.
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph2d);
         let mut st = ui::State::new();
@@ -1124,7 +1079,6 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
 
     // phase graph2d_wheel_zooms_the_view
     {
-        // handle_event wheel over the canvas → on_wheel → view2d.scale grows.
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph2d);
         let mut st = ui::State::new();
@@ -1142,7 +1096,6 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
 
     // phase graph3d_drag_orbits_the_view
     {
-        // handle_event drag → on_drag → view3d yaw/pitch change.
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph3d);
         let mut st = ui::State::new();
@@ -1162,7 +1115,6 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
 
     // phase graph3d_wheel_zooms_the_view
     {
-        // handle_event wheel over the surface canvas → on_wheel → view3d.zoom.
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph3d);
         let mut st = ui::State::new();
@@ -1196,7 +1148,6 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
 
     // phase vis_dot_click_toggles_function_visibility
     {
-        // on_press_graph → vis_at → funcs[i].visible flips, via the real toggle rect.
         let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
         app.set_mode(Mode::Graph2d);
         let mut st = ui::State::new();
@@ -1218,8 +1169,8 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
 
     // phase graph_row_delete_button_tombstones_the_stable_resource
     {
-        // The visible delete button uses the same keyed action as the
-        // palette, so it cannot rebind after a peer changes list order.
+        // The delete button runs the same keyed action as the palette, so a
+        // peer changing the list order cannot rebind it.
         let mut app = TestApp::<CalculatorShell>::capture(None).unwrap();
         let before = app.state().funcs;
         let delete = node(&mut app, "calculator.graph.delete:2d:0")
@@ -1230,7 +1181,7 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
             f64::midpoint(delete.y0, delete.y1),
         );
         app.settle();
-        // Undo takes a removed formula back, so nobody is asked.
+        // Undo takes a removed formula back, so nothing asks first.
         assert!(app.asking().is_none(), "nothing asks first");
         let after = app.state().funcs;
         assert_eq!(after.len(), before.len() - 1, "one row removed");
@@ -1256,8 +1207,7 @@ fn the_keypad_types_the_expression_without_a_soft_keyboard() {
     );
 }
 
-/// A phone-sized window showing `mode`, driven through the toolkit's touch
-/// translation.
+/// A phone-sized window driven through the toolkit's touch translation.
 fn touch_harness(mode: Mode) -> ui::headless::FrameHarness {
     let mut app = CalculatorApp::new();
     app.set_mode(mode);
@@ -1312,9 +1262,8 @@ fn orbiting_round_and_round_keeps_the_yaw_within_one_turn() {
     );
 }
 
-/// The conversion page is a page of this window: the bar switches to it, it
-/// answers the question the audit asked (`40 °C` in `°F`), and every control
-/// it paints is reachable by address.
+/// The bar switches to the conversion page, it answers `40 °C` in `°F`, and
+/// every control it paints is reachable by address.
 #[test]
 fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
     let mut app = hosted();
@@ -1329,7 +1278,6 @@ fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
         "the page opens on lengths"
     );
 
-    // Money is a chip that says what it cannot do, in the person's words.
     click(&mut app, "calculator.convert:currency");
     assert!(
         app.with_widget(|page: &mut CalculatorApp| page.convert_page().currency_note_shown())
@@ -1337,8 +1285,6 @@ fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
         "the currency chip shows why it cannot convert money"
     );
 
-    // 40 °C in °F, by pressing the chips and typing the amount, as a person
-    // would.
     click(&mut app, "calculator.convert:quantity:temperature");
     app.harness().type_text("40");
     app.settle();
