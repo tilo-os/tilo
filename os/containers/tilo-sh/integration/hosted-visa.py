@@ -11,7 +11,10 @@ agent take there, with the person's answering device held by the check
   b. the agent navigates the window to the visa test page and fills it with
      page actions (`find-page-element`, `fill-page`, `select-page`,
      `click-page`), then reads it back — the key operates web pages, so the
-     person is asked nothing and Browser runs every one of them;
+     person is asked nothing and Browser runs every one of them; a person
+     invited into the workspace, in their own browser, sees that page on their
+     desk and sees it change as the agent fills one more field: what the
+     person approving a submit is looking at;
   c. `capture-page` answers a picture of the filled form, saved as a PNG;
   d. the person refuses one submission: the window holds it, the call ends
      refused, and the form stays filled and unsent — and the question they were
@@ -40,7 +43,9 @@ names the stack's reviewer helper (integration/reviewer.py); the person is
 answered for by HOSTED_VISA_APPROVER (`tilo-approve`), in the identity root
 HOSTED_VISA_ROOT, through the host HOSTED_VISA_RELAY names as
 `KEY@HOST:PORT`; HOSTED_VISA_UNSCOPED_KEY is a key of the same person that may
-not operate web pages in Browser.
+not operate web pages in Browser. HOSTED_VISA_SITE and HOSTED_VISA_SITE_RELAY
+are the site and the relay a person enters through, for the person who watches
+the page on their desk (integration/person.mjs).
 
 Prints one JSON line with the timings and what it asserted.
 """
@@ -51,10 +56,13 @@ import asyncio
 import base64
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.parse
 import urllib.request
+
+from pathlib import Path
 
 from approver import Person
 from tilo import AsyncTilo, ProtocolError, Refused, Run
@@ -67,6 +75,17 @@ APPROVER = os.environ.get("HOSTED_VISA_APPROVER", "")
 UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
 PERSON_ROOT = os.environ.get("HOSTED_VISA_ROOT", "")
 HOST = os.environ.get("HOSTED_VISA_RELAY", "")
+# The person in their own browser, watching the hosted Browser's page on their
+# desk: the site they arrive at, the relay it enters through, and the window
+# they watch, by the name the desk gives the app that hosts it.
+SITE = os.environ.get("HOSTED_VISA_SITE", "")
+SITE_RELAY = os.environ.get("HOSTED_VISA_SITE_RELAY", "")
+DESK_EMAIL = "desk-person@example.invalid"
+# The tile on their desk, by the name the desk gives it: the hosted window is
+# the workspace's Browser, and a desk that names it by the page it shows names
+# it by the page's title.
+DESK_WINDOW = "browser|visa"
+PERSON_PAGE = Path(__file__).with_name("person.mjs")
 # What the agent puts in the page's fields, by the name the page gives each
 # of them: the words of its label, which is what `find-page-element` matches.
 FILLED = {
@@ -86,6 +105,9 @@ CHOSEN = {"Nationality": "Germany", "Purpose": "Business"}
 DECLARATION = "I declare that the information above is true"
 SUBMIT = "Submit application"
 RECEIPT = "Application received"
+
+# The desks this run opened, stopped whichever way the run ends.
+DESKS: list[Desk] = []
 
 
 def say(step: str, detail: str = "") -> None:
@@ -196,6 +218,77 @@ class Page:
 
     async def title(self) -> str:
         return str((await self.read()).get("title") or "")
+
+
+class Desk:
+    """A person in their own browser watching the hosted Browser's page on
+    their desk (integration/person.mjs --page).
+
+    The window is another device's, so what the person sees of it is the page
+    the session in the VM publishes: the check asks this person to keep a
+    picture of it, and every picture that differs from the one before is a
+    change they saw. It says those as lines while the check goes on working
+    the page, which is how the person's sight of the agent's work is held to,
+    and not only the fact that they could have looked."""
+
+    def __init__(self, link: str) -> None:
+        check(bool(SITE and SITE_RELAY), "the check names the site and the relay a person enters through")
+        self.lines = Path(OUT) / "desk.jsonl"
+        self.log = Path(OUT) / "desk.log"
+        self.out = open(self.lines, "w")
+        self.err = open(self.log, "w")
+        self.seen = 0
+        self.ran = subprocess.Popen(
+            ["node", str(PERSON_PAGE), SITE, SITE_RELAY, str(Path(OUT) / "desk"),
+             "--follow", link, "--page", DESK_WINDOW, "--changes", "8"],
+            stdout=self.out, stderr=self.err,
+        )
+        DESKS.append(self)
+
+    def said(self) -> list[dict]:
+        try:
+            text = self.lines.read_text()
+        except OSError:
+            return []
+        events = []
+        for line in text.splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+        return events
+
+    def wait(self, kind: str, within: float = 180) -> dict:
+        """The next `kind` the person's desk says (`desk`, or each `change` in
+        turn), waited for `within` seconds."""
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            events = self.said()
+            if kind == "desk":
+                for event in events:
+                    if "desk" in event:
+                        return event["desk"]
+            else:
+                changes = [event["change"] for event in events if "change" in event]
+                if len(changes) > self.seen:
+                    self.seen += 1
+                    return changes[self.seen - 1]
+            if self.ran.poll() not in (None, 0):
+                raise AssertionError(f"the person's browser ended ({self.ran.returncode}): {self.log.read_text()[-2000:]}")
+            time.sleep(0.2)
+        raise AssertionError(f"the person's desk said no {kind} in {within:.0f} s (see {self.log})")
+
+    def stop(self) -> None:
+        if self.ran.poll() is None:
+            self.ran.terminate()
+            try:
+                self.ran.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                self.ran.kill()
+        self.out.close()
+        self.err.close()
 
 
 async def open_browser(workspace: object) -> tuple[Page, float]:
@@ -316,6 +409,28 @@ async def fill_phase(report: dict[str, object]) -> int:
         await person.asked_nothing()
         report["questions_while_filling"] = person.answered()
 
+        say("b2. a person invited into the workspace sees the agent's page on their desk")
+        desk = Desk((await aws.members.invite(role="editor", email=DESK_EMAIL)).link)
+        on_desk = desk.wait("desk", within=240)
+        check(
+            on_desk.get("content", 0) >= 0.02,
+            f"the hosted Browser's page is drawn on the person's desk, not a card waiting for one ({on_desk})",
+        )
+        report["desk"] = on_desk
+        say("   drawn", f"the page was on their desk in {on_desk.get('drawnMs')} ms, {on_desk.get('content')} of it its content")
+        # The agent fills a field while they watch: what the person approving
+        # the submit sees happen on the page before they are asked about it.
+        element = await page.find("textbox", "Given names")
+        await outcome(page.do("fill-page", element=element, text=f"{FILLED['Given names']} Wilhelmine"))
+        seen = desk.wait("change", within=60)
+        check(int(seen.get("moved", 0)) > 150, f"the agent's fill reached the person's desk ({seen})")
+        say("   seen", f"the fill changed {seen['moved']} pixels of the page on their desk, {seen['ms']} ms after the change before")
+        report["desk_fill"] = seen
+        # What the rest of the flow asserts, back in its field.
+        element = await page.find("textbox", "Given names")
+        await outcome(page.do("fill-page", element=element, text=FILLED["Given names"]))
+        desk.wait("change", within=60)
+
         say("c. the agent captures the filled form")
         captured = await outcome(page.do("capture-page"))
         ref = content_ref(captured)
@@ -359,6 +474,13 @@ async def fill_phase(report: dict[str, object]) -> int:
         check(RECEIPT in json.dumps(receipt), "the page shows the application was received")
         check("TV-" in json.dumps(receipt), f"the page shows the reference it made ({json.dumps(receipt)[:300]})")
         report["receipt"] = True
+        # The page the person allowed the submission of shows its receipt,
+        # and so does the page on their desk.
+        seen = desk.wait("change", within=60)
+        check(int(seen.get("moved", 0)) > 500, f"the receipt reached the person's desk ({seen})")
+        say("   seen", f"the receipt changed {seen['moved']} pixels of the page on their desk")
+        report["desk_receipt"] = seen
+        desk.stop()
 
         say("f. a click on the submit button is held, and the person is asked once")
         submit = await fill(page)
@@ -463,14 +585,20 @@ async def main() -> int:
         with open(previous) as saved:
             report.update(json.load(saved))
     phase = sys.argv[5] if len(sys.argv) > 5 else "--all"
-    if phase == "--open":
-        status = await open_phase(report)
-    elif phase == "--fill":
-        status = await fill_phase(report)
-    else:
-        status = await open_phase(report)
-        if status == 0:
+    try:
+        if phase == "--open":
+            status = await open_phase(report)
+        elif phase == "--fill":
             status = await fill_phase(report)
+        else:
+            status = await open_phase(report)
+            if status == 0:
+                status = await fill_phase(report)
+    finally:
+        # The person's browser goes with the run, whichever way it ends: a
+        # desk left open would sit in the stack for the next step.
+        for desk in DESKS:
+            desk.stop()
     write_json("report.json", report)
     print(json.dumps(report), flush=True)
     return status

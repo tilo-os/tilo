@@ -37,12 +37,15 @@
 #      image's browser user, its device key, and what the page costs in memory
 #      (integration/vm-proofs.py);
 #  12. the agent fills the visa test page through page actions with the
-#      person asked nothing (their key operates web pages), captures it,
-#      submits it once the person allows that one submission, is refused when
-#      they deny another, and has a click on the submit button held and asked
-#      once; a key minted with the scope unticked is asked about the page
-#      actions that act on the page; a reviewer who joined by invitation reads
-#      the run in
+#      person asked nothing (their key operates web pages), captures it, and
+#      a person invited into the workspace, in their own browser, sees that
+#      page on their desk — the agent's next fill changes the picture they
+#      are looking at — before anyone is asked to approve anything; then the
+#      submission runs once the person allows that one submission, the
+#      receipt reaches the same desk, and a second submission is refused when
+#      they deny it, a click on the submit button held and asked once; a key
+#      minted with the scope unticked is asked about the page actions that act
+#      on the page; a reviewer who joined by invitation reads the run in
 #      History, and page actions past the plans file's free ones are refused;
 #  13. a Linux command in that workspace's VM, from an agent's run, while the
 #      provider's plans file names no card for the account: refused at once,
@@ -377,6 +380,7 @@ if [[ $hosted == 1 ]]; then
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
       HOSTED_VISA_APPROVER=$approve HOSTED_VISA_ROOT=$work/startup/root \
       HOSTED_VISA_RELAY=$relay_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
+      HOSTED_VISA_SITE=$site HOSTED_VISA_SITE_RELAY=$relay \
       sdk_python "$here/integration/hosted-visa.py" "$api" "$key" "$work/hosted" "$form_url" "$1"
   }
   # A Linux command in that workspace's VM, as its people and their agents
