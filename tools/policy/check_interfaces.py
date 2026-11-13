@@ -954,6 +954,16 @@ def at_revision(root: Path, revision: str, rel: str) -> str | None:
     return shown.stdout.decode() if shown.returncode == 0 else None
 
 
+def defined_types(sources: list[str], root: Path) -> set[str]:
+    """The type names the `sources` `root` holds define."""
+    names: set[str] = set()
+    for source in sources:
+        items: list[Item] = []
+        read_items(tokenize((root / source).read_text()), source, items)
+        names.update(item.name for item in items)
+    return names
+
+
 def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, dict[str, str]] | None:
     """The interface `rel` names as `revision` has it: its file, its version
     and its schema, read from that revision's sources by this extractor, so
@@ -980,6 +990,14 @@ def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, di
                 path = scratch_root / source
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content)
+            # A root that revision's own code does not define declares no bytes: the
+            # declaration is stale there, and `check` names it in the tree that holds
+            # it. Dropping it here keeps a stale line out of what an interface is
+            # compared with, so removing it is no incompatible change.
+            defined = defined_types(spec.sources, scratch_root)
+            spec.roots = [
+                name for name in spec.roots if name in defined or name in spec.opaque
+            ]
             return data, code_version(spec, scratch_root), schema_of(spec, scratch_root)
         except (InterfaceError, KeyError, OSError):
             # What that revision committed, when its sources no longer read.

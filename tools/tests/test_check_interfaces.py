@@ -224,6 +224,33 @@ class AgainstMainTests(unittest.TestCase):
             spec.unlink()
             self.assertIn("`S.a` is now `u64`", interfaces.against("main", root)[0])
 
+    def test_a_root_its_own_code_does_not_define_is_no_change_to_remove(self):
+        """A declaration left stale beside code that dropped its type names no
+        bytes: taking it out is no incompatible change, so no version bump."""
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.git(root, "init", "-q", "-b", "main")
+            self.git(root, "config", "user.email", "t@example.com")
+            self.git(root, "config", "user.name", "t")
+            spec = root / "crates/demo/wire/interface.toml"
+            code = root / "crates/demo/wire/src/lib.rs"
+            code.parent.mkdir(parents=True)
+            spec.write_text(
+                self.SPEC.replace('roots = ["S"]', 'roots = ["S", "Gone"]')
+                + '\n[schema]\n"S" = "struct"\n"S.a" = "#0 u32"\n'
+                '"Gone" = "struct"\n"Gone.b" = "#0 u8"\n'
+            )
+            code.write_text(self.source(1, "a: u32"))
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "base")
+
+            # The code has no `Gone` at either revision: the line under base's own
+            # copy of the schema is stale text, and removing it lands as it is.
+            spec.write_text(
+                self.SPEC + '\n[schema]\n"S" = "struct"\n"S.a" = "#0 u32"\n'
+            )
+            self.assertEqual(interfaces.against("main", root), [])
+
     def test_members_moved_to_another_interface_are_judged_there(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
