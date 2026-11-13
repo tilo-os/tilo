@@ -256,6 +256,70 @@ fn tab_titled(device: &Device, workspace: &str, title: &str) -> Option<(String, 
         })
 }
 
+/// The epoch `device`'s session last said it seals the live plane of `workspace` under: what it
+/// logs when the plane opens and whenever its keys move.
+fn sealing_epoch(device: &Device, workspace: &str) -> Option<u64> {
+    let log = device.log();
+    log.lines()
+        .rev()
+        .find(|line| {
+            line.contains("tilo_session::live")
+                && line.contains(workspace)
+                && line.contains(" epoch=")
+        })
+        .and_then(|line| {
+            line.rsplit_once(" epoch=")?
+                .1
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+}
+
+/// How often `device`'s session said that no relay of `workspace` took it into the workspace's
+/// live plane.
+fn missed_relays(device: &Device, workspace: &str) -> usize {
+    device
+        .log()
+        .lines()
+        .filter(|line| {
+            line.contains(workspace)
+                && (line.contains("no relay of this workspace was reached")
+                    || line.contains("no device that relays this workspace took this device in"))
+        })
+        .count()
+}
+
+/// Wait until both devices seal the live plane of `workspace` under the same keys and have for a
+/// while: nothing of the workspace's keys is still on its way to either, so neither is told of a
+/// change of them later.
+fn keys_at_rest(workspace: &str, one: &Device, other: &Device) {
+    let mut alike: Option<(u64, Instant)> = None;
+    eventually(
+        "both devices hold the same keys of the workspace, and those stopped moving",
+        Duration::from_secs(60),
+        workspace,
+        &[one, other],
+        || match (
+            sealing_epoch(one, workspace),
+            sealing_epoch(other, workspace),
+        ) {
+            (Some(here), Some(there)) if here == there => match alike {
+                Some((epoch, since)) if epoch == here => since.elapsed() >= Duration::from_secs(4),
+                _ => {
+                    alike = Some((here, Instant::now()));
+                    false
+                }
+            },
+            _ => {
+                alike = None;
+                false
+            }
+        },
+    );
+}
+
 /// A workspace `maker` makes and hosts, which `other`, a further device of the same person, takes
 /// from the person's list and holds: its id.
 fn made_on(maker: &Device, other: &Device) -> String {
@@ -408,12 +472,22 @@ fn a_window_shared_after_the_host_came_back_last_is_pictured() {
     log_sessions_at(LOGGED);
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
+    // Neither device is behind on the workspace's keys when it goes off: a change of them that
+    // reached the laptop only after the phone came back would have its plane settled again, and
+    // hide that nothing else does.
+    keys_at_rest(&made, &laptop, &phone);
     laptop.stop();
     phone.stop();
+    let missed = missed_relays(&laptop, &made);
     laptop.start();
     laptop.wait_holding(&made);
-    // Long enough for the laptop to have tried the phone and found it away.
-    std::thread::sleep(Duration::from_secs(8));
+    eventually(
+        "the laptop asked the phone, which is off, for the workspace's live plane",
+        Duration::from_secs(60),
+        &made,
+        &[&laptop],
+        || missed_relays(&laptop, &made) > missed,
+    );
     phone.start();
     phone.wait_holding(&made);
     the_shared_window_arrives(&made, &laptop, &phone, "Shared before the host was back");
