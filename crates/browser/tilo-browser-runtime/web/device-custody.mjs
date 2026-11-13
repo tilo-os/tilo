@@ -20,6 +20,8 @@
  * - A tab remembers its slot (`sessionStorage`, which a reload of the same
  *   tab keeps), and takes it back after a reload or a navigation, waiting
  *   for the page before it to let go of it: a reload is the same device.
+ *   The slot it remembers is the first its page took: a second custody the
+ *   same page opens of the profile is another device, not the tab's.
  * - A tab whose remembered slot another live tab holds (a duplicated tab
  *   copies `sessionStorage`) asks first (`BroadcastChannel`): a holder that
  *   answers is another tab, and this one takes a slot of its own at once.
@@ -141,6 +143,21 @@ const readSlot = (session, profile) => {
 const keepSlot = (session, profile, slot) => {
   try { session?.setItem(SLOT_MEMORY + profile, String(slot)); } catch { /* not kept: the next load picks a free slot */ }
 };
+/** The profiles whose slot this page already keeps for its tab, by the
+ * tab's session: the first custody a page opens of a profile is the tab's
+ * device. Another one the same page opens of it (a second peer on the same
+ * host, such as the one carrying reports to the home workspace) is a device
+ * of its own, and a reload must not come back as that one: the host let only
+ * the first into the workspace in front. */
+const kept = new WeakMap();
+const keepFirstSlot = (session, profile, slot) => {
+  if (!session || typeof session !== 'object') return;
+  const profiles = kept.get(session) ?? new Set();
+  if (profiles.has(profile)) return;
+  profiles.add(profile);
+  kept.set(session, profiles);
+  keepSlot(session, profile, slot);
+};
 
 /**
  * The slot of `profile` this tab takes: the one it remembers (`session`)
@@ -207,7 +224,7 @@ export async function openDeviceCustody({
   const lockName = LOCK_PREFIX + slotName(profile, slot);
   holding.add(lockName);
   answerForSlots(broadcast, events);
-  keepSlot(session, profile, slot);
+  keepFirstSlot(session, profile, slot);
   const release = () => { holding.delete(lockName); letGo(); };
   try {
     let record = await storage.get(keyRecord(profile, slot));
