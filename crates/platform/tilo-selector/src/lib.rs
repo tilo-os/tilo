@@ -1,11 +1,9 @@
-//! Which resources a skill is for: a resource kind, and what the resource's
-//! own words say about it.
+//! Which resources a skill is for: a resource kind, and what the resource's own
+//! words say about it.
 //!
-//! A skill is a person's own instruction for the work they do on kinds of
-//! thing they have (reviewing a book, sorting a folder of invoices). It says
-//! which things it is for as a structured value over the typed resource
-//! model, never as text: a kind the model names, the fields its surface
-//! publishes, and the words the resource says in them. The text form
+//! A skill says which things it is for as a structured value over the typed
+//! resource model, never as text: the kinds the model names, the fields their
+//! surface publishes, and the words the resources say in them. The text form
 //! ([`Selector::parse`], [`Selector::to_syntax`]) is what a person types and
 //! reads; nothing stores it.
 //!
@@ -34,14 +32,11 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The most predicates one selector holds, so text a person (or an agent)
-/// typed stays bounded.
+/// The most predicates one selector holds, so typed text stays bounded.
 pub const MAX_PREDICATES: usize = 16;
 
-/// The most values one predicate holds.
 pub const MAX_VALUES: usize = 32;
 
-/// The longest a term, a field name or a value may be.
 pub const MAX_TERM_BYTES: usize = 128;
 
 /// One condition on a resource: the field `field` of its surface, by the key
@@ -51,12 +46,11 @@ pub const MAX_TERM_BYTES: usize = 128;
 pub struct Predicate {
     /// The field's key in the resource's surface (`content-type`, `title`).
     pub field: String,
-    /// The words the field holds; empty for a field that holds any.
+    /// The words the field holds; empty when the field holds any.
     pub values: Vec<String>,
 }
 
 impl Predicate {
-    /// `field` holds one of `values`.
     #[must_use]
     pub fn new(field: impl Into<String>, values: impl IntoIterator<Item = String>) -> Self {
         Self {
@@ -87,12 +81,10 @@ pub struct Selector {
     /// The resource kinds, as the model names them (`ebook.book`,
     /// `files.file`). Empty for every kind.
     pub kinds: Vec<String>,
-    /// Conditions every match meets.
     pub predicates: Vec<Predicate>,
 }
 
 impl Selector {
-    /// The resources of `kinds`, whatever their fields.
     #[must_use]
     pub fn kinds(kinds: impl IntoIterator<Item = String>) -> Self {
         Self {
@@ -101,7 +93,6 @@ impl Selector {
         }
     }
 
-    /// The same selector, also requiring `predicate`.
     #[must_use]
     pub fn where_(mut self, predicate: Predicate) -> Self {
         if self.predicates.len() < MAX_PREDICATES {
@@ -111,8 +102,8 @@ impl Selector {
     }
 
     /// Whether a resource meets it. A condition on a field the resource's
-    /// surface does not publish is not met: what a resource does not say
-    /// about itself cannot make it a match.
+    /// surface does not publish is not met: a resource cannot be a match by
+    /// what it does not say.
     #[must_use]
     pub fn matches(&self, subject: &(impl Subject + ?Sized)) -> bool {
         let kind_matches = self.kinds.is_empty()
@@ -130,9 +121,9 @@ impl Selector {
     }
 
     /// The selector as a person types and reads it: `ebook.book`,
-    /// `files.file { content-type in [application/pdf] }`, several kinds
-    /// joined by `|`, several conditions by `and`. Words with a space in them
-    /// or a mark of the syntax are quoted.
+    /// `files.file { content-type in [application/pdf] }`, kinds joined by `|`
+    /// and conditions by `and`. Words with a space or a mark of the syntax are
+    /// quoted.
     #[must_use]
     pub fn to_syntax(&self) -> String {
         let mut out = if self.kinds.is_empty() {
@@ -168,14 +159,11 @@ impl Selector {
     }
 }
 
-/// `word` as the syntax writes it: bare when it reads as itself, quoted
-/// otherwise.
 fn quoted(word: &str) -> String {
     let plain = !word.is_empty()
         && word
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '-' | '.' | '_' | ':' | '/' | '@'))
-        // A word of digits alone reads back as itself, unquoted.
         && word.parse::<f64>().is_err();
     if plain {
         word.to_owned()
@@ -184,11 +172,9 @@ fn quoted(word: &str) -> String {
     }
 }
 
-/// Reading [`Selector::to_syntax`] back.
 mod parse {
     use super::{MAX_PREDICATES, MAX_TERM_BYTES, MAX_VALUES, Predicate, Selector};
 
-    /// The text, as far as it has been read.
     struct Reader<'a> {
         text: &'a str,
         at: usize,
@@ -229,7 +215,6 @@ mod parse {
             }
         }
 
-        /// A word: quoted, or bare up to a mark of the syntax.
         fn word(&mut self) -> Result<String, String> {
             self.skip_space();
             if self.eat('"') {
@@ -272,7 +257,6 @@ mod parse {
             Ok(self.text[start..self.at].to_owned())
         }
 
-        /// `[word, word]`.
         fn list(&mut self) -> Result<Vec<String>, String> {
             if !self.eat('[') {
                 return Err("expected [ after in".to_owned());
@@ -346,7 +330,6 @@ mod parse {
 mod tests {
     use super::*;
 
-    /// A resource of `kind` that says `fields`, and nothing else.
     struct Sample<'a> {
         kind: &'a str,
         fields: &'a [(&'a str, &'a str)],
@@ -383,8 +366,6 @@ mod tests {
 
     #[test]
     fn a_condition_on_a_published_field_narrows_a_kind() {
-        // What a person types, and what [`Selector::to_syntax`] writes back
-        // for it: bare words where they read as themselves.
         let text =
             r#"files.file { "content-type" in ["application/pdf", "application/epub+zip"] }"#;
         let written = r#"files.file { content-type in [application/pdf, "application/epub+zip"] }"#;
