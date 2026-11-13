@@ -86,6 +86,86 @@ class CanonicalPackaging(unittest.TestCase):
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn(b'is a dev runtime module, not release runtime', refused.stderr)
 
+    def test_steps_that_make_the_package_run_where_the_cargo_compiles(self):
+        """A cargo drop-in that compiles on a builder runs them there too.
+
+        wasm-bindgen and wasm-opt are the build's memory, not the compile's: a
+        machine that sends its compile away still pays for them unless they go
+        with it. The fake builder binds the module in a target dir of its own
+        and hands back only the directory `--fetch` names.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            tools = temp / 'bin'
+            tools.mkdir()
+            scripts = {
+                'cargo': '#!/bin/sh\nif [ "$1" = metadata ]; then printf \'{"target_directory":"%s"}\\n\' "$CARGO_METADATA_TARGET"; fi\n',
+                # Binding here is the failure this asks about: only the builder
+                # may spend the gigabytes, and only it sets FAKE_BUILDER.
+                'wasm-bindgen': '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
+                                'if "--version" in sys.argv: print("wasm-bindgen 0.2.108");sys.exit()\n'
+                                'if not os.environ.get("FAKE_BUILDER"):\n'
+                                '    Path(os.environ["FAKE_LOG"]).open("a").write("bound here\\n")\n'
+                                '    sys.exit(1)\n'
+                                'a=sys.argv;out=Path(a[a.index("--out-dir")+1]);out.mkdir(parents=True,exist_ok=True)\n'
+                                'name=a[a.index("--out-name")+1]\n'
+                                '(out/(name+".js")).write_text("export default async()=>{};")\n'
+                                '(out/(name+"_bg.wasm")).write_bytes(bytes([0,97,115,109,1,0,0,0,5,5,1,1,18,128,32]))\n',
+                # --fetch STAGE exec PROGRAM ARGS...: PROGRAM in a target dir of
+                # its own, then STAGE mirrored into this tree's target dir.
+                'rcargo': '#!/bin/sh\nset -e\n[ "$1" != metadata ] || exec cargo "$@"\nfetch=\nwhile [ $# -gt 0 ]; do\n'
+                          '  case "$1" in --fetch) fetch=$2; shift 2 ;; exec) shift; break ;; *) shift ;; esac\ndone\n'
+                          '[ "${1:-}" != --help ] || { echo "with --fetch PATH, PATH is mirrored back"; exit 0; }\n'
+                          '[ -n "$fetch" ] || { echo "rcargo: no --fetch before exec" >&2; exit 2; }\n'
+                          'printf "%s\\n" "$fetch" >> "$FAKE_LOG"\n'
+                          'CARGO=cargo CARGO_TARGET_DIR=$FAKE_BUILDER_TARGET FAKE_BUILDER=1 "$@"\n'
+                          '[ -z "${FAKE_BUILDER_MISSING:-}" ] || exit 0\n'
+                          'rm -rf "$CARGO_METADATA_TARGET/$fetch"\nmkdir -p "$CARGO_METADATA_TARGET/$fetch"\n'
+                          'cp -R "$FAKE_BUILDER_TARGET/$fetch/." "$CARGO_METADATA_TARGET/$fetch/"\n',
+                'npm': '#!/bin/sh\nexit 0\n',
+                'git': '#!/bin/sh\ncase "$1" in rev-parse) echo ' + 'a' * 40 + ' ;; esac\n',
+                'wasm-opt': '#!/bin/sh\n[ \"$1" != --version ] || echo wasm-opt-fixture\n',
+                'node': '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
+                        'if len(sys.argv)>1 and sys.argv[1]=="build.mjs": Path(sys.argv[2]).write_text("export {};")\n'
+                        'else: os.execv(os.environ["REAL_NODE"],[os.environ["REAL_NODE"],*sys.argv[1:]])\n',
+            }
+            for name, source in scripts.items():
+                path = tools / name
+                path.write_text(source)
+                path.chmod(0o755)
+            target = temp / 'target'
+            env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}',
+                       CARGO_METADATA_TARGET=str(target), FAKE_BUILDER_TARGET=str(temp / 'builder-target'),
+                       FAKE_LOG=str(temp / 'steps.log'), REAL_NODE=shutil.which('node'),
+                       WASM_BINDGEN=str(tools / 'wasm-bindgen'), CARGO=str(tools / 'rcargo'))
+            out = temp / 'bundle'
+            subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
+                            str(out), '--profile', 'dev'], cwd=ROOT, env=env, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            log = (temp / 'steps.log').read_text().splitlines()
+            self.assertEqual(log[0], 'web-bundle-wasm-runtime-dev-no-wasm-opt', 'the fetch names the stage')
+            self.assertNotIn('bound here', log, 'wasm-bindgen ran on this machine')
+            self.assertTrue((out / 'pkg/tilo_browser_runtime_bg.wasm').is_file())
+            metadata = json.loads((out / 'build.json').read_text())
+            self.assertEqual(metadata['profile'], 'dev')
+            self.assertEqual(metadata['wasmBindgen'], 'wasm-bindgen 0.2.108')
+
+            # A fetch that brings nothing back is a build that stops here, never
+            # a bundle: what an earlier run fetched is not this one's output,
+            # and without even that it names the files it looked for.
+            def build_without_fetch(name):
+                result = subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
+                                         str(temp / name), '--profile', 'dev'], cwd=ROOT,
+                                        env=dict(env, FAKE_BUILDER_MISSING='1'),
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((temp / name / 'build.json').exists())
+                return result.stderr
+            self.assertIn(b'is not what this build made on the builder', build_without_fetch('stale'))
+            shutil.rmtree(target / log[0])
+            self.assertIn(b'left no wasm.json pkg/tilo_browser_runtime.js pkg/tilo_browser_runtime_bg.wasm',
+                          build_without_fetch('missing'))
+
 
 if __name__ == '__main__':
     unittest.main()
