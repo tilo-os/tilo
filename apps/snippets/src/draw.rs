@@ -1,5 +1,4 @@
-//! Layout and paint helpers shared by the app's panes and the fill-in
-//! dialog's preview.
+//! Layout and paint helpers shared by the app's panes and the fill-in dialog's preview.
 
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
@@ -9,8 +8,8 @@ use vello::kurbo::Point;
 use crate::highlight::{self, Span};
 use crate::model::Language;
 
-/// One painted row of wrapped code: the source line it starts (counted from
-/// 1; `None` when it continues the line above) and its highlighted runs.
+/// One painted row of wrapped code: the source line it starts (counted from 1; `None` when
+/// it continues the line above) and its highlighted runs.
 pub(crate) struct CodeRow {
     pub(crate) number: Option<usize>,
     pub(crate) runs: Vec<Span>,
@@ -20,10 +19,9 @@ fn width_of(text: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
     f64::from(text.measure_style(s, None, style).0)
 }
 
-/// The longest leading part of `s` that fits in `room`, ending after a
-/// space or `/` when one fits. Without `force` (the row already holds
-/// code) a part that would split a token is empty: the token moves to the
-/// next row; with `force` the part is never empty.
+/// The longest leading part of `s` that fits in `room`, ending after a space or `/` when
+/// one fits. Without `force` (the row already holds code) a part that would split a token
+/// is empty: the token moves to the next row; with `force` the part is never empty.
 fn fitting_prefix<'a>(
     text: &mut TextRenderer,
     s: &'a str,
@@ -32,7 +30,6 @@ fn fitting_prefix<'a>(
     force: bool,
 ) -> &'a str {
     let bounds: Vec<usize> = s.char_indices().map(|(i, c)| i + c.len_utf8()).collect();
-    // Binary search the last char boundary whose prefix fits.
     let (mut lo, mut hi) = (0usize, bounds.len());
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
@@ -56,8 +53,8 @@ fn fitting_prefix<'a>(
     if end >= s.len() {
         return fits;
     }
-    // Break after a space or a path separator when one fits, so words and
-    // path segments stay whole; a token with neither breaks where it must.
+    // Break after a space or a path separator when one fits, so words and path segments
+    // stay whole; a token with neither breaks where it must.
     match fits.rfind([' ', '/']) {
         Some(at) if at > 0 => s.get(..=at).unwrap_or(fits),
         _ if !force => "",
@@ -65,8 +62,8 @@ fn fitting_prefix<'a>(
     }
 }
 
-/// Highlight `body` and wrap it to `width` in `style`: a line that does not
-/// fit continues on the next row, so nothing is cut off.
+/// Highlight `body` and wrap it to `width` in `style`: a line that does not fit continues
+/// on the next row, so nothing is cut off.
 pub(crate) fn wrap_code(
     text: &mut TextRenderer,
     style: &TextStyle,
@@ -123,9 +120,7 @@ pub(crate) fn wrap_code(
     rows
 }
 
-/// Paint `rows` from `origin`, one code line box apart, each run in its
-/// syntax colour. Line numbers, when `numbers` gives their column width,
-/// sit right-aligned before the code in tertiary ink.
+/// Paint `rows` from `origin`, one code line box apart, each run in its syntax colour.
 pub(crate) fn paint_code_rows(
     ctx: &mut PaintCtx<'_>,
     rows: &[CodeRow],

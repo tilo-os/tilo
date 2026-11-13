@@ -1,9 +1,8 @@
-//! Snippets' controls, as slots in the window's bar ([`ui::window_toolbar`]):
-//! the shell's sidebar toggle and Back, what the window shows as the
-//! location (the open snippet, else the chosen place), New snippet (unless
-//! the library is empty and the window offers it itself), and the open
-//! snippet's favorite toggle, with Duplicate and Delete in the bar's menu.
-//! The bar's search is the library's search; the window draws no header row.
+//! Snippets' controls, as slots in the window's bar ([`ui::window_toolbar`]): the shell's
+//! sidebar toggle and Back, what the window shows as the location (the open snippet, else
+//! the chosen place), New snippet (unless the library is empty and the window offers it
+//! itself), and the open snippet's favorite toggle, with Duplicate and Delete in the bar's
+//! menu.
 
 use ui::framework::{BarActions, BarCommands};
 use ui::widget::{NavPane, NavShell};
@@ -13,8 +12,7 @@ use super::{Action, SnippetsWindow};
 use crate::model::Snippets;
 use crate::tr;
 
-/// The bar's entries: the library's verbs, and the commands that open
-/// what they make.
+/// The bar's entries: the library's verbs, and the commands that open what they make.
 #[derive(Default)]
 pub(super) struct Bar {
     pub(super) actions: Option<BarActions<Snippets>>,
@@ -39,8 +37,6 @@ impl SnippetsWindow {
             ..ToolbarLocation::default()
         });
         let commands = &self.bar.commands;
-        // An empty library offers New snippet in the window itself; the bar
-        // would only repeat it.
         let mut actions = Vec::new();
         if !core.library.snippets.is_empty() {
             actions.push(commands.entry("plus", tr("snippets-new"), Action::NewSnippet));
@@ -76,9 +72,8 @@ impl SnippetsWindow {
         toolbar
     }
 
-    /// Run what the person did in the window's bar: the shell's own slots,
-    /// then the library's, applied with the window's other requests.
-    /// Returns whether anything was asked.
+    /// Run what the person did in the window's bar: the shell's own slots, then the
+    /// library's, applied with the window's other requests.
     pub(super) fn take_window_toolbar_events(&mut self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {

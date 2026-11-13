@@ -12,9 +12,8 @@ pub fn starter_library() -> Vec<Snippet> {
     lib
 }
 
-/// One starter snippet, bundled into a struct rather than passed as
-/// positional fields so `mk` doesn't collect an unreadable pile of
-/// same-typed arguments.
+/// One starter snippet, bundled into a struct rather than passed as positional fields so
+/// `mk` doesn't collect an unreadable pile of same-typed arguments.
 struct SeedSnippet<'a> {
     title: &'a str,
     language: Language,
@@ -277,8 +276,6 @@ mod tests {
             );
         }
 
-        // Case `titles_are_unique`: a capture and an agent tell the
-        // starter snippets apart by name.
         {
             let lib = starter_library();
             let mut titles: Vec<_> = lib.iter().map(|s| s.title.as_str()).collect();

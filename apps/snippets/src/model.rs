@@ -1,22 +1,12 @@
-//! The snippet library's model: what is stored, and the pure queries the
-//! window asks of it.
-//!
-//! [`Snippets`] is the record: one [`Snippet`] per item of a
-//! [`Collection`], each a typed struct whose fields merge the way their types
-//! say (a body merges character by character, tags per tag, uses add up).
-//! `#[derive(Model)]` is the whole storage contract; nothing here touches
-//! the document. The record's verbs are in [`crate::resource`].
+//! The snippet library's model: what is stored, and the pure queries the window asks of it.
 
 use std::collections::BTreeMap;
 
 use ui::tilo_resource::{self, Atom, Collection, Counter, Id, Model, Refusal, Set};
 
-/// The id of one snippet: its item in the library's collection.
 pub type SnippetId = Id;
 
-/// The syntax a snippet body is written in. Drives both the language
-/// badge and the syntax highlighter's grammar. `PlainText` is the
-/// fallback for prose snippets.
+/// The syntax a snippet body is written in.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Language {
     #[default]
@@ -39,8 +29,6 @@ pub enum Language {
 }
 
 impl Language {
-    /// Every language, in the order they appear in the filter and the
-    /// language picker.
     pub const ALL: [Language; 14] = [
         Language::PlainText,
         Language::Shell,
@@ -78,8 +66,8 @@ impl Language {
         }
     }
 
-    /// The language's name in the person's language: the proper names of
-    /// programming languages stay as they are; plain text is translated.
+    /// The language's name in the person's language: the proper names of programming
+    /// languages stay as they are; plain text is translated.
     pub fn name(self) -> String {
         match self {
             Language::PlainText => crate::tr("snippets-language-plain-text"),
@@ -87,8 +75,8 @@ impl Language {
         }
     }
 
-    /// The short name the list-row badge shows: the language's own
-    /// abbreviation where it has one, otherwise its name.
+    /// The short name the list-row badge shows: the language's own abbreviation where it
+    /// has one, otherwise its name.
     pub fn badge(self) -> &'static str {
         match self {
             Language::PlainText => "Text",
@@ -109,8 +97,7 @@ impl Language {
     }
 }
 
-/// One reusable snippet. The body may contain `${name}` placeholders
-/// that the expand flow fills in before copying.
+/// One reusable snippet.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 #[model(check = Snippet::valid)]
 pub struct Snippet {
@@ -123,21 +110,20 @@ pub struct Snippet {
     pub description: String,
     /// Starred
     pub favorite: bool,
-    /// Folder: empty for none (only "All snippets" lists it). Written
-    /// whole, so two people filing it at once do not merge two names.
+    /// Folder: empty for none (only "All snippets" lists it). Written whole, so two people
+    /// filing it at once do not merge two names.
     pub folder: Atom,
     /// Language
     pub language: Language,
     /// Tags
     pub tags: Set<String>,
-    /// How often it was copied: drives "Most used" and the row's usage
-    /// hint. Only copying it changes the count.
+    /// How often it was copied: drives "Most used" and the row's usage hint. Only copying
+    /// it changes the count.
     #[model(readonly)]
     pub uses: Counter,
 }
 
 impl Snippet {
-    /// A blank snippet titled `title`, filed under `folder`.
     pub fn titled(title: impl Into<String>, folder: impl Into<String>) -> Self {
         Self {
             title: title.into(),
@@ -146,8 +132,8 @@ impl Snippet {
         }
     }
 
-    /// Folder and tag names are what the sidebar lists and what people
-    /// type to find them again: never blank, never padded.
+    /// Folder and tag names are what the sidebar lists and what people type to find them
+    /// again: never blank, never padded.
     fn valid(&self) -> Result<(), Refusal> {
         if self.folder.0.trim() != self.folder.0 {
             return Err(Refusal::new("a folder name has no surrounding spaces"));
@@ -164,19 +150,15 @@ impl Snippet {
         Ok(())
     }
 
-    /// Extract the ordered, de-duplicated set of `${placeholder}` names
-    /// in the body. The first occurrence wins for ordering so the expand
-    /// form reads top-to-bottom.
+    /// Extract the ordered, de-duplicated set of `${placeholder}` names in the body.
     pub fn placeholders(&self) -> Vec<String> {
         placeholders_in(&self.body)
     }
 
-    /// True if the body has at least one `${placeholder}`.
     pub fn has_placeholders(&self) -> bool {
         !self.placeholders().is_empty()
     }
 
-    /// How often the snippet was copied.
     pub fn use_count(&self) -> usize {
         usize::try_from(self.uses.get()).unwrap_or_default()
     }
@@ -197,8 +179,6 @@ impl Snippets {
         self.snippets.is_empty()
     }
 
-    /// Distinct folder names, sorted. Snippets in no folder are covered by
-    /// the "All" smart folder.
     pub fn folders(&self) -> Vec<String> {
         let mut folders: Vec<String> = self
             .snippets
@@ -211,8 +191,7 @@ impl Snippets {
         folders
     }
 
-    /// Distinct tags across the whole library, sorted, with the per-tag
-    /// snippet count.
+    /// Distinct tags across the whole library, sorted, with the per-tag snippet count.
     pub fn tags(&self) -> Vec<(String, usize)> {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for tag in self.snippets.values().flat_map(|s| s.tags.iter()) {
@@ -221,9 +200,7 @@ impl Snippets {
         counts.into_iter().collect()
     }
 
-    /// Resolve a sidebar [`Selection`] into the ordered snippets the list
-    /// shows. "Most used" sorts by use, everything else favorites first,
-    /// then by title.
+    /// Resolve a sidebar [`Selection`] into the ordered snippets the list shows.
     pub fn query(&self, selection: &Selection) -> Vec<SnippetId> {
         let mut matched: Vec<(&Id, &Snippet)> = self
             .snippets
@@ -243,10 +220,6 @@ impl Snippets {
     }
 }
 
-/// Pull the ordered, de-duplicated `${name}` placeholders out of `body`.
-/// A name runs from `${` to the next `}`; empty or whitespace-only names
-/// are ignored. Standalone `$` and unmatched `${` are left as literal
-/// text.
 pub fn placeholders_in(body: &str) -> Vec<String> {
     let bytes = body.as_bytes();
     let mut out: Vec<String> = Vec::new();
@@ -270,10 +243,7 @@ pub fn placeholders_in(body: &str) -> Vec<String> {
     out
 }
 
-/// Substitute `${name}` occurrences in `body` with the matching value
-/// from `values`. A placeholder with no value — either absent from the
-/// map or mapped to an empty string — is left untouched so a partial fill
-/// stays legible and the preview keeps showing which slots remain.
+/// Substitute `${name}` occurrences in `body` with the matching value from `values`.
 pub fn expand<S: std::hash::BuildHasher>(
     body: &str,
     values: &std::collections::HashMap<String, String, S>,
@@ -296,7 +266,6 @@ pub fn expand<S: std::hash::BuildHasher>(
                 let name = name.trim();
                 match values.get(name) {
                     Some(v) if !v.is_empty() => out.push_str(v),
-                    // Absent or empty: keep the placeholder visible.
                     _ => {
                         if let Some(slice) = body.get(i..=end) {
                             out.push_str(slice);
@@ -307,17 +276,16 @@ pub fn expand<S: std::hash::BuildHasher>(
             i = end + 1;
             continue;
         }
-        // Push the whole character, not its individual bytes — a raw
-        // `bytes[i] as char` here would mangle any multi-byte UTF-8
-        // character in the body into mojibake.
+        // Push the whole character, not its individual bytes — a raw `bytes[i] as char`
+        // here would mangle any multi-byte UTF-8 character in the body into mojibake.
         out.push(c);
         i += c_len;
     }
     out
 }
 
-/// A built-in smart folder that selects snippets by a rule rather than
-/// by an explicit `folder` field.
+/// A built-in smart folder that selects snippets by a rule rather than by an explicit
+/// `folder` field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SmartFolder {
     All,
@@ -326,8 +294,8 @@ pub enum SmartFolder {
 }
 
 impl SmartFolder {
-    /// The stable, locale-independent key of the folder: control ids and
-    /// sidebar item ids are built from it.
+    /// The stable, locale-independent key of the folder: control ids and sidebar item ids
+    /// are built from it.
     pub fn key(self) -> &'static str {
         match self {
             SmartFolder::All => "all",
@@ -360,7 +328,6 @@ impl Default for Selection {
     }
 }
 
-/// Whether a [`Selection`] includes `snippet`.
 fn selection_matches(selection: &Selection, snippet: &Snippet) -> bool {
     match selection {
         Selection::Smart(SmartFolder::All) => true,
@@ -402,8 +369,7 @@ mod tests {
         assert_eq!(expand("hi ${name}, ${missing}", &v), "hi world, ${missing}");
     }
 
-    /// Favourite ordering, smart favourites, most used and folder and tag
-    /// filters.
+    /// Favourite ordering, smart favourites, most used and folder and tag filters.
     #[test]
     fn library_queries_filter_and_sort() {
         let starred = Snippet {

@@ -1,16 +1,4 @@
-//! Root widget for the snippet manager.
-//!
-//! The window is the shared [`NavShell`]: the sidebar lists the library's
-//! places (smart folders, folders, tags) in a [`NavList`], the overview is
-//! the snippet list of the chosen place, and the content is the open
-//! snippet. The shell owns the header row, the sidebar toggle, the widths,
-//! the drawer and the push stack; this module owns the state they show.
-//!
-//! The library is the [`Snippets`] record the framework presents. Every
-//! change is submitted through its dispatcher as a typed value: a field edit
-//! at a path (star, language, the body's text) or one of the record's verbs
-//! (new, duplicate, delete, record a use). Selection, the open snippet and
-//! the variables dialog are view state and stay local to each peer.
+//! The Snippets window: the sidebar, the list and the open snippet's content column.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,11 +31,8 @@ use crate::model::{Language, Selection, SmartFolder, Snippet, SnippetId, Snippet
 use crate::resource::{SnippetsView, snippets};
 use crate::{tr, tr_with};
 
-/// The core every part of the window reads and changes.
 pub(crate) type Shared = Rc<RefCell<Core>>;
 
-/// Requests from retained controls (the sidebar list, header buttons). They
-/// are applied by the root, which holds the document.
 pub(crate) type Requests = Rc<RefCell<Vec<Action>>>;
 
 /// What a click, a key or a control asks the app to do.
@@ -59,7 +44,6 @@ pub(crate) enum Action {
     Copy(SnippetId),
     ToggleFavorite(SnippetId),
     Duplicate(SnippetId),
-    /// Take a tag off the snippet.
     RemoveTag(SnippetId, String),
 }
 
@@ -90,48 +74,26 @@ pub(crate) fn stable_key(value: &str) -> String {
     hex::encode(value)
 }
 
-/// The state of the window: the library, what is chosen and open, and the
-/// painted panes' geometry.
+/// The state of the window: the library, what is chosen and open, and the painted panes'
+/// geometry.
 pub(crate) struct Core {
     pub(crate) library: Rc<Snippets>,
     pub(crate) selection: Selection,
-    /// The open snippet's body, bound to its path: it shows the stored text
-    /// and every keystroke is a splice there, a word one undo step.
     pub(crate) body: TextControl<CodeEditor, Snippets>,
     body_identity: Option<(SnippetId, Language)>,
-    /// The snippet the content column shows.
     pub(crate) open: Option<SnippetId>,
-    /// This view created or duplicated a snippet: the one its submission
-    /// minted opens once it lands.
     pub(crate) open_minted: bool,
-    /// Ordered ids the list shows (the chosen place's snippets).
     pub(crate) visible: Vec<SnippetId>,
-    /// The fill-in-variables dialog, when open.
     pub(crate) expand: Option<ExpandModal>,
-    /// A short confirmation of the last action, for the shell to show
-    /// next.
     notice: Option<String>,
-    /// A copy whose outcome the clipboard reports after it returned: one that
-    /// fails later is said, not confirmed.
     copy: ui::CopyWatch,
-    /// The resource's dispatcher, once the framework attaches the view.
-    /// Each on-screen control submits a field edit or a verb through it.
     dispatch: Option<Dispatcher<Snippets>>,
-    /// The resource's published actions, once the framework attaches the
-    /// view: the open snippet's fields are bound to their edits.
     pub(crate) actions: Option<ui::framework::Actions<Snippets>>,
     pub(crate) pointer: Point,
-    /// The window, for dialogs.
     pub(crate) window: Rect,
-    /// The snippet whose row the list should scroll into view, though it
-    /// may already be the open one.
     pub(crate) reveal: Option<SnippetId>,
-    /// The language picker should open (taken by the picker).
     pub(crate) pick_language: bool,
-    /// The screen a narrow window should bring to the front next.
     show_pane: Option<NavPane>,
-    /// The body editor may take input (the content column is on screen and
-    /// nothing floats over it).
     pub(crate) body_reachable: bool,
 }
 
@@ -185,18 +147,14 @@ impl Core {
         if self.library.get(&id).is_none() {
             return;
         }
-        // A snippet the chosen place does not list is shown among all.
         if !self.visible.contains(&id) {
             self.select(Selection::default());
         }
         self.reveal = Some(id.clone());
         self.open = Some(id);
-        // A narrow window pushes the content screen in; a wide one already
-        // shows it.
         self.show_pane = Some(NavPane::Content);
     }
 
-    /// The column title of the list: what the chosen place is called.
     pub(crate) fn selection_title(&self) -> String {
         match &self.selection {
             Selection::Smart(smart) => smart.label(),
@@ -204,9 +162,8 @@ impl Core {
         }
     }
 
-    /// Open the snippet a capture shows off: a substantial, templated piece
-    /// of code, so the content column shows the highlighter and the
-    /// variables action.
+    /// Open the snippet a capture shows off: a substantial, templated piece of code, so the
+    /// content column shows the highlighter and the variables action.
     fn open_specimen(&mut self) {
         self.open = self
             .visible
@@ -225,7 +182,6 @@ impl Core {
         self.reveal.clone_from(&self.open);
     }
 
-    /// The column title of the content: the open snippet's title.
     pub(crate) fn open_title(&self) -> String {
         self.open
             .as_ref()
@@ -242,8 +198,8 @@ impl Core {
         })
     }
 
-    /// The sidebar: the smart folders, then folders and tags (a section only
-    /// when it has places), each with its count.
+    /// The sidebar: the smart folders, then folders and tags (a section only when it has
+    /// places), each with its count.
     fn nav_sections(&self) -> Vec<NavSection> {
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         let smart = [
@@ -294,9 +250,9 @@ impl Core {
         sections
     }
 
-    /// Submit a field edit or a verb through the resource's dispatcher:
-    /// the host checks the participant's permission, applies it as one undo
-    /// step, records it in history, and presents the changed library.
+    /// Submit a field edit or a verb through the resource's dispatcher: the host checks the
+    /// participant's permission, applies it as one undo step, records it in history, and
+    /// presents the changed library.
     fn submit(&self, submit: impl Submit<Snippets>) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.submit(submit);
@@ -307,8 +263,6 @@ impl Core {
         Snippets::paths().snippets.item(id)
     }
 
-    /// Show the library the resource holds: a local edit, a collaborator's,
-    /// an undo.
     pub(crate) fn show_library(&mut self, state: &Rc<Snippets>) {
         self.library = Rc::clone(state);
         self.recompute_visible();
@@ -316,8 +270,8 @@ impl Core {
         self.sync_body_editor(None);
     }
 
-    /// Open the snippet this view's own "new" or "duplicate" minted, once
-    /// the submission landed and the library presents it.
+    /// Open the snippet this view's own "new" or "duplicate" minted, once the submission
+    /// landed and the library presents it.
     pub(crate) fn open_landed(&mut self) {
         if !self.open_minted {
             return;
@@ -337,15 +291,14 @@ impl Core {
         self.recompute_visible();
     }
 
-    /// Edit through the resource's dispatcher from now on.
     fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>) {
         self.dispatch = Some(dispatcher);
         self.body_identity = None;
         self.sync_body_editor(None);
     }
 
-    /// The body editor over snippet `open`'s body, through `dispatch` once
-    /// the view has one.
+    /// The body editor over snippet `open`'s body, through `dispatch` once the view has
+    /// one.
     fn body_control(
         dispatch: Option<Dispatcher<Snippets>>,
         open: Option<&SnippetId>,
@@ -361,8 +314,8 @@ impl Core {
         body
     }
 
-    /// Follow the open snippet: its body, its language's highlighter, and
-    /// the stored text when the document is at hand.
+    /// Follow the open snippet: its body, its language's highlighter, and the stored text
+    /// when the document is at hand.
     pub(crate) fn sync_body_editor(&mut self, doc: Option<&ui::tilo_resource::Doc>) {
         let identity = self.open.as_ref().and_then(|id| {
             self.library
@@ -396,8 +349,8 @@ impl Core {
             && self.body.control().rect().area() > 0.0
     }
 
-    /// Hand `event` to the body editor when it is the editor's: a press on
-    /// it, the pointer while it drags, keys while it has focus.
+    /// Hand `event` to the body editor when it is the editor's: a press on it, the pointer
+    /// while it drags, keys while it has focus.
     fn route_body_event(
         &mut self,
         event: &WindowEvent,
@@ -421,7 +374,6 @@ impl Core {
         }
         let focused = self.body.control().is_focused();
         if let WindowEvent::KeyboardInput { event, .. } = event {
-            // Escape and the app's own shortcuts leave the editor.
             let global = matches!(&event.logical_key, Key::Named(NamedKey::Escape))
                 || ((modifiers.state().control_key() || modifiers.state().super_key())
                     && matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("n")));
@@ -448,8 +400,6 @@ impl Core {
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
         );
-        // Pointer motion stays everyone's; the editor only claims what it
-        // consumed.
         handled && !matches!(event, WindowEvent::CursorMoved { .. })
     }
 
@@ -458,8 +408,6 @@ impl Core {
             Selection::Folder(f) => Some(f.clone()),
             _ => None,
         };
-        // A new snippet is neither a favorite nor used yet: show it in a
-        // place that holds it.
         if matches!(
             self.selection,
             Selection::Smart(SmartFolder::Favorites | SmartFolder::MostUsed) | Selection::Tag(_)
@@ -473,8 +421,8 @@ impl Core {
         }));
     }
 
-    /// Open the snippet this view is about to create once it is presented,
-    /// in front on a narrow window.
+    /// Open the snippet this view is about to create once it is presented, in front on a
+    /// narrow window.
     fn open_when_presented(&mut self) {
         self.open_minted = true;
         if let Some(dispatch) = &self.dispatch {
@@ -484,25 +432,23 @@ impl Core {
     }
 
     fn copy(&mut self, id: &SnippetId) {
-        // A body with placeholders goes through the fill-in dialog so raw
-        // `${...}` never lands on the clipboard.
+        // A body with placeholders goes through the fill-in dialog so raw `${...}` never
+        // lands on the clipboard.
         let needs_expand = self.library.get(id).is_some_and(Snippet::has_placeholders);
         if needs_expand {
             self.start_expand(id);
             return;
         }
-        // Copying is presentation; the use it records is a verb, so it
-        // replicates and undoes like any change.
         if let Some(body) = self.library.get(id).map(|s| s.body.clone()) {
             self.copy_text(&body, id);
         }
     }
 
-    /// Put a snippet's text on the clipboard, through the checked path — and
-    /// through the expiring one when the snippet carries a credential, so an
-    /// API key does not sit in the clipboard history for the rest of the day.
-    /// The copy's outcome is watched: a clipboard that refuses is said, not
-    /// confirmed.
+    /// Put a snippet's text on the clipboard through the checked path, or through the
+    /// expiring one when it carries a credential, so an API key does not sit in the
+    /// clipboard history.
+    ///
+    /// A clipboard that refuses is said, not confirmed.
     fn copy_text(&mut self, text: &str, id: &SnippetId) {
         let secret = looks_like_a_credential(text);
         let copy = if secret {
@@ -511,9 +457,6 @@ impl Core {
             ui::try_clipboard_copy(text)
         };
         let copied = self.copy.watch(copy);
-        // The use is the person taking the snippet, which happened whether
-        // the clipboard took it or not; the toast is what reports the
-        // clipboard.
         self.record_use(id);
         if copied {
             self.toast(&tr(if secret {
@@ -526,13 +469,11 @@ impl Core {
         }
     }
 
-    /// A copy whose outcome the clipboard reported late as failed: say so
-    /// once. `true` when it did.
+    /// A copy whose outcome the clipboard reported late as failed: say so once.
     fn report_copy_failure(&mut self) -> bool {
         self.copy.failed()
     }
 
-    /// Record one use of a snippet (drives "Most used").
     fn record_use(&self, id: &SnippetId) {
         self.submit(Snippets::RECORD_USE.with(id.clone()));
     }
@@ -553,13 +494,9 @@ impl Core {
         let Some(title) = self.library.get(id).map(|s| s.title.clone()) else {
             return;
         };
-        // The copy has no uses yet: leave Most used so it can open instead
-        // of silently keeping the original in the editor.
         if self.selection == Selection::Smart(SmartFolder::MostUsed) {
             self.select(Selection::default());
         }
-        // The copy is no favorite, so Favorites does not list it: there
-        // the open snippet stays.
         if self.selection != Selection::Smart(SmartFolder::Favorites) {
             self.open_when_presented();
         }
@@ -597,7 +534,6 @@ impl Core {
         }
     }
 
-    /// Open the open snippet's language picker.
     pub(crate) fn open_languages(&mut self, id: &SnippetId) {
         if self.open.as_ref() == Some(id) {
             self.pick_language = true;
@@ -640,7 +576,6 @@ impl Core {
     }
 }
 
-/// The sidebar item id of a place.
 fn nav_id(selection: &Selection) -> String {
     match selection {
         Selection::Smart(SmartFolder::All) => "smart:all".into(),
@@ -651,7 +586,6 @@ fn nav_id(selection: &Selection) -> String {
     }
 }
 
-/// The place a sidebar item id names.
 fn selection_of(id: &str) -> Option<Selection> {
     match id {
         "smart:all" => Some(Selection::Smart(SmartFolder::All)),
@@ -667,8 +601,7 @@ fn selection_of(id: &str) -> Option<Selection> {
     }
 }
 
-/// The sidebar: the shared [`NavList`], following the library and the
-/// chosen place.
+/// The sidebar: the shared [`NavList`], following the library and the chosen place.
 fn sidebar(core: &Shared, requests: &Requests) -> NavList {
     let requests = Rc::clone(requests);
     let core = Rc::clone(core);
@@ -687,11 +620,8 @@ fn sidebar(core: &Shared, requests: &Requests) -> NavList {
 
 /// Result of routing an event to the variables dialog.
 pub enum ExpandOutcome {
-    /// Keep the dialog open.
     Stay,
-    /// The person dismissed it.
     Cancel,
-    /// The person confirmed; the filled text and the snippet it came from.
     Copy(String, SnippetId),
 }
 
@@ -700,28 +630,19 @@ pub struct SnippetsWindow {
     core: Shared,
     requests: Requests,
     shell: NavShell,
-    /// The library as the document holds it, shown as it changes; `None`
-    /// for a window outside the framework.
     live: Option<Live<Snippets>>,
     presented: Option<(u64, u64)>,
-    /// What the content column was last built for.
     detail: DetailKey,
-    /// Whether the overview column is in the shell (not for an empty
-    /// library, whose one action the content column offers).
     overview_shown: bool,
-    /// A screenshot scenario to stage once its library is shown.
     pending_scenario: Rc<RefCell<Option<String>>>,
-    /// The capture's specimen snippet has been opened.
     specimen_open: bool,
-    /// How many layouts the window has had since the specimen opened.
     settled_layouts: u32,
-    /// The window bar's entries.
     bar: window_bar::Bar,
 }
 
 impl SnippetsWindow {
-    /// A window following `live` when the framework hosts it: empty until
-    /// the library arrives.
+    /// A window following `live` when the framework hosts it: empty until the library
+    /// arrives.
     fn new(live: Option<Live<Snippets>>) -> Self {
         let core: Shared = Rc::new(RefCell::new(Core::new()));
         let requests: Requests = Rc::default();
@@ -761,7 +682,6 @@ impl SnippetsWindow {
         Self::new(None)
     }
 
-    /// Show the library the document holds when it changed.
     fn follow_document(&mut self) {
         let Some(live) = &self.live else {
             return;
@@ -777,24 +697,16 @@ impl SnippetsWindow {
         self.settle();
     }
 
-    /// Stage a capture once its library (the starter library the resource's
-    /// scenario creates, none for `empty`) is shown and the window has its
-    /// size:
-    ///
-    /// * `narrow` — the sidebar drawer open over the content.
-    /// * `detail` — a narrow window showing the open snippet.
-    /// * `expand` — the fill-in-variables dialog over the open snippet.
-    /// * `language` — the language picker.
+    /// Stage a capture once its library (the starter library the resource's scenario
+    /// creates, none for `empty`) is shown and the window has its size:
     fn stage_pending_scenario(&mut self) {
         let Some(scenario) = self.pending_scenario.borrow_mut().take() else {
             return;
         };
-        // The starter library is still on its way.
         if scenario != "empty" && self.core.borrow().library.snippets.is_empty() {
             *self.pending_scenario.borrow_mut() = Some(scenario);
             return;
         }
-        // First open the specimen.
         if !self.specimen_open {
             self.specimen_open = true;
             {
@@ -805,8 +717,6 @@ impl SnippetsWindow {
             self.refresh_columns();
             self.settled_layouts = 0;
         }
-        // The language picker opens under its control: let the window lay
-        // the specimen's column out first.
         if scenario == "language" && self.settled_layouts == 0 {
             *self.pending_scenario.borrow_mut() = Some(scenario);
             return;
@@ -831,8 +741,8 @@ impl SnippetsWindow {
         self.shell.snap();
     }
 
-    /// Keep the columns in step with the library: the overview while there
-    /// is a library to list, and the content column for what is open.
+    /// Keep the columns in step with the library: the overview while there is a library to
+    /// list, and the content column for what is open.
     fn refresh_columns(&mut self) {
         let (detail, library_empty) = {
             let core = self.core.borrow();
@@ -852,11 +762,9 @@ impl SnippetsWindow {
         }
     }
 
-    /// Apply what retained controls asked for and bring the screen a choice
-    /// asked for to the front. The
-    /// columns themselves are rebuilt only between frames
-    /// ([`Self::refresh_columns`] from `sync` and `update`), never while
-    /// the host is still routing an event or an action through them.
+    /// Apply what retained controls asked for and bring a chosen screen to the front. The
+    /// columns are rebuilt between frames, never while the host routes an event through
+    /// them.
     fn settle(&mut self) {
         let requests = std::mem::take(&mut *self.requests.borrow_mut());
         for action in requests {
@@ -873,8 +781,6 @@ impl SnippetsWindow {
         if let Some(notice) = notice {
             self.shell.toast(notice, ToastKind::Info);
         }
-        // The body editor takes input only while the content column is on
-        // screen and no drawer floats over it.
         let geometry = self.shell.geometry();
         let drawer_open =
             geometry.sidebar == SidebarPlacement::Drawer && self.shell.is_sidebar_open();
@@ -883,15 +789,14 @@ impl SnippetsWindow {
         self.core.borrow_mut().body_reachable = !drawer_open && !content_hidden;
     }
 
-    /// Edit through the resource's dispatcher from now on.
     fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>) {
         self.bar.actions = Some(ui::framework::BarActions::new(dispatcher.clone()));
         self.core.borrow_mut().attach_dispatcher(dispatcher);
     }
 
     /// What shows the snippet a search hit or an agent's `open` names, for
-    /// [`ViewCx::on_open_item`](ui::framework::ViewCx::on_open_item); a
-    /// snippet that is gone is refused.
+    /// [`ViewCx::on_open_item`](ui::framework::ViewCx::on_open_item); a snippet that is
+    /// gone is refused.
     fn opener(&self) -> impl FnMut(&SnippetId) -> Result<(), ui::tilo_resource::Refusal> + 'static {
         let requests = Rc::clone(&self.requests);
         let core = Rc::clone(&self.core);
@@ -951,7 +856,7 @@ impl SnippetsWindow {
         self.is_push_for_test() && self.shell.front_pane() == NavPane::Content
     }
 
-    /// How wide the sidebar stands on screen, as last laid out.
+    /// How wide the sidebar is on screen, as last laid out.
     #[cfg(test)]
     pub(crate) fn sidebar_width_for_test(&self) -> f64 {
         self.shell.geometry().sidebar_column.width()
@@ -1033,8 +938,6 @@ impl ui::widget::Decorator for SnippetsWindow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = Widget::build_layout(&mut self.shell, taffy, theme, node_map);
-        // The undo hooks the host sweeps through the node map are this
-        // root's, not the shell's.
         ui::widget::decorator::register_node(node_map, node, self);
         node
     }
@@ -1049,7 +952,6 @@ impl ui::widget::Decorator for SnippetsWindow {
             }
             core.window = window;
         }
-        // A staged picker opens once its control has been laid out.
         if self.pending_scenario.borrow().is_some() {
             self.stage_pending_scenario();
         }
@@ -1096,9 +998,9 @@ impl ui::widget::Decorator for SnippetsWindow {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.core.borrow_mut().pointer = ctx.logical(position);
         }
-        // A popup of the shell (the language list) stands over the body
-        // while open: its clicks and wheels, and the click outside that
-        // closes it, are its own, never the editor's under it.
+        // A popup of the shell (the language list) stands over the body while open: its
+        // clicks and wheels, and the click outside that closes it, are its own, never the
+        // editor's under it.
         let shell_holds_pointer = Widget::modal_capture(&self.shell).is_some()
             && matches!(
                 event,
@@ -1106,7 +1008,6 @@ impl ui::widget::Decorator for SnippetsWindow {
             );
         let consumed = {
             let mut core = self.core.borrow_mut();
-            // The variables dialog is modal: it owns all input while open.
             if let Some(mut modal) = core.expand.take() {
                 let pointer = core.pointer;
                 let outcome = modal.handle_event(event, ctx, pointer);
@@ -1148,7 +1049,6 @@ impl ui::widget::Decorator for SnippetsWindow {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // A capture keeps frames coming until its scenario is staged.
         self.pending_scenario.borrow().is_some() || Widget::needs_animation_frame(&self.shell)
     }
 
@@ -1301,8 +1201,8 @@ mod window_bar;
 #[cfg(test)]
 mod tests;
 
-/// Show what `view` asks for: a tag's or a folder's snippets, or the
-/// platform search over the library.
+/// Show what `view` asks for: a tag's or a folder's snippets, or the platform search over
+/// the library.
 fn show(core: &Shared, view: SnippetsView, cx: &EffectCx<Snippets>) -> EffectAnswer {
     let mut core = core.borrow_mut();
     match view {
@@ -1346,9 +1246,8 @@ fn show(core: &Shared, view: SnippetsView, cx: &EffectCx<Snippets>) -> EffectAns
     Ok(Effected::done())
 }
 
-/// The Snippets window over the document's library: it shows the snippet a
-/// search hit or an agent's `open` names, answers [`SnippetsView`] and
-/// stages the captures.
+/// The Snippets window over the document's library: it shows the snippet a search hit or an
+/// agent's `open` names, answers [`SnippetsView`] and stages the captures.
 pub(crate) fn window(cx: &ViewCx<Snippets>) -> Element {
     let mut window = SnippetsWindow::new(Some(cx.live().clone()));
     window.attach_dispatcher(cx.dispatcher());
@@ -1363,14 +1262,8 @@ pub(crate) fn window(cx: &ViewCx<Snippets>) -> Element {
     Box::new(window)
 }
 
-/// Whether `text` looks like it carries a credential — an assignment to a
-/// key, token, secret or password, a bearer header, or a vendor key prefix.
-///
-/// This is a guess, and it is deliberately conservative: a snippet wrongly
-/// treated as a secret is cleared from the clipboard after a minute, which
-/// costs the person a second copy; a snippet wrongly treated as ordinary
-/// stays in the clipboard history. The checked, expiring path is the safe
-/// direction to be wrong in.
+/// Whether `text` looks like it carries a credential — an assignment to a key, token,
+/// secret or password, a bearer header, or a vendor key prefix.
 fn looks_like_a_credential(text: &str) -> bool {
     const MARKERS: [&str; 6] = [
         "api_key",

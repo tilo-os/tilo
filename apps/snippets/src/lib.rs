@@ -1,31 +1,7 @@
-//! Snippets — a text & code snippet manager for Tilo.
-//!
-//! A searchable, taggable library of reusable snippets. Each snippet has a
-//! title, language, tags and a body that may contain `${placeholder}`
-//! variables; the detail pane shows a syntax-highlighted preview, and the
-//! expand-with-variables flow fills the placeholders before copying to the
-//! clipboard. The library is a typed model (see [`model`]) stored in a CRDT
-//! document, so it syncs across devices and collaborators converge on one
-//! shared set of snippets.
-//!
-//! The app is [`SnippetsShell`], a framework app over the [`Snippets`]
-//! resource: every host mounts it through [`definition`].
-//!
-//! **How a snippet leaves this library is the clipboard, and that is the
-//! contract.** There is no system-wide "insert snippet" action yet: the
-//! text-expander behaviour such an action would give every text field is a
-//! platform capability, not an app's. So the way to use a snippet is to copy
-//! it — through the fill-in dialog when its body has `${placeholders}` — and
-//! paste it where it is needed. When a system-level insert action exists,
-//! this library is what it should offer.
+//! Snippets — a library of text and code snippets, with folders, tags and fill-in
+//! variables.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run isolated, so app-local arithmetic checks are relaxed; a fault in a shared crate reaches the session, so its lints stay.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -45,7 +21,6 @@ pub mod seed;
 pub use model::{Language, Selection, SmartFolder, Snippet, SnippetId, Snippets};
 pub use resource::{SnippetsShell, SnippetsView};
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(SnippetsShell)
 }

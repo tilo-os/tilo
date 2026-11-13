@@ -1,10 +1,4 @@
 //! The fill-in-variables dialog.
-//!
-//! Copying a snippet whose body holds `${placeholder}` variables opens this
-//! dialog: one field per variable, a live preview of the filled body, and
-//! Copy. It is the toolkit's modal sheet ([`modal_dialog`]) drawn in the
-//! window's top layer; it consumes all input while open. Its values are
-//! local to this peer (a transient flow, not part of the shared library).
 
 #[cfg(test)]
 use automerge::AutoCommit;
@@ -27,8 +21,6 @@ use crate::draw::{self, CodeRow};
 use crate::model::{self, Snippet, SnippetId};
 use ui::widget::DrawChild;
 
-/// The most preview rows (wrapped lines) the dialog shows; a longer body
-/// ends in an ellipsis row.
 const PREVIEW_ROWS: usize = 12;
 
 /// One placeholder field: its name and the person's current value.
@@ -41,14 +33,12 @@ struct Field {
 #[derive(Default)]
 struct Geometry {
     card: Rect,
-    /// Cancel, then Copy.
     actions: Vec<Rect>,
     scrim: Rect,
     fields: Vec<Rect>,
 }
 
 pub struct ExpandModal {
-    /// The sheet's title and its two actions, in the person's language.
     title: String,
     cancel: String,
     copy: String,
@@ -56,7 +46,6 @@ pub struct ExpandModal {
     body: String,
     language: crate::model::Language,
     fields: Vec<Field>,
-    /// Index of the field with keyboard focus.
     focused: usize,
     pointer: Point,
     geometry: Geometry,
@@ -99,7 +88,6 @@ impl ExpandModal {
             .collect()
     }
 
-    /// The expanded body with current field values applied.
     fn preview(&self) -> String {
         model::expand(&self.body, &self.values())
     }
@@ -122,8 +110,8 @@ impl ExpandModal {
         ]
     }
 
-    /// The label column: wide enough for the longest variable name, never
-    /// more than a third of the body.
+    /// The label column: wide enough for the longest variable name, never more than a third
+    /// of the body.
     fn label_width(&self, text: &mut TextRenderer, theme: &Theme, body_w: f64) -> f64 {
         let style = theme.text(TextRole::Code);
         self.fields
@@ -150,8 +138,8 @@ impl ExpandModal {
             + self.preview_height(text, theme, body_w)
     }
 
-    /// The filled body wrapped to the preview well `width` wide, cut to
-    /// [`PREVIEW_ROWS`], and whether it was cut.
+    /// The filled body wrapped to the preview well `width` wide, cut to [`PREVIEW_ROWS`],
+    /// and whether it was cut.
     fn preview_rows(
         &self,
         text: &mut TextRenderer,
@@ -167,7 +155,6 @@ impl ExpandModal {
             width - pad * 2.0,
         );
         let cut = rows.len() > PREVIEW_ROWS;
-        // The last kept row makes room for the ellipsis that says so.
         rows.truncate(if cut { PREVIEW_ROWS - 1 } else { PREVIEW_ROWS });
         (rows, cut)
     }
@@ -226,7 +213,6 @@ impl ExpandModal {
             y -= f64::from(rhythm.sibling);
         }
 
-        // The filled body, as it will be copied.
         y += f64::from(rhythm.group);
         let mut ctx = PaintCtx::new(scene, t, text, &ink);
         ctx.text_role(
@@ -251,8 +237,8 @@ impl ExpandModal {
         self.geometry.actions = layout.actions;
     }
 
-    /// The filled body as it will be copied: long lines wrap inside the
-    /// well, and a body longer than the well ends in an ellipsis row.
+    /// The filled body as it will be copied: long lines wrap inside the well, and a body
+    /// longer than the well ends in an ellipsis row.
     fn paint_preview(
         &self,
         scene: &mut Scene,
@@ -287,7 +273,6 @@ impl ExpandModal {
         }
     }
 
-    /// Route a window event. Returns the dialog's lifecycle outcome.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -357,9 +342,6 @@ impl ExpandModal {
             self.focus_field(index);
         }
 
-        // Pointer motion reaches every field so each keeps its hover and
-        // drag state. Keys and IME go to the focused field; pointer events
-        // to the field under the pointer.
         if matches!(event, WindowEvent::CursorMoved { .. }) {
             for field in &mut self.fields {
                 let mut child_handled = false;
@@ -534,8 +516,6 @@ mod tests {
     use taffy::TaffyTree;
 
     fn key(named: NamedKey) -> WindowEvent {
-        // `KeyEvent`'s platform field is private; initialize the same minimal
-        // synthetic event used by the shared TextInput's own tests.
         let event = ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
         ui::synthetic_input::keyboard_input(event)
     }
@@ -573,7 +553,8 @@ mod tests {
         ExpandModal::new(&SnippetId::from_raw("greet"), &templated())
     }
 
-    /// The expand modal: one field per placeholder, preview substitution and IME/backspace editing.
+    /// The expand modal: one field per placeholder, preview substitution and IME/backspace
+    /// editing.
     #[test]
     fn expand_modal_collects_fields_and_previews_live() {
         {

@@ -17,8 +17,8 @@ fn presented(snippets: impl IntoIterator<Item = Snippet>) -> Rc<Snippets> {
     Rc::new(library)
 }
 
-/// The bare window showing the starter library as the framework presents
-/// it, with a specimen open.
+/// The bare window showing the starter library as the framework presents it, with a
+/// specimen open.
 fn demo() -> SnippetsWindow {
     let mut app = SnippetsWindow::bare();
     app.show_library(&presented(crate::seed::starter_library()));
@@ -52,8 +52,6 @@ fn snippet(title: &str, body: &str) -> Snippet {
 /// Activate the control labelled `label` as assistive technology does.
 fn activate(app: &mut TestApp<SnippetsShell>, label: &str) {
     let harness = app.harness();
-    // A snippet's header heading shares its label with the list row. Select
-    // the exported control that actually advertises activation, not the title.
     let nodes = harness.a11y_nodes();
     let actionable: Vec<_> = nodes
         .iter()
@@ -83,8 +81,8 @@ fn press_bar(app: &mut TestApp<SnippetsShell>, name: &str) {
     app.settle();
 }
 
-/// The list's item for the snippet titled `title`: the row's own node, which
-/// the list exports as the item, named by the row's language badge and title.
+/// The list's item for the snippet titled `title`: the row's own node, which the list
+/// exports as the item, named by the row's language badge and title.
 fn list_item(app: &mut TestApp<SnippetsShell>, title: &str) -> ui::accesskit::NodeId {
     let suffix = format!(" {title}");
     app.harness()
@@ -97,8 +95,8 @@ fn list_item(app: &mut TestApp<SnippetsShell>, title: &str) -> ui::accesskit::No
         .map_or_else(|| panic!("the list item of {title:?}"), |(id, _)| id)
 }
 
-/// Open the snippet titled `title` from the list, as assistive technology
-/// activates a list item.
+/// Open the snippet titled `title` from the list, as assistive technology activates a list
+/// item.
 fn open_row(app: &mut TestApp<SnippetsShell>, title: &str) {
     let item = list_item(app, title);
     app.harness()
@@ -181,14 +179,13 @@ fn sidebar_places_narrow_the_list() {
     );
     drop(core);
 
-    // An empty library has no folder or tag sections.
     let empty = SnippetsWindow::bare();
     let sections = empty.core.borrow().nav_sections();
     assert_eq!(sections.len(), 1);
 }
 
-/// Favorite, Copy, New and Delete submit the library's field edits and
-/// verbs: each is one undo step, and the window follows the stored library.
+/// Favorite, Copy, New and Delete submit the library's field edits and verbs: each is one
+/// undo step, and the window follows the stored library.
 #[test]
 fn controls_submit_library_actions_as_one_undo_step_each() {
     let mut app = launched(&[snippet("Plain", "echo hi"), snippet("Templated", "")]);
@@ -213,8 +210,6 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
         Some(made.clone()),
         "the new snippet opens"
     );
-    // The new snippet is the one open, so the bar's Delete deletes it. Undo
-    // takes a deletion back, so it runs at once and nobody is asked.
     press_bar(&mut app, "Delete");
     assert!(app.asking().is_none(), "the host asks nothing");
     assert!(
@@ -227,13 +222,12 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
     assert_eq!(app.state().snippets.len(), 3);
 }
 
-/// The language picker sets the chosen language; the window bar's
-/// Duplicate duplicates the open snippet and opens the copy.
+/// The language picker sets the chosen language; the window bar's Duplicate duplicates the
+/// open snippet and opens the copy.
 #[test]
 fn the_snippet_menus_set_the_language_and_duplicate() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
     open_row(&mut app, "Deploy");
-    // The language is a dropdown: assistive technology sets its value.
     {
         let harness = app.harness();
         let picker = harness
@@ -257,8 +251,8 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
     );
 }
 
-/// A copy has no uses, so duplicating from Most used must leave that
-/// filtered place before opening it; subsequent typing belongs to the copy.
+/// A copy has no uses, so duplicating from Most used must leave that filtered place before
+/// opening it; subsequent typing belongs to the copy.
 #[test]
 fn duplicating_from_most_used_opens_the_copy_for_editing() {
     let mut original = snippet("Deploy", "kubectl apply");
@@ -300,8 +294,8 @@ fn duplicating_from_most_used_opens_the_copy_for_editing() {
     assert_eq!(by_title(&app, "Deploy").1.body, "kubectl apply");
 }
 
-/// The open snippet's folder and tag chips reveal their snippets through the
-/// action each place publishes.
+/// The open snippet's folder and tag chips reveal their snippets through the action each
+/// place publishes.
 #[test]
 fn the_folder_and_tag_chips_reveal_their_places() {
     let tagged = Snippet {
@@ -322,8 +316,8 @@ fn the_folder_and_tag_chips_reveal_their_places() {
     );
 }
 
-/// A synthetic row is operated by its measured list owner; a removed row's
-/// exported handle must never operate the replacement row.
+/// A synthetic row is operated by its measured list owner; a removed row's exported handle
+/// must never operate the replacement row.
 #[test]
 fn exported_list_rows_activate_and_refuse_removed_handles() {
     let mut app = launched(&[
@@ -428,8 +422,8 @@ fn the_list_moves_the_open_snippet_by_keys() {
     );
 }
 
-/// Typing in the body splices the stored text with field edits at the
-/// body's path; the editor follows a collaborator's edit and an undo.
+/// Typing in the body splices the stored text with field edits at the body's path; the
+/// editor follows a collaborator's edit and an undo.
 #[test]
 fn body_edits_are_text_actions_and_the_editor_follows_the_document() {
     let mut app = launched(&[snippet("Only", "")]);
@@ -468,8 +462,7 @@ fn body_edits_are_text_actions_and_the_editor_follows_the_document() {
     assert_eq!(body_shown(&mut app), "remote 🌍\n");
 }
 
-/// The variable dialog is addressable and peer-local, and holds the body
-/// while it is open.
+/// The variable dialog is addressable and peer-local, and holds the body while it is open.
 #[test]
 fn variable_dialog_is_semantic_and_local() {
     let mut app = SnippetsWindow::bare();
@@ -508,8 +501,7 @@ fn variable_dialog_is_semantic_and_local() {
     assert_eq!(doc.get_heads(), heads, "the dialog writes nothing");
 }
 
-/// The window bar offers New snippet without authoring one; pressing it
-/// creates one.
+/// The window bar offers New snippet without authoring one; pressing it creates one.
 #[test]
 fn showing_the_bars_new_snippet_authors_nothing_and_pressing_it_does() {
     let mut app = launched(&[snippet("Only", "")]);
@@ -537,7 +529,6 @@ fn framed(app: SnippetsWindow, width: u32) -> Framed<SnippetsWindow> {
 
 #[test]
 fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
-    // Case `wide_keeps_sidebar_docked_and_open`.
     {
         let app = framed(demo(), 1280);
         assert!(
@@ -551,7 +542,6 @@ fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
         );
     }
 
-    // Case `narrow_makes_the_sidebar_a_closed_drawer`.
     {
         let mut app = framed(demo(), 720);
         assert!(
@@ -565,7 +555,6 @@ fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
         assert!(!app.sidebar_open_for_test(), "and closes it again");
     }
 
-    // Case `very_narrow_pushes_the_open_snippet`.
     {
         let mut app = framed(demo(), 480);
         assert!(app.is_push_for_test(), "very narrow window pushes");
@@ -576,7 +565,6 @@ fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
         );
     }
 
-    // Case `wide_choice_does_not_push`.
     {
         let mut app = framed(demo(), 1280);
         app.open_first_for_test();
@@ -584,9 +572,8 @@ fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
     }
 }
 
-/// The content column's controls keep their measured size across a window
-/// resize and a rebuild for another snippet, and its header buttons follow
-/// the open snippet.
+/// The content column's controls keep their measured size across a window resize and a
+/// rebuild for another snippet, and its header buttons follow the open snippet.
 #[test]
 fn the_content_column_lays_out_its_controls() {
     let mut app = framed(demo(), 1280);
@@ -629,8 +616,8 @@ fn has_control(app: &mut TestApp<SnippetsShell>, label: &str) -> bool {
         .any(|(_, node)| node.label() == Some(label))
 }
 
-/// A new window starts on an empty library; captures stage the starter
-/// library through actions and their view state through `stage`.
+/// A new window starts on an empty library; captures stage the starter library through
+/// actions and their view state through `stage`.
 #[test]
 fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
     let live = TestApp::<SnippetsShell>::new().unwrap();
@@ -660,7 +647,6 @@ fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
 
     let mut narrow = TestApp::<SnippetsShell>::capture(Some("narrow")).unwrap();
     assert_eq!(narrow.harness().inspection().viewport, [720, 720]);
-    // The drawer floats over the list, its own toggle under it.
     assert!(
         has_control(&mut narrow, "All snippets"),
         "the overlay sidebar is open"
@@ -673,9 +659,9 @@ fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
     );
 }
 
-/// An agent reaches every snippet, folder and tag through the one
-/// published tree: each change is one call, a verb on the snippet it acts
-/// on or a field edit at a path, and opening a snippet shows it.
+/// An agent reaches every snippet, folder and tag through the one published tree: each
+/// change is one call, a verb on the snippet it acts on or a field edit at a path, and
+/// opening a snippet shows it.
 #[test]
 fn an_agent_edits_and_opens_snippets_one_call_each() {
     let mut app = TestApp::<SnippetsShell>::new().unwrap();
@@ -762,15 +748,14 @@ fn an_agent_edits_and_opens_snippets_one_call_each() {
     .unwrap();
     assert!(by_title(&app, "Deploy").1.tags.is_empty());
 
-    // Undo takes a deletion back, so it runs at once.
     app.call_on(&item, "delete", serde_json::json!({}))
         .expect("an undoable delete runs at once");
     assert_eq!(app.state().snippets.len(), 2);
 }
 
-/// What an agent does for a person is history the person reads in their
-/// language: the app's sentence for each field and verb, naming the
-/// snippet as it was called, and who did it for whom.
+/// What an agent does for a person is history the person reads in their language: the app's
+/// sentence for each field and verb, naming the snippet as it was called, and who did it
+/// for whom.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -856,8 +841,8 @@ fn history_entries_render_as_the_apps_sentences() {
     );
 }
 
-/// Click the control assistive technology names `label`, at the centre of
-/// where it is drawn, as a pointer does.
+/// Click the control assistive technology names `label`, at the centre of where it is
+/// drawn, as a pointer does.
 fn click_label(app: &mut TestApp<SnippetsShell>, label: &str) {
     let nodes = app.harness().a11y_nodes();
     let names: Vec<_> = nodes.iter().filter_map(|(_, node)| node.label()).collect();
@@ -874,8 +859,8 @@ fn click_label(app: &mut TestApp<SnippetsShell>, label: &str) {
     app.settle();
 }
 
-/// The language picked with the pointer applies: a click opens the list
-/// below the picker and a click on a language there chooses it.
+/// The language picked with the pointer applies: a click opens the list below the picker
+/// and a click on a language there chooses it.
 #[test]
 fn a_pointer_click_picks_the_language() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
@@ -887,8 +872,8 @@ fn a_pointer_click_picks_the_language() {
         .find_map(|(_, node)| node.bounds().filter(|b| b.width() > 0.0))
         .expect("the language picker is drawn");
     click_label(&mut app, "Language");
-    // The list opens under the picker, one 32 px row per language: Plain
-    // text, Shell, then Rust.
+    // The list opens under the picker, one 32 px row per language: Plain text, Shell, then
+    // Rust.
     app.harness()
         .click_at(picker.x0 + 30.0, picker.y1 + 28.0 + 64.0);
     app.settle();
@@ -913,8 +898,8 @@ fn a_pointer_click_on_copy_copies() {
     );
 }
 
-/// A picked language and a typed name apply for the record's owner and
-/// for an editor of a shared workspace alike.
+/// A picked language and a typed name apply for the record's owner and for an editor of a
+/// shared workspace alike.
 #[test]
 fn owners_and_editors_set_the_language_and_the_name() {
     for role in [None, Some(ui::Role::Editor)] {
@@ -947,9 +932,8 @@ fn owners_and_editors_set_the_language_and_the_name() {
     }
 }
 
-/// A guest (an Editor in a public room) copies a snippet as the owner does:
-/// the copy lands on their own clipboard and touches nothing shared, so no
-/// one is asked first.
+/// A guest (an Editor in a public room) copies a snippet as the owner does: the copy lands
+/// on their own clipboard and touches nothing shared, so no one is asked first.
 #[test]
 fn a_guest_copies_a_snippet_without_being_asked() {
     let mut app = launched(&[snippet("Plain", "echo hi")]);
@@ -971,12 +955,8 @@ fn a_guest_copies_a_snippet_without_being_asked() {
 
 #[test]
 fn the_window_bars_sidebar_toggle_collapses_and_expands_the_sidebar() {
-    // Every motion reads as arrived: a frame that comes after the slide's
-    // whole time (a busy device), where the collapse lands in one tick.
     let _arrived = ui::motion::testing::settled();
     let mut app = TestApp::<SnippetsShell>::new().unwrap();
-    // Frames as the window's host draws them: the one the input asked
-    // for, then more only while the app asks.
     let pump = |app: &mut TestApp<SnippetsShell>| {
         app.harness().relayout();
         for _ in 0..32 {
@@ -991,7 +971,6 @@ fn the_window_bars_sidebar_toggle_collapses_and_expands_the_sidebar() {
         app.with_widget(|shell: &mut SnippetsWindow| shell.sidebar_width_for_test())
             .unwrap()
     };
-    // The sidebar toggle is the window bar's.
     let toggle = |app: &mut TestApp<SnippetsShell>| {
         app.harness()
             .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
@@ -1013,9 +992,8 @@ fn the_window_bars_sidebar_toggle_collapses_and_expands_the_sidebar() {
     );
 }
 
-/// In the desktop the window's bar shows the library's "New snippet", and a
-/// press there adds one. An empty library's one action is in the window
-/// itself, so its bar offers none that would do nothing.
+/// In the desktop the window's bar shows the library's "New snippet", and a press there
+/// adds one.
 #[test]
 fn the_window_bars_new_snippet_adds_one() {
     let bar_actions = |app: &mut TestApp<SnippetsShell>| -> Vec<String> {
@@ -1050,8 +1028,8 @@ fn the_window_bars_new_snippet_adds_one() {
     assert_eq!(app.state().snippets.len(), 2, "{failures}");
 }
 
-/// The folder, the description and the tags are editable where the snippet
-/// is read: the library's organising model is not write-once.
+/// The folder, the description and the tags are editable where the snippet is read: the
+/// library's organising model is not write-once.
 #[test]
 fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
@@ -1082,7 +1060,6 @@ fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
         "a tag is trimmed and never doubled, and a blank tag is nothing"
     );
 
-    // The sidebar lists the folder and the tag the snippet was given.
     let sections = app.surface_mut::<SnippetsWindow>().nav_sections_for_test();
     let labels: Vec<String> = sections
         .into_iter()
@@ -1092,7 +1069,6 @@ fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
     assert!(labels.iter().any(|label| label == "Releases"), "{labels:?}");
     assert!(labels.iter().any(|label| label == "k8s"), "{labels:?}");
 
-    // Taking the tag off leaves the snippet without it.
     let id = by_title(&app, "Deploy").0;
     app.surface_mut::<SnippetsWindow>()
         .request_for_test(Action::RemoveTag(id, "k8s".into()));
@@ -1100,10 +1076,8 @@ fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
     assert!(by_title(&app, "Deploy").1.tags.is_empty());
 }
 
-/// A snippet that carries a credential is copied through the expiring path,
-/// so an API key does not sit in the clipboard history; ordinary text takes
-/// the shared path. The guess errs towards "secret", which costs one copy and
-/// not the key.
+/// A snippet that carries a credential is copied through the expiring path, so an API key
+/// does not sit in the clipboard history; ordinary text takes the shared path.
 #[test]
 fn a_snippet_holding_a_credential_is_treated_as_one() {
     assert!(looks_like_a_credential("export API_KEY=sk-live-1234"));
@@ -1111,16 +1085,14 @@ fn a_snippet_holding_a_credential_is_treated_as_one() {
         "curl -H 'Authorization: Bearer abc.def'"
     ));
     assert!(looks_like_a_credential("password: hunter2"));
-    // Assembled rather than written out: a test fixture is not a key, and
-    // the repository's own policy scans for the header that introduces one.
     let key_header = format!("-----BEGIN {} PRIVATE KEY-----", "OPENSSH");
     assert!(looks_like_a_credential(&key_header));
     assert!(!looks_like_a_credential("kubectl apply -f deployment.yaml"));
     assert!(!looks_like_a_credential("SELECT * FROM tracks;"));
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
+/// The window bar's sidebar button flips the sidebar on every click, in a window wide
+/// enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(
