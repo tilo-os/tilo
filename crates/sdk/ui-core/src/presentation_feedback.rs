@@ -167,6 +167,7 @@ impl Observer {
         &self,
         worker_frame_ix: u64,
         cpu_frame_id: Option<u64>,
+        size: (u32, u32),
         present: impl FnOnce(),
     ) {
         if !tilo_presentation::supported() {
@@ -184,7 +185,8 @@ impl Observer {
         };
         let accepted = tilo_presentation::present(
             window,
-            Box::new(move |result| {
+            size,
+            Some(Box::new(move |result| {
                 let row = match result {
                     Feedback::Presented {
                         clock_id,
@@ -207,7 +209,7 @@ impl Observer {
                     }),
                 };
                 crate::native_scenario::log::emit_json("tilo-display-frame", row);
-            }),
+            })),
             present,
         );
         if !accepted {

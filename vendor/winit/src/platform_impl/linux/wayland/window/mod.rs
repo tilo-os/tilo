@@ -377,13 +377,15 @@ impl Window {
         }
     }
 
-    pub fn present_with_feedback(
+    pub fn present_frame(
         &self,
-        observer: crate::platform::wayland::WaylandPresentationObserver,
+        size: PhysicalSize<u32>,
+        observer: Option<crate::platform::wayland::WaylandPresentationObserver>,
         present: impl FnOnce(),
     ) -> bool {
         let guard = self.window_state.lock().unwrap();
-        let accepted = guard.observe_next_present(observer);
+        let accepted = observer.is_some_and(|observer| guard.observe_next_present(observer));
+        guard.size_viewport_to((size.width, size.height));
         present();
         drop(guard);
         accepted

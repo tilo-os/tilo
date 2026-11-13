@@ -56,6 +56,8 @@ struct Seen {
     /// The size the compositor gave the layer surface.
     configured: Option<(u32, u32)>,
     pointer_inside: bool,
+    /// Where the pointer is on the surface it is over, in that surface's coordinates.
+    pointer_at: Option<(f64, f64)>,
     buttons: Vec<(u32, bool)>,
     keyboard_focused: bool,
     keys: Vec<(u32, bool)>,
@@ -157,14 +159,32 @@ impl Client {
 
     /// Attach a buffer of one colour (RGBA) to the surface and commit it.
     fn show(&self, surface: &WlSurface, width: i32, height: i32, rgba: [u8; 4]) {
+        self.show_bands(surface, (width, height), 1, rgba, rgba);
+    }
+
+    /// Attach a buffer of `size` logical pixels at `scale` , its top half `top` and its bottom half
+    /// `bottom` (RGBA), and commit it.
+    fn show_bands(
+        &self,
+        surface: &WlSurface,
+        size: (i32, i32),
+        scale: i32,
+        top: [u8; 4],
+        bottom: [u8; 4],
+    ) {
         let qh = self.queue.handle();
+        let (width, height) = (size.0 * scale, size.1 * scale);
         let stride = width * 4;
-        let len = usize::try_from(stride * height).unwrap();
+        let row = usize::try_from(width).unwrap();
         let fd =
             rustix::fs::memfd_create("tilo-layer-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
         let mut file = std::fs::File::from(fd);
-        let pixel = [rgba[2], rgba[1], rgba[0], rgba[3]];
-        file.write_all(&pixel.repeat(len / 4)).unwrap();
+        for y in 0..height {
+            let rgba = if y < height / 2 { top } else { bottom };
+            let pixel = [rgba[2], rgba[1], rgba[0], rgba[3]];
+            file.write_all(&pixel.repeat(row)).unwrap();
+        }
+        surface.set_buffer_scale(scale);
         let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
             file.as_fd(),
             stride * height,
@@ -456,6 +476,121 @@ fn keys_go_to_the_layer_surface_that_takes_them() {
     assert_eq!(prompt.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
 }
 
+/// A panel resting on the bottom edge that grows: until its app draws the new size, the frame on
+/// screen is the one it drew, at its own size, standing on that edge; the pointer reaches it where
+/// it is drawn, one logical pixel for one; then the frame of the new size replaces it. At scale 1
+/// and 2 alike.
+#[test]
+fn a_layer_surface_is_hit_where_it_is_drawn_and_never_shown_at_another_size() {
+    const TOP: [u8; 4] = [255, 0, 0, 255];
+    const BOTTOM: [u8; 4] = [0, 255, 0, 255];
+    for scale in [1, 2] {
+        let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 640, 480).with_scale(f64::from(scale)))
+            .expect("output");
+        let output_h = 480 / scale;
+        let mut panel = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut [&mut panel], |_, clients| {
+            clients[0].seen.layer_shell.is_some() && clients[0].seen.seat.is_some()
+        });
+        let (surface, layer) = panel.layer_surface(
+            zwlr_layer_shell_v1::Layer::Top,
+            zwlr_layer_surface_v1::Anchor::Bottom | zwlr_layer_surface_v1::Anchor::Left,
+            (100, 40),
+            0,
+            zwlr_layer_surface_v1::KeyboardInteractivity::None,
+        );
+        pump(&mut compositor, &mut [&mut panel], |_, clients| {
+            clients[0].seen.configured == Some((100, 40))
+        });
+        panel.show_bands(&surface, (100, 40), scale, TOP, BOTTOM);
+        pump(&mut compositor, &mut [&mut panel], |_, clients| {
+            clients[0].seen.pointer.is_some()
+        });
+
+        // The device pixel at a logical point, and the colour drawn there.
+        let shown = |compositor: &mut Compositor, x: i32, y: i32| {
+            compositor.draw_frame().expect("a frame");
+            let frame = compositor.screenshot("HEADLESS-1").unwrap();
+            frame.pixel(
+                u32::try_from(x * scale + scale / 2).unwrap(),
+                u32::try_from(y * scale + scale / 2).unwrap(),
+            )
+        };
+        let top = output_h - 40;
+        assert_eq!(
+            shown(&mut compositor, 30, top + 5),
+            Some(TOP),
+            "at {scale}x"
+        );
+        assert_eq!(
+            shown(&mut compositor, 30, top + 35),
+            Some(BOTTOM),
+            "at {scale}x"
+        );
+
+        // It asks to grow, and the compositor configures the new size before its app has drawn it.
+        layer.set_size(100, 80);
+        surface.commit();
+        pump(&mut compositor, &mut [&mut panel], |_, clients| {
+            clients[0].seen.configured == Some((100, 80))
+        });
+        surface.commit();
+        pump(&mut compositor, &mut [&mut panel], |_, _| true);
+        assert_eq!(
+            shown(&mut compositor, 30, top + 5),
+            Some(TOP),
+            "the frame it drew stays at its size on the edge it rests on, at {scale}x"
+        );
+        assert_eq!(
+            shown(&mut compositor, 30, top + 35),
+            Some(BOTTOM),
+            "at {scale}x"
+        );
+        assert_eq!(
+            shown(&mut compositor, 30, top - 20),
+            Some(BACKGROUND),
+            "nothing stands where it has not drawn yet, at {scale}x"
+        );
+        // The pointer on a drawn pixel reaches that pixel of the surface.
+        compositor
+            .input(InputEvent::PointerMotion {
+                x: 30.5,
+                y: f64::from(top) + 35.5,
+            })
+            .unwrap();
+        pump(&mut compositor, &mut [&mut panel], |_, clients| {
+            clients[0].seen.pointer_at.is_some()
+        });
+        assert_eq!(panel.seen.pointer_at, Some((30.5, 35.5)), "at {scale}x");
+
+        // The frame of the new size replaces it, grown up from the same edge.
+        panel.show_bands(&surface, (100, 80), scale, TOP, BOTTOM);
+        pump(&mut compositor, &mut [&mut panel], |_, _| true);
+        let top = output_h - 80;
+        assert_eq!(
+            shown(&mut compositor, 30, top + 5),
+            Some(TOP),
+            "at {scale}x"
+        );
+        assert_eq!(
+            shown(&mut compositor, 30, top + 75),
+            Some(BOTTOM),
+            "at {scale}x"
+        );
+        compositor
+            .input(InputEvent::PointerMotion {
+                x: 70.25,
+                y: f64::from(top) + 10.75,
+            })
+            .unwrap();
+        pump(&mut compositor, &mut [&mut panel], |_, clients| {
+            clients[0].seen.pointer_at == Some((70.25, 10.75))
+        });
+    }
+}
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -614,7 +749,19 @@ impl Dispatch<WlPointer, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { .. } => seen.pointer_inside = true,
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                seen.pointer_inside = true;
+                seen.pointer_at = Some((surface_x, surface_y));
+            }
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => seen.pointer_at = Some((surface_x, surface_y)),
             wl_pointer::Event::Leave { .. } => seen.pointer_inside = false,
             wl_pointer::Event::Button { button, state, .. } => {
                 let pressed =

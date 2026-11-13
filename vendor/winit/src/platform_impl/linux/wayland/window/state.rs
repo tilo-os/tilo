@@ -312,6 +312,7 @@ impl WindowState {
             None => false,
         };
         let surface = self.window.wl_surface();
+        self.size_viewport_to(buffer.size());
         surface.attach(Some(buffer.wl_buffer()), 0, 0);
         if damage.is_empty() {
             surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
@@ -912,11 +913,36 @@ impl WindowState {
             );
         }
 
-        // Update the target viewport, this is used if and only if fractional scaling is in use.
-        if let Some(viewport) = self.viewport.as_ref() {
-            // Set inner size without the borders.
-            viewport.set_destination(self.size.width as _, self.size.height as _);
-        }
+        // The viewport's destination is not set here: it goes with the
+        // next frame drawn at this size (`Self::size_viewport_to`).
+    }
+
+    /// Show the frame committed next, `size` pixels, at the logical size it
+    /// was drawn for. Under fractional scaling the buffer has scale 1 and the
+    /// viewport alone says how big the surface is, so its destination must
+    /// change in the very commit that carries a frame of that size: set
+    /// earlier (when the compositor configures a new size), whatever commits
+    /// first, an older frame still on its way or a request without a buffer,
+    /// shows a frame of one size stretched to another, with the pointer
+    /// mapped through the stretch.
+    pub fn size_viewport_to(&self, size: (u32, u32)) {
+        let Some(viewport) = self.viewport.as_ref() else {
+            return;
+        };
+        let scale = self.scale_factor;
+        let logical = if logical_to_physical_rounded(self.size, scale)
+            == PhysicalSize::new(size.0, size.1)
+        {
+            self.size
+        } else {
+            LogicalSize::new(
+                (f64::from(size.0) / scale).round() as u32,
+                (f64::from(size.1) / scale).round() as u32,
+            )
+        };
+        let width = i32::try_from(logical.width.max(1)).unwrap_or(i32::MAX);
+        let height = i32::try_from(logical.height.max(1)).unwrap_or(i32::MAX);
+        viewport.set_destination(width, height);
     }
 
     /// Get the scale factor of the window.

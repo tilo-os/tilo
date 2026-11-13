@@ -93,8 +93,13 @@ struct Placed {
     output: Option<Output>,
     layer: Layer,
     /// Its rectangle in the logical layout, from its anchors, margins and size on the output it is
-    /// on; empty before it has an output.
+    /// on; empty before it has an output. The size its client is configured to.
     rect: Rectangle<i32, Logical>,
+    /// Where the frame its client last committed stands, at that frame's own size: where it would
+    /// stand had it asked for the size it drew. While it resizes, the frame on screen is the last
+    /// one it drew, at the size it drew it, placed by its anchors and hit where it is drawn, until
+    /// a frame of the new size replaces it; never one frame shown at another's size.
+    drawn: Rectangle<i32, Logical>,
     /// How many frames its client has committed: what says a frame was drawn after something the
     /// session asked it for.
     frames: u64,
@@ -253,7 +258,7 @@ impl Layers {
             .rev()
             .filter(|placed| self.visible(placed))
             .find_map(|placed| {
-                let rect = placed.rect;
+                let rect = placed.drawn;
                 if !rect.to_f64().contains(point) {
                     return None;
                 }
@@ -288,6 +293,7 @@ impl State {
             output,
             layer,
             rect: Rectangle::default(),
+            drawn: Rectangle::default(),
             frames: 0,
         });
         let index = self.layers.surfaces.len().saturating_sub(1);
@@ -327,11 +333,18 @@ impl State {
             return;
         };
         let request = placed.request();
-        let rect = place.map_or_else(
-            || placement(&request, geometry),
-            |room| within(&request, room),
-        );
+        let stand = |request: &LayerSurfaceCachedState| {
+            place.map_or_else(
+                || placement(request, geometry),
+                |room| within(request, room),
+            )
+        };
+        let rect = stand(&request);
         placed.rect = rect;
+        placed.drawn = placed.buffer_size().map_or(rect, |size| {
+            let drew = LayerSurfaceCachedState { size, ..request };
+            Rectangle::new(stand(&drew).loc, size)
+        });
         if !send {
             return;
         }
@@ -754,7 +767,7 @@ impl State {
                 continue;
             }
             let pose = self.layers.pose(&placed.namespace);
-            let placed_at = (placed.rect.loc - geometry.loc).to_f64();
+            let placed_at = (placed.drawn.loc - geometry.loc).to_f64();
             let location = placed_at + Point::from(pose.offset);
             if pose.opacity <= 0.0 || pose.scale <= 0.0 {
                 continue;
@@ -778,12 +791,13 @@ impl State {
                     clippy::cast_possible_truncation,
                     reason = "a share of one output's surface, far inside i32"
                 )]
-                let across = (f64::from(placed.rect.size.w) * scale * pose.anchor.0).round() as i32;
+                let across =
+                    (f64::from(placed.drawn.size.w) * scale * pose.anchor.0).round() as i32;
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "a share of one output's surface, far inside i32"
                 )]
-                let down = (f64::from(placed.rect.size.h) * scale * pose.anchor.1).round() as i32;
+                let down = (f64::from(placed.drawn.size.h) * scale * pose.anchor.1).round() as i32;
                 let pivot =
                     Point::<i32, Physical>::new(placed_from.x + across, placed_from.y + down);
                 elements.extend(drawn.into_iter().map(|element| {

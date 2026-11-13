@@ -1690,7 +1690,7 @@ impl App {
 
         let actual = window.fullscreen().is_some();
         changed |= self.note_actual_fullscreen(actual);
-        self.reconcile_minimum_size(window);
+        self.reconcile_minimum_size(window, false);
 
         changed
     }
@@ -2344,9 +2344,11 @@ impl App {
         self.window.minimum_width
     }
 
+    /// `frame` re-reads a fitted size from its motion; between frames, asking again on every
+    /// configure would resize the window without drawing at each size.
     #[cfg(feature = "native")]
-    fn reconcile_minimum_size(&mut self, window: &Window) {
-        if self.window.preferred_size.is_some() {
+    fn reconcile_minimum_size(&mut self, window: &Window, frame: bool) {
+        if frame && self.window.preferred_size.is_some() {
             self.window.preferred_size =
                 crate::widget::preferred_window_size(self.root_widget.as_ref());
         }

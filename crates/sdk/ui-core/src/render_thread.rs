@@ -383,7 +383,7 @@ pub(crate) fn spawn_render_thread_deferred(
             let present_dbg = crate::env::var("TILO_UI_PRESENT").is_ok();
             let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
-            let presentation = crate::presentation_feedback::Observer::from_env(window);
+            let presentation = crate::presentation_feedback::Observer::from_env(window.clone());
             let mut gpu_trace = presentation
                 .as_ref()
                 .and_then(crate::presentation_feedback::Observer::worker_id)
@@ -627,6 +627,7 @@ pub(crate) fn spawn_render_thread_deferred(
                         cpu_frame_id,
                         present_dbg,
                         observer: presentation.as_ref(),
+                        window: window.as_deref(),
                     },
                 );
                 let render_host_end = native_timing.and_then(|_| timing::capture());
@@ -957,6 +958,9 @@ struct FramePresentation<'a> {
     cpu_frame_id: Option<u64>,
     present_dbg: bool,
     observer: Option<&'a crate::presentation_feedback::Observer>,
+    /// The window the frame is shown in: its surface takes the frame's size in the commit that
+    /// carries the frame.
+    window: Option<&'a winit::window::Window>,
 }
 
 struct FrameRasterizers<'a> {
@@ -1002,6 +1006,7 @@ fn render_one_frame(
         cpu_frame_id,
         present_dbg,
         observer: presentation,
+        window,
     } = present;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         tracing::info!("render device index out of range; stopping the render thread");
@@ -1239,7 +1244,13 @@ fn render_one_frame(
     }
     let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
         if let Some(observer) = presentation {
-            observer.present_wayland(frame_ix, cpu_frame_id, || surface_texture.present());
+            observer.present_wayland(frame_ix, cpu_frame_id, (width, height), || {
+                surface_texture.present();
+            });
+        } else if let Some(window) = window {
+            tilo_presentation::present(window, (width, height), None, || {
+                surface_texture.present();
+            });
         } else {
             surface_texture.present();
         }

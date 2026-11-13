@@ -814,6 +814,18 @@ commit falls between attach and commit, with optional `wp_presentation`
 feedback, and flushes from the calling thread. `client_buffer_formats`
 reports the announced pairs. X11 windows report none and make no buffers.
 
+## `vendor/winit`: a frame is shown at the size it was drawn for
+
+Under fractional scaling a buffer has scale 1 and the `wp_viewport`
+destination alone sizes the surface. Upstream sets the destination when a
+configure resizes the window, so the next commit, an older frame still on
+its way from the render thread or a layer surface's `set_size` commit,
+showed one size stretched to another, with the pointer mapped through the
+stretch. The destination now goes with each frame: `attach_client_buffer`
+sets it from the buffer's own size, and `WindowExtWayland::present_frame`
+(which replaces `present_with_feedback`) sets it from the size of the frame
+a swapchain present commits, under the window state's lock.
+
 ## `vendor/winit`: drag offers stream files when asked
 
 `WindowExtWayland::start_drag` takes each offer as a `DragData`: bytes, or a

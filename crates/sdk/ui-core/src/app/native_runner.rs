@@ -2636,7 +2636,7 @@ impl AppHandler {
         // A window that fits its content asks for the size its layout just measured before this
         // frame is committed: the frame a client sees is at the size its page needs, not one
         // drawn at the room it was given and resized after.
-        app.reconcile_minimum_size(window);
+        app.reconcile_minimum_size(window, true);
         // A local read this frame would show has not answered and is still
         // inside its frame budget ([`crate::arriving`]): the frame on screen
         // stays until the data lands (its wake redraws) or the budget runs
