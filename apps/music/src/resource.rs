@@ -839,32 +839,69 @@ mod tests {
         assert!(library.tracks.is_empty() && library.playlists.is_empty());
     }
 
-    #[test]
-    fn scenarios_stage_the_sample_library_through_actions() {
-        let staged = TestApp::<MusicShell>::capture(Some("nowplaying")).unwrap();
-        let library = staged.state();
-        let sample = crate::seed::sample_library();
-        assert_eq!(library.tracks, sample.tracks);
-        assert_eq!(library.albums, sample.albums);
-        assert_eq!(library.artists, sample.artists);
-        assert_eq!(library.liked, sample.liked);
-        assert_eq!(library.saved_albums, sample.saved_albums);
-        let names: Vec<_> = library.playlists().map(|p| p.name.clone()).collect();
-        assert_eq!(names, ["Deep Focus", "Night Drive", "Slow Morning"]);
-        for (staged, sample) in library.playlists().zip(sample.playlists()) {
-            assert_eq!(staged.track_ids(), sample.track_ids());
-        }
+    /// The scenarios that stage no library, in the order the app lists them: each shows what its
+    /// window shows before any music is in it.
+    const EMPTY_SCENARIOS: [&str; 7] = [
+        "empty",
+        "spotify-home",
+        "spotify-devices",
+        "spotify-error",
+        "spotify-queue",
+        "spotify-create",
+        "recommendations-empty",
+    ];
 
-        let empty = TestApp::<MusicShell>::capture(Some("empty")).unwrap();
-        assert!(empty.state().tracks.is_empty());
-    }
-
+    /// Every scenario captures, and its library is the one its actions stage: nothing for the
+    /// scenarios above, the sample library for every other one.
     #[test]
     fn every_scenario_captures() {
-        for scenario in MusicShell::scenarios() {
-            TestApp::<MusicShell>::capture(Some(scenario))
+        let sample = crate::seed::sample_library();
+        let mut empty = Vec::new();
+        for &scenario in MusicShell::scenarios() {
+            let staged = TestApp::<MusicShell>::capture(Some(scenario))
                 .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            let library = staged.state();
+            if EMPTY_SCENARIOS.contains(&scenario) {
+                empty.push(scenario);
+                assert!(library.tracks.is_empty(), "{scenario} stages no songs");
+                assert!(
+                    library.playlists.is_empty(),
+                    "{scenario} stages no playlists"
+                );
+                continue;
+            }
+            assert_eq!(library.tracks, sample.tracks, "{scenario}");
+            assert_eq!(library.albums, sample.albums, "{scenario}");
+            assert_eq!(library.artists, sample.artists, "{scenario}");
+            assert_eq!(library.liked, sample.liked, "{scenario}");
+            assert_eq!(library.saved_albums, sample.saved_albums, "{scenario}");
+            assert_eq!(
+                library.followed_artists, sample.followed_artists,
+                "{scenario}"
+            );
+            let names: Vec<_> = library.playlists().map(|p| p.name.clone()).collect();
+            assert_eq!(
+                names,
+                ["Deep Focus", "Night Drive", "Slow Morning"],
+                "{scenario}"
+            );
+            for (staged, sample) in library.playlists().zip(sample.playlists()) {
+                assert_eq!(staged.track_ids(), sample.track_ids(), "{scenario}");
+            }
+            // Only the feedback scenario stages feedback on the recommendations.
+            let feedback = scenario == "recommendations-feedback";
+            let recommendations = &library.recommendations;
+            assert_eq!(
+                recommendations.is_dismissed("tk_g2"),
+                feedback,
+                "{scenario}"
+            );
+            assert_eq!(recommendations.prefers("ar_kavi"), feedback, "{scenario}");
         }
+        assert_eq!(
+            empty, EMPTY_SCENARIOS,
+            "every scenario that stages no library was captured"
+        );
     }
 
     #[test]
