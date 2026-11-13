@@ -293,41 +293,17 @@ pub fn runtime_offer_from_enabled(runtime: &str) -> Result<Option<CatalogueApp>,
     last_error.map_or(Ok(None), Err)
 }
 
-/// A language pack the enabled repositories offer: its locale (`de-DE`) and
-/// the newest version this device can install.
+/// A language pack a repository offers: its language (`de`) and newest version.
 #[derive(Clone, Debug)]
 pub struct LanguagePackOffer {
-    /// The locale as a BCP 47 tag, the pack's id suffix in its usual case.
+    /// The language the pack carries ([`tilo_paths::language_of`]: `de`).
     pub locale: String,
     /// The package to install.
     pub offer: CatalogueApp,
 }
 
-/// `lower` (`de-de`, `zh-hant-tw`) in the usual case of a BCP 47 tag
-/// (`de-DE`, `zh-Hant-TW`): the language lower, a script title-cased, a
-/// region upper.
-#[must_use]
-pub fn locale_tag(lower: &str) -> String {
-    lower
-        .split('-')
-        .enumerate()
-        .map(|(index, part)| match (index, part.len()) {
-            (0, _) => part.to_ascii_lowercase(),
-            (_, 2) => part.to_ascii_uppercase(),
-            (_, 4) => {
-                let mut chars = part.chars();
-                chars.next().map_or_else(String::new, |first| {
-                    first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
-                })
-            }
-            _ => part.to_ascii_lowercase(),
-        })
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-/// Every language pack the enabled repositories offer, by locale, the first
-/// repository that offers a locale answering for it.
+/// Every language pack the enabled repositories offer, by language, the
+/// first repository that offers a language answering for it.
 ///
 /// # Errors
 ///
@@ -353,10 +329,11 @@ pub fn language_pack_offers() -> Result<Vec<LanguagePackOffer>, String> {
             .filter(|id| registry_types::is_language_pack_package_id(id))
             .collect();
         for package_id in packs {
-            let Some(lower) = tilo_app_package::language_pack_locale(&package_id) else {
+            let Some(locale) =
+                tilo_app_package::language_pack_locale(&package_id).map(tilo_paths::language_of)
+            else {
                 continue;
             };
-            let locale = locale_tag(lower);
             if offers.iter().any(|known| known.locale == locale) {
                 continue;
             }
@@ -378,21 +355,22 @@ pub fn language_pack_offers() -> Result<Vec<LanguagePackOffer>, String> {
     Ok(offers)
 }
 
-/// The package id of `locale`'s language pack.
+/// The package id of the language pack of the language `tag` names
+/// ([`tilo_paths::language_of`]): `de-DE` and `de` both name the `de` pack.
 #[must_use]
-pub fn language_pack_id(locale: &str) -> String {
+pub fn language_pack_id(tag: &str) -> String {
     format!(
         "{}{}",
         tilo_app_package::LANGUAGE_PACK_ID_PREFIX,
-        locale.to_ascii_lowercase()
+        tilo_paths::language_of(tag)
     )
 }
 
-/// The version of the language pack installed for `locale`, if one is: the
-/// package store's record, as for any package.
+/// The version of the language pack of the language `tag` names, if one is:
+/// the package store's record, as for any package.
 #[must_use]
-pub fn installed_language_pack(locale: &str) -> Option<String> {
-    installed_version(&language_pack_id(locale)).ok().flatten()
+pub fn installed_language_pack(tag: &str) -> Option<String> {
+    installed_version(&language_pack_id(tag)).ok().flatten()
 }
 
 /// The catalogue row offering exactly `version` of a verified entry.
@@ -909,14 +887,14 @@ mod tests {
 
     use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
 
-    /// A language pack's id names its locale in lower case; the picker shows
-    /// the tag in its usual case.
+    /// A language pack's id names its own language: the pack chosen in
+    /// Settings for `de-DE` is the `de` one, and a tag of its language in
+    /// any spelling names the same pack.
     #[test]
-    fn a_language_packs_locale_reads_as_a_tag() {
-        assert_eq!(locale_tag("de-de"), "de-DE");
-        assert_eq!(locale_tag("pt-br"), "pt-BR");
-        assert_eq!(locale_tag("zh-hant-tw"), "zh-Hant-TW");
-        assert_eq!(locale_tag("fr"), "fr");
+    fn a_language_names_the_same_pack_whatever_its_tag() {
+        assert_eq!(language_pack_id("de-DE"), "so.tilo.language-pack.de");
+        assert_eq!(language_pack_id("de_DE"), "so.tilo.language-pack.de");
+        assert_eq!(language_pack_id("pt-BR"), "so.tilo.language-pack.pt");
     }
 
     /// A listing's names and taglines read in the person's language, the same
@@ -935,7 +913,7 @@ mod tests {
         assert_eq!(preferred_locale(), "de-DE");
         assert_eq!(
             language_pack_id(&preferred_locale()),
-            "so.tilo.language-pack.de-de"
+            "so.tilo.language-pack.de"
         );
     }
 

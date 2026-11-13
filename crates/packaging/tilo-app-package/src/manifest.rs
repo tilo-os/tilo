@@ -387,8 +387,8 @@ impl Package {
     /// language, else English; `None` when the app declares none.
     #[must_use]
     pub fn tagline_for(&self, locale: &str) -> Option<&str> {
-        let language = locale.split(['-', '_']).next().unwrap_or(locale);
-        [locale, language, "en"]
+        let language = tilo_paths::language_of(locale);
+        [locale, language.as_str(), "en"]
             .into_iter()
             .find_map(|wanted| {
                 self.taglines

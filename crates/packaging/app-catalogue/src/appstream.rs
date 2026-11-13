@@ -179,13 +179,8 @@ struct Component {
 /// Whether text in `lang` is for a desktop speaking `locale`: the same tag,
 /// or the same language.
 fn speaks(lang: &str, locale: &str) -> bool {
-    let primary = |tag: &str| {
-        tag.split(['-', '_'])
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-    };
-    lang.replace('_', "-").eq_ignore_ascii_case(locale) || primary(lang) == primary(locale)
+    lang.replace('_', "-").eq_ignore_ascii_case(locale)
+        || tilo_paths::language_of(lang) == tilo_paths::language_of(locale)
 }
 
 /// The text for `locale`, else the untranslated one.

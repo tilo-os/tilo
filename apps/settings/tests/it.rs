@@ -236,3 +236,6 @@ mod action_keywords_tests;
 
 #[path = "live_window_density.rs"]
 mod live_window_density;
+
+#[path = "choose_language.rs"]
+mod choose_language;

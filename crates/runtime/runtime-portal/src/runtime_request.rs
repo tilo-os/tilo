@@ -38,7 +38,8 @@ pub enum Request {
 /// A language the repositories offer a pack for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferedLanguage {
-    /// The locale, a BCP 47 tag (`de-DE`).
+    /// The language the pack carries, as the pack is named
+    /// ([`tilo_paths::language_of`]: `de`).
     pub locale: String,
     pub installed: bool,
 }

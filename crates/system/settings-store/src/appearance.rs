@@ -21,8 +21,8 @@ pub const TEXT_SCALE_MAX: f32 = 4.0;
 /// which the compositor keeps per device. Unset shows the default picture.
 pub const WALLPAPER: Key<Option<String>> = Key::new(SECTION, "wallpaper", || None);
 
-/// The interface language as a BCP 47 tag (`de-DE`). Unset follows the
-/// system locale.
+/// The interface language, named as its language pack is (`de`; see
+/// [`tilo_paths::language_of`]). Unset follows the device's locale.
 pub const LANGUAGE: Key<Option<String>> = Key::new(SECTION, "language", || None);
 
 /// The interface language: the one the person chose ([`LANGUAGE`]), else the

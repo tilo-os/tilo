@@ -671,10 +671,10 @@ pub fn install_runtime_from_enabled(
     }
 }
 
-/// Install the language pack for `locale` (`de-DE`) from the first enabled
-/// repository that offers it, through the verified pipeline apps and
-/// runtimes take; the caller names only the locale. Nothing is done when
-/// the newest offered version is installed already.
+/// Install the language pack of the language `tag` names (`de`, `de-DE`) from
+/// the first enabled repository that offers it, through the verified pipeline
+/// apps and runtimes take; nothing is done when the newest version of it is
+/// installed already.
 ///
 /// # Errors
 ///
