@@ -1,26 +1,14 @@
 //! Take changes into an [`AutoCommit`] without growing it by a patch event per op.
 //!
-//! An `AutoCommit` owns a patch log that backs its incremental diff
-//! ([`AutoCommit::update_diff_cursor`], [`AutoCommit::diff_incremental`]). It
-//! passes that log to every apply path — [`AutoCommit::apply_changes`],
-//! [`AutoCommit::apply_changes_batch`], [`AutoCommit::load_incremental`],
-//! [`AutoCommit::merge`] and the sync wrapper's
-//! [`SyncDoc::receive_sync_message`] — and to the view switches
-//! [`AutoCommit::isolate`] and [`AutoCommit::integrate`]. Automerge (0.8
-//! through at least 0.12) records an event per applied op into that log
-//! whether or not it is active, and only an active log is ever drained
-//! (`update_diff_cursor` truncates it). A document nobody diffs therefore
-//! keeps one event for every op any peer ever sent it, for as long as it
-//! lives: several times the size of the document itself.
+//! An `AutoCommit` records an event per applied op into its patch log whether or not a
+//! diff cursor is armed, and only an armed log is ever drained; a document nobody diffs
+//! therefore keeps one event for every op any peer ever sent it, for as long as it lives.
 //!
-//! [`ApplyIncoming`] wraps each of those calls. When no diff cursor is armed
-//! the log it leaves behind is dead, so it is replaced by an empty one
-//! ([`AutoCommit::reset_diff_cursor`]); a document whose owner armed a cursor
-//! keeps its log for the next diff. The raw methods are listed under
-//! `disallowed-methods` in `clippy.toml`, so this trait is the one way in.
-//!
-//! [`Automerge`](automerge::Automerge) itself is not affected: its apply paths
-//! log into a fresh inactive log per call and drop it.
+//! [`ApplyIncoming`] wraps each apply path: with no cursor armed the log it leaves behind
+//! is dead and is replaced by an empty one ([`AutoCommit::reset_diff_cursor`]), while a
+//! document whose owner armed a cursor keeps its log for the next diff. The raw methods
+//! are listed under `disallowed-methods` in `clippy.toml`, so this trait is the one way
+//! in.
 
 #[cfg(feature = "heap-probe")]
 pub mod heap;
