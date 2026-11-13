@@ -13,9 +13,10 @@ files are not there - and pushes that had only been built natively broke main
 that way repeatedly.
 
 Only the touched packages are linted, and the Clippy runs start together, so a
-one-crate push costs about one build. `rcargo`, the remote builder, compiles
-when it is on PATH; without it the host lint runs on the local toolchain and
-the wasm32 lint is skipped, with a line saying so.
+one-crate push costs about one build. Cargo compiles wherever `$CARGO` points
+when it is set - any cargo drop-in, which may build on another machine - and
+otherwise the `cargo` on PATH. The wasm32 pass needs the target, so it is
+skipped with a line saying so where the cargo in use cannot build it.
 
 There is no switch to skip the lint: `git push --no-verify` is Git's own
 escape, and CONTRIBUTING.md asks contributors never to use it.
@@ -25,7 +26,9 @@ escape, and CONTRIBUTING.md asks contributors never to use it.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -65,6 +68,20 @@ ZERO_OID = {"0"}
 def say(message: str) -> None:
     """Say something to the person pushing, on stderr where Git shows it in order."""
     print(message, file=sys.stderr, flush=True)
+
+
+def cargo_command() -> list[str]:
+    """The cargo that builds: any drop-in named in $CARGO (which may build on another machine), else cargo."""
+    return shlex.split(os.environ.get("CARGO", "")) or ["cargo"]
+
+
+def wasm_target_installed() -> bool:
+    """Whether the toolchain here has the page's target, so the wasm32 pass can run."""
+    if shutil.which("rustup") is None:
+        return False
+    installed = subprocess.run(["rustup", "target", "list", "--installed"],
+                               capture_output=True, text=True, check=False)
+    return installed.returncode == 0 and WASM_TARGET in installed.stdout.split()
 
 
 class Lint(NamedTuple):
@@ -164,29 +181,31 @@ def touched(root: Path, files: set[str]) -> tuple[list[str], list[str]]:
     return sorted(owners), sorted(owners & web)
 
 
-def lint_runs(native: list[str], web: list[str], builder: str, formatting: bool) -> list[Lint]:
-    """The runs the gate makes: formatting, the host lint, and the page lint when the page builds them.
+def lint_runs(native: list[str], web: list[str], formatting: bool) -> list[Lint]:
+    """The runs the gate makes: formatting, the host lint, and the page lint where it can run.
 
-    `web` is what is actually linted for the page, so a missing builder leaves
-    it empty. Each command is also the line a failure prints to rerun it.
+    `web` is what is actually linted for the page, so a toolchain without the
+    target leaves it empty. Each command is also the line a failure prints to
+    rerun it.
     """
+    cargo = cargo_command()
     selected = [item for name in native for item in ("-p", name)]
     runs = []
     if formatting:
-        runs.append(Lint("rustfmt", ["cargo", "fmt", "--check", *selected]))
+        runs.append(Lint("rustfmt", [*cargo, "fmt", "--check", *selected]))
     runs.append(Lint("clippy (native)",
-                     [builder, "clippy", "--locked", *selected, "--all-targets", "--", "-D", "warnings"]))
+                     [*cargo, "clippy", "--locked", *selected, "--all-targets", "--", "-D", "warnings"]))
     if web:
         page = [item for name in web for item in ("-p", name)]
         runs.append(Lint("clippy (wasm32)", [
-            builder, "clippy", "--locked", "--target", WASM_TARGET, *page, "--", "-D", "warnings",
+            *cargo, "clippy", "--locked", "--target", WASM_TARGET, *page, "--", "-D", "warnings",
         ]))
     return runs
 
 
 def rustfmt_available() -> bool:
-    return shutil.which("cargo") is not None and subprocess.run(
-        ["cargo", "fmt", "--version"], capture_output=True, check=False).returncode == 0
+    return subprocess.run([*cargo_command(), "fmt", "--version"], capture_output=True,
+                          check=False).returncode == 0
 
 
 def run_together(root: Path, runs: list[Lint]) -> tuple[list[tuple[Lint, int, str]], float]:
@@ -258,13 +277,13 @@ def main(argv: list[str]) -> int:
     if workspace_wide := sorted(files & WORKSPACE_INPUTS):
         say(f"pre-push: {', '.join(workspace_wide)} changed too: only the touched packages are linted "
             "here, CI builds the whole workspace")
-    if not shutil.which("cargo"):
-        say("pre-push: no cargo on PATH to lint with; the lint is skipped for this push")
+    if shutil.which(cargo_command()[0]) is None:
+        say(f"pre-push: there is no cargo to lint with ({cargo_command()[0]}); the lint is skipped for "
+            "this push")
         return 0
-    builder = "rcargo" if shutil.which("rcargo") else "cargo"
-    if builder == "cargo":
-        say("pre-push: rcargo is not on PATH: linting natively with the local toolchain, so the wasm32 "
-            "lint is skipped")
+    if web and not (os.environ.get("CARGO", "").strip() or wasm_target_installed()):
+        say(f"pre-push: {WASM_TARGET} is not installed here, so the page build is not linted "
+            f"(rustup target add {WASM_TARGET} adds it)")
         web = []
     if git(root, "status", "--porcelain").stdout.strip():
         say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, which "
@@ -273,9 +292,8 @@ def main(argv: list[str]) -> int:
     if not formatting:
         say("pre-push: rustfmt is not installed, so formatting is not checked here")
     page = f", {len(web)} of them for the page" if web else ""
-    where = " on the builder" if builder == "rcargo" else " locally"
-    say(f"pre-push: linting {packages(len(native))}{where}{page}")
-    runs = lint_runs(native, web, builder, formatting)
+    say(f"pre-push: linting {packages(len(native))}{page}")
+    runs = lint_runs(native, web, formatting)
     checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(native))}{page}"
     return report(*run_together(root, runs), checked)
 

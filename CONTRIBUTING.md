@@ -163,11 +163,11 @@ files passes immediately. Every failure prints the command that reruns it.
 Each package is linted as its default build; CI's wider matrix also covers the
 features a package's tests turn on.
 
-With `rcargo`, the maintainers' remote build tool, on your `PATH`, all of it
-compiles there, the wasm32 pass included. Without it the lint runs on your own
-toolchain, which needs `clippy` and `rustfmt` (`rustup component add clippy
-rustfmt`), and the hook says the wasm32 lint was skipped, so CI is the first to
-lint that target.
+The lint compiles with the `cargo` on your `PATH`, or with the drop-in named in
+`CARGO` when you set one (`CARGO` may build on another machine). The wasm32
+pass needs that target installed: `rustup target add wasm32-unknown-unknown`.
+Without it the hook says the page build was skipped, so CI is the first to lint
+that target.
 
 Then [open a pull request](https://code.tilo.so/tilo/tilo/pulls) from your
 fork's branch into `tilo/tilo`'s `main`. Say what changed, why, and what you
