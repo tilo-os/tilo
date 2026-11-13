@@ -925,7 +925,7 @@ fn read_view_definition() -> ToolDefinition {
 fn look_content_definition() -> ToolDefinition {
     ToolDefinition {
         name: LOOK_CONTENT.into(),
-        description: "See a picture kept as content (tilo.content:<hash>) that this conversation \
+        description: "See a picture kept as content (tilo.content:<ref>) that this conversation \
              named: in the request, what was produced, a read's answer or a search result. Use \
              it when the plan depends on what the picture shows. A read that renders a picture \
              (look) already shows it."
@@ -935,7 +935,7 @@ fn look_content_definition() -> ToolDefinition {
             "properties": {
                 "content": {
                     "type": "string",
-                    "description": "The picture's address, tilo.content:<hash>, exactly as shown."
+                    "description": "The picture's address, tilo.content:<ref>, exactly as shown."
                 }
             },
             "required": ["content"],

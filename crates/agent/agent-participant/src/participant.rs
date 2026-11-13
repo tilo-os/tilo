@@ -1063,7 +1063,7 @@ impl AgentParticipant {
                 let Some(picture) = arguments
                     .values()
                     .filter_map(serde_json::Value::as_str)
-                    .filter_map(crate::vision::content_hash)
+                    .filter_map(crate::vision::reference)
                     .find(|hash| self.content_is_picture(hash))
                     .map(|hash| crate::vision::content_address(&hash))
                 else {

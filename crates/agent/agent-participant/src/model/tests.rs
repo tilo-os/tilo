@@ -1983,34 +1983,28 @@ pub(crate) fn look_context() -> PlanContext {
 }
 
 /// Reads whose every read renders the picture at `rendered`, with the
-/// workspace's content in `content`; it keeps what it was asked to look at.
+/// workspace's content sealed in `content`, as members keep it; it keeps
+/// what it was asked to look at.
 pub(crate) struct Looks {
     pub(crate) rendered: String,
-    pub(crate) content: BTreeMap<String, Vec<u8>>,
+    pub(crate) content: tilo_content::ContentStore,
     pub(crate) looked: Vec<String>,
 }
 
 impl Looks {
-    pub(crate) fn new(rendered: char) -> Self {
-        let rendered = crate::vision::tests::address(rendered);
-        let mut content = BTreeMap::new();
-        content.insert(
-            crate::vision::content_hash(&rendered).unwrap(),
-            crate::vision::tests::png(8, 6),
-        );
+    pub(crate) fn new() -> Self {
+        let content = tilo_content::ContentStore::memory_in_workspace().sealing();
+        let rendered = content.put(&crate::vision::tests::png(8, 6)).unwrap();
         Self {
-            rendered,
+            rendered: crate::vision::content_address(&rendered),
             content,
             looked: Vec::new(),
         }
     }
 
-    /// Keep `bytes` as the workspace's content at the address of `fill`.
-    pub(crate) fn keep(&mut self, fill: char, bytes: Vec<u8>) -> String {
-        let address = crate::vision::tests::address(fill);
-        self.content
-            .insert(crate::vision::content_hash(&address).unwrap(), bytes);
-        address
+    /// Keep `bytes`, sealed, as the workspace's content: its address.
+    pub(crate) fn keep(&self, bytes: &[u8]) -> String {
+        crate::vision::content_address(&self.content.put(bytes).unwrap())
     }
 }
 
@@ -2031,8 +2025,7 @@ impl Reads for Looks {
     fn look(&mut self, hash: &str) -> Result<Vec<u8>, String> {
         self.looked.push(hash.to_owned());
         self.content
-            .get(hash)
-            .cloned()
+            .read(hash)
             .ok_or_else(|| "the workspace keeps no such content".into())
     }
 }

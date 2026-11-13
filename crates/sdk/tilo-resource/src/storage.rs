@@ -815,10 +815,7 @@ impl Bytes {
     /// before it was sealed, or an address and the key that opens it. Any
     /// other text is the stored form ([`Self::parse_text`]), or no content.
     fn from_content_argument(text: &str) -> Result<Self, String> {
-        let bare = text.trim();
-        let Some(reference) = crate::content::reference_hash(text)
-            .or_else(|| tilo_content::valid_reference(bare).then_some(bare))
-        else {
+        let Some(reference) = tilo_actions::named_reference(text) else {
             return Self::from_json(&serde_json::Value::String(text.to_owned()))
                 .map_err(|error| error.to_string());
         };

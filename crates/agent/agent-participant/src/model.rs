@@ -865,7 +865,7 @@ impl<'a> PlanningReads<'a> {
                 .rendered
                 .iter()
                 .chain(&context.pictures)
-                .filter_map(|address| crate::vision::content_hash(address))
+                .filter_map(|address| crate::vision::reference(address))
                 .collect(),
         }
     }
@@ -886,8 +886,8 @@ impl<'a> PlanningReads<'a> {
             .into_iter()
             .collect();
         for address in &context.read_pictures {
-            let rendered = crate::vision::content_hash(address)
-                .is_some_and(|hash| self.rendered.contains(&hash));
+            let rendered =
+                crate::vision::reference(address).is_some_and(|hash| self.rendered.contains(&hash));
             if (rendered || context.workspace_pictures)
                 && !shown.iter().any(|(looked, _)| looked == address)
             {
@@ -912,7 +912,7 @@ impl<'a> PlanningReads<'a> {
     /// The picture at `address` as the model is shown it; `rendered` when
     /// an app rendered it.
     fn picture(&mut self, address: &str, rendered: bool) -> Result<Picture, String> {
-        let hash = crate::vision::content_hash(address)
+        let hash = crate::vision::reference(address)
             .ok_or_else(|| format!("`{address}` is not a content address"))?;
         let bytes = self.reads.look(&hash)?;
         if crate::vision::is_pdf(&bytes) {
@@ -984,7 +984,7 @@ impl PlanReads for PlanningReads<'_> {
             // Content read as text that is a picture is shown, as a look
             // shows it, or refused saying why.
             let name = crate::vision::read_picture_name(value, &picture);
-            let rendered = crate::vision::content_hash(&picture)
+            let rendered = crate::vision::reference(&picture)
                 .is_some_and(|hash| self.rendered.contains(&hash));
             let why = if !self.sees {
                 Some(crate::vision::NOT_SEEING)
@@ -1005,7 +1005,7 @@ impl PlanReads for PlanningReads<'_> {
         }
         let mut pictures = Vec::new();
         if let Some(rendered) = rendered_picture(&output) {
-            if let Some(hash) = crate::vision::content_hash(&rendered) {
+            if let Some(hash) = crate::vision::reference(&rendered) {
                 self.rendered.insert(hash);
             }
             let withheld = if self.sees {
@@ -1054,8 +1054,8 @@ impl PlanReads for PlanningReads<'_> {
     /// — one of the workspace's own. A PDF is looked at page by page in
     /// pdf-viewer.
     fn look(&mut self, address: &str) -> Result<Seen, String> {
-        let hash = crate::vision::content_hash(address).ok_or_else(|| {
-            format!("`{address}` is not a content address: give tilo.content:<hash>")
+        let hash = crate::vision::reference(address).ok_or_else(|| {
+            format!("`{address}` is not a content address: give tilo.content:<reference>")
         })?;
         let address = crate::vision::content_address(&hash);
         let bytes = self.reads.look(&hash)?;

@@ -77,6 +77,23 @@ pub fn reference_hash(value: &str) -> Option<&str> {
     tilo_actions::content_hash(value.trim()).filter(|hash| tilo_content::valid_reference(hash))
 }
 
+/// The content reference `value` names, as a content store reads it: a
+/// `tilo.content:<reference>` address, the reference alone, or a kept
+/// value's stored form (`blake3:<hex>:<len>[:<reference>]`). Its address is
+/// lower case; a sealed reference keeps its key. `None` for anything else.
+#[must_use]
+pub fn named(value: &str) -> Option<String> {
+    let value = value.trim();
+    let reference = tilo_actions::named_reference(value)
+        .map(str::to_owned)
+        .or_else(|| {
+            <crate::Bytes as crate::model::Model>::from_json(&value.into())
+                .ok()?
+                .reference()
+        })?;
+    tilo_content::ContentRef::parse(&reference).map(|parsed| parsed.to_string())
+}
+
 /// The bytes the content reference `address` names, read from the store of
 /// the window whose code is running.
 ///
