@@ -199,6 +199,40 @@ fn grain_tooth_inner_shadow_and_feather_change_what_is_drawn() {
         app.call("edit-marks", edit.clone()).unwrap();
         assert_eq!(app.state(), plain, "{edit} is no finish");
     }
+    // The end of a range is within it: each finish is kept as given, and the
+    // three given at once are one step.
+    app.call(
+        "edit-marks",
+        json!({"ids": ["hill"], "grain": 1.0, "feather": 500, "inner_shadow": {"offset": [0, 12], "blur": 500, "colour": "#000000aa"}}),
+    )
+    .unwrap();
+    let style = app.state().mark("hill").unwrap().style.clone();
+    assert_eq!(style.grain, Some(1.0), "grain 1 is within its range");
+    assert_eq!(
+        style.feather,
+        Some(500.0),
+        "feather 500 is within its range"
+    );
+    assert_eq!(
+        style.inner_shadow.as_ref().map(|shadow| shadow.blur),
+        Some(500.0),
+        "blur 500 is within its range"
+    );
+    assert!(
+        app.undo(),
+        "finishes given at once are one step to take back"
+    );
+    assert_eq!(app.state(), plain, "the hill is plain again after them");
+    // The paper's tooth has its range too.
+    let refused = app
+        .call("edit-layer", json!({"id": "layer-1", "texture": 1.5}))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("texture must be within 0..=1"),
+        "{refused}"
+    );
+    assert_eq!(app.state(), plain, "a tooth past its range changed nothing");
     app.call("edit-layer", json!({"id": "layer-1", "texture": 1.0}))
         .unwrap();
     let after = pixels(&app, region);
