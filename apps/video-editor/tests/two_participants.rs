@@ -374,8 +374,12 @@ fn participants_presence_reaches_the_other_screen() {
         );
     }
     // A participant holding a clip has to be on it, whatever their playhead is doing.
+    //
+    // Ada is only read here: Bo joins from a copy of her document and nothing presses a key or
+    // draws a frame of hers. The case after this one therefore takes her over exactly as she
+    // opened, instead of opening the project a second time.
+    let ada = Participant::opening();
     {
-        let ada = Participant::opening();
         let mut bo = Participant::joining(&ada);
 
         // A clip near the start of the timeline, so it is on screen at the
@@ -406,7 +410,7 @@ fn participants_presence_reaches_the_other_screen() {
     }
     // Through a published frame, because there is no other way to retract an outline.
     {
-        let mut ada = Participant::opening();
+        let mut ada = ada;
         let mut ctx = PresenceCtx::empty();
         ada.relay(&mut ctx, "ada");
         assert_eq!(vp::peer_clips(&ctx).len(), 1, "Ada starts with a clip");
