@@ -360,39 +360,21 @@ fn item_of_resource(resource: &str, kind: &str) -> Option<String> {
 /// label the item's own published resource carries.
 ///
 /// An item's actions are published on the item's own resource and again on the
-/// record, with the item's id as an argument (`<record>#rename` addressed by
-/// `issue`), so a caller naming an item either way names that item. `None`
-/// where the argument names none: the step then says the record.
+/// record, the record's copy addressing the item by its id: the one parameter
+/// the item's copy leaves out, its method's first. That is what says which id
+/// in the argument names the item — an action can name another item beside it
+/// (`move-under` takes the new parent) without that being the one it acts on.
+/// `None` where the argument names no item: the step then says the record.
 fn item_named<'a>(
     action: &PublishedAction,
     surface: &'a PublishedSurface,
     argument: Option<&str>,
 ) -> Option<&'a str> {
-    /// Every string `value` holds, at any depth.
-    fn strings<'v>(value: &'v serde_json::Value, into: &mut Vec<&'v str>) {
-        match value {
-            serde_json::Value::String(text) => into.push(text),
-            serde_json::Value::Array(items) => {
-                for item in items {
-                    strings(item, into);
-                }
-            }
-            serde_json::Value::Object(fields) => {
-                for item in fields.values() {
-                    strings(item, into);
-                }
-            }
-            _ => {}
-        }
-    }
     let tilo_actions::remote::InvokeArgument::Json(argument) =
         tilo_actions::remote::InvokeArgument::from_slot(argument)
     else {
         return None;
     };
-    let argument = serde_json::Value::Object(argument);
-    let mut said: Vec<&str> = Vec::new();
-    strings(&argument, &mut said);
     surface.actions.iter().find_map(|descriptor| {
         // The same verb on an item of this record, by the item resource the app
         // published for it: what a person reads it by.
@@ -401,9 +383,16 @@ fn item_named<'a>(
         {
             return None;
         }
+        let names_the_item = action
+            .params
+            .iter()
+            .find(|param| !descriptor.params.iter().any(|own| own.name == param.name))?;
         let item = item_of_resource(&descriptor.resource, &descriptor.resource_kind)?;
-        said.contains(&item.as_str())
-            .then_some(descriptor.resource_label.as_str())
+        (argument
+            .get(names_the_item.name.as_ref())
+            .and_then(serde_json::Value::as_str)
+            == Some(item.as_str()))
+        .then_some(descriptor.resource_label.as_str())
     })
 }
 
@@ -717,13 +706,53 @@ mod anchor_tests {
             None
         );
         assert_eq!(item_named(&rename, &surface, None), None);
+        // An action names another item beside the one it acts on — moving an
+        // issue under another — and the step still says the issue it moves.
+        let under = |item: &str, label: &str| PublishedAction {
+            resource: format!("tasks.tracker/issues/{item}"),
+            resource_kind: "tasks.tracker.issues".into(),
+            resource_label: label.into(),
+            params: vec![ActionParam::required_owned(
+                "parent",
+                ParamType::Text,
+                "Which issue it goes under",
+            )],
+            ..published("", "tasks.tracker", "move-under", Vec::new()).0
+        };
+        let (mover, _) = published(
+            "tasks.tracker",
+            "tasks.tracker",
+            "move-under",
+            vec![
+                ActionParam::required_owned("issue", ParamType::Text, "Which issue to move"),
+                ActionParam::required_owned("parent", ParamType::Text, "Which issue it goes under"),
+            ],
+        );
+        let moving_surface = PublishedSurface {
+            actions: vec![
+                mover.clone(),
+                under("7d2b", "Book room 4 for Friday"),
+                under("9c1e", "Draft the launch plan"),
+            ],
+            ..surface.clone()
+        };
+        let moving = slot(&serde_json::json!({ "issue": "7d2b", "parent": "9c1e" }));
+        assert_eq!(
+            item_named(&mover, &moving_surface, Some(&moving)),
+            Some("Book room 4 for Friday"),
+            "the issue it moves, not the one it moves it under",
+        );
         // The same verb on another record's item is another step's item.
         let elsewhere = slot(&serde_json::json!({ "issue": "7d2b" }));
         let (mut other, _) = published(
             "notes.notebook/pages/7d2b",
             "notes.notebook.pages",
             "rename",
-            Vec::new(),
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "Its new title",
+            )],
         );
         other.resource_label = "Trip plan".into();
         let surface = PublishedSurface {
