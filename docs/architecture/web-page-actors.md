@@ -387,18 +387,40 @@ sharing device, whatever its desk lists as its own view of that window.
 On three booted machines the three tab steps pass: two machines, then three,
 answer one form in one tab, and the record and the review name each remote
 agent's device by its key and its name and none beside the tab's own agent.
-The share step has not passed there. When it last ran, the sharing device
+The share step has not passed there. When it first ran, the sharing device
 said it shared the window, the other said it watched it, and no picture
 crossed. Two causes were found and are closed in the session: a device that
 did not reach the device relaying the workspace's live plane when its session
 started never asked again, and a desk that listed the window as its own view
 of it had no tab to picture the shared window in. The second is held by the
 shares' own tests, which carry the workspace's governance between two
-sessions by hand. The tests that run two real sessions (`window_share_live`)
-are written to hold both and do not reach the share today: they stop where a
+sessions by hand.
+
+When it ran again the pictures crossed and then stopped: the device relaying
+the plane turned the sharing device away, and went on doing so through a
+restart of either session. A relay turns away a device whose keys are behind
+its own, and the sharing device's were. The host had been stopped and copied
+a second time; back on, it admitted the new copy, which moved the
+workspace's keys one epoch on, and it said that change once, to the members
+linked to it at that moment, before the first copy's link was up again. A
+site that hosts a workspace keeps each channel's newest frame and replays it
+to a member that comes back; a device that hosts one kept none. It now hands
+each member that links what its channels hold of the workspace, so a member
+that was away when the keys moved follows them when it is back, and the
+relay's check is as it was. The relay says why it turned a device away, in
+its journal and in its own reading of the workspace's plane (`turned_away`),
+and the device it turned away says which epoch's keys it presented
+(`presented`): the two side by side name a refusal that read alike on both
+ends before.
+
+That third cause is held by a test of real sessions in the order the
+machines were made and started (`window_share_live`), which fails without
+the change and passes with it on the tree the machines ran. On this tree the
+tests that run two real sessions do not reach the share: they stop where a
 workspace made on one device should arrive on the person's other one, which
-does not happen on this tree. The step has not been run on booted machines
-since (see "Not built yet").
+does not happen here. The step has not been run on booted machines since
+(see "Not built yet"); it now judges by what the two sessions publish of the
+share, when the first picture came and again twenty seconds on.
 
 ## The cases
 
@@ -478,11 +500,13 @@ down.
 - **Several machines in one tab: what is left.** Three machines answer one
   form in one tab on the machines the remote end-to-end run boots, and the
   record names their devices. Two things are not shown there. A window
-  shared with the workspace has not been pictured on the person's other
-  device on those machines: what kept its pictures from crossing when the
-  step last ran is closed in the session, and the step has not been run on
-  machines since. Each session says how far its live plane came and what a
-  share waits for, which is what the step reads when no picture arrives.
+  shared with the workspace has not stayed pictured on the person's other
+  device on those machines: when the step last ran its pictures crossed and
+  stopped, what stopped them is closed in the session, and the step has not
+  been run on machines since. Each session says how far its live plane came,
+  what a share waits for and, for the device relaying a plane, which devices
+  it turned away and why, which is what the step reads when a picture does
+  not arrive or does not go on arriving.
   And nothing has run more than three machines. The door
   serves sixteen connections at once and refuses the next as busy; a tab
   keeps track of sixty-four actors and forgets the oldest beyond that
