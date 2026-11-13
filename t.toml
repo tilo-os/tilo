@@ -4663,7 +4663,9 @@ default = false
 
 [[check]]
 name = "os-base-x86_64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+# The mirror answers a blob read with a redirect into object storage, whose host is no fixed
+# name: the open network, as the layers built on this image have.
+egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/build-layer.sh base x86_64 /target/os/x86_64/base"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/os/x86_64/base/**"]
@@ -4875,7 +4877,9 @@ default = false
 
 [[check]]
 name = "os-base-aarch64"
-egress = { to = ["registry.tilo.so:443"], pinned = true }
+# The mirror answers a blob read with a redirect into object storage, whose host is no fixed
+# name: the open network, as the layers built on this image have.
+egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/build-layer.sh base aarch64 /target/os/aarch64/base"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/os/aarch64/base/**"]
