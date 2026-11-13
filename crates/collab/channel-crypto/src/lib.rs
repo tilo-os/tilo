@@ -67,7 +67,6 @@ pub mod content;
 pub mod crypto;
 pub mod endpoint;
 pub mod errors;
-mod formats;
 pub mod gate;
 pub mod group;
 pub mod peer;

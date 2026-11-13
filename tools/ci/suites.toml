@@ -1558,8 +1558,8 @@ package = "tilo-session-client"
 # door and the page read it. The page tests' driver serves the runtime module
 # built beside the page's sources: a run that is handed none builds it with the
 # script the CI setup uses, so that script and the build it runs are read too.
-inputs = ["crates/session/fixtures/", "crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/host_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
-readers = ["crates/session/client/src/channels/vault.rs", "crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/host_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
 [[cargo]]
