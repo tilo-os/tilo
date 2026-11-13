@@ -237,7 +237,13 @@ fn shell_runs(
                 .and_then(|((replicas, joined), id)| super::hold_files(replicas, &joined, id))
                 .unwrap_or_else(|| files(&member, workspace))
         })
-        .with_browsers_on(browsers);
+        // Browser starts on the hosted-VM service this host names, else the
+        // one its environment does: the account each open is paid by comes
+        // with the relay's request, so the socket alone says this member
+        // runs the workspaces' VMs.
+        .with_browsers_on(
+            browsers.or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from)),
+        );
     Some(Arc::new(EnvironmentRuns::new(shells, joined.operator())))
 }
 
