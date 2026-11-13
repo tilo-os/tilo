@@ -1,8 +1,6 @@
 //! Canonical namespace supervision for ordinary signed GUI launches.
 //!
-//! This is kernel process custody, not a filesystem admission. The protected
-//! retained owner must independently authenticate the launcher, package and
-//! current session before accepting a witness or exporting a view.
+//! This is kernel process custody, not a filesystem admission.
 
 use crate::{
     managed::EnrolledProcessObserver,
@@ -19,9 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// An init observed by the canonical owner after bubblewrap's actual info pipe
-/// and kernel parent/PID namespace checks. There is no descriptor constructor.
-/// Holding this witness does not grant access to a source or projected view.
+/// An init observed by the canonical owner after bubblewrap's actual info pipe and kernel parent/PID
+/// namespace checks.
 pub struct NamespaceWitness {
     init: OwnedFd,
     pid_namespace: File,
@@ -52,8 +49,6 @@ impl NamespaceWitness {
         self.pid
     }
     /// Clone the kernel task handle for protected lifetime supervision.
-    /// # Errors
-    /// Returns descriptor exhaustion; never falls back to the numeric PID.
     pub fn init_pidfd(&self) -> io::Result<OwnedFd> {
         self.init.try_clone()
     }
@@ -63,9 +58,7 @@ impl NamespaceWitness {
     pub fn mount_namespace(&self) -> io::Result<File> {
         self.mount_namespace.try_clone()
     }
-    /// Verify this opaque witness against the independently authenticated
-    /// executing launcher. Package and session admission remain the root actor's
-    /// responsibility; this establishes kernel ancestry and held namespaces.
+    /// Verify this opaque witness against the independently authenticated executing launcher.
     pub fn validate_for_launcher(
         &self,
         peer: &runtime_portal::process_binding::ExecutingPeer,
@@ -109,8 +102,6 @@ impl NamespaceWitness {
         Ok(())
     }
     /// Qualify a genuine executing task inside this actual consuming namespace.
-    /// A PID label or a shared numeric UID cannot replace the retained peer.
-    /// This proves process membership, never file or source authority.
     pub fn validate_member(
         &self,
         member: &runtime_portal::process_binding::ExecutingPeer,
@@ -143,10 +134,7 @@ impl NamespaceWitness {
         Ok(())
     }
 
-    /// Transfer kernel witnesses over the already authenticated private lease
-    /// endpoint. Each descriptor is acknowledged to avoid stream coalescing.
-    /// # Errors
-    /// Returns a transport failure; receipt alone never admits file authority.
+    /// Transfer kernel witnesses over the already authenticated private lease endpoint.
     pub fn send(
         &self,
         stream: &mut UnixStream,
@@ -176,9 +164,7 @@ impl NamespaceWitness {
         }
         Ok(())
     }
-    /// Receive only from the actor's independently authenticated actual
-    /// launcher peer. Wire process numbers are checked against every held
-    /// kernel descriptor and the actual live launcher before construction.
+    /// Receive only from the actor's independently authenticated actual launcher peer.
     pub fn receive(
         stream: &mut UnixStream,
         peer: &runtime_portal::process_binding::ExecutingPeer,
@@ -218,7 +204,6 @@ impl NamespaceWitness {
         Ok(witness)
     }
     /// Kill only the exact held namespace init and wait for kernel exit.
-    /// A timeout leaves this witness intact and cannot release a source lease.
     pub fn cancel_and_wait(&self, budget: Duration) -> io::Result<()> {
         if self.observed_stopped()? {
             return Ok(());
@@ -252,7 +237,6 @@ impl NamespaceWitness {
         }
     }
     /// Observe exact task exit, even after admission or session revocation.
-    /// This does not establish a successful application exit.
     pub fn observed_stopped(&self) -> io::Result<bool> {
         let mut fd = libc::pollfd {
             fd: self.init.as_raw_fd(),
@@ -269,15 +253,13 @@ impl NamespaceWitness {
     }
 }
 
-/// Fixed bounded registration transport, not an arbitrary callback. It sends
-/// exact descriptors to the root lease owner without replacing their origin.
+/// Fixed bounded registration transport, not an arbitrary callback.
 pub struct ConnectedNamespace {
     stream: UnixStream,
 }
 impl ConnectedNamespace {
-    /// Own the private registration transport after the launcher has verified
-    /// its protected root helper. This transport carries kernel observations;
-    /// constructing it grants no retained view or filesystem authority.
+    /// Own the private registration transport after the launcher has verified its protected root
+    /// helper.
     #[must_use]
     pub fn new(stream: UnixStream) -> Self {
         Self { stream }
@@ -293,9 +275,8 @@ impl ConnectedNamespace {
     }
 }
 
-/// Uses the existing owned-service namespace observer and teardown unchanged,
-/// while leaving ordinary GUI network decisions in the normal pipeline.
-/// This owner contains no retained view, FD grant or source path constructor.
+/// Uses the existing owned-service namespace observer and teardown unchanged, while leaving ordinary
+/// GUI network decisions in the normal pipeline.
 pub struct OrdinaryNamespaceOwner {
     inner: NamespaceOwner,
     retained: Option<Arc<crate::retained_view::RetainedViewAdmission>>,
@@ -313,7 +294,6 @@ impl OrdinaryNamespaceOwner {
             retained: Some(retained),
         })
     }
-    /// # Errors
     /// Refuses a retired authority or failure to create the canonical info pipe.
     pub fn new(
         authority: Arc<dyn ServiceAuthority>,
@@ -331,9 +311,7 @@ impl EnrolledProcessObserver for OrdinaryNamespaceOwner {
     fn retained_view(&self) -> Option<&crate::retained_view::RetainedViewAdmission> {
         self.retained.as_deref()
     }
-    // Default reviewed_network_hosts(None) preserves the manifest/workspace
-    // decision. Delegating ServiceAuthority.network_hosts would block or alter
-    // ordinary app networking and is intentionally not part of this wrapper.
+    // Default reviewed_network_hosts(None) preserves the manifest/workspace decision.
     fn namespace_init_fd(&self) -> Option<RawFd> {
         self.inner.namespace_init_fd()
     }
@@ -363,9 +341,7 @@ fn parent(pid: u32) -> io::Result<u32> {
         .ok_or_else(|| refused("ordinary namespace parent unavailable"))
 }
 
-// One absolute deadline covers the entire transfer. Nonblocking syscalls and
-// short poll slices ensure owner cancellation is observed while awaiting an
-// authenticated but stalled peer; neither partial progress nor EINTR renews it.
+// One absolute deadline covers the entire transfer.
 pub(crate) struct Handoff<'a> {
     stream: &'a mut UnixStream,
     cancellation: &'a ServiceCancellation,
@@ -490,9 +466,7 @@ mod tests {
 
     #[test]
     fn receive_refuses_actual_live_unisolated_child_even_with_authentic_launcher_peer() {
-        // Genuine kernel process and pidfd, not a mocked authority or forged
-        // ExecutingPeer. This proves the receive boundary refuses ancestry
-        // claims; it does not pretend an ordinary child is a namespace init.
+        // Genuine kernel process and pidfd, not a mocked authority or forged ExecutingPeer.
         let mut child = OwnedChild(
             std::process::Command::new("/usr/bin/sleep")
                 .arg("30")

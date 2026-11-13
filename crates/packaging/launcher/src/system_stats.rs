@@ -1,27 +1,9 @@
-//! The `system-info` and `processes` capabilities: what an app is granted of
-//! the session's system information service (`tilo_system_stats`).
+//! The `system-info` and `processes` capabilities: what an app is granted of the
+//! session's system information service (`tilo_system_stats`).
 //!
-//! An app sandbox has a process namespace of its own, so `/proc` inside it
-//! shows the app and nothing else, and binding the host's would hand every
-//! program's command line and environment to it. An app that declares
-//! `system-info` instead receives a connection to the session's service,
-//! opened here and authenticated before the sandbox starts: the launcher
-//! writes the app's id, its workspace and its grants as the first frame, so the
-//! app cannot claim more than it was given.
-//!
-//! What it is given:
-//!
-//! - an app the image ships (its payload is in the image's read-only store)
-//!   is granted what it declares, `system-info` and `processes`, by default;
-//! - any other app is granted what the workspace's capabilities name
-//!   (`Scope::Device("system-info")`, `"processes"`, `"process-commands"`),
-//!   and asks the person through the permission prompt for the rest;
-//! - a command line beside the process list is never a default: it is its
-//!   own grant (`process-commands`).
-//!
-//! The manifest is the ceiling of all three: what an app does not declare
-//! it is neither given nor asked about. `processes` alone keeps its other
-//! meaning (starting programs of its own) and opens no connection.
+//! An app sandbox has a process namespace of its own, so `/proc` inside it shows the
+//! app and nothing else, and binding the host's would hand every program's command line
+//! and environment to it.
 
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
@@ -49,8 +31,8 @@ pub fn ceiling(manifest: &ManifestView) -> Grants {
     }
 }
 
-/// What a launch of `manifest` is granted, given the workspace's capabilities
-/// (`plan`) and whether the image ships it.
+/// What a launch of `manifest` is granted, given the workspace's capabilities (`plan`) and whether the
+/// image ships it.
 #[must_use]
 pub fn grants(manifest: &ManifestView, plan: &CapabilityPlan, image_shipped: bool) -> Grants {
     let mut grants = if image_shipped {
@@ -66,8 +48,7 @@ pub fn grants(manifest: &ManifestView, plan: &CapabilityPlan, image_shipped: boo
     grants.within(ceiling(manifest))
 }
 
-/// Whether `payload_root` lies in the image's own store, which only an image
-/// update writes.
+/// Whether `payload_root` lies in the image's own store, which only an image update writes.
 #[must_use]
 pub fn image_shipped(payload_root: &Path) -> bool {
     let Ok(payload) = payload_root.canonicalize() else {
@@ -87,9 +68,8 @@ pub fn image_shipped(payload_root: &Path) -> bool {
 /// In-sandbox descriptor slot of the system information connection.
 pub const CHILD_FD: i32 = 33;
 
-/// Open and authenticate the app's connection, when it declares
-/// `system-info` and the session serves it. A session without the service
-/// costs the app its readings, never its launch.
+/// Open and authenticate the app's connection, when it declares `system-info` and the session serves
+/// it.
 pub fn resolve_bind(
     manifest: &ManifestView,
     plan: &CapabilityPlan,

@@ -59,11 +59,9 @@ fn private(file: &File, directory: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether an ancestor of the projection may be walked: the runner's own or
-/// root's, and not writable by group or other — unless it is sticky and
-/// outside the home, where no other account can move or replace the entries
-/// this walk follows. A test environment's temporary root is such a
-/// directory, and inside a user namespace it reads as the runner's own.
+/// Whether an ancestor of the projection may be walked: the runner's own or root's, and not writable by
+/// group or other — unless it is sticky and outside the home, where no other account can move or
+/// replace the entries this walk follows.
 fn ancestor_holds(owner: u32, mode: u32, inside_home: bool) -> bool {
     (owner == 0 || owner == uid())
         && (mode & 0o022 == 0 || (mode & libc::S_ISVTX != 0 && !inside_home))

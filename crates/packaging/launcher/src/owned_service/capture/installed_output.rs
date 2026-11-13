@@ -1,6 +1,4 @@
 //! Installed copy scratch admission. No medium, receiver or completion proof.
-//! The producer must retain actual source, owner and scratch operation custody
-//! until the original worker has stopped and target-owner import has finished.
 use super::{contains, writable_directory};
 use crate::owned_service::ServiceAuthority;
 use runtime_portal::process_binding::ExecutingPeer;
@@ -36,9 +34,8 @@ pub struct InstalledCopyOutputFiles {
     pub private_parent: File,
     pub namespace: File,
 }
-/// Implemented by the canonical installed root controller ONLY after protected
-/// setup/source review and actual target QPE/person proof. Bare UI paths or an
-/// implementation of this trait alone are not authenticated operation authority.
+/// Implemented by the canonical installed root controller ONLY after protected setup/source review and
+/// actual target QPE/person proof.
 pub trait InstalledCopyOutputCustody: ServiceAuthority {
     /// Return the authenticated installed transaction binding.
     fn binding(&self) -> io::Result<InstalledCopyOutputBinding>;
@@ -46,13 +43,7 @@ pub trait InstalledCopyOutputCustody: ServiceAuthority {
     fn files(&self) -> io::Result<InstalledCopyOutputFiles>;
     /// Return the authenticated executing target peer.
     fn target_peer(&self) -> io::Result<Arc<ExecutingPeer>>;
-    /// Defaults refuse. The actual canonical Store/source scratch owner must
-    /// replay ALL protected Home, mounted and Flatpak physical-source geometry
-    /// against the held target partition/Btrfs members on every check. Device
-    /// numbers or caller-authored binding fields alone confer no disjointness.
-    /// Actual durable export phase requires new allocation. Independent
-    /// verification reads already allocated ciphertext and requires zero more.
-    /// Defaults refuse; caller-authored phase flags cannot reduce a reservation.
+    /// Defaults refuse.
     fn additional_output_reservation(&self) -> io::Result<u64> {
         Err(refuse())
     }

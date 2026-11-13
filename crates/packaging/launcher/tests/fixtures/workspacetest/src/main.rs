@@ -1,21 +1,4 @@
-// Fixture for `tests/workspace_confinement.rs`. Does real file I/O rather
-// than reporting its config — every line printed is the answer a
-// syscall gave, since a bind list is not proof.
-//
-//   write <relative path> <contents>   write inside $TILO_APP_DIR
-//   writeabs <path> <contents>         write to an absolute path
-//   read  <path>                       read it, print OK/ERR
-//   elf <path>                         read the ELF magic bytes
-//   readdir <path>                     list it, print OK/ERR
-//   rename <from> <to>                 rename(2) it, print RENAMED/ERR
-//   env   <name>                       print the variable's value
-//   envall                             print every variable name it has
-//   mkdir <path>                       mkdir(2) it, print MADE/ERR
-//   mount <fstype> <target>            mkdir -p the target, mount(2) the
-//                                      filesystem there, print MOUNTED/ERR
-//
-// Exit code is always 0 — a test that asserted on it couldn't tell
-// "denied" from "the fixture crashed".
+// Fixture for `tests/workspace_confinement.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -85,8 +68,8 @@ fn main() {
             let v = std::env::var(&args[1]).unwrap_or_else(|_| "<unset>".into());
             writeln!(out, "ENV {}={}", &args[1], v).unwrap()
         }
-        // Names only, never values: a value could be a socket path or home
-        // directory with no business in a test log.
+        // Names only, never values: a value could be a socket path or home directory with no business
+        // in a test log.
         Some("envall") => {
             let mut names: Vec<String> = std::env::vars_os()
                 .map(|(k, _)| k.to_string_lossy().into_owned())
@@ -132,9 +115,8 @@ fn main() {
     }
 }
 
-/// `io::ErrorKind` has no stable string form, and the raw OS message is
-/// localised, so map to the errno name to tell "not in my namespace"
-/// from "there but denied".
+/// `io::ErrorKind` has no stable string form, and the raw OS message is localised, so map to the errno
+/// name to tell "not in my namespace" from "there but denied".
 trait KindStr {
     fn kind_str(&self) -> String;
 }

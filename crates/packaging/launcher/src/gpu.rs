@@ -1,81 +1,17 @@
 //! Which GPU a launched application renders on.
 //!
-//! # Why the launcher has to answer this
-//!
-//! The compositor picks one DRM render node and advertises it as
-//! `zwp_linux_dmabuf_v1`'s `main_device`. Every client has to end up on
-//! **that** device — one that renders on a different GPU produces
-//! dma-bufs the compositor can't import, and the tile shows an import
-//! error instead of the app.
-//!
-//! Advertising `main_device` isn't enough, because the device is chosen
-//! by the client's *loader*, one layer below Wayland:
-//!
-//! - **Vulkan**: the loader reads every `*.json` in the ICD search path
-//!   and exposes one `VkPhysicalDevice` per driver — an app asking for a
-//!   high-performance adapter gets whichever ranked first, frequently
-//!   the discrete GPU, not the one the compositor renders on.
-//! - **EGL**: GLVND reads `/usr/share/glvnd/egl_vendor.d/*.json` in name
-//!   order and loads the first vendor that answers — `10_nvidia` sorts
-//!   before `50_mesa`, so a box with a broken NVIDIA userspace fails EGL
-//!   before Mesa is ever asked.
-//!
-//! Both are selected by environment variable, and both must name a file
-//! that exists **inside the sandbox** — this module derives the paths
-//! and the Linux sandbox launcher binds them.
-//!
-//! [`select_for_device`] takes the node's identity, the search paths and
-//! the way ICDs are asked as inputs, so it runs against fixtures on every
-//! host. Sysfs discovery, default search paths and actually loading an ICD
-//! ([`select_for_node`]) are Linux-only.
-//!
-//! # Asked, not looked up
-//!
-//! The input is a render node and its `(major, minor)`. Every installed
-//! Vulkan ICD for this architecture is loaded and asked for its physical
-//! devices; the one whose `VK_EXT_physical_device_drm` render node is this
-//! node is the driver for it. No table maps kernel driver names to
-//! libraries: sysfs names the *platform* driver the node hangs off, which
-//! for a Snapdragon X display controller is `msm_dpu` rather than `msm`,
-//! and a table keyed on names silently pinned nothing there. A GPU nobody
-//! listed works the moment its ICD can see it.
-//!
-//! The EGL vendor follows the Vulkan driver's vendor — Mesa's ICDs and
-//! Mesa's GLVND vendor ship together, NVIDIA's likewise.
-//!
-//! If exactly one ICD claims the node, it's pinned. If none does, the
-//! selection pins **no** driver and every ICD's answer is recorded in
-//! [`GpuSelection::notes`] — a wrong pin strands the app on a driver
-//! that can't drive its GPU, and a GPU with only an OpenGL driver still
-//! draws through its EGL. A compositor that found no render node at all
-//! hands its apps a display's primary node instead (a virtual display, as
-//! in a VM without 3D), which nothing renders on: it draws with lavapipe
-//! there, and a launch onto such a node that no driver claims is given the
-//! same software pin ([`unclaimed_node_pin`]) rather than the loader's
-//! default, which loads every installed driver and Mesa's device-select
-//! layer into the app and crashed Chat in such a VM.
+//! The render node the compositor resolved, the loader manifests that pin the app's
+//! Vulkan and GLVND to the same driver, and the environment that makes them mean
+//! anything.
 
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use tilo_lock::MutexRecover as _;
 
-/// The capability an app declares to reach the GPU itself
-/// (`[capabilities]` in its manifest).
+/// The capability an app declares to reach the GPU itself (`[capabilities]` in its manifest).
 pub const CAPABILITY: &str = "gpu";
 
 /// Whether `manifest`'s app opens the GPU itself.
-///
-/// A toolkit app does not: the render service of its workspace draws its frames
-/// (the session's render service), so its sandbox has no GPU node, no loader pin and
-/// no shader-cache seed, and the launcher spends nothing preparing them.
-/// Apps that do (a web engine, video, games, 3D, ML) declare `gpu`.
-///
-/// A permission, decided like `io-uring` (`crate::seccomp::syscall_grants`):
-/// the signed manifest is the ceiling (an app that does not declare `gpu`
-/// never gets it); an app the image ships (`image_shipped`) is granted what
-/// it declares; any other app only what the workspace's capabilities name
-/// (`Scope::Device("gpu")`), which the person gives through the permission
-/// prompt.
 pub fn granted(
     manifest: &crate::manifest::ManifestView,
     plan: &crate::capabilities::CapabilityPlan,
@@ -85,23 +21,21 @@ pub fn granted(
         && (image_shipped || plan.devices.iter().any(|device| device == CAPABILITY))
 }
 
-/// GLVND's EGL vendor selection: a colon-separated list of vendor ICD
-/// JSONs; when set, GLVND loads only these and skips the directory scan.
+/// GLVND's EGL vendor selection: a colon-separated list of vendor ICD JSONs; when set, GLVND loads only
+/// these and skips the directory scan.
 pub const EGL_VENDOR_ENV: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
 
-/// Name of the session's pipeline cache directory under
-/// `$XDG_RUNTIME_DIR/tilo/` (see `ui::pipeline_seed`).
+/// Name of the session's pipeline cache directory under `$XDG_RUNTIME_DIR/tilo/` (see
+/// `ui::pipeline_seed`).
 pub const PIPELINE_SEED_DIR_NAME: &str = "pipeline-seed";
 
 /// Where that directory appears inside a sandbox, read-only.
 pub const SANDBOX_PIPELINE_SEED_DIR: &str = "/run/tilo/pipeline-seed";
 
-/// Names [`SANDBOX_PIPELINE_SEED_DIR`] to the app; `ui::pipeline_seed`
-/// reads it.
+/// Names [`SANDBOX_PIPELINE_SEED_DIR`] to the app; `ui::pipeline_seed` reads it.
 pub const PIPELINE_SEED_ENV: &str = "TILO_PIPELINE_SEED_DIR";
 
-/// The session's pipeline cache directory on this host, if one was
-/// published.
+/// The session's pipeline cache directory on this host, if one was published.
 #[must_use]
 pub fn host_pipeline_seed() -> Option<PathBuf> {
     let dir = tilo_paths::xdg::runtime_dir()?
@@ -113,37 +47,18 @@ pub fn host_pipeline_seed() -> Option<PathBuf> {
 /// Vulkan loader driver selection (loader 1.3.207+).
 pub const VK_DRIVER_FILES_ENV: &str = "VK_DRIVER_FILES";
 
-/// Pre-1.3.207 spelling of [`VK_DRIVER_FILES_ENV`], set in lock-step so
-/// an older loader honours the same choice.
+/// Pre-1.3.207 spelling of [`VK_DRIVER_FILES_ENV`], set in lock-step so an older loader honours the
+/// same choice.
 pub const VK_ICD_FILENAMES_ENV: &str = "VK_ICD_FILENAMES";
 
-/// Turns off Mesa's implicit device-selection layer
-/// (`VK_LAYER_MESA_device_select`). It exists to pick one GPU among several
-/// and reorders the physical devices for that, connecting to the display
-/// server and enumerating every device on each `vkCreateInstance`. With the
-/// driver pinned to the one ICD that drives the session's render node there
-/// is exactly one device to pick, so the layer only costs time: ~4 ms of
-/// adapter and device creation per app start on the Snapdragon X here.
+/// Turns off Mesa's implicit device-selection layer (`VK_LAYER_MESA_device_select`).
 pub const NO_DEVICE_SELECT_ENV: &str = "NODEVICE_SELECT";
 
 /// Mesa's Windows-compatibility switch ([`SiteIntegration`]).
 pub const SITE_INTEGRATION_ENV: &str = "mesa_vk_map_memory_placed";
 
-/// What a driver can do for Windows code running under a translation layer,
-/// named by the value [`SITE_INTEGRATION_ENV`] takes.
-///
-/// A D3D translation layer has to hand a guest program memory at an address
-/// the program picked. Two extensions provide it:
-///
-/// - `VK_EXT_map_memory_placed` (turnip, Honeykrisp) places a host
-///   allocation with **target buffers**, and the Vulkan memory model gives
-///   that placement the `bufferDeviceAddress` guarantees a guest heap needs.
-/// - `VK_KHR_map_memory2` places an allocation without target buffers, but
-///   the memory then carries no device address of its own.
-///
-/// Mesa gates both behind this one switch, so the launcher sets it only
-/// when the driver itself advertises the feature. Which driver has which
-/// extension is the driver's business: the launcher asks, never assumes.
+/// What a driver can do for Windows code running under a translation layer, named by the value
+/// [`SITE_INTEGRATION_ENV`] takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SiteIntegration {
     /// Placement with target buffers (`VK_EXT_map_memory_placed`).
@@ -166,11 +81,6 @@ impl SiteIntegration {
 }
 
 /// One feature field a driver must report `VK_TRUE`.
-///
-/// Asking a device several features at once means chaining extension
-/// structures onto `VkPhysicalDeviceFeatures2` and reading each field back.
-/// Naming the field keeps that query in one place and lets the tests and the
-/// selection reason about features without touching Vulkan pointers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Feature {
     /// `VkPhysicalDeviceBufferDeviceAddressFeatures::bufferDeviceAddress`.
@@ -183,17 +93,12 @@ pub enum Feature {
     MemoryUnmapReserve,
 }
 
-/// The site integration the claiming driver advertises, if it can place
-/// memory at all.
-///
-/// A driver that will not say, or says only some of it, is left alone: the
-/// switch is an opt-in whose failure mode is a graphics stack that stops
-/// working, so only every feature of one path turns it on.
+/// The site integration the claiming driver advertises, if it can place memory at all.
 fn site_integrator(claim: Option<&Claim>, probe: &impl IcdProbe) -> Option<SiteIntegration> {
     let claim = claim?;
     let has = |features: &[Feature]| probe.advertises(&claim.manifest, &claim.device, features);
-    // Target buffers are the stronger of the two, and a driver with both
-    // takes the same path either way, so they are asked for first.
+    // Target buffers are the stronger of the two, and a driver with both takes the same path either
+    // way, so they are asked for first.
     if has(&[
         Feature::BufferDeviceAddress,
         Feature::MemoryMapPlaced,
@@ -208,8 +113,7 @@ fn site_integrator(claim: Option<&Claim>, probe: &impl IcdProbe) -> Option<SiteI
         .then_some(SiteIntegration::Placed)
 }
 
-/// Directories the EGL vendor JSONs are installed in, most-specific
-/// first. `/etc` overrides `/usr` by GLVND's own convention.
+/// Directories the EGL vendor JSONs are installed in, most-specific first.
 #[cfg(target_os = "linux")]
 const EGL_VENDOR_DIRS: &[&str] = &[
     "/etc/glvnd/egl_vendor.d",
@@ -225,17 +129,12 @@ const VULKAN_ICD_DIRS: &[&str] = &[
     "/usr/local/share/vulkan/icd.d",
 ];
 
-/// Architecture tokens in ICD manifest file names
-/// (`radeon_icd.x86_64.json`, `radeon_icd.i686.json`). A file naming a
-/// different arch is skipped, or a multilib host offers two "matching"
-/// candidates for no reason.
+/// Architecture tokens in ICD manifest file names (`radeon_icd.x86_64.json`, `radeon_icd.i686.json`).
 const ARCH_TOKENS: &[&str] = &[
     "i686", "x86_64", "aarch64", "armv7l", "armv7hl", "riscv64", "ppc64le", "s390x",
 ];
 
-/// Where to look for ICD manifests. Split out so tests can point the
-/// *production* selection code at a fixture tree instead of the host's
-/// real `/usr/share`.
+/// Where to look for ICD manifests.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IcdSearch {
     pub egl_vendor_dirs: Vec<PathBuf>,
@@ -252,48 +151,37 @@ impl Default for IcdSearch {
     }
 }
 
-/// The GPU an app should be pinned to, and the loader manifests that
-/// pin it there.
+/// The GPU an app should be pinned to, and the loader manifests that pin it there.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GpuSelection {
-    /// The DRM render node the compositor resolved, e.g.
-    /// `/dev/dri/renderD128`.
+    /// The DRM render node the compositor resolved, e.g. `/dev/dri/renderD128`.
     pub node: PathBuf,
-    /// Kernel driver bound to that node, from sysfs. `None` when sysfs had
-    /// no answer, in which case nothing can be derived and every field
-    /// below is `None`.
+    /// Kernel driver bound to that node, from sysfs.
     pub driver: Option<String>,
-    /// GLVND EGL vendor manifest of the Vulkan driver's vendor, if exactly
-    /// one is installed.
+    /// GLVND EGL vendor manifest of the Vulkan driver's vendor, if exactly one is installed.
     pub egl_vendor_json: Option<PathBuf>,
     /// The one Vulkan ICD manifest whose driver reports this node.
     pub vulkan_icd_json: Option<PathBuf>,
-    /// The physical device that ICD reported for the node, e.g.
-    /// `Turnip Adreno (TM) X1-85`.
+    /// The physical device that ICD reported for the node, e.g. `Turnip Adreno (TM) X1-85`.
     pub vulkan_device: Option<String>,
-    /// The session's published pipeline cache directory on the host, bound
-    /// read-only at [`SANDBOX_PIPELINE_SEED_DIR`] when it exists.
+    /// The session's published pipeline cache directory on the host, bound read-only at
+    /// [`SANDBOX_PIPELINE_SEED_DIR`] when it exists.
     #[serde(default)]
     pub pipeline_seed: Option<PathBuf>,
-    /// The Windows-compatibility site integration this driver supports
-    /// ([`SiteIntegration`]). `None` for a driver that cannot place memory,
-    /// which is every native GPU, so the environment is unchanged there.
+    /// The Windows-compatibility site integration this driver supports ([`SiteIntegration`]).
     #[serde(default)]
     pub site_integration: Option<SiteIntegration>,
-    /// Every installed Vulkan driver answered and none reported this node as
-    /// its render node: no GPU drives it ([`unclaimed_node_pin`]). False when
-    /// one claimed it, several did, or the drivers could not be asked.
+    /// Every installed Vulkan driver answered and none reported this node as its render node: no GPU
+    /// drives it ([`unclaimed_node_pin`]).
     #[serde(default)]
     pub unclaimed: bool,
-    /// Human-readable record of everything that was *not* pinned and why —
-    /// otherwise invisible until a tile renders black.
+    /// Human-readable record of everything that was *not* pinned and why — otherwise invisible until a
+    /// tile renders black.
     pub notes: Vec<String>,
 }
 
 impl GpuSelection {
-    /// The environment the app must run with. Only variables this
-    /// selection could derive appear — an unmatched loader is left at its
-    /// own default rather than pinned to a guess.
+    /// The environment the app must run with.
     pub fn env(&self) -> Vec<(&'static str, String)> {
         let mut out = Vec::new();
         if let Some(p) = &self.egl_vendor_json {
@@ -310,9 +198,9 @@ impl GpuSelection {
         out
     }
 
-    /// Files that must be readable *inside the sandbox* for [`Self::env`]
-    /// to mean anything: GLVND and the Vulkan loader both treat "set but
-    /// unreadable" as "no drivers", so a bad bind is worse than no variable.
+    /// Files that must be readable *inside the sandbox* for [`Self::env`] to mean anything: GLVND and
+    /// the Vulkan loader both treat "set but unreadable" as "no drivers", so a bad bind is worse than
+    /// no variable.
     pub fn manifest_files(&self) -> Vec<PathBuf> {
         self.egl_vendor_json
             .iter()
@@ -321,17 +209,13 @@ impl GpuSelection {
             .collect()
     }
 
-    /// Did anything at all get pinned? Used by callers to decide
-    /// whether to log a selection line or a "left to the loader" line.
+    /// Did anything at all get pinned?
     pub fn is_empty(&self) -> bool {
         self.egl_vendor_json.is_none() && self.vulkan_icd_json.is_none()
     }
 }
 
 /// Kernel driver bound to a render node, read out of sysfs.
-///
-/// `/dev/dri/renderD128` → `/sys/class/drm/renderD128/device/driver` →
-/// symlink basename. `None` when sysfs has no such link.
 #[cfg(target_os = "linux")]
 pub fn driver_for(node: &Path) -> Option<String> {
     let name = node.file_name()?.to_str()?;
@@ -341,11 +225,6 @@ pub fn driver_for(node: &Path) -> Option<String> {
 }
 
 /// `library_path` out of a loader manifest, as a bare file name.
-///
-/// Both manifest flavours use the same shape —
-/// `{"ICD": {"library_path": "..."}}` — and the value may be a bare
-/// soname or an absolute path, so comparing on the file name matches
-/// both forms.
 fn manifest_library_name(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -360,10 +239,6 @@ fn manifest_library_name(path: &Path) -> Option<String> {
 }
 
 /// The architecture token this build's ICDs are named with.
-///
-/// `std::env::consts::ARCH` and the manifest file names agree on
-/// `x86_64`/`aarch64` but not on 32-bit x86 (`x86` vs `i686`) — getting
-/// this wrong would filter out the only manifest that fits.
 fn host_arch_token() -> &'static str {
     match std::env::consts::ARCH {
         "x86" => "i686",
@@ -373,9 +248,6 @@ fn host_arch_token() -> &'static str {
 }
 
 /// Is this manifest file name for an architecture we can't load?
-/// `radeon_icd.i686.json` on an `x86_64` host describes a 32-bit library
-/// this process could never dlopen. Files with no arch token are
-/// always eligible.
 fn is_foreign_arch(file_name: &str) -> bool {
     let host = host_arch_token();
     file_name
@@ -401,8 +273,8 @@ fn manifests_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-/// The single manifest under `dirs` whose `library_path` names
-/// `library`, or `Err(reason)` describing why there wasn't exactly one.
+/// The single manifest under `dirs` whose `library_path` names `library`, or `Err(reason)` describing
+/// why there wasn't exactly one.
 fn unique_manifest_for(dirs: &[PathBuf], library: &str, kind: &str) -> Result<PathBuf, String> {
     let mut matches: Vec<PathBuf> = Vec::new();
     let mut scanned = 0usize;
@@ -446,9 +318,9 @@ fn render_dirs(dirs: &[PathBuf]) -> String {
         .join(", ")
 }
 
-/// `library_path` out of a loader manifest, as something `dlopen` can
-/// load: absolute and bare sonames as written, a relative path resolved
-/// against the manifest's directory the way the Vulkan loader does.
+/// `library_path` out of a loader manifest, as something `dlopen` can load: absolute and bare sonames
+/// as written, a relative path resolved against the manifest's directory the way the Vulkan loader
+/// does.
 fn manifest_library_path(path: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -465,25 +337,18 @@ fn manifest_library_path(path: &Path) -> Option<PathBuf> {
 pub struct VulkanDevice {
     /// `VkPhysicalDeviceProperties::deviceName`.
     pub name: String,
-    /// `(major, minor)` of its DRM render node, from
-    /// `VK_EXT_physical_device_drm`. `None` for a device with no render
-    /// node (lavapipe) or a driver without the extension.
+    /// `(major, minor)` of its DRM render node, from `VK_EXT_physical_device_drm`.
     pub render_node: Option<(u64, u64)>,
 }
 
 /// Asks one installed ICD which devices it drives.
 pub trait IcdProbe {
-    /// The physical devices the ICD at `library` (named by `manifest`)
-    /// reports, or why it could not be asked.
+    /// The physical devices the ICD at `library` (named by `manifest`) reports, or why it could not be
+    /// asked.
     fn devices(&self, manifest: &Path, library: &Path) -> Result<Vec<VulkanDevice>, String>;
 
-    /// Whether the physical device the ICD at `manifest` names `device`
-    /// advertises every feature in `features` (`VK_TRUE` for each).
-    ///
-    /// The default answers `false`: a probe that scripts devices describes
-    /// none, and "not advertised" is the safe answer everywhere this is
-    /// read — it leaves the environment alone rather than switching on
-    /// something the driver cannot do.
+    /// Whether the physical device the ICD at `manifest` names `device` advertises every feature in
+    /// `features` (`VK_TRUE` for each).
     fn advertises(
         &self,
         _manifest: &Path,
@@ -503,11 +368,6 @@ fn node_numbers(node: &Path) -> std::io::Result<(u64, u64)> {
 }
 
 /// Derive the loader pinning for `node` by asking every installed ICD.
-///
-/// Loading an ICD is not free (lavapipe initialises LLVM), so the answer
-/// is kept for the life of the process: a node's driver does not change
-/// under a running session. Callers that launch many apps should still
-/// resolve once and pass the result on, as the compositor does.
 #[cfg(target_os = "linux")]
 pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
     use std::collections::HashMap;
@@ -569,16 +429,6 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
 }
 
 /// Run `probe` where the drivers it loads cannot affect the caller.
-///
-/// Loading a GPU driver runs its initialisers, and some start threads. The
-/// compositor resolves its GPU from `main` while it is still
-/// single-threaded, because it then pins the loaders with `set_var`, which
-/// is only sound with no other thread alive. So a single-threaded caller
-/// runs the probe in a forked child and reads the answer back over a pipe:
-/// no driver is ever loaded into it, and a driver that crashes takes only
-/// the child down. A caller that already has threads cannot fork safely;
-/// it probes in-process, which is fine because it has no environment left
-/// to pin.
 #[cfg(target_os = "linux")]
 pub fn in_isolation<T: serde::Serialize + serde::de::DeserializeOwned>(
     probe: impl FnOnce() -> T,
@@ -609,8 +459,8 @@ mod isolated {
         // SAFETY: pipe2 succeeded, so both are fresh descriptors we own.
         let (read_end, write_end) =
             unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        // SAFETY: the caller is single-threaded (checked by the caller), so
-        // the child is a complete copy and may do anything the parent could.
+        // SAFETY: the caller is single-threaded (checked by the caller), so the child is a complete
+        // copy and may do anything the parent could.
         let pid = unsafe { libc::fork() };
         if pid < 0 {
             return Err(format!("fork: {}", std::io::Error::last_os_error()));
@@ -620,8 +470,7 @@ mod isolated {
             let answer = serde_json::to_vec(&probe()).unwrap_or_default();
             let mut out = std::fs::File::from(write_end);
             let code = i32::from(out.write_all(&answer).is_err());
-            // SAFETY: leave without running the parent's exit handlers or
-            // the drivers' destructors.
+            // SAFETY: leave without running the parent's exit handlers or the drivers' destructors.
             unsafe { libc::_exit(code) };
         }
         drop(write_end);
@@ -644,11 +493,8 @@ mod isolated {
     }
 }
 
-/// The pin a compositor already applied to its own environment, when it
-/// names exactly one installed manifest per loader and one is the Vulkan
-/// driver's. The compositor resolves its node once at startup and exports
-/// the result through these variables; every launcher it spawns reads them
-/// back instead of loading every driver again per launch.
+/// The pin a compositor already applied to its own environment, when it names exactly one installed
+/// manifest per loader and one is the Vulkan driver's.
 #[must_use]
 pub fn inherited_selection(node: &Path) -> Option<GpuSelection> {
     let single_file = |key: &str| {
@@ -670,21 +516,14 @@ pub fn inherited_selection(node: &Path) -> Option<GpuSelection> {
     })
 }
 
-/// The Vulkan driver of a machine with no GPU: Mesa's software rasteriser,
-/// lavapipe.
+/// The Vulkan driver of a machine with no GPU: Mesa's software rasteriser, lavapipe.
 const SOFTWARE_VULKAN_LIBRARY: &str = "libvulkan_lvp";
 
 /// Mesa's GLVND vendor, which serves the software OpenGL rasteriser.
 const MESA_EGL_LIBRARY: &str = "libEGL_mesa";
 
-/// The loader pin of a machine whose compositor found no GPU at all (every
-/// render node is a virtio GPU the host renders nothing for): the compositor
-/// renders with lavapipe, and so must its apps.
-///
-/// Without a pin the Vulkan loader still loads every installed driver for
-/// every app, and an app cannot tell a GPU-less render node from a GPU with
-/// only an OpenGL driver, so it also initialises OpenGL (`ui::gpu`). Pinned,
-/// the loader loads lavapipe alone and the app asks for Vulkan alone.
+/// The loader pin of a machine whose compositor found no GPU at all (every render node is a virtio GPU
+/// the host renders nothing for): the compositor renders with lavapipe, and so must its apps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoftwarePin {
     /// Lavapipe's Vulkan ICD manifest.
@@ -717,12 +556,10 @@ impl SoftwarePin {
     }
 }
 
-/// The pin a launch onto `selection` runs with when its node is a display's
-/// primary node (`card*`, no render node) that no Vulkan driver claims: no
-/// GPU renders on it, so the app renders as the compositor does, with
-/// lavapipe — the pin the compositor handed down (`inherited`), else the one
-/// installed under `search`. `None` for a render node (a GPU, if only with an
-/// OpenGL driver), a node a driver claims or several do, or no lavapipe.
+/// The pin a launch onto `selection` runs with when its node is a display's primary node (`card*`, no
+/// render node) that no Vulkan driver claims: no GPU renders on it, so the app renders as the
+/// compositor does, with lavapipe — the pin the compositor handed down (`inherited`), else the one
+/// installed under `search`.
 #[must_use]
 pub fn unclaimed_node_pin(
     selection: &GpuSelection,
@@ -740,8 +577,8 @@ pub fn unclaimed_node_pin(
     inherited.or_else(|| software_pin(search).ok())
 }
 
-/// The software pin from the manifests installed under `search`, or why
-/// there is none (no lavapipe manifest, or several).
+/// The software pin from the manifests installed under `search`, or why there is none (no lavapipe
+/// manifest, or several).
 pub fn software_pin(search: &IcdSearch) -> Result<SoftwarePin, String> {
     let vulkan_icd_json = unique_manifest_for(
         &search.vulkan_icd_dirs,
@@ -759,10 +596,8 @@ pub fn software_pin(search: &IcdSearch) -> Result<SoftwarePin, String> {
     })
 }
 
-/// The software pin a GPU-less compositor applied to its own environment,
-/// read back by a launch it started with no render node. Only lavapipe's
-/// manifest counts: an arbitrary driver someone named is no evidence that
-/// the machine has no GPU.
+/// The software pin a GPU-less compositor applied to its own environment, read back by a launch it
+/// started with no render node.
 #[must_use]
 pub fn inherited_software_pin() -> Option<SoftwarePin> {
     software_pin_from(
@@ -805,8 +640,6 @@ fn driver_name(_node: &Path) -> Option<String> {
 }
 
 /// The GLVND vendor library shipped by the vendor of a Vulkan driver.
-/// Every Mesa Vulkan driver is a `libvulkan_*` beside Mesa's one EGL
-/// vendor; NVIDIA's Vulkan driver lives in `libGLX_nvidia`.
 fn egl_vendor_for_vulkan(library: &str) -> Option<&'static str> {
     if library == "libGLX_nvidia" {
         Some("libEGL_nvidia")
@@ -817,9 +650,8 @@ fn egl_vendor_for_vulkan(library: &str) -> Option<&'static str> {
     }
 }
 
-/// Derive the loader pinning for the node numbered `numbers`, asking each
-/// installed ICD through `probe`. The function the tests drive: a fixture
-/// tree and a scripted probe stand in for the host.
+/// Derive the loader pinning for the node numbered `numbers`, asking each installed ICD through
+/// `probe`.
 pub fn select_for_device(
     node: &Path,
     numbers: (u64, u64),
@@ -951,8 +783,8 @@ fn claim_for(
     }
 }
 
-/// Why no single driver was pinned for a node: `nobody` when every driver answered and none
-/// reported the node, rather than several claiming it.
+/// Why no single driver was pinned for a node: `nobody` when every driver answered and none reported
+/// the node, rather than several claiming it.
 struct Unclaimed {
     nobody: bool,
     why: String,
@@ -978,8 +810,8 @@ fn egl_vendor_after(claim: Option<&Claim>, search: &IcdSearch) -> Result<PathBuf
     unique_manifest_for(&search.egl_vendor_dirs, vendor, "EGL vendor")
 }
 
-/// Asking a real ICD: load its library and talk to it directly, without
-/// the loader, so one answer belongs to exactly one manifest.
+/// Asking a real ICD: load its library and talk to it directly, without the loader, so one answer
+/// belongs to exactly one manifest.
 #[cfg(target_os = "linux")]
 mod loaded {
     use super::{Feature, IcdProbe, VulkanDevice};
@@ -1003,9 +835,8 @@ mod loaded {
             device: &str,
             features: &[Feature],
         ) -> Result<bool, String> {
-            // The loader hands `library_path` to `dlopen` exactly as an
-            // absolute path or a bare soname, so the launcher does the
-            // same rather than trust the caller's spelling.
+            // The loader hands `library_path` to `dlopen` exactly as an absolute path or a bare
+            // soname, so the launcher does the same rather than trust the caller's spelling.
             let library = super::manifest_library_path(manifest)
                 .ok_or_else(|| format!("{}: unreadable manifest", manifest.display()))?;
             with_instance(&library, vk::API_VERSION_1_2, |instance| {
@@ -1014,9 +845,7 @@ mod loaded {
         }
     }
 
-    /// Load an ICD's library, open an instance at `api_version`, hand it to
-    /// `ask`, and destroy it. The one path both probes take, so a driver
-    /// that cannot be loaded is reported the same way either way.
+    /// Load an ICD's library, open an instance at `api_version`, hand it to `ask`, and destroy it.
     #[allow(
         unsafe_code,
         reason = "the Vulkan ICD interface is a C ABI reached through dlopen"
@@ -1026,12 +855,12 @@ mod loaded {
         api_version: u32,
         ask: impl FnOnce(&ash::Instance) -> Result<T, String>,
     ) -> Result<T, String> {
-        // SAFETY: loading a Vulkan ICD runs its initialisers, exactly as
-        // the Vulkan loader would in this process a moment later.
+        // SAFETY: loading a Vulkan ICD runs its initialisers, exactly as the Vulkan loader would in
+        // this process a moment later.
         let lib = unsafe { libloading::Library::new(library) }
             .map_err(|error| format!("cannot load: {error}"))?;
-        // SAFETY: the symbol names and signatures are the ICD interface's,
-        // fixed by the Vulkan loader-driver contract.
+        // SAFETY: the symbol names and signatures are the ICD interface's, fixed by the Vulkan
+        // loader-driver contract.
         let get_instance_proc_addr = unsafe {
             if let Ok(negotiate) =
                 lib.get::<NegotiateFn>(b"vk_icdNegotiateLoaderICDInterfaceVersion\0")
@@ -1042,11 +871,10 @@ mod loaded {
             *lib.get::<vk::PFN_vkGetInstanceProcAddr>(b"vk_icdGetInstanceProcAddr\0")
                 .map_err(|error| format!("not a Vulkan ICD: {error}"))?
         };
-        // Mesa drivers register exit handlers; unloading one would run them
-        // against freed code. Keep it, as the loader does.
+        // Mesa drivers register exit handlers; unloading one would run them against freed code.
         std::mem::forget(lib);
-        // SAFETY: `get_instance_proc_addr` is the ICD's own entry point,
-        // kept alive by the library forgotten above.
+        // SAFETY: `get_instance_proc_addr` is the ICD's own entry point, kept alive by the library
+        // forgotten above.
         let entry = unsafe { entry_of(get_instance_proc_addr) }?;
         let app = vk::ApplicationInfo::default().api_version(api_version);
         let create = vk::InstanceCreateInfo::default().application_info(&app);
@@ -1059,12 +887,7 @@ mod loaded {
         result
     }
 
-    /// Whether the device called `target` answered `VK_TRUE` for every
-    /// feature in `features`.
-    ///
-    /// Every structure a [`Feature`] lives in is chained onto one features
-    /// query whatever was asked for; a structure the driver does not know is
-    /// left `VK_FALSE`, which is the answer an absent feature should give.
+    /// Whether the device called `target` answered `VK_TRUE` for every feature in `features`.
     #[allow(unsafe_code, reason = "Vulkan physical-device queries are a C ABI")]
     fn advertised(
         instance: &ash::Instance,
@@ -1093,8 +916,7 @@ mod loaded {
             let mut asked = vk::PhysicalDeviceFeatures2::default()
                 .push_next(&mut address)
                 .push_next(&mut placed);
-            // SAFETY: the device is live and the chained structures are
-            // locals of this frame.
+            // SAFETY: the device is live and the chained structures are locals of this frame.
             unsafe { instance.get_physical_device_features2(device, &mut asked) };
             let has = |feature: Feature| match feature {
                 Feature::BufferDeviceAddress => address.buffer_device_address,
@@ -1127,8 +949,8 @@ mod loaded {
     unsafe fn entry_of(
         get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
     ) -> Result<ash::Entry, String> {
-        // SAFETY: the caller's entry point, asked with a null instance for a
-        // global command, as the loader-driver contract allows.
+        // SAFETY: the caller's entry point, asked with a null instance for a global command, as the
+        // loader-driver contract allows.
         let create_instance =
             unsafe { get_instance_proc_addr(vk::Instance::null(), c"vkCreateInstance".as_ptr()) };
         if create_instance.is_none() {
@@ -1176,8 +998,8 @@ mod loaded {
             let render_node = if has_drm {
                 let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
                 let mut properties2 = vk::PhysicalDeviceProperties2::default().push_next(&mut drm);
-                // SAFETY: the device is Vulkan 1.1 and advertises the
-                // extension whose structure is chained.
+                // SAFETY: the device is Vulkan 1.1 and advertises the extension whose structure is
+                // chained.
                 unsafe { instance.get_physical_device_properties2(device, &mut properties2) };
                 (drm.has_render == vk::TRUE).then(|| {
                     (
@@ -1206,8 +1028,8 @@ mod loaded {
             None
         }
 
-        /// A driver that loads but hands out no vkCreateInstance is refused
-        /// with a reason rather than panicking inside ash.
+        /// A driver that loads but hands out no vkCreateInstance is refused with a reason rather than
+        /// panicking inside ash.
         #[test]
         #[allow(
             unsafe_code,
@@ -1233,9 +1055,7 @@ mod tests {
         format!("{driver}_icd.{}.json", host_arch_token())
     }
 
-    /// Build a fixture ICD tree. `egl` and `vulkan` are
-    /// `(file_name, library_path)` pairs written as real manifests, so the
-    /// production scanner parses real JSON off a real filesystem.
+    /// Build a fixture ICD tree.
     fn fixture(dir: &Path, egl: &[(&str, &str)], vulkan: &[(&str, &str)]) -> IcdSearch {
         let egl_dir = dir.join("glvnd/egl_vendor.d");
         let vk_dir = dir.join("vulkan/icd.d");
@@ -1263,8 +1083,7 @@ mod tests {
         }
     }
 
-    /// What each ICD library answers, keyed by its file name. A library
-    /// with no entry fails to load.
+    /// What each ICD library answers, keyed by its file name.
     struct Scripted(HashMap<&'static str, Vec<VulkanDevice>>);
 
     impl IcdProbe for Scripted {
@@ -1277,9 +1096,8 @@ mod tests {
         }
     }
 
-    /// A probe whose driver advertises exactly `features`; asking for any
-    /// feature outside them is answered `false`, as an unsupported extension
-    /// answers.
+    /// A probe whose driver advertises exactly `features`; asking for any feature outside them is
+    /// answered `false`, as an unsupported extension answers.
     struct Advertises(HashMap<&'static str, Vec<VulkanDevice>>, Vec<Feature>);
 
     impl IcdProbe for Advertises {
@@ -1483,8 +1301,7 @@ mod tests {
 
     #[test]
     fn the_icd_that_reports_the_node_is_pinned_whatever_sysfs_calls_it() {
-        // A hybrid box: NVIDIA on renderD129, AMD on renderD128, lavapipe
-        // with no node. The AMD node pins RADV and Mesa's EGL vendor.
+        // A hybrid box: NVIDIA on renderD129, AMD on renderD128, lavapipe with no node.
         let tmp = tempfile::tempdir().unwrap();
         let search = fixture(
             tmp.path(),
@@ -1535,8 +1352,7 @@ mod tests {
             "the pre-1.3.207 spelling must carry the same choice: {env:?}"
         );
         assert!(!env.iter().any(|(_, v)| v.contains("nvidia")), "{env:?}");
-        // Every file the env names is offered for binding; the device-select
-        // switch names no file.
+        // Every file the env names is offered for binding; the device-select switch names no file.
         for (key, value) in env
             .into_iter()
             .filter(|(key, _)| *key != NO_DEVICE_SELECT_ENV)
@@ -1569,8 +1385,7 @@ mod tests {
 
     #[test]
     fn a_snapdragon_display_node_pins_turnip_over_lavapipe() {
-        // The field failure: sysfs names the node's driver `msm_dpu`, which
-        // no table listed. Turnip reporting the node is all it takes.
+        // The field failure: sysfs names the node's driver `msm_dpu`, which no table listed.
         let tmp = tempfile::tempdir().unwrap();
         let search = fixture(
             tmp.path(),
@@ -1622,8 +1437,8 @@ mod tests {
                 (&host_icd_name("broken"), "/usr/lib64/libvulkan_broken.so"),
             ],
         );
-        // A GL-only GPU: nothing reports the node, so nothing is pinned
-        // and every ICD's answer is on the record.
+        // A GL-only GPU: nothing reports the node, so nothing is pinned and every ICD's answer is on
+        // the record.
         let probe = Scripted(HashMap::from([
             (
                 "libvulkan_radeon.so",
@@ -1681,8 +1496,7 @@ mod tests {
                 (&host_icd_name("radeon"), "/usr/lib64/libvulkan_radeon.so"),
             ],
         );
-        // Both would claim the node; only the host's file may be asked, or
-        // selection is ambiguous.
+        // Both would claim the node; only the host's file may be asked, or selection is ambiguous.
         let probe = Scripted(HashMap::from([
             (
                 "libvulkan_radeon32.so",
@@ -1731,8 +1545,8 @@ mod tests {
         );
     }
 
-    /// A tree where a driver reports the node, with `advertised` as the
-    /// features it answers `VK_TRUE` for.
+    /// A tree where a driver reports the node, with `advertised` as the features it answers `VK_TRUE`
+    /// for.
     fn placement_tree(tmp: &Path, advertised: Vec<Feature>) -> (IcdSearch, Advertises) {
         let search = fixture(
             tmp,
@@ -1802,8 +1616,8 @@ mod tests {
 
     #[test]
     fn a_partial_placement_advertisement_is_not_enough_for_target_buffers() {
-        // `memoryMapPlaced` and a placed range, but no unmap reservation:
-        // the range could be handed out twice, so this is placement only.
+        // `memoryMapPlaced` and a placed range, but no unmap reservation: the range could be handed
+        // out twice, so this is placement only.
         let tmp = tempfile::tempdir().unwrap();
         let (search, probe) = placement_tree(
             tmp.path(),
@@ -1821,8 +1635,8 @@ mod tests {
 
     #[test]
     fn a_driver_that_cannot_place_memory_leaves_the_switch_alone() {
-        // A native GPU: it claims the node and pins its loaders, and the
-        // variable a translation layer reads never appears.
+        // A native GPU: it claims the node and pins its loaders, and the variable a translation layer
+        // reads never appears.
         let tmp = tempfile::tempdir().unwrap();
         let (search, probe) = placement_tree(tmp.path(), vec![Feature::BufferDeviceAddress]);
         let sel = selection_for("asahi", &search, &probe);
@@ -1839,8 +1653,8 @@ mod tests {
 
     #[test]
     fn an_unpinned_session_never_sets_the_site_integration_switch() {
-        // Nothing claims the node, so there is no driver to ask and the
-        // environment stays exactly as the loaders leave it.
+        // Nothing claims the node, so there is no driver to ask and the environment stays exactly as
+        // the loaders leave it.
         let tmp = tempfile::tempdir().unwrap();
         let (search, probe) = placement_tree(
             tmp.path(),
@@ -1873,8 +1687,8 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn host_render_node_resolves_to_files_that_exist() {
-        // The path the compositor actually calls, against this machine's
-        // real drivers: whatever it pins has to exist.
+        // The path the compositor actually calls, against this machine's real drivers: whatever it
+        // pins has to exist.
         assert_eq!(driver_for(Path::new("/dev/null")), None);
         assert_eq!(driver_for(Path::new("/dev/dri/renderD9999")), None);
         let Some(node) = std::fs::read_dir("/dev/dri")

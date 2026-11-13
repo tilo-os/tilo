@@ -1,8 +1,7 @@
 //! Bubblewrap argv construction from a [`ManifestView`].
 //!
-//! Pure function: given a manifest, payload root, the app's runtime root,
-//! and resolved service fds, returns the argv for `bwrap`. No I/O — fd
-//! plumbing is `run()`'s job in `lib.rs`.
+//! Pure function: given a manifest, payload root, the app's runtime root, and resolved
+//! service fds, returns the argv for `bwrap`.
 
 use std::path::{Path, PathBuf};
 
@@ -18,20 +17,16 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
     PathBuf::from("/run/tilo-runtime").join(version)
 }
 
-/// The `LD_LIBRARY_PATH` of a sandbox running on the runtime bundle mounted
-/// for `version`: the bundle's `lib/` directory.
+/// The `LD_LIBRARY_PATH` of a sandbox running on the runtime bundle mounted for `version`: the bundle's
+/// `lib/` directory.
 pub fn runtime_library_path(version: &str) -> PathBuf {
     runtime_mount_for(version).join("lib")
 }
 
 /// The selected signed SDK's catalog, private to this application's namespace.
-/// The toolkit checks its compiled manifest and each font's pinned bytes.
 pub const RUNTIME_FONT_CATALOG_PATH: &str = "/run/tilo-fonts";
 
-/// Canonical absolute ELF interpreter paths re-exposed from the runtime
-/// bundle. Ordinary shared libraries are found through the bundle's
-/// `LD_LIBRARY_PATH`; rebinding them here can target host symlinks (for
-/// example `/lib64/libgcc_s.so.1`), which bubblewrap deliberately refuses.
+/// Canonical absolute ELF interpreter paths re-exposed from the runtime bundle.
 pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib64/ld-linux-x86-64.so.2",
     "/lib/ld-linux-x86-64.so.2",
@@ -44,16 +39,13 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
 ];
 
-/// Plan for exposing a filtered D-Bus proxy into the sandbox. The production
-/// runner leaves D-Bus unavailable when that proxy cannot start; there is no
-/// raw-session-bus plan or fallback.
+/// Plan for exposing a filtered D-Bus proxy into the sandbox.
 #[derive(Debug, Clone)]
 pub struct DBusBindPlan {
     pub host_socket: PathBuf,
     /// In-sandbox path, read via `DBUS_SESSION_BUS_ADDRESS=unix:path=<sandbox_path>`.
     pub sandbox_path: PathBuf,
-    /// The filtered AT-SPI bus proxy, for a graphical app whose session runs
-    /// an accessibility bus.
+    /// The filtered AT-SPI bus proxy, for a graphical app whose session runs an accessibility bus.
     pub atspi: Option<AtspiBindPlan>,
 }
 
@@ -69,8 +61,6 @@ pub struct AtspiBindPlan {
 }
 
 /// Where a GUI app's Wayland socket appears inside the sandbox.
-/// Normalised to `wayland-0` regardless of host display name — the app
-/// has no business knowing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaylandBind {
     pub host_socket: PathBuf,
@@ -92,17 +82,8 @@ pub fn wayland_bind_for(host_socket: &Path, uid: u32) -> WaylandBind {
     }
 }
 
-/// Splice a Wayland display into an argv built by [`build_bwrap_argv`],
-/// before the trailing entrypoint token.
-///
-/// `--ro-bind`, matching Flatpak: blocks the app from
-/// unlinking/replacing the compositor's socket while still allowing
-/// `connect(2)`.
-///
-/// Exactly **one** socket is bound — the public one. The compositor's
-/// privileged socket carries the clipboard-manager protocols (which
-/// hand their holder every selection with no focus check) and is never
-/// bound or named here.
+/// Splice a Wayland display into an argv built by [`build_bwrap_argv`], before the trailing entrypoint
+/// token.
 pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
     push_bind(argv, "--ro-bind", &bind.host_socket, &bind.sandbox_socket);
     argv.push("--setenv".to_string());
@@ -116,15 +97,11 @@ pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
     argv.push(PRIVILEGED_WAYLAND_ENV.to_string());
 }
 
-/// The `PATH` a sandboxed app runs with, fixed rather than inherited —
-/// a writable dir on the session's PATH would decide which binary
-/// `exec` finds.
+/// The `PATH` a sandboxed app runs with, fixed rather than inherited — a writable dir on the session's
+/// PATH would decide which binary `exec` finds.
 pub const SANDBOX_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
-/// The whole of what a sandboxed app inherits from the launching
-/// session. An allowlist, not a filter: nothing here names a socket,
-/// workspace, identity or path — those reach the app only via an explicit
-/// `--setenv` beside the bind that makes them reachable.
+/// The whole of what a sandboxed app inherits from the launching session.
 pub const INHERITED_ENV: &[&str] = &[
     // `LANGUAGE` is the GNU fallback chain, `LC_ALL` overrides the rest.
     "LANG",
@@ -146,9 +123,6 @@ pub const INHERITED_ENV: &[&str] = &[
 ];
 
 /// User-owned type-only accessibility preferences allowed into applications.
-/// Values are parsed and canonicalised before crossing the sandbox boundary;
-/// keeping these out of [`INHERITED_ENV`] prevents arbitrary strings from
-/// becoming app input merely because their variable name is recognised.
 pub const ACCESSIBILITY_TEXT_SCALE_ENV: &[&str] = &["TILO_A11Y_TEXT_SCALE", "TILO_TEXT_SCALE"];
 
 fn push_accessibility_environment(argv: &mut Vec<String>) {
@@ -174,13 +148,6 @@ fn push_accessibility_environment(argv: &mut Vec<String>) {
 }
 
 /// Empty the environment, then put back what the app is entitled to.
-///
-/// `bwrap` passes the parent's environment straight through unless
-/// told not to, and the parent here is the compositor — its Wayland
-/// socket, broker and `TILO_*` confinement variables. So the
-/// environment is *built*: `--clearenv` first, then `PATH`, then
-/// [`INHERITED_ENV`], with everything else set beside the bind that
-/// makes it mean something.
 pub fn push_clean_environment(argv: &mut Vec<String>) {
     argv.push("--clearenv".to_string());
     argv.push("--setenv".to_string());
@@ -198,16 +165,14 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
         argv.push((*key).to_string());
         argv.push(value.to_string_lossy().into_owned());
     }
-    // Every launch: no transparent huge pages in its heap. A hardened one
-    // overrides this with [`push_runtime_hardening`].
+    // Every launch: no transparent huge pages in its heap.
     argv.extend([
         "--setenv".into(),
         "GLIBC_TUNABLES".into(),
         crate::hardening::tunables(false),
     ]);
     push_accessibility_environment(argv);
-    // Fixed content-free presentation/GPU timing booleans, never an input
-    // injector or output path. Keep arbitrary profiling/scenario environment stripped.
+    // Fixed content-free presentation/GPU timing booleans, never an input injector or output path.
     for name in [
         "TILO_PROFILE_PRESENTATION",
         "TILO_PROFILE_GPU_STAGES",
@@ -221,24 +186,16 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
 }
 
 /// Env var publishing the compositor's privileged Wayland socket.
-/// Mirrors `tilo_compositor::native::PRIVILEGED_SOCKET_ENV`,
-/// duplicated since the launcher has no compositor dep.
 pub const PRIVILEGED_WAYLAND_ENV: &str = "TILO_WAYLAND_PRIVILEGED";
 
-/// Env var naming the workspace an app launched into —
-/// `ui::collaboration` uses it as the **collaboration cluster id** CRDT
-/// deltas are addressed to, so apps in different workspaces never
+/// Env var naming the workspace an app launched into — `ui::collaboration` uses it as the
+/// **collaboration cluster id** CRDT deltas are addressed to, so apps in different workspaces never
 /// share traffic.
 pub const WORKSPACE_ID_ENV: &str = "TILO_WORKSPACE_ID";
 
-/// Attach [`crate::hardening::RuntimeHardening`] to a sandbox: the
-/// preload library must also be bound, since an unbound `LD_PRELOAD`
-/// path just falls back to the ordinary allocator with a stderr
-/// warning, not an error.
-///
-/// Assumes the preload is linked against the host's libc, true for a
-/// runtime bundle only because it's baked from the same rootfs in the
-/// same image build.
+/// Attach [`crate::hardening::RuntimeHardening`] to a sandbox: the preload library must also be bound,
+/// since an unbound `LD_PRELOAD` path just falls back to the ordinary allocator with a stderr warning,
+/// not an error.
 pub fn push_runtime_hardening(
     argv: &mut Vec<String>,
     hardening: &crate::hardening::RuntimeHardening,
@@ -251,8 +208,7 @@ pub fn push_runtime_hardening(
         argv.push(allocator.display().to_string());
     }
     if hardening.shadow_stack {
-        // Marking the binary isn't enough — glibc also needs this tunable for
-        // a shadow stack request.
+        // Marking the binary isn't enough — glibc also needs this tunable for a shadow stack request.
         argv.push("--setenv".to_string());
         argv.push("GLIBC_TUNABLES".to_string());
         argv.push(crate::hardening::tunables(true));
@@ -265,23 +221,14 @@ pub fn push_workspace_id(argv: &mut Vec<String>, workspace_id: &str) {
     argv.push(workspace_id.to_string());
 }
 
-/// The DRM device directory: the system profile binds it (every GPU on
-/// a multi-GPU host); [`push_gpu_selection`] narrows to one.
+/// The DRM device directory: the system profile binds it (every GPU on a multi-GPU host);
+/// [`push_gpu_selection`] narrows to one.
 const DRM_DIR: &str = "/dev/dri";
 
-/// Where a shell-issued startup trace may land: the app's state directory,
-/// never its home.
+/// Where a shell-issued startup trace may land: the app's state directory, never its home.
 const STARTUP_METRICS_PREFIX: &str = "/run/tilo/app/.local/state/startup-";
 
-/// Splice the compositor's GPU choice into the argv, before the
-/// entrypoint token. Three things: (1) a tmpfs over `/dev/dri` hides
-/// the manifest's grant, then only the chosen render node is bound
-/// back — the only way to stop Mesa/EGL enumeration picking a GPU the
-/// compositor can't import buffers from; (2) loader manifests stay
-/// readable; (3) variables are set explicitly so the choice is
-/// assertable.
-///
-/// `grants_drm` says whether the manifest gave this app `/dev/dri` at all.
+/// Splice the compositor's GPU choice into the argv, before the entrypoint token.
 pub fn push_gpu_selection(
     argv: &mut Vec<String>,
     selection: &crate::gpu::GpuSelection,
@@ -308,9 +255,8 @@ pub fn push_gpu_selection(
     }
 }
 
-/// The loader pin of a GPU-less machine (`gpu::SoftwarePin`): its manifests
-/// read-only and the variables that name them. No device is bound beyond
-/// the system profile's.
+/// The loader pin of a GPU-less machine (`gpu::SoftwarePin`): its manifests read-only and the variables
+/// that name them.
 pub fn push_software_pin(argv: &mut Vec<String>, pin: &crate::gpu::SoftwarePin) {
     for file in pin.manifest_files() {
         push_bind(argv, "--ro-bind-try", &file, &file);
@@ -335,10 +281,8 @@ pub fn push_pipeline_seed(argv: &mut Vec<String>, seed: &Path) {
     ]);
 }
 
-/// The Landlock rules that make [`push_gpu_selection`]'s binds usable: the
-/// selection is only real if Landlock agrees. Loader manifests and the
-/// pipeline seed need read; the render node needs read+write (it is opened
-/// `O_RDWR`), and read-only looks like no GPU present.
+/// The Landlock rules that make [`push_gpu_selection`]'s binds usable: the selection is only real if
+/// Landlock agrees.
 pub fn push_gpu_landlock_rules(argv: &mut Vec<String>, selection: &crate::gpu::GpuSelection) {
     for file in selection.manifest_files() {
         argv.push("--ro".to_string());
@@ -352,10 +296,8 @@ pub fn push_gpu_landlock_rules(argv: &mut Vec<String>, selection: &crate::gpu::G
     }
 }
 
-/// Whether this launch exposes `/dev/dri` at all: an app granted `gpu`
-/// ([`crate::gpu::granted`]), or a capability naming a DRM path. Consulted
-/// rather than assumed, since [`push_gpu_selection`]'s narrowing needs
-/// something actually mounted.
+/// Whether this launch exposes `/dev/dri` at all: an app granted `gpu` ([`crate::gpu::granted`]), or a
+/// capability naming a DRM path.
 pub fn grants_drm(gpu_granted: bool, capabilities: &CapabilityPlan) -> bool {
     let from_profile = gpu_granted
         && crate::profile::GPU_DEVICE_PATHS
@@ -373,14 +315,10 @@ fn is_drm_path(p: &Path) -> bool {
     p == Path::new(DRM_DIR) || p.starts_with(DRM_DIR)
 }
 
-/// Host-governed human identity directory exposed to Files.  Unlike the
-/// app's writable data directory, this individual mount is read-only.
+/// Host-governed human identity directory exposed to Files.
 pub const SANDBOX_TRUSTED_IDENTITIES_DIR: &str = "/run/tilo/identity-projection";
 
 /// Bind one already-staged identity projection into Files.
-///
-/// The caller restricts this to the Files package.  Keeping the bind helper
-/// dumb makes its exact mount shape independently testable.
 pub fn push_trusted_identities_bind(argv: &mut Vec<String>, host_path: &Path) {
     let host_directory = host_path.parent().unwrap_or(host_path);
     push_bind(
@@ -420,14 +358,9 @@ pub fn push_action_authority_bind(argv: &mut Vec<String>, host_path: &Path) {
     );
 }
 
-/// Build the bwrap argv from a manifest plus the launcher's resolved
-/// inputs: `runtime_root`, `service_binds` (fds reach the child by
-/// inheritance, not argv), `dbus_bind`, and whether an identity broker fd is
-/// available (`identity_host_path` is a host-only presence marker).
-///
-/// `capabilities` only ever adds binds — [`CapabilityPlan::empty`]
-/// renders exactly the sandbox the manifest alone describes, the whole
-/// enforcement story for a revoked or never-granted permission.
+/// Build the bwrap argv from a manifest plus the launcher's resolved inputs: `runtime_root`,
+/// `service_binds` (fds reach the child by inheritance, not argv), `dbus_bind`, and whether an identity
+/// broker fd is available (`identity_host_path` is a host-only presence marker).
 pub fn build_bwrap_argv(
     manifest: &ManifestView,
     payload_root: &Path,
@@ -437,8 +370,7 @@ pub fn build_bwrap_argv(
     identity_host_path: Option<&Path>,
     capabilities: &CapabilityPlan,
 ) -> Vec<String> {
-    // GUI launch: pick the GUI-flavour bin, falling back to the legacy
-    // top-level `bin`.
+    // GUI launch: pick the GUI-flavour bin, falling back to the legacy top-level `bin`.
     let entry = manifest
         .entrypoint
         .gui_bin()
@@ -455,10 +387,8 @@ pub fn build_bwrap_argv(
     )
 }
 
-/// The surface the package ships (`surface.toml` at its payload root), by
-/// its path in the sandbox and its hash: the app reads it from there, checks
-/// the hash and names it in every change it signs. A package without one
-/// names none, and its changes wait wherever surfaces decide them.
+/// The surface the package ships (`surface.toml` at its payload root), by its path in the sandbox and
+/// its hash: the app reads it from there, checks the hash and names it in every change it signs.
 fn push_surface(argv: &mut Vec<String>, payload_root: &Path, payload_mount: &Path) {
     let Ok(bytes) = std::fs::read(payload_root.join("surface.toml")) else {
         return;
@@ -499,12 +429,8 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
             argv.extend(["--setenv".to_string(), key.to_string(), value]);
         }
     }
-    // The shell owns this path and always points it at the app's state
-    // directory inside its one writable bind — not the directory itself,
-    // which is the app's home and what Files shows. Preserve it across
-    // `--clearenv` so startup checkpoints survive a compositor crash or
-    // forced reboot. Refuse arbitrary paths: this diagnostic must never turn
-    // into a sandbox write primitive.
+    // The shell owns this path and always points it at the app's state directory inside its one
+    // writable bind — not the directory itself, which is the app's home and what Files shows.
     if let Ok(value) = std::env::var("TILO_STARTUP_METRICS_PATH")
         && value.starts_with(STARTUP_METRICS_PREFIX)
         && std::path::Path::new(&value)
@@ -521,8 +447,7 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
             value,
         ]);
     }
-    // Where an unattended session's Save chooser answers. It only names a
-    // destination: whether the app may write there is still its file grants'.
+    // Where an unattended session's Save chooser answers.
     if let Ok(value) = std::env::var(SAVE_DIRECTORY_ENV)
         && is_plain_absolute_path(&value)
     {
@@ -538,8 +463,7 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
 /// `tilo_dialogs::portal::SAVE_DIRECTORY_ENV`).
 const SAVE_DIRECTORY_ENV: &str = "TILO_SAVE_DIRECTORY";
 
-/// An absolute path of ordinary components, bounded and free of control
-/// characters.
+/// An absolute path of ordinary components, bounded and free of control characters.
 fn is_plain_absolute_path(value: &str) -> bool {
     let path = std::path::Path::new(value);
     value.len() <= 4096
@@ -553,13 +477,12 @@ fn is_plain_absolute_path(value: &str) -> bool {
         })
 }
 
-/// The variable that tells a runtime's binary where the package it runs is
-/// mounted (see [`ManifestView::entrypoint`]'s `runtime`).
+/// The variable that tells a runtime's binary where the package it runs is mounted (see
+/// [`ManifestView::entrypoint`]'s `runtime`).
 pub const APP_MODULE_ENV: &str = "TILO_APP_MODULE";
 
-/// The sandbox directory the entrypoint's binary paths are relative to: the
-/// mount of the runtime bundle `[entrypoint].runtime` names, else the
-/// package's own payload.
+/// The sandbox directory the entrypoint's binary paths are relative to: the mount of the runtime bundle
+/// `[entrypoint].runtime` names, else the package's own payload.
 #[must_use]
 pub fn entry_root_for(manifest: &ManifestView) -> PathBuf {
     match manifest
@@ -603,19 +526,14 @@ fn push_app_metadata(argv: &mut Vec<String>, manifest: &ManifestView, payload_mo
     }
 }
 
-/// Mount a further runtime bundle read-only at its runtime mount. Unlike the
-/// app's own runtime it changes no loader path: the app finds what it needs
-/// inside by path. Returns the mount.
+/// Mount a further runtime bundle read-only at its runtime mount.
 pub fn push_required_runtime(argv: &mut Vec<String>, root: &Path, version: &str) -> PathBuf {
     let mount = runtime_mount_for(version);
     push_bind(argv, "--ro-bind", root, &mount);
     mount
 }
 
-/// `GStreamer` relocates its default plugin lookup beside `libgstreamer`. The
-/// signed SDK carries that library, while platform decoder plugins already
-/// live in the fixed read-only system library profile. Name that boundary
-/// explicitly; never inherit a session's writable plugin search paths.
+/// `GStreamer` relocates its default plugin lookup beside `libgstreamer`.
 const SYSTEM_GSTREAMER_PLUGINS: &[&str] = &[
     "/usr/lib64/gstreamer-1.0",
     "/usr/lib/gstreamer-1.0",
@@ -689,14 +607,13 @@ pub fn build_bwrap_argv_for_entry(
 ) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
 
-    // First, because `--clearenv` keeps only what a *later* `--setenv` puts
-    // back — including the ones `run.rs` splices in after this returns.
+    // First, because `--clearenv` keeps only what a *later* `--setenv` puts back — including the ones
+    // `run.rs` splices in after this returns.
     push_clean_environment(&mut argv);
 
-    // Network namespace is shared ONLY for unrestricted access (host
-    // network, or a `*` grant) — anything more specific keeps the empty
-    // namespace and uses the egress gate, since `--share-net` is
-    // all-or-nothing.
+    // Network namespace is shared ONLY for unrestricted access (host network, or a `*` grant) —
+    // anything more specific keeps the empty namespace and uses the egress gate, since `--share-net`
+    // is all-or-nothing.
     argv.push("--unshare-all".to_string());
     if egress_decision(manifest, capabilities).shares_host_network() {
         argv.push("--share-net".to_string());
@@ -711,9 +628,9 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("TILO_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
     push_surface(&mut argv, payload_root, &payload_mount);
-    // An entrypoint that executes its runtime's binary is told where the
-    // package it runs is: the payload is then the app (a tilolang app's
-    // compiled module and metadata), and the binary is the runtime's.
+    // An entrypoint that executes its runtime's binary is told where the package it runs is: the
+    // payload is then the app (a tilolang app's compiled module and metadata), and the binary is the
+    // runtime's.
     if manifest.entrypoint.runtime.is_some() {
         argv.extend([
             "--setenv".to_string(),
@@ -722,25 +639,22 @@ pub fn build_bwrap_argv_for_entry(
         ]);
     }
 
-    // Same-identity continuation is launcher-authored metadata. bwrap clears
-    // the parent environment, so forward only the compact identifiers/payload
-    // after rejecting control characters and an oversized resume blob.
+    // Same-identity continuation is launcher-authored metadata.
     push_continuity_environment(&mut argv);
 
-    // The human-readable app name from `[package].name`; omitted when
-    // unset, and the toolkit derives one from the package id.
+    // The human-readable app name from `[package].name`; omitted when unset, and the toolkit derives
+    // one from the package id.
     push_app_metadata(&mut argv, manifest, &payload_mount);
 
-    // Hardened allocator + shadow stacks for packages the image lists as
-    // handling untrusted bytes — decided against an image-owned policy,
-    // never something the manifest can ask for.
+    // Hardened allocator + shadow stacks for packages the image lists as handling untrusted bytes —
+    // decided against an image-owned policy, never something the manifest can ask for.
     push_runtime_hardening(
         &mut argv,
         &crate::hardening::for_package(&manifest.package_id),
     );
 
-    // Standard mounts, before the system profile so its device entries
-    // land on top of the `--dev` tmpfs instead of under it.
+    // Standard mounts, before the system profile so its device entries land on top of the `--dev`
+    // tmpfs instead of under it.
     argv.push("--tmpfs".to_string());
     argv.push("/tmp".to_string());
     argv.push("--proc".to_string());
@@ -748,30 +662,20 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--dev".to_string());
     argv.push("/dev".to_string());
 
-    // Bind the runtime and its canonical ELF interpreter paths before the
-    // broad read-only `/lib` and `/lib64` profile mounts below. Bubblewrap
-    // processes these actions in order: attempting to create
-    // `/lib/ld-linux.so.2` beneath an already-mounted read-only `/lib` fails
-    // before the app can exec. The later parent bind leaves the existing
-    // child mount visible, while the selected bundle itself lives under the
-    // sandbox-private `/run` tree.
+    // Bind the runtime and its canonical ELF interpreter paths before the broad read-only `/lib` and
+    // `/lib64` profile mounts below.
     push_runtime_bundle(&mut argv, runtime);
 
-    // The system read profile: fixed, identical for every package, fed by
-    // no manifest field.
+    // The system read profile: fixed, identical for every package, fed by no manifest field.
     crate::profile::push_system_profile(
         &mut argv,
         egress_decision(manifest, capabilities).shares_host_network(),
     );
 
-    // User-granted capabilities after the system profile (read-write wins
-    // over read-only). `-try` variants throughout: a stale grant (deleted
-    // dir, unplugged webcam) must not fail the launch — bwrap just skips
-    // it, never widens.
+    // User-granted capabilities after the system profile (read-write wins over read-only).
     push_capability_binds(&mut argv, capabilities);
 
-    // XDG portals: wire in the bind plan the caller supplied. No plan
-    // means the bus is NOT exposed at all.
+    // XDG portals: wire in the bind plan the caller supplied.
     if let Some(bind) = dbus_bind {
         push_bind(
             &mut argv,
@@ -801,22 +705,14 @@ pub fn build_bwrap_argv_for_entry(
         }
     }
 
-    // Participation: tell the app which shape it is in. Information, not
-    // enforcement — the enforcement is the identity about to not be bound.
+    // Participation: tell the app which shape it is in.
     if let Some(mode) = capabilities.participation.env_value() {
         argv.push("--setenv".to_string());
         argv.push("TILO_PARTICIPATION".to_string());
         argv.push(mode.to_string());
     }
 
-    // User identity: the path is a host-side presence marker only. Private
-    // material is never mounted. run.rs puts one connected broker socket on
-    // BROKER_CHILD_FD and the app receives only that least-privilege signing
-    // capability.
-    //
-    // A **read-only participant gets no identity at all** — without a
-    // signing key the app can't produce an authored change for anything
-    // downstream to reject.
+    // User identity: the path is a host-side presence marker only.
     if let Some(host_path) =
         identity_host_path.filter(|_| capabilities.participation.carries_identity())
     {
@@ -826,13 +722,8 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(runtime_identity::broker::BROKER_CHILD_FD.to_string());
     }
 
-    // Service sockets reach the app as inherited descriptors: dup2'd onto
-    // `child_fd` in `pre_exec`, surviving exec at the same number the app
-    // reads from `TILO_SVC_<NAME>_FD`.
-    //
-    // Deliberately **no bwrap flag**: `--file FD DEST` copies the fd's
-    // *contents* to a file, so pointing it at a connected socket blocks
-    // bwrap on an EOF that never comes, hanging the launch before `exec`.
+    // Service sockets reach the app as inherited descriptors: dup2'd onto `child_fd` in `pre_exec`,
+    // surviving exec at the same number the app reads from `TILO_SVC_<NAME>_FD`.
     for sb in service_binds {
         argv.push("--setenv".to_string());
         argv.push(svc_env_var(&sb.name));
@@ -845,10 +736,7 @@ pub fn build_bwrap_argv_for_entry(
     argv
 }
 
-/// The outbound access this launch resolves to. One function so the
-/// argv layer, Landlock layer and gate spawn can't disagree — the
-/// alternative is an empty namespace with no gate (silently offline)
-/// or a gate plus `--share-net` (a hole beside the filter).
+/// The outbound access this launch resolves to.
 pub fn egress_decision(
     manifest: &ManifestView,
     capabilities: &CapabilityPlan,
@@ -858,9 +746,8 @@ pub fn egress_decision(
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
     );
-    // Applied here, not at the gate: the namespace decision and the gate
-    // must come from the same answer, or the app gets an empty namespace
-    // with nothing to reach through it.
+    // Applied here, not at the gate: the namespace decision and the gate must come from the same
+    // answer, or the app gets an empty namespace with nothing to reach through it.
     if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
         && package_store::dev_env::dev_override(crate::dev_env::NET_GATE_ENV)
             .is_some_and(|v| v == "off")
@@ -876,8 +763,8 @@ pub fn egress_decision(
     decision
 }
 
-/// Where the egress gate socket is on each side of the sandbox
-/// boundary, and the loopback port the in-sandbox relay serves.
+/// Where the egress gate socket is on each side of the sandbox boundary, and the loopback port the
+/// in-sandbox relay serves.
 #[derive(Debug, Clone)]
 pub struct NetGateBind {
     pub host_socket: PathBuf,
@@ -886,12 +773,8 @@ pub struct NetGateBind {
     pub port: u16,
 }
 
-/// Wire the egress gate into the sandbox: socket + env vars for an
-/// ordinary HTTP client ([`crate::netgate::proxy_env`]), pointed at the
-/// in-sandbox relay.
-///
-/// `--bind`, not `--ro-bind`: `connect(2)` on a pathname socket needs
-/// write access.
+/// Wire the egress gate into the sandbox: socket + env vars for an ordinary HTTP client
+/// ([`crate::netgate::proxy_env`]), pointed at the in-sandbox relay.
 pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
     push_bind(argv, "--bind", &bind.host_socket, &bind.sandbox_socket);
     for (var, value) in crate::netgate::proxy_env(bind.port) {
@@ -899,8 +782,7 @@ pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
         argv.push(var.to_string());
         argv.push(value);
     }
-    // Convenience for an app that speaks to the gate directly instead of
-    // via the loopback relay.
+    // Convenience for an app that speaks to the gate directly instead of via the loopback relay.
     argv.push("--setenv".to_string());
     argv.push("TILO_NET_GATE".to_string());
     argv.push(bind.sandbox_socket.display().to_string());
@@ -909,7 +791,7 @@ pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
 /// One service-socket triple resolved by the launcher.
 #[derive(Debug, Clone)]
 pub struct ServiceBind {
-    /// Service name as it appeared in the manifest (e.g. "collab").
+    /// Service name as the manifest spells it.
     pub name: String,
     /// Host-side fd we keep open across exec for bwrap to read from.
     pub host_fd: i32,
@@ -922,10 +804,7 @@ pub fn svc_env_var(name: &str) -> String {
     format!("TILO_SVC_{}_FD", name.to_uppercase())
 }
 
-/// Render a [`CapabilityPlan`]'s paths as bwrap binds. Read grants get
-/// `--ro-bind-try` even for device nodes (a read cap conferring write
-/// would be the model lying); write grants under `/dev` get
-/// `--dev-bind-try`.
+/// Render a [`CapabilityPlan`]'s paths as bwrap binds.
 pub fn push_capability_binds(argv: &mut Vec<String>, capabilities: &CapabilityPlan) {
     push_grant_binds(argv, capabilities, |_| true);
     push_private_store_masks(argv, capabilities);
@@ -950,14 +829,8 @@ fn push_grant_binds(
     }
 }
 
-/// Hide the private stores a grant contains — after every grant, or a later
-/// bind would show them again (bwrap applies its operations in order).
-///
-/// Pins first: each directory on the way to a store inside a writable grant
-/// is bound onto itself, a mount point the app cannot rename or remove. A pin
-/// re-binds the host directory, which would hide any grant bound beneath it,
-/// so those are bound again. Then each store: an empty tmpfs, remounted
-/// read-only, so the directory reads as empty and refuses every write.
+/// Hide the private stores a grant contains — after every grant, or a later bind would show them again
+/// (bwrap applies its operations in order).
 fn push_private_store_masks(argv: &mut Vec<String>, capabilities: &CapabilityPlan) {
     for dir in &capabilities.pinned_dirs {
         push_bind(argv, "--bind", dir, dir);
@@ -976,11 +849,8 @@ fn push_private_store_masks(argv: &mut Vec<String>, capabilities: &CapabilityPla
     }
 }
 
-/// Tell the app where the **user's** home is, when a capability binds
-/// it — inside the sandbox `HOME` is the app's own per-workspace directory,
-/// wrong for an app whose job *is* the user's files. Only set when the
-/// capability plan has bound a path containing it, so the variable can
-/// never name a directory the app can't read.
+/// Tell the app where the **user's** home is, when a capability binds it — inside the sandbox `HOME` is
+/// the app's own per-workspace directory, wrong for an app whose job *is* the user's files.
 pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> Option<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -1000,8 +870,6 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
 }
 
 /// Name the user's data directory only when an existing capability binds it.
-/// Apps keep their own `XDG_DATA_HOME`; this hint lets shared host controls
-/// identify user resources such as Trash without granting another path.
 pub fn push_user_data(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> Option<PathBuf> {
     let data = tilo_paths::data_dir().filter(|path| path.is_absolute())?;
     if !capabilities
@@ -1020,9 +888,7 @@ pub fn push_user_data(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
     Some(data)
 }
 
-/// Pass on the session's workspace roots this app's capability plan
-/// has bound. Order preserved — the first root is the one a file
-/// manager cold-starts into.
+/// Pass on the session's workspace roots this app's capability plan has bound.
 pub fn push_workspace_roots(
     argv: &mut Vec<String>,
     capabilities: &CapabilityPlan,
@@ -1036,8 +902,6 @@ pub fn push_workspace_roots(
 }
 
 /// The roots of `raw` that `capabilities` has actually bound.
-/// `None` (not empty) when nothing survives — "no workspace" and "a
-/// workspace with no roots" are different states.
 fn granted_workspace_roots(raw: &str, capabilities: &CapabilityPlan) -> Option<String> {
     let kept: Vec<&str> = raw
         .split(':')
@@ -1074,10 +938,6 @@ mod tests {
 
     #[test]
     fn workspace_roots_cross_only_where_granted() {
-        // Phase `an_ungranted_workspace_root_is_not_named_to_the_app`.
-        // Naming an ungranted root would be worse than useless: the app opens
-        // on a directory that isn't there and reports an empty folder,
-        // indistinguishable from a shared workspace with nothing in it.
         {
             let plan = CapabilityPlan::default();
             assert_eq!(granted_workspace_roots("/var/workspace", &plan), None);
@@ -1092,8 +952,6 @@ mod tests {
                 Some("/var/workspace"),
             );
         }
-        // Phase `only_the_granted_roots_cross`.
-        // Narrowed per root, not all-or-nothing.
         {
             let plan = CapabilityPlan {
                 ro_paths: vec![PathBuf::from("/var/workspace")],
@@ -1110,9 +968,6 @@ mod tests {
                 "a root nobody granted must be dropped while the granted ones stay",
             );
         }
-        // Phase `a_sibling_directory_is_not_covered_by_the_grant`.
-        // Matching is by path component, not string prefix: a grant on
-        // `/var/workspace` must not carry `/var/workspace-notes` across.
         {
             let plan = CapabilityPlan {
                 ro_paths: vec![PathBuf::from("/var/workspace")],
@@ -1182,8 +1037,8 @@ mod tests {
                     mode: net_mode.to_string(),
                     hosts: Vec::new(),
                 },
-                // A manifest names no path here — one that did would be refused before
-                // reaching this builder; see `manifest::enforce_fs_policy`.
+                // A manifest names no path here — one that did would be refused before reaching this
+                // builder; see `manifest::enforce_fs_policy`.
                 fs: crate::manifest::Fs::default(),
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
@@ -1210,8 +1065,7 @@ mod tests {
             let mut argv = vec!["--unshare-all".to_string()];
             push_runtime_bundle(&mut argv, Some((&root, version)));
             crate::profile::push_system_profile(&mut argv, false);
-            // Execute the production mount plan without starting an app or
-            // compositor. The catalog mount needs no directory on the host.
+            // Execute the production mount plan without starting an app or compositor.
             argv.extend([
                 "--ro-bind".into(),
                 "/usr/bin/cat".into(),
@@ -1253,8 +1107,8 @@ mod tests {
         assert!(!legacy.iter().any(|arg| arg == RUNTIME_FONT_CATALOG_PATH));
     }
 
-    /// Build argv for `mk_manifest`'s package id with `policy`, exercising
-    /// the real `build_bwrap_argv` → `hardening::for_package` path.
+    /// Build argv for `mk_manifest`'s package id with `policy`, exercising the real `build_bwrap_argv`
+    /// → `hardening::for_package` path.
     fn argv_with_hardening_policy(policy: &str) -> Vec<String> {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("untrusted-parsers.conf");
@@ -1322,8 +1176,8 @@ mod tests {
                 .find(|w| w[0] == "--setenv" && w[1] == "LD_PRELOAD")
                 .map(|w| w[2].clone());
 
-            // compiler-rt may be absent at test time; fall back to the system
-            // allocator rather than a preload that can't resolve.
+            // compiler-rt may be absent at test time; fall back to the system allocator rather than a
+            // preload that can't resolve.
             match preload {
                 Some(path) => {
                     assert!(
@@ -1467,9 +1321,6 @@ mod tests {
                 Some(blake3::hash(b"[[resources]]\n").to_hex().to_string())
             );
         }
-        // Phase `argv_reads_come_from_the_system_profile_not_the_manifest`.
-        // The reads a launch gets are the system profile's; a manifest naming
-        // a path never reaches this builder.
         {
             let _env = tilo_test_env::lock();
             let m = mk_manifest("off");
@@ -1489,8 +1340,8 @@ mod tests {
                     "profile entry {entry} missing from argv: {argv:?}"
                 );
             }
-            // A manifest that still carries `fs` fields changes nothing — the
-            // builder doesn't read them.
+            // A manifest that still carries `fs` fields changes nothing — the builder doesn't read
+            // them.
             let mut hostile = mk_manifest("off");
             hostile.sandbox.fs.write.push("/".to_string());
             hostile.sandbox.fs.read.push("/home/alice/.ssh".to_string());
@@ -1507,15 +1358,14 @@ mod tests {
                 argv, hostile_argv,
                 "a manifest naming paths must produce byte-identical argv to one that names none"
             );
-            // The payload mount stays a hard `--ro-bind`: a package whose
-            // own payload is missing genuinely cannot run.
+            // The payload mount stays a hard `--ro-bind`: a package whose own payload is missing
+            // genuinely cannot run.
             assert!(
                 argv.windows(3)
                     .any(|w| w[0] == "--ro-bind" && w[1] == "/host/pkg"),
                 "payload bind must stay non-try: {argv:?}"
             );
-            // Nothing writable comes out of this builder. The app's one writable
-            // directory is spliced by `run`, from the workspace it was launched into.
+            // Nothing writable comes out of this builder.
             assert!(
                 !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
                 "the manifest layer must produce no writable bind: {argv:?}"
@@ -1594,9 +1444,8 @@ mod tests {
             );
         }
         {
-            // bwrap reads everything after the entrypoint token as the child's
-            // argv — a `--setenv` spliced after it silently becomes a
-            // command-line arg instead of an env var. Pin the ordering.
+            // bwrap reads everything after the entrypoint token as the child's argv — a `--setenv`
+            // spliced after it silently becomes a command-line arg instead of an env var.
             let m = mk_manifest("off");
             let mut argv = build_bwrap_argv(
                 &m,
@@ -1634,10 +1483,6 @@ mod tests {
             assert_eq!(bind.sandbox_runtime_dir, Path::new("/run/user/1000"));
             assert_eq!(bind.host_socket, Path::new("/run/user/1000/wayland-4"));
         }
-        // Phase `sandbox_binds_only_the_public_wayland_socket`.
-        // The sandbox must bind exactly one Wayland socket — the public one
-        // — never the privileged one, which is how the clipboard-manager gate
-        // in `crates/session/compositor/src/` stays closed to a sandboxed app.
         {
             let mut argv = Vec::new();
             let bind = wayland_bind_for(Path::new("/run/user/1000/wayland-4"), 1000);
@@ -1870,8 +1715,7 @@ mod tests {
             assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), None);
         }
         {
-            // Icon art named payload-relative; builder resolves it to the
-            // in-sandbox payload mount.
+            // Icon art named payload-relative; builder resolves it to the in-sandbox payload mount.
             let mut m = mk_manifest("off");
             m.icon = Some("assets/icon.png".to_string());
             let argv = build_bwrap_argv(
@@ -1906,8 +1750,8 @@ mod tests {
 
     #[test]
     fn an_entrypoint_runtime_execs_the_runtime_binary_over_the_payload() {
-        // A tilolang app: its payload is the compiled module; the binary is
-        // the tilolang runtime bundle's, told where the module is.
+        // A tilolang app: its payload is the compiled module; the binary is the tilolang runtime
+        // bundle's, told where the module is.
         let mut m = mk_manifest("off");
         m.required_runtimes = vec!["tilolang/0.1.0".to_string()];
         m.entrypoint.bin = "bin/tilolang".to_string();
@@ -1952,10 +1796,8 @@ mod tests {
 
     #[test]
     fn a_media_app_may_own_the_player_name_its_toolkit_requests() {
-        // The app learns who it is from the `TILO_PACKAGE_ID` the sandbox
-        // sets; the toolkit names its player from that identity. The
-        // session-bus filter must grant exactly that name, or the bus
-        // refuses the player and the desktop never shows it.
+        // The app learns who it is from the `TILO_PACKAGE_ID` the sandbox sets; the toolkit names its
+        // player from that identity.
         let mut m = mk_manifest("off");
         m.capabilities = vec![crate::dbus_proxy::MEDIA_SESSION_CAPABILITY.to_string()];
         let argv = build_bwrap_argv(
@@ -2071,8 +1913,7 @@ mod tests {
                     && w[2] == "/run/user/1234/bus"),
                 "proxy socket ro-bind missing from argv: {argv:?}"
             );
-            // The sandbox sees the bus at /run/user/<uid>/bus, so the env var
-            // reflects that.
+            // The sandbox sees the bus at /run/user/<uid>/bus, so the env var reflects that.
             assert!(
                 argv.windows(3).any(|w| w[0] == "--setenv"
                     && w[1] == "DBUS_SESSION_BUS_ADDRESS"
@@ -2101,8 +1942,7 @@ mod tests {
             );
         }
         {
-            // With the plan-based API, `Deny`-only portals means the caller passes
-            // `None` — same as no portals at all.
+            // `Deny`-only portals means the caller passes `None`, the same as no portals.
             let mut m = mk_manifest("off");
             m.sandbox
                 .portals
@@ -2166,9 +2006,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `a_read_only_participant_keeps_only_the_public_identity_projection`.
-        // A read-only participant gets public identity metadata for attribution,
-        // but the launcher has already stripped the signing key.
         {
             use crate::capabilities::Participation;
 
@@ -2197,8 +2034,8 @@ mod tests {
                 !argv.iter().any(|a| a == host.to_str().unwrap()),
                 "nor may the private identity path enter its namespace: {argv:?}"
             );
-            // …and it is told which shape it is in, so chrome can present a
-            // viewer rather than an editor whose saves vanish.
+            // …and it is told which shape it is in, so chrome can present a viewer rather than an
+            // editor whose saves vanish.
             assert!(
                 argv.windows(3).any(|w| w[0] == "--setenv"
                     && w[1] == "TILO_PARTICIPATION"
@@ -2232,9 +2069,6 @@ mod tests {
                 "and is told so: {argv:?}"
             );
         }
-        // Phase `an_unscoped_launch_is_unchanged`.
-        // An app no workspace capability names keeps the launch it always had:
-        // brokered identity, and no participation claim made on its behalf.
         {
             let m = mk_manifest("off");
             let host = Path::new("/home/alice/.config/tilo/identity/primary.json");
@@ -2323,10 +2157,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn gpu_selection_and_drm_grants_shape_device_binds() {
-        // Phase `gpu_selection_narrows_the_device_and_pins_the_loaders`.
-        // A selection with both loaders resolved must hide every GPU except
-        // the compositor's, bind the manifests its variables name, and set
-        // those variables.
         {
             let sel = crate::gpu::GpuSelection {
                 node: PathBuf::from("/dev/dri/renderD128"),
@@ -2344,8 +2174,7 @@ mod tests {
             let mut argv = Vec::new();
             push_gpu_selection(&mut argv, &sel, true);
 
-            // The tmpfs must come before the node re-bind, or the bind is
-            // the thing that gets hidden.
+            // The tmpfs must come before the node re-bind, or the bind is the thing that gets hidden.
             let tmpfs = argv
                 .windows(2)
                 .position(|w| w[0] == "--tmpfs" && w[1] == "/dev/dri")
@@ -2393,9 +2222,6 @@ mod tests {
                 );
             }
         }
-        // Phase `gpu_selection_does_not_mount_a_device_the_manifest_withheld`.
-        // An app the manifest gave no DRM access to gets no device mount —
-        // the GPU plumbing must not hand out access nobody asked for.
         {
             let sel = crate::gpu::GpuSelection {
                 node: PathBuf::from("/dev/dri/renderD128"),
@@ -2424,10 +2250,6 @@ mod tests {
                 "the loader that did resolve must still be pinned: {argv:?}"
             );
         }
-        // Phase `drm_grant_detection_follows_the_gpu_capability_and_grants`.
-        // An app draws through its workspace's render service and has no GPU
-        // node, unless it declares `gpu`; then its node is narrowed to the
-        // compositor's. A user-granted node counts too.
         {
             let none = CapabilityPlan::empty();
             let off = mk_manifest("off");
@@ -2460,8 +2282,7 @@ mod tests {
                 "a user-granted node must be narrowed too"
             );
 
-            // Only the `gpu` capability counts. A package that writes
-            // `/dev/dri` into its (retired) fs block changes nothing.
+            // Only the `gpu` capability counts.
             let mut hostile = mk_manifest("off");
             hostile.sandbox.fs.write.push("/dev/dri".to_string());
             assert_eq!(
@@ -2496,10 +2317,6 @@ mod tests {
                 "the app must be told which descriptor its service is on: {argv:?}"
             );
         }
-        // Phase `service_sockets_are_never_handed_to_bwrap_as_files`.
-        // `--file FD DEST` copies FD's contents into a file; pointed at a
-        // connected socket it blocks bwrap on an EOF the broker never sends.
-        // The descriptor reaches the child by inheritance instead.
         {
             let m = mk_manifest("off");
             let binds = vec![
@@ -2539,8 +2356,7 @@ mod tests {
                     );
                 }
             }
-            // Nothing emits `--file` any more, so the statement is flat: not on
-            // these fds, ever.
+            // Nothing emits `--file` any more, so the statement is flat: not on these fds, ever.
             assert!(
                 !argv.iter().any(|a| a == "--file"),
                 "a service socket must never be handed to bwrap as a file: {argv:?}"
@@ -2555,13 +2371,13 @@ mod tests {
         }
     }
 
-    // Capability enforcement: assert on the production argv itself — a path
-    // missing from it is a path the app cannot reach, whatever the UI says.
+    // Capability enforcement: assert on the production argv itself — a path missing from it is a path
+    // the app cannot reach, whatever the UI says.
 
     use collab_types::caps::{Access, CapOverride, Expiry, Scope, Subject};
 
-    /// Deterministic stand-in for the host's device nodes, so a camera
-    /// assertion doesn't depend on the test machine owning one.
+    /// Deterministic stand-in for the host's device nodes, so a camera assertion doesn't depend on the
+    /// test machine owning one.
     fn fake_device_paths(device: &str) -> Vec<PathBuf> {
         match device {
             "camera" => vec![PathBuf::from("/dev/video0")],
@@ -2570,9 +2386,8 @@ mod tests {
         }
     }
 
-    /// Build the argv the launcher would really produce for `app_id`,
-    /// through the same production path as `run_with`; only the
-    /// device-node lookup is substituted.
+    /// Build the argv the launcher would really produce for `app_id`, through the same production path
+    /// as `run_with`; only the device-node lookup is substituted.
     fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
         let m = mk_manifest("off");
         let plan = CapabilityPlan::for_app_with(app_id, caps, Some(now), fake_device_paths);
@@ -2601,8 +2416,8 @@ mod tests {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
     }
 
-    /// Everything a launch with no grants binds, as an equality (not
-    /// `any()` probes) so a new mount can't sneak into the default sandbox.
+    /// Everything a launch with no grants binds, as an equality (not `any()` probes) so a new mount
+    /// can't sneak into the default sandbox.
     fn baseline_binds() -> Vec<(String, String, String)> {
         let mut expected = vec![(
             "--ro-bind".to_string(),
@@ -2616,14 +2431,11 @@ mod tests {
                 (*p).to_string(),
             ));
         }
-        // No GPU node: an app without `gpu` draws through its workspace's render
-        // service.
+        // No GPU node: an app without `gpu` draws through its workspace's render service.
         expected
     }
 
-    /// The argv masks the private store after every grant: a later bind
-    /// would show it again. A nested grant re-bound after a pin keeps its own
-    /// read-only mount.
+    /// The argv masks the private store after every grant: a later bind would show it again.
     #[test]
     fn private_stores_are_masked_after_every_grant_bind() {
         let dir = tempfile::tempdir().unwrap();
@@ -2632,8 +2444,8 @@ mod tests {
         let notes = home.join(".config/notes");
         std::fs::create_dir_all(&store).unwrap();
         std::fs::create_dir_all(&notes).unwrap();
-        // The home is writable; `notes` inside it is capped at Read, so it
-        // has its own read-only mount the pin must not shadow.
+        // The home is writable; `notes` inside it is capped at Read, so it has its own read-only mount
+        // the pin must not shadow.
         let caps = vec![
             fs_grant("so.tilo.files", &home.display().to_string(), Access::Write),
             fs_grant("so.tilo.files", &notes.display().to_string(), Access::Read),
@@ -2733,8 +2545,8 @@ mod tests {
                     );
                 }
             }
-            // The grant is for that path and nothing above it: the parent
-            // directory must not be reachable.
+            // The grant is for that path and nothing above it: the parent directory must not be
+            // reachable.
             assert!(
                 !argv.iter().any(|a| a == "/var/workspace"),
                 "a grant on /var/workspace/books must not bind its parent: {argv:?}"
@@ -2753,8 +2565,8 @@ mod tests {
                     && w[2] == "/var/workspace/books"),
                 "a Write capability must produce a read-write bind: {argv:?}"
             );
-            // Scoped to the granted path: the manifest's own `fs.read`
-            // declarations legitimately emit read-only binds of their own.
+            // Scoped to the granted path: the manifest's own `fs.read` declarations legitimately emit
+            // read-only binds of their own.
             for (flag, src, _dst) in bind_triples(&argv) {
                 if src == "/var/workspace/books" {
                     assert!(
@@ -2811,8 +2623,8 @@ mod tests {
                 !argv.iter().any(|a| a == "--share-net"),
                 "another app's network grant must not open this app's namespace: {argv:?}"
             );
-            // Proof the fixture is capable of granting: the same list, read
-            // as the app it names, does produce those binds.
+            // Proof the fixture is capable of granting: the same list, read as the app it names, does
+            // produce those binds.
             let theirs = argv_with_caps("so.tilo.other", &caps, 1_000);
             assert!(theirs.iter().any(|a| a == "/var/workspace/secrets"));
             assert!(theirs.iter().any(|a| a == "--share-net"));
@@ -2833,8 +2645,8 @@ mod tests {
                 baseline_binds(),
                 "only the payload and the system profile survive an expired grant: {expired:?}"
             );
-            // Same capability before its deadline does bind — so the
-            // emptiness above is the expiry, not a broken fixture.
+            // Same capability before its deadline does bind — so the emptiness above is the expiry,
+            // not a broken fixture.
             let live = argv_with_caps("so.tilo.books", &caps, 499);
             assert!(
                 live.windows(3).any(|w| w[0] == "--bind-try"
@@ -2848,8 +2660,8 @@ mod tests {
     #[test]
     fn network_capabilities_decide_namespace_and_egress_gate() {
         {
-            // The manifest says net.mode = "off": without a capability the sandbox
-            // keeps the empty network namespace, and no packet can leave.
+            // The manifest says net.mode = "off": without a capability the sandbox keeps the empty
+            // network namespace, and no packet can leave.
             let isolated = argv_with_caps("so.tilo.mail", &[], 1_000);
             assert!(
                 !isolated.iter().any(|a| a == "--share-net"),
@@ -2867,11 +2679,6 @@ mod tests {
                 "a grant for `*` is unrestricted access and shares the namespace: {granted:?}"
             );
         }
-        // Phase `a_grant_naming_a_host_no_longer_shares_the_whole_network`.
-        // A named host must not share the whole network — the grant must
-        // reach a real mechanism (the gate socket the empty namespace leaves
-        // as the only way out), not just an argv string. Packets asserted in
-        // `tests/netgate_egress.rs`.
         {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
@@ -2886,8 +2693,8 @@ mod tests {
                  equivalence between `github.com` and `*` is the bug this closes: {argv:?}"
             );
 
-            // And the grant does reach a mechanism now: the gate decision comes from
-            // the same manifest + capability pair that built the argv above.
+            // And the grant does reach a mechanism now: the gate decision comes from the same manifest
+            // + capability pair that built the argv above.
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1_000), |_| Vec::new());
             let decision = egress_decision(&mk_manifest("off"), &plan);
@@ -2916,8 +2723,8 @@ mod tests {
                 "the gate socket must be bound read-write: connect(2) on a pathname socket is a \
                  write and a --ro-bind surfaces as EACCES: {argv:?}"
             );
-            // socks5h, not socks5: the `h` sends the hostname to the gate instead of
-            // resolving it locally, which the sandbox cannot do.
+            // socks5h, not socks5: the `h` sends the hostname to the gate instead of resolving it
+            // locally, which the sandbox cannot do.
             let socks = format!("socks5h://127.0.0.1:{}", crate::netgate::RELAY_PORT);
             for var in ["ALL_PROXY", "all_proxy"] {
                 assert!(
@@ -2926,8 +2733,8 @@ mod tests {
                     "{var} must point at the relay as socks5h: {argv:?}"
                 );
             }
-            // And the HTTP form works without an opt-in feature — an app whose
-            // HTTP library lacks SOCKS support reads only these.
+            // And the HTTP form works without an opt-in feature — an app whose HTTP library lacks
+            // SOCKS support reads only these.
             let http = format!("http://127.0.0.1:{}", crate::netgate::RELAY_PORT);
             for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
                 assert!(

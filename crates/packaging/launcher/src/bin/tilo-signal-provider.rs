@@ -1,7 +1,6 @@
-//! Thin entrypoint for the normally signed native Signal service package.
-//! It owns Java, requests graceful shutdown and reports success only after
-//! Java's normal shutdown hooks have finished. The host still proves namespace
-//! teardown before sealing the newest private profile.
+//! Thin entrypoint for the normally signed native Signal service package. It owns Java,
+//! requests graceful shutdown and reports success only after Java's normal shutdown
+//! hooks have finished.
 use std::{
     io,
     process::{Child, Command, ExitStatus},
@@ -76,10 +75,7 @@ fn run() -> io::Result<bool> {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let wake = install_stop()?;
-    // The normal strict launcher verifies this exact runtime and mounts it
-    // read-only. There is no host Java, library lookup or alternate version.
-    // bwrap supplies the verified bundle's exact library path. Landlock
-    // grants that mount, not enumeration of the parent runtime directory.
+    // The normal strict launcher verifies this exact runtime and mounts it read-only.
     let library = std::env::var_os("LD_LIBRARY_PATH").ok_or(io::ErrorKind::InvalidData)?;
     let runtime = runtime_lib(
         std::path::Path::new("/run/tilo-runtime"),
@@ -138,8 +134,7 @@ fn supervise(mut java: Java, wake: &bounded_command::WakeFd, grace: Duration) ->
         }
         deadline = None;
         if stopping.is_none() && STOP.load(Ordering::Relaxed) {
-            // This child remains owned and unreaped, so its PID cannot refer
-            // to another process. It is never selected by a name or pid file.
+            // This child remains owned and unreaped, so its PID cannot refer to another process.
             let pid = i32::try_from(java.0.id()).map_err(io::Error::other)?;
             if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
                 return Err(io::Error::last_os_error());
@@ -258,8 +253,8 @@ mod tests {
         let (_root, child) =
             live("trap 'exit 143' TERM; touch \"$1\"; while :; do sleep 0.02; done");
         STOP.store(true, Ordering::Relaxed);
-        // A child that honours TERM exits by itself: the grace only bounds a hang,
-        // so a loaded machine that delays its trap cannot turn it into a kill.
+        // A child that honours TERM exits by itself: the grace only bounds a hang, so a loaded machine
+        // that delays its trap cannot turn it into a kill.
         assert!(supervise(child, wake, tilo_test_env::hang_bound()).unwrap());
         let (_root, child) = live("trap '' TERM; touch \"$1\"; while :; do sleep 0.02; done");
         assert!(!supervise(child, wake, STOP_GRACE).unwrap());
@@ -284,8 +279,8 @@ mod tests {
             !supervise(child, wake, STOP_GRACE).unwrap(),
             "kernel signal termination is never a normal Java shutdown"
         );
-        // Phase `sigterm_wakes_the_sleeping_supervisor`: the supervisor waits
-        // without a timer, so only the handler's ring can start the shutdown.
+        // Phase `sigterm_wakes_the_sleeping_supervisor`: the supervisor waits without a timer, so only
+        // the handler's ring can start the shutdown.
         let (root, child) =
             live("trap 'exit 143' TERM; touch \"$1\"; while :; do sleep 0.02; done");
         let pid = i32::try_from(child.0.id()).unwrap();
@@ -300,7 +295,6 @@ mod tests {
             }
             if !stopped.exists() {
                 // A missed ring would otherwise hang: an unrequested kill fails it.
-                // SAFETY: the supervised child is still owned and unreaped here.
                 unsafe { libc::kill(pid, libc::SIGKILL) };
             }
         });

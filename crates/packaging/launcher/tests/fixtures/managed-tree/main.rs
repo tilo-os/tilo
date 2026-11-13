@@ -1,6 +1,5 @@
-//! Opt-in Linux qualification fixture, never an application or provider.
-//! Cargo builds this through the checkout's normal compiler budget. Its only
-//! protocol is the real managed startup challenge followed by private test bytes.
+//! Opt-in Linux qualification fixture, never an application or provider. Cargo builds
+//! this through the checkout's normal compiler budget.
 #[cfg(target_os = "linux")]
 fn main() {
     use std::{
@@ -35,8 +34,7 @@ fn main() {
     );
     collab.set_read_timeout(None).unwrap();
 
-    // No threads have been created. After fork the child branches use only libc
-    // and terminate with _exit; they never unwind or run inherited Rust drops.
+    // No threads have been created.
     let intermediate = unsafe { libc::fork() };
     assert!(intermediate >= 0, "intermediate fork failed");
     if intermediate == 0 {
@@ -48,8 +46,8 @@ fn main() {
         if grandchild > 0 {
             unsafe { libc::_exit(0) };
         }
-        // The initial application is PID 2 by default, not PID 1: bubblewrap
-        // owns the namespace reaper. Wait until this orphan has that parent.
+        // The initial application is PID 2 by default, not PID 1: bubblewrap owns the namespace
+        // reaper.
         while unsafe { libc::getppid() } == original_parent {
             let delay = libc::timespec {
                 tv_sec: 0,
@@ -65,8 +63,6 @@ fn main() {
             unsafe { libc::_exit(43) };
         }
         // The orphan has no voluntary exit path, including descriptor EOF.
-        // Only real sandbox teardown or the test's exact pidfd failure cleanup
-        // can terminate it after READY.
         loop {
             unsafe { libc::pause() };
         }
@@ -81,8 +77,7 @@ fn main() {
     let mut exit = [0];
     model.read_exact(&mut exit).unwrap();
     assert_eq!(exit, [b'E']);
-    // The reparented descendant remains blocked in pause until the actual
-    // sandbox teardown kills it.
+    // The reparented descendant remains blocked in pause until the actual sandbox teardown kills it.
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -1,7 +1,5 @@
-//! Root-mounted target projection in a canonical owned private namespace.
-//! This module does not admit caller paths, source credentials, or mount names.
-//! The canonical signed runner must supply NativeTrust/NamespaceOwner hooks;
-//! merely constructing this bootstrap does not launch a trusted service.
+//! Root-mounted target projection in a canonical owned private namespace. This module
+//! does not admit caller paths, source credentials, or mount names.
 use super::delayed_filter;
 use crate::owned_service::refused;
 use serde::{Deserialize, Serialize};
@@ -62,15 +60,13 @@ fn root() -> io::Result<()> {
     Ok(())
 }
 /// Obtained from the live certified Shell `ExecutingPeer`, never NSS or source GID.
-/// Root-only, nonserializable and no supplementary-source-group field.
 pub struct TargetProjectionCredentials {
     uid: u32,
     gid: u32,
 }
 impl TargetProjectionCredentials {
-    /// # Errors
-    /// Fails unless the caller has real root custody and the IDs identify a
-    /// non-root target user without sentinel user or group IDs.
+    /// Fails unless the caller has real root custody and the IDs identify a non-root target user
+    /// without sentinel user or group IDs.
     pub fn admitted(uid: u32, gid: u32) -> io::Result<Self> {
         root()?;
         validate_ids(uid, gid)?;
@@ -87,7 +83,6 @@ pub enum TargetProjectionMode {
 }
 pub trait TargetProjectionAuthority: super::ServiceAuthority {
     fn projection_mode(&self) -> TargetProjectionMode;
-    /// # Errors
     /// Fails if the certified target identity cannot be admitted under root custody.
     fn target_credentials(&self) -> io::Result<TargetProjectionCredentials>;
     fn context_sha256(&self) -> [u8; 32];
@@ -281,8 +276,7 @@ fn mount_id(file: &File) -> io::Result<u64> {
         .filter(|id| *id != 0)
         .ok_or_else(|| refused("Target mount identity unavailable"))
 }
-/// Canonical runner custody before namespace creation. Its descriptor pairs and
-/// exact splice hooks are usable only after independent signed-native admission.
+/// Canonical runner custody before namespace creation.
 struct LaunchState {
     token: File,
     filter: delayed_filter::Filter,
@@ -302,9 +296,8 @@ pub struct TargetProjectionAdmission {
     exposure: Arc<exposure::ExposureCustody>,
 }
 impl TargetProjectionAdmission {
-    /// # Errors
-    /// Fails if root custody, live authority, offline policy, target identity,
-    /// FUSE access, or sealed bootstrap preparation cannot be established.
+    /// Fails if root custody, live authority, offline policy, target identity, FUSE access, or sealed
+    /// bootstrap preparation cannot be established.
     pub fn admit(authority: Arc<dyn TargetProjectionAuthority>) -> io::Result<Self> {
         root()?;
         authority.check()?;
@@ -319,7 +312,6 @@ impl TargetProjectionAdmission {
             .open("/dev/fuse")?;
         let record = Record {
             // Schema 3 requires the long-lived authenticated TOM1 observation channel.
-            // Older workers only acknowledge readiness and cannot serve observations.
             schema: 4,
             mode: authority.projection_mode(),
             purpose: "retained-target-projection".into(),
@@ -390,9 +382,8 @@ impl TargetProjectionAdmission {
         }
         self.authority.check()
     }
-    /// # Errors
-    /// Fails if admission has changed, a runtime is already present, or the
-    /// runtime directory and its signed publisher cannot be verified.
+    /// Fails if admission has changed, a runtime is already present, or the runtime directory and its
+    /// signed publisher cannot be verified.
     pub fn with_native_runtime(
         mut self,
         runtime: &std::path::Path,
@@ -412,9 +403,8 @@ impl TargetProjectionAdmission {
         self.check()?;
         Ok(self)
     }
-    /// # Errors
-    /// Fails if admission has changed, the package is not the projection worker,
-    /// or the installation cannot be bound to the admitted signed runtime.
+    /// Fails if admission has changed, the package is not the projection worker, or the installation
+    /// cannot be bound to the admitted signed runtime.
     pub fn with_installation(
         mut self,
         installed: package_store::InstalledPackage,
@@ -508,10 +498,8 @@ impl TargetProjectionAdmission {
             .map(|s| s.record.clone())
             .ok_or_else(|| refused("Target filter missing"))
     }
-    /// The fixed compatibility filter stays active; the normal compiler output
-    /// is installed by the signed shim immediately after root mount admission.
-    /// Canonical runner must separately require root native mode, host userns,
-    /// fresh PID/net/IPC/UTS/mount namespaces and only the three transient caps.
+    /// The fixed compatibility filter stays active; the normal compiler output is installed by the
+    /// signed shim immediately after root mount admission.
     pub(crate) fn splice_baseline_argv(&self, argv: &mut Vec<String>) -> io::Result<()> {
         self.check()?;
         let expected = ["--add-seccomp-fd", "40", "--add-seccomp-fd", "41"];

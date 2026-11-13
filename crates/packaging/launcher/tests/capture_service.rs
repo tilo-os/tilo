@@ -26,9 +26,7 @@ impl ServiceAuthority for Authority {
     }
 }
 
-/// Model the broker-private snapshot ancestor after native admission. The
-/// selected descriptor remains valid while the original user cannot resolve
-/// the snapshot's ambient pathname. Restore even when qualification panics.
+/// Model the broker-private snapshot ancestor after native admission.
 struct InaccessibleAncestor {
     path: PathBuf,
     permissions: std::fs::Permissions,
@@ -50,9 +48,6 @@ impl Drop for InaccessibleAncestor {
 }
 
 /// A copy of the built launcher under `root` that the fixture may rewrite (strip).
-/// `fs::copy` keeps the source's mode, and the runner may hand the test a
-/// read-only (0555) link into its content store rather than a writable build
-/// output, so the copy is made owner-writable explicitly.
 fn writable_launcher_copy(root: &Path) -> PathBuf {
     let launcher = root.join("tilo-launcher");
     std::fs::copy(tilo_test_env::package_binary!("tilo-launcher"), &launcher).unwrap();
@@ -467,9 +462,7 @@ fn assert_retired_original_reader(
     installed: &package_store::InstalledPackage,
     source: &Path,
 ) {
-    // A permissive, unrelated outer authority cannot replace the retained
-    // original context. Retiring it must refuse endpoint use and tear down the
-    // actual signed namespace before its owning callback thread returns.
+    // A permissive, unrelated outer authority cannot replace the retained original context.
     let retired_data = root.join("retired-reader-work");
     std::fs::create_dir(&retired_data).unwrap();
     std::fs::set_permissions(&retired_data, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -552,8 +545,8 @@ fn returning_callback_retains_original_custody(
     let cancellation = ServiceCancellation::default();
     let worker_cancel = cancellation.clone();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
-    // Model the allowed callback return: the caller receives an owned worker
-    // handle and drops its outer context while the canonical service is live.
+    // Model the allowed callback return: the caller receives an owned worker handle and drops its
+    // outer context while the canonical service is live.
     let mut running = CaptureThread {
         cancellation,
         worker: Some(std::thread::spawn(move || {
@@ -631,10 +624,9 @@ fn exercise_retained_endpoint(
     custody: launcher::owned_service::ServiceCustody,
     retire: bool,
 ) {
-    // connect() observes the real provider socket created AFTER the signed
-    // shim changed source credentials and the worker verified group reads,
-    // readonly source, closed descriptors and GNU tar. Its protocol read is
-    // still blocked, keeping the actual live subject available for observation.
+    // connect() observes the real provider socket created AFTER the signed shim changed source
+    // credentials and the worker verified group reads, readonly source, closed descriptors and GNU
+    // tar.
     let late_custody = endpoint.custody().unwrap();
     assert_eq!(late_custody, custody);
     assert!(late_custody.start_ticks > 0);
@@ -651,8 +643,8 @@ fn exercise_retained_endpoint(
             endpoint.connect().unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
-        // Keep its existing accepted stream alive until supervisor retirement;
-        // the read worker is blocked awaiting a real protocol command.
+        // Keep its existing accepted stream alive until supervisor retirement; the read worker is
+        // blocked awaiting a real protocol command.
     } else {
         let mut stream = stream.try_clone().unwrap();
         stream
@@ -671,16 +663,15 @@ fn signed_reader_failure(
     phase: &str,
     error: &dyn std::fmt::Debug,
 ) -> launcher::run::RunError {
-    // Preserve canonical ownership and the actual refusal rather than letting
-    // an assertion panic silently discard the owning thread's terminal result.
+    // Preserve canonical ownership and the actual refusal rather than letting an assertion panic
+    // silently discard the owning thread's terminal result.
     running.cancellation.cancel();
     let refusal = match running.worker.take().unwrap().join() {
         Ok(Ok(_)) => "unexpected successful checkpoint".to_owned(),
         Ok(Err(error)) => format!("{error:?}"),
         Err(_) => "owning service thread panicked".to_owned(),
     };
-    // Existing canonical stderr sink is bounded and synthetic qualification
-    // owns its contents. Allow its reader to finish, then bound diagnostic IO.
+    // Existing canonical stderr sink is bounded and synthetic qualification owns its contents.
     std::thread::sleep(Duration::from_millis(100));
     let mut stderr = String::new();
     let observation =

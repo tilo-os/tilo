@@ -1,14 +1,12 @@
 //! The launcher's developer-only environment overrides.
 //!
-//! A handful of environment variables re-point the launcher at trust or
-//! policy inputs other than the image's: the system app store, the runtime
-//! bundle root, the runtime trusted-publisher list, the JIT and
-//! untrusted-parser policy files, the D-Bus filtering proxy binary, and the
-//! switch that turns per-host egress filtering off. They are read through
-//! [`package_store::dev_env::dev_override`], which a shipped build closes.
+//! A handful of environment variables re-point the launcher at trust or policy inputs
+//! other than the image's: the system app store, the runtime bundle root, the runtime
+//! trusted-publisher list, the JIT and untrusted-parser policy files, the D-Bus
+//! filtering proxy binary, and the switch that turns per-host egress filtering off.
 
-/// Names the runtime trusted-publisher list instead of the image's: the
-/// developer session's publisher list, which the store also reads.
+/// Names the runtime trusted-publisher list instead of the image's: the developer session's publisher
+/// list, which the store also reads.
 pub const TRUSTED_PUBLISHERS_FILE_ENV: &str =
     package_store::size_limit::DEVELOPER_PUBLISHERS_FILE_ENV;
 /// `off` downgrades a host-scoped network grant to unrestricted egress.
@@ -16,12 +14,7 @@ pub const NET_GATE_ENV: &str = "TILO_LAUNCHER_NET_GATE";
 /// Names the `xdg-dbus-proxy` binary that filters an app's session bus.
 pub const DBUS_PROXY_BIN_ENV: &str = "TILO_LAUNCHER_DBUS_PROXY_BIN";
 
-/// Every variable the launcher (and the app host beside it) treats as a
-/// developer-only override. The compositor removes these from a launcher's
-/// environment when its own gate is closed.
-/// Turns live modules on for the launches of this launcher (`1`). A developer override: a
-/// shipped launcher ignores it. Declared here, on every platform, because the list of
-/// overrides below names it everywhere; only Linux launches read it (`live_module`).
+/// Every variable the launcher (and the app host beside it) treats as a developer-only override.
 pub const LIVE_MODULES_ENV: &str = "TILO_LAUNCHER_LIVE_MODULES";
 
 pub const DEV_OVERRIDE_VARS: &[&str] = &[
@@ -43,15 +36,6 @@ mod tests {
 
     #[test]
     fn every_override_this_crate_reads_is_listed() {
-        // Phase `every_override_this_crate_reads_is_listed`.
-        // The list is what the compositor strips from a launcher's
-        // environment, so an override read through `dev_override` but
-        // missing here is honoured by a dev launcher even when the
-        // compositor meant to remove it. Found by reading the sources: every
-        // override a call passes by name — `dev_override(NAME)` or
-        // `entitled(.., NAME, ..)`, which reads `NAME` through
-        // `dev_override` — whose `NAME` is a constant defined in this crate
-        // must have that constant's value in the list.
         {
             let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
             let mut sources = String::new();
@@ -76,16 +60,16 @@ mod tests {
                 })
                 .collect();
             let mut read = Vec::new();
-            // A constant reaches the override reader as the argument of a
-            // call: `dev_override(NAME)` itself, or `hardening::entitled`,
-            // which hands the variable name it was given to `dev_override`.
+            // A constant reaches the override reader as the argument of a call: `dev_override(NAME)`
+            // itself, or `hardening::entitled`, which hands the variable name it was given to
+            // `dev_override`.
             for call in ["dev_override(", "entitled("] {
                 for after in sources.split(call).skip(1) {
                     let args = after.split(')').next().expect("a closing paren");
                     for word in args.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
                     {
-                        // Only a variable name is an override; the list a
-                        // call also passes is the image's own path.
+                        // Only a variable name is an override; the list a call also passes is the
+                        // image's own path.
                         let name = word.rsplit("::").next().expect("a word");
                         if name.ends_with("_ENV")
                             && let Some(value) = consts.get(name)

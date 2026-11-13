@@ -1,5 +1,5 @@
-//! Kernel-derived filesystem coordinates for scratch/source overlap refusal.
-//! Metadata reopens confer no source-read or parent-directory permission.
+//! Kernel-derived filesystem coordinates for scratch/source overlap refusal. Metadata
+//! reopens confer no source-read or parent-directory permission.
 use super::{AsRawFd, File, OpenOptionsExt, Path, PathBuf, identity, io, refuse};
 use std::{
     io::Read,
@@ -34,9 +34,8 @@ pub(super) fn of(file: &File) -> io::Result<Coordinate> {
     literal(&name)?;
     let mount = selected_mount(before.2)?;
     let filesystem = filesystem_type(file)?;
-    // Btrfs getattr returns the subvolume's anonymous device, whereas
-    // mountinfo reports the superblock device. Both remain independently
-    // attested: object identity above and filesystem coordinates below.
+    // Btrfs getattr returns the subvolume's anonymous device, whereas mountinfo reports the superblock
+    // device.
     let btrfs = filesystem == libc::BTRFS_SUPER_MAGIC;
     if btrfs != (mount.filesystem == b"btrfs") {
         return Err(refuse("Held source filesystem type differs"));
@@ -51,9 +50,7 @@ pub(super) fn of(file: &File) -> io::Result<Coordinate> {
     if identity(&named)? != before || filesystem_type(&named)? != filesystem {
         return Err(refuse("Held source namespace differs from its descriptor"));
     }
-    // For a regular-file root, attest the real containing directory and exact
-    // child. The parent is used only for this metadata proof; it is never
-    // added to the mounted source table or worker's readable policy.
+    // For a regular-file root, attest the real containing directory and exact child.
     let parent = if file.metadata()?.is_file() {
         let parent_name = name
             .parent()
@@ -106,8 +103,8 @@ pub(super) fn of(file: &File) -> io::Result<Coordinate> {
     })
 }
 fn filesystem_type(file: &File) -> io::Result<libc::c_long> {
-    // rustix types `f_type` as the kernel's signed word on every C library;
-    // musl's own `statfs` types it unsigned.
+    // rustix types `f_type` as the kernel's signed word on every C library; musl's own `statfs` types
+    // it unsigned.
     Ok(rustix::fs::fstatfs(file)?.f_type)
 }
 fn reopen(path: &Path) -> io::Result<File> {
@@ -345,8 +342,8 @@ mod tests {
             let held = reopen(&sibling_file).unwrap();
             std::fs::rename(&sibling_file, sibling.join("old-document")).unwrap();
             std::fs::write(&sibling_file, b"replacement").unwrap();
-            // The held descriptor remains named old-document; prove its actual
-            // coordinate rather than mistaking the replacement for the grant.
+            // The held descriptor remains named old-document; prove its actual coordinate rather than
+            // mistaking the replacement for the grant.
             scratch.refuse_mounted_overlap(&held).unwrap();
             std::fs::remove_file(sibling.join("old-document")).unwrap();
             assert!(scratch.refuse_mounted_overlap(&held).is_err());
@@ -425,8 +422,7 @@ mod tests {
     impl Drop for OwnedChild {
         fn drop(&mut self) {
             if let Some(mut child) = self.0.take() {
-                // Keep exact task custody until a successful wait observes
-                // retirement. The outer native runner provides the deadline.
+                // Keep exact task custody until a successful wait observes retirement.
                 loop {
                     let _ = child.kill();
                     match child.wait() {
@@ -476,8 +472,8 @@ mod tests {
             return;
         }
         assert_eq!(rustix::process::geteuid().as_raw(), 0);
-        // The native runner supplies only this private writable Btrfs witness,
-        // independently from the readonly signed artifacts and SDK closure.
+        // The native runner supplies only this private writable Btrfs witness, independently from the
+        // readonly signed artifacts and SDK closure.
         let witness = Path::new("/run/tilo/btrfs-coordinate-witness");
         let held = reopen(witness).unwrap();
         let facts = held.metadata().unwrap();
@@ -495,9 +491,8 @@ mod tests {
             libc::BTRFS_SUPER_MAGIC,
             "genuine Btrfs native prerequisite must be observable"
         );
-        // This fixture runs rootless: its namespace CAP_SYS_ADMIN does not
-        // satisfy Btrfs ioctl's initial-user-namespace capable() check.
-        // Require the actual superblock option before creating any subvolume.
+        // This fixture runs rootless: its namespace CAP_SYS_ADMIN does not satisfy Btrfs ioctl's
+        // initial-user-namespace capable() check.
         let mount_id = identity(&held).unwrap().2;
         let mut table = Vec::new();
         File::open("/proc/self/mountinfo")

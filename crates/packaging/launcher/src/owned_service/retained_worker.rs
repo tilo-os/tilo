@@ -143,8 +143,8 @@ impl RetainedWorkerProgram {
         Ok(())
     }
 }
-/// Opaque custody derived only from a retained endpoint's signed installed ELF,
-/// exact init pidfd and current socket peer. Getters are observations, not grants.
+/// Opaque custody derived only from a retained endpoint's signed installed ELF, exact init pidfd and
+/// current socket peer.
 pub struct RetainedWorkerWitness {
     init: OwnedFd,
     namespace: File,
@@ -157,10 +157,6 @@ pub struct RetainedWorkerWitness {
 }
 impl RetainedWorkerWitness {
     /// Verify the live worker's authority, program and namespace custody.
-    ///
-    /// # Errors
-    /// Refuses cancelled, exited or reused workers and changed namespaces or
-    /// programs; propagates authority and process metadata I/O failures.
     pub fn check(&self) -> io::Result<()> {
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
@@ -189,8 +185,6 @@ impl RetainedWorkerWitness {
         Ok(())
     }
     /// Observe only the already-held source task/program/namespace for teardown.
-    /// This grants no access and cannot connect, arm, or export a capability.
-    /// Consumer cancellation/role loss must not prevent releasing an owned realm.
     pub fn check_retirement_custody(&self) -> io::Result<()> {
         if rustix::process::getuid().as_raw() != 0
             || rustix::process::geteuid().as_raw() != 0
@@ -231,8 +225,7 @@ impl RetainedWorkerWitness {
     pub fn gid(&self) -> u32 {
         self.gid
     }
-    /// Clone only the held signed installation ELF for an independently enrolled
-    /// daemon receiver. This descriptor alone carries no execution authority.
+    /// Clone only the held signed installation ELF for an independently enrolled daemon receiver.
     pub fn held_program(&self) -> io::Result<File> {
         self.check()?;
         let file = self.program.file.try_clone()?;
@@ -276,8 +269,7 @@ pub(super) fn same_worker_peer(
     Ok(peer)
 }
 impl ServiceEndpoint {
-    /// A NEW unread stream to the retained worker only. Its independent daemon
-    /// receiver must still perform QPE; this method sends no protocol frames.
+    /// A NEW unread stream to the retained worker only.
     pub fn connect_pending_worker(&self) -> io::Result<(UnixStream, RetainedWorkerWitness)> {
         let before = self.custody()?;
         let program = self.retained_program.as_ref().ok_or_else(refused)?.clone();
@@ -303,15 +295,12 @@ impl ServiceEndpoint {
     }
 }
 
-/// Narrow derivative of one genuine retained provider endpoint. Only the
-/// supervisor's already admitted endpoint can mint it; no paths, facts or
-/// descriptors supplied by callers can substitute another source task.
+/// Narrow derivative of one genuine retained provider endpoint.
 pub struct RetainedWorkerConnector {
     endpoint: ServiceEndpoint,
     custody: ServiceCustody,
 }
 impl RetainedWorkerConnector {
-    /// # Errors
     /// Refuses current authority/cancellation, namespace or held init changes.
     pub fn custody(&self) -> io::Result<ServiceCustody> {
         let actual = self.endpoint.custody()?;
@@ -329,9 +318,8 @@ impl RetainedWorkerConnector {
     }
 }
 impl ServiceEndpoint {
-    /// Retain only this genuine signed worker endpoint before moving its
-    /// supervisor into projection custody. Cloning cannot prolong source
-    /// authority: the exact init/cancellation/current lease are shared.
+    /// Retain only this genuine signed worker endpoint before moving its supervisor into projection
+    /// custody.
     pub fn retain_worker_connector(&self) -> io::Result<RetainedWorkerConnector> {
         let before = self.custody()?;
         let program = self.retained_program.as_ref().ok_or_else(refused)?.clone();

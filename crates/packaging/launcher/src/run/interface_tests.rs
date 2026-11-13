@@ -1,5 +1,5 @@
-//! A build that speaks another version of an interface than the system serves is refused, with
-//! what the system serves and how to remove the app.
+//! A build that speaks another version of an interface than the system serves is
+//! refused, with what the system serves and how to remove the app.
 
 use super::*;
 use tilo_app_package::interfaces::ProvidedInterfaces;

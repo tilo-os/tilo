@@ -1,26 +1,9 @@
-//! Development sessions only: a running app whose payload is its module follows reinstalls of
-//! its package, so a new build takes over without the app restarting.
+//! Development sessions only: a running app whose payload is its module follows
+//! reinstalls of its package, so a new build takes over without the app restarting.
 //!
-//! A package whose entrypoint executes its runtime's binary (`[entrypoint] runtime`, a tilolang
-//! app) is code the runtime interprets: its payload is a module, its metadata and its surface.
-//! In a development session (a launcher built with the developer overrides, started with
-//! [`LIVE_MODULES_ENV`] set, which the compositor strips when its own gate is closed) a pinned
-//! launch of such a package also gets a directory of later builds of the same package:
-//!
-//! * the launcher creates it under its runtime directory and binds it read-only into the sandbox
-//!   at [`UPDATES_MOUNT`], named to the app by [`UPDATES_ENV`];
-//! * it watches the app store, and when the installed package of the app's id changes, it checks
-//!   the new installation exactly as a launch does (`run::verified_launch_installation`: the
-//!   signed record, the payload's integrity, the revocation list), and takes it only from the
-//!   same publisher, executing the same runtime binary;
-//! * it copies the verified payload into `<generation>/` and then names that generation in
-//!   [`CURRENT_FILE`], each by one rename. The app reads the generation `current` names
-//!   ([`tilo_app_module`]).
-//!
-//! So nothing reaches the app that `tilo-install` did not install and the launcher did not
-//! verify, the app's process, custody, sandbox and grants are the ones it was launched with, and
-//! a shipped launcher has none of it: `package_store::dev_env::dev_override` closes the gate.
-//! The only thing that changes is which verified module the runtime interprets.
+//! A package whose entrypoint executes its runtime's binary (`[entrypoint] runtime`, a
+//! tilolang app) is code the runtime interprets: its payload is a module, its metadata
+//! and its surface.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -54,11 +37,8 @@ fn enabled() -> bool {
 }
 
 impl LiveModule {
-    /// The live module of this launch, when the session asks for live modules and the launch is
-    /// a pinned launch of a package whose payload is its module.
-    ///
-    /// # Errors
-    /// The pinned installation cannot be read again, or the updates directory cannot be made.
+    /// The live module of this launch, when the session asks for live modules and the launch is a
+    /// pinned launch of a package whose payload is its module.
     pub fn prepare(manifest: &ManifestView, opts: &RunOptions) -> Result<Option<Self>, RunError> {
         if !enabled() || manifest.entrypoint.runtime.is_none() {
             return Ok(None);
@@ -91,8 +71,8 @@ impl LiveModule {
         }))
     }
 
-    /// The bind and the variable that show the app its later builds; `ro_paths` gains the mount
-    /// for the sandbox's Landlock plan.
+    /// The bind and the variable that show the app its later builds; `ro_paths` gains the mount for the
+    /// sandbox's Landlock plan.
     pub fn splice(
         &self,
         argv: &mut Vec<String>,
@@ -112,11 +92,8 @@ impl LiveModule {
         Ok(())
     }
 
-    /// Follow reinstalls until the returned guard is dropped (the app exited), which stops the
-    /// watch and removes the directory.
-    ///
-    /// # Errors
-    /// The store cannot be watched.
+    /// Follow reinstalls until the returned guard is dropped (the app exited), which stops the watch
+    /// and removes the directory.
     pub fn follow(self) -> Result<Following, RunError> {
         let (replaced, replacements) = mpsc::channel();
         let watch = tilo_files::native::watch_changes(
@@ -164,8 +141,8 @@ impl LiveModule {
         }
     }
 
-    /// Take the installed package of the app as the next generation, when it changed since the
-    /// last one taken: its number and package id.
+    /// Take the installed package of the app as the next generation, when it changed since the last one
+    /// taken: its number and package id.
     fn take_reinstall(&self) -> Result<Option<(u64, String)>, String> {
         let Some(installed) =
             package_store::find_installed(&self.app).map_err(|error| error.to_string())?
@@ -199,8 +176,7 @@ impl LiveModule {
     }
 }
 
-/// The publisher whose key signed the installed package `package_id_hex`, from its verified
-/// record.
+/// The publisher whose key signed the installed package `package_id_hex`, from its verified record.
 fn publisher_of(
     installed: &package_store::InstalledPackage,
     package_id_hex: &str,

@@ -1,5 +1,5 @@
-//! No regular scratch inode may have an additional name outside scratch.
-//! This checks scratch only: valid source-side hardlinks remain supported.
+//! No regular scratch inode may have an additional name outside scratch. This checks
+//! scratch only: valid source-side hardlinks remain supported.
 use super::{AsRawFd, File, MetadataExt, identity, io, refuse};
 use std::{os::fd::FromRawFd, os::unix::ffi::OsStrExt};
 const ENTRIES_MAX: usize = 65536;
@@ -85,8 +85,8 @@ fn walk(directory: &File, mount: u64, uid: u32, depth: usize, count: &mut usize)
                 "Inventory scratch contains a linked or unsupported inode",
             ));
         }
-        // Reopen the exact child again; directory facts bracket the complete
-        // enumeration and reject link/unlink/replacement during this check.
+        // Reopen the exact child again; directory facts bracket the complete enumeration and reject
+        // link/unlink/replacement during this check.
         let raw = unsafe {
             libc::openat(
                 directory.as_raw_fd(),

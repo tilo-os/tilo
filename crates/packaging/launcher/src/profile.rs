@@ -1,29 +1,15 @@
-//! The system read profile — the only host paths a sandboxed app can
-//! see without a user's consent.
+//! The system read profile — the only host paths a sandboxed app can see without a
+//! user's consent.
 //!
-//! The set is fixed and independent of the manifest because these paths are a
-//! property of running a GUI app, not of an individual package. Letting a
-//! package select host paths would let it define its own containment boundary.
-//! An app that needs something outside the profile asks the user through the
-//! capability system ([`crate::capabilities`]).
-//!
-//! Two rules govern what may be added: **no user content** (fonts,
-//! driver ICDs, the C library and the CA bundle are the same bytes for
-//! every person; `~/Documents` is not and never enters here), and
-//! **every GUI app needs it** — otherwise it's a capability, not a
-//! profile entry, or the profile drifts back into being the union of
-//! what apps happened to ask for.
+//! The set is fixed and independent of the manifest because these paths are a property
+//! of running a GUI app, not of an individual package.
 
 use std::path::{Path, PathBuf};
 
 /// Read-only host paths every sandboxed app gets.
-///
-/// Bound with `--ro-bind-try`: an entry is a *permission*, not an
-/// assertion the path exists on this host — `/usr/share/nvidia` on an
-/// AMD box is normal and not a reason to refuse a launch.
 pub const SYSTEM_READ_PATHS: &[&str] = &[
-    // Dynamic loader + C library: an app whose ELF can't find its
-    // interpreter doesn't start — the floor below which nothing runs.
+    // Dynamic loader + C library: an app whose ELF can't find its interpreter doesn't start — the
+    // floor below which nothing runs.
     "/usr/lib",
     "/usr/lib64",
     "/lib",
@@ -32,54 +18,41 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/etc/ld.so.cache",
     "/etc/ld.so.conf",
     "/etc/ld.so.conf.d",
-    // Text rendering: the toolkit renders every string through
-    // cosmic-text; without fonts an app draws empty boxes.
+    // Text rendering: the toolkit renders every string through cosmic-text; without fonts an app draws
+    // empty boxes.
     "/usr/share/fonts",
     "/usr/share/fontconfig",
     "/etc/fonts",
-    // Spelling dictionaries: every toolkit text field checks spelling
-    // in-process against the system Hunspell dictionaries (the
-    // `spellcheck` crate's `DICTIONARY_DIRS`). Without them a sandboxed app
-    // silently checks nothing outside English.
+    // Spelling dictionaries: every toolkit text field checks spelling in-process against the system
+    // Hunspell dictionaries (the `spellcheck` crate's `DICTIONARY_DIRS`).
     "/usr/share/hunspell",
     "/usr/share/myspell",
-    // Keyboard layout data: `xkb_context_new` returns NULL without its
-    // default include path, and winit unwraps that into a panic — every
-    // sandboxed Wayland app dies before painting. `X11/locale` carries
-    // Compose tables for dead keys, so the two travel together.
+    // Keyboard layout data: `xkb_context_new` returns NULL without its default include path, and winit
+    // unwraps that into a panic — every sandboxed Wayland app dies before painting.
     "/usr/share/X11/xkb",
     "/usr/share/X11/locale",
-    // Language packs: every app's and the toolkit's catalogues in each
-    // language other than English, which the packages leave out
-    // (`ui::i18n::language_pack_roots`); without them an app speaks only
-    // English. The image's, and at `SANDBOX_LANGUAGE_PACKS` the ones the
-    // person installed (`push_system_profile` binds them there).
+    // Language packs: every app's and the toolkit's catalogues in each language other than English,
+    // which the packages leave out (`ui::i18n::language_pack_roots`); without them an app speaks only
+    // English.
     SANDBOX_LANGUAGE_PACKS,
     "/usr/share/tilo/language-packs",
-    // GPU loader manifests + driver data (vendor-neutral); which device is
-    // narrowed separately by `push_gpu_selection`.
+    // GPU loader manifests + driver data (vendor-neutral); which device is narrowed separately by
+    // `push_gpu_selection`.
     "/usr/share/vulkan",
     "/usr/share/glvnd",
     "/usr/share/drirc.d",
     "/usr/share/libdrm",
     "/usr/share/nvidia",
     "/etc/vulkan",
-    // Mesa and the Vulkan loader enumerate PCI devices and read driver
-    // attributes out of sysfs. There is no interface that replaces it.
+    // Mesa and the Vulkan loader enumerate PCI devices and read driver attributes out of sysfs.
     "/sys",
-    // Locale + machine facts: `/etc/machine-id` is read by graphics/D-Bus
-    // client libraries at startup — identifies the machine, not the person.
+    // Locale + machine facts: `/etc/machine-id` is read by graphics/D-Bus client libraries at startup
+    // — identifies the machine, not the person.
     "/etc/machine-id",
     "/etc/os-release",
     "/usr/share/zoneinfo",
     "/etc/localtime",
-    // TLS trust: whether an app reaches the network is decided by
-    // `[sandbox.net]` and the egress gate. The CA bundle only decides
-    // whether a *permitted* connection verifies — withholding it produces
-    // certificate errors, not security, and it's the same bytes for every user.
-    // Fedora's NSS trust module is a public library in /usr/lib64 whose
-    // symlink passes through an architecture-specific system alternative.
-    // Bind only the public library files, so dlopen resolves the CA provider.
+    // TLS trust: whether an app reaches the network is decided by `[sandbox.net]` and the egress gate.
     "/etc/alternatives/libnssckbi.so",
     "/etc/alternatives/libnssckbi.so.x86_64",
     "/etc/alternatives/libnssckbi.so.aarch64",
@@ -88,28 +61,11 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/etc/crypto-policies",
 ];
 
-/// Read-only paths added **only** when the launch shares the host
-/// network namespace.
-///
-/// These describe the network the machine is on, not the machine
-/// itself, so they aren't part of what every app gets: an app under a
-/// host-scoped grant has an empty namespace and never resolves
-/// anything itself (the gate resolves after the name passes policy),
-/// and an app with no network has nothing to resolve. Only the
-/// unrestricted case has a resolver to configure — still a system
-/// decision, derived from the egress decision already made.
+/// Read-only paths added **only** when the launch shares the host network namespace.
 pub const NETWORK_READ_PATHS: &[&str] = &["/etc/resolv.conf", "/etc/hosts"];
 
-/// GPU device nodes, bound with `--dev-bind-try` for an app granted the
-/// `gpu` capability ([`crate::gpu::granted`]) and for no other.
-///
-/// A toolkit app does not open the GPU: its workspace's render service draws its
-/// frames (the session's render service). The GPU kernel driver is among the most
-/// exploited kernel surfaces, so an app reaches it only when it declares it
-/// needs to (a web engine, video, games, 3D, ML). `--dev /dev` mounts a
-/// fresh, near-empty devtmpfs, so these nodes exist in a sandbox only when
-/// [`push_gpu_devices`] binds them; `push_gpu_selection`'s narrowing lands
-/// on top, so such an app never sees more than one GPU.
+/// GPU device nodes, bound with `--dev-bind-try` for an app granted the `gpu` capability
+/// ([`crate::gpu::granted`]) and for no other.
 pub const GPU_DEVICE_PATHS: &[&str] = &[
     "/dev/dri",
     "/dev/nvidia0",
@@ -120,28 +76,15 @@ pub const GPU_DEVICE_PATHS: &[&str] = &[
     "/dev/nvidia-caps",
 ];
 
-/// Paths below the profile's binds that an app must not see, each covered by
-/// an empty read-only tmpfs.
-///
-/// `/sys/fs/cgroup` is the cgroup hierarchy: the session's app tree and
-/// every app's cgroup in it (`crate::app_cgroup`), named by app id with its
-/// memory and CPU counters. Read-only already (the `/sys` bind is), it would
-/// still tell an app which other apps run and how much they use, and a
-/// writable cgroupfs is the one place a process could move or reconfigure
-/// cgroups from. Nothing an app runs needs it: `available_parallelism` and
-/// the engines' memory probes fall back to the affinity mask and
-/// `/proc/meminfo`. Its own place stays visible as `/proc/self/cgroup`,
-/// which reads `0::/` in the cgroup namespace bwrap gives it.
+/// Paths below the profile's binds that an app must not see, each covered by an empty read-only tmpfs.
 pub const HIDDEN_PATHS: &[&str] = &["/sys/fs/cgroup"];
 
-/// Where an app sees the language packs the person installed
-/// (`tilo_paths::language_packs_dir`), bound read-only: the same path as
-/// `ui::i18n::SANDBOX_LANGUAGE_PACKS`.
+/// Where an app sees the language packs the person installed (`tilo_paths::language_packs_dir`), bound
+/// read-only: the same path as `ui::i18n::SANDBOX_LANGUAGE_PACKS`.
 pub const SANDBOX_LANGUAGE_PACKS: &str = "/var/lib/tilo/language-packs";
 
-/// What is bound at `path` of the profile: the person's installed language
-/// packs at [`SANDBOX_LANGUAGE_PACKS`] when they have any, else the path
-/// itself.
+/// What is bound at `path` of the profile: the person's installed language packs at
+/// [`SANDBOX_LANGUAGE_PACKS`] when they have any, else the path itself.
 fn bind_source(path: &str) -> String {
     if path == SANDBOX_LANGUAGE_PACKS
         && let Some(installed) = tilo_paths::language_packs_dir().filter(|dir| dir.is_dir())
@@ -153,9 +96,6 @@ fn bind_source(path: &str) -> String {
 }
 
 /// Push the profile's binds onto a bwrap argv.
-///
-/// Callers must splice this in *before* the trailing entrypoint token —
-/// bwrap treats everything after it as the child's argv.
 pub fn push_system_profile(argv: &mut Vec<String>, shares_host_network: bool) {
     for path in SYSTEM_READ_PATHS {
         push(argv, "--ro-bind-try", &bind_source(path), path);
@@ -177,20 +117,14 @@ pub fn push_gpu_devices(argv: &mut Vec<String>) {
     }
 }
 
-/// No device node of a GPU in the sandbox: an empty `/dev/dri` over the ones
-/// [`push_gpu_devices`] bound, for an app that renders in software on a machine
-/// whose render nodes drive no GPU.
+/// No device node of a GPU in the sandbox: an empty `/dev/dri` over the ones [`push_gpu_devices`]
+/// bound, for an app that renders in software on a machine whose render nodes drive no GPU.
 pub fn hide_gpu_devices(argv: &mut Vec<String>) {
     argv.push("--tmpfs".to_owned());
     argv.push("/dev/dri".to_owned());
 }
 
 /// The profile as Landlock read-only rules.
-///
-/// A bind the ruleset does not name is visible and unreadable — every
-/// `open()` on it returns `EACCES`, which reads from inside the app as
-/// a corrupted system rather than a policy. So the two layers are
-/// derived from one list.
 pub fn landlock_ro_paths(shares_host_network: bool) -> Vec<PathBuf> {
     let extra = if shares_host_network {
         NETWORK_READ_PATHS
@@ -204,22 +138,13 @@ pub fn landlock_ro_paths(shares_host_network: bool) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The GPU device nodes as Landlock read-write rules, for an app granted
-/// `gpu`. A GPU context is opened `O_RDWR`; a read-only rule surfaces at
-/// device-open time and looks exactly like "no GPU present".
+/// The GPU device nodes as Landlock read-write rules, for an app granted `gpu`.
 pub fn landlock_rw_device_paths() -> Vec<PathBuf> {
     GPU_DEVICE_PATHS.iter().map(PathBuf::from).collect()
 }
 
-/// Landlock read-write rules for an engine that builds its own sandbox
-/// inside ours, keyed on the seccomp profile the launch was granted.
-///
-/// Chromium's zygote writes `setgroups`, `uid_map` and `gid_map` through
-/// `/proc/self` from each child it has just forked into a new user
-/// namespace. Those children have fresh PIDs, so no rule narrower than the
-/// sandbox's own `/proc` — mounted for its private PID namespace, listing
-/// only its own processes — reaches them. Without it the engine refuses to
-/// start rather than run its renderers unsandboxed.
+/// Landlock read-write rules for an engine that builds its own sandbox inside ours, keyed on the
+/// seccomp profile the launch was granted.
 pub fn landlock_rw_nested_sandbox_paths(profile: crate::seccomp::SeccompProfile) -> Vec<PathBuf> {
     if profile.allows_nested_sandbox() {
         vec![PathBuf::from("/proc")]
@@ -228,8 +153,8 @@ pub fn landlock_rw_nested_sandbox_paths(profile: crate::seccomp::SeccompProfile)
     }
 }
 
-/// Whether `path` is covered by the read profile — used to explain a
-/// refusal ("this is already yours") rather than to grant anything.
+/// Whether `path` is covered by the read profile — used to explain a refusal ("this is already yours")
+/// rather than to grant anything.
 pub fn covers(path: &Path) -> bool {
     SYSTEM_READ_PATHS
         .iter()
@@ -249,10 +174,6 @@ mod tests {
 
     #[test]
     fn the_system_profile_names_no_user_path_and_not_the_root() {
-        // Phase `the_profile_names_no_user_path`.
-        // The profile is a *system* list. If a user path ever appears in it,
-        // every app on the machine silently gained access — checked
-        // mechanically rather than by review.
         {
             for p in SYSTEM_READ_PATHS
                 .iter()
@@ -279,10 +200,6 @@ mod tests {
                 );
             }
         }
-        // Phase `the_profile_does_not_contain_the_root`.
-        // `/` (or any prefix of every path) in the profile would hand the
-        // whole host to every app — the bug this file exists to remove. Cheap
-        // to assert, catastrophic to miss.
         {
             for p in SYSTEM_READ_PATHS
                 .iter()
@@ -299,9 +216,8 @@ mod tests {
         }
     }
 
-    /// The language packs a person installed are theirs, in their data
-    /// directory; every app they run reads them where the toolkit looks in
-    /// a sandbox, read-only. With none installed the image's path stands.
+    /// The language packs a person installed are theirs, in their data directory; every app they run
+    /// reads them where the toolkit looks in a sandbox, read-only.
     #[test]
     fn the_persons_language_packs_are_bound_where_apps_read_them() {
         let data = tempfile::tempdir().unwrap();
@@ -332,17 +248,15 @@ mod tests {
                     && w[2] == "/usr/share/fonts"),
                 "fonts must be read-only: {argv:?}"
             );
-            // Without it every sandboxed Wayland app panics on `XKBNotFound`
-            // before it paints.
+            // Without it every sandboxed Wayland app panics on `XKBNotFound` before it paints.
             assert!(
                 argv.windows(3).any(|w| w[0] == "--ro-bind-try"
                     && w[1] == "/usr/share/X11/xkb"
                     && w[2] == "/usr/share/X11/xkb"),
                 "the xkb keymap data must be read-only in the sandbox: {argv:?}"
             );
-            // Every text field checks spelling in-process; without the
-            // dictionaries (bound and Landlock-readable) non-English
-            // checking silently finds nothing.
+            // Every text field checks spelling in-process; without the dictionaries (bound and
+            // Landlock-readable) non-English checking silently finds nothing.
             for dictionaries in ["/usr/share/hunspell", "/usr/share/myspell"] {
                 assert!(
                     argv.windows(3).any(|w| w[0] == "--ro-bind-try"
@@ -355,8 +269,8 @@ mod tests {
                     "{dictionaries} must be readable under Landlock"
                 );
             }
-            // The GPU is not part of what every app gets: an app draws
-            // through its workspace's render service unless it declares `gpu`.
+            // The GPU is not part of what every app gets: an app draws through its workspace's render
+            // service unless it declares `gpu`.
             assert!(
                 !argv
                     .iter()
@@ -370,8 +284,8 @@ mod tests {
                     .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),
                 "a `gpu` app's GPU node needs a device bind: {gpu:?}"
             );
-            // The cgroup hierarchy is covered, after `/sys` is bound, by an
-            // empty tree no app can write either.
+            // The cgroup hierarchy is covered, after `/sys` is bound, by an empty tree no app can
+            // write either.
             let sys = argv
                 .windows(3)
                 .position(|w| w[0] == "--ro-bind-try" && w[1] == "/sys")
@@ -388,8 +302,7 @@ mod tests {
                 })
                 .expect("/sys/fs/cgroup is covered and read-only");
             assert!(sys < hidden, "the cover must come after the bind: {argv:?}");
-            // Nothing in the profile may be writable. A `--bind` here would
-            // be a system directory an app can rewrite.
+            // Nothing in the profile may be writable.
             assert!(
                 !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
                 "no profile entry may be read-write: {argv:?}"
@@ -425,11 +338,6 @@ mod network_profile_tests {
 
     #[test]
     fn network_profile_resolver_files_and_landlock_rules_match_the_binds() {
-        // Phase `the_resolver_files_appear_only_for_an_unrestricted_network`.
-        // The machine's resolver configuration is not part of what every app
-        // gets: an app with no network has nothing to resolve, and one under
-        // a host-scoped grant resolves through the gate — either way, handing
-        // out the resolver list gives no functional gain.
         {
             let mut without = Vec::new();
             push_system_profile(&mut without, false);
@@ -450,9 +358,6 @@ mod network_profile_tests {
                 );
             }
         }
-        // Phase `the_landlock_rules_match_the_binds`.
-        // The bind list and the Landlock ruleset are derived from the same
-        // two constants, so they cannot disagree about what is readable.
         {
             for shares in [false, true] {
                 let mut argv = Vec::new();

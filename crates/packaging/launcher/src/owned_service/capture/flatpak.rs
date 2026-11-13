@@ -28,7 +28,6 @@ pub struct OriginalFlatpakProjection {
     pub owner: u32,
 }
 /// These facts must be included in the authenticated `OriginalReadClaim` digest.
-/// Root-authored inventory bytes alone are not a source access grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OriginalFlatpakBinding {
@@ -168,9 +167,8 @@ impl OriginalFlatpakBinding {
     }
 }
 impl CaptureAdmission {
-    /// Attach only after the exact sealed inventory facts enter this admission's
-    /// root-authenticated read claim. The caller retains source guards through
-    /// child quiescence; original credentials are changed by the existing shim.
+    /// Attach only after the exact sealed inventory facts enter this admission's root-authenticated
+    /// read claim.
     pub fn with_original_flatpak_sources(
         mut self,
         binding: OriginalFlatpakBinding,
