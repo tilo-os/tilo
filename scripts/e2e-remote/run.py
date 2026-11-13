@@ -1148,8 +1148,20 @@ ip -o addr show dev "$dev"
 
         def shares(state: dict, part: str) -> list:
             """What the session says of its window shares: `sharing` with each window's viewers,
-            `starting`, `watching` and `received`."""
+            `starting`, `watching`, `received`, and `live`, the workspaces' live planes."""
             return (state.get("sharing") or {}).get(part) or []
+
+        def plane(state: dict) -> dict | None:
+            """The live plane of the workspace the window is shared in, as a session says it
+            stands: `state` is `open`, or what it lacks, with `waiting_for` in words and `relay`
+            the device it runs through or waits to reach. None for a session that does not
+            publish its planes, which says nothing either way."""
+            said = state.get("sharing") or {}
+            if "live" not in said:
+                return None
+            return next((row for row in said.get("live") or [] if row.get("room") == room),
+                        {"state": "absent",
+                         "waiting_for": "its session names no live plane for the workspace"})
 
         self.person_opens_browser(b, res)
         on_b = desk(b)
@@ -1202,6 +1214,8 @@ ip -o addr show dev "$dev"
                 "watching_on_a": shares(on_a, "watching"), "received_on_a": shares(on_a, "received"),
                 "tab_on_a": next((held.get("tile") for _, held in tabs(on_a)
                                   if held.get("id") == tab), None),
+                # The pictures travel the workspace's live plane: how it stands on each end.
+                "live_on_b": plane(on_b), "live_on_a": plane(on_a),
             }
             for name, value in seen.items():
                 res.facts[name] = json.dumps(value, ensure_ascii=False)[:800]
@@ -1214,6 +1228,15 @@ ip -o addr show dev "$dev"
                 res.facts["windows_on_a"] = a.vm.raw({"op": "windows"})
                 viewers = [viewer for shared in seen["sharing_on_b"]
                            for viewer in shared.get("viewers") or []]
+                # A plane that is not open carries nothing, whatever the shares say: the sharing
+                # device's first, since nothing is captured without it.
+                closed = next(((letter, stands) for letter, stands
+                               in (("B", seen["live_on_b"]), ("A", seen["live_on_a"]))
+                               if stands is not None and stands.get("state") != "open"), None)
+                # Whether B's plane was asked for the window's track: a build that says so, says
+                # `streaming` on the window's row.
+                unasked = [shared for shared in seen["sharing_on_b"]
+                           if str(shared.get("tab")) == str(tab) and shared.get("streaming") is False]
                 # The first thing that did not happen, in the order a share travels.
                 if seen["starting_on_b"] and not seen["sharing_on_b"]:
                     why = f"B's share waits to start: {res.facts['starting_on_b'][:300]}"
@@ -1224,6 +1247,17 @@ ip -o addr show dev "$dev"
                 elif not seen["watching_on_a"]:
                     why = ("A's desk reads the share and asks no device for the window: it does not "
                            "know which device hosts the tab")
+                elif closed:
+                    letter, stands = closed
+                    relay = stands.get("relay_name") or stands.get("relay") or "no device"
+                    why = (f"the workspace's live plane is not open on {letter} "
+                           f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
+                elif unasked and not seen["received_on_a"]:
+                    why = ("the live plane is open on both and B's was never asked for the window's "
+                           f"track, so B captures nothing: A's plane runs through "
+                           f"{(seen['live_on_a'] or {}).get('relay')}, B's through "
+                           f"{(seen['live_on_b'] or {}).get('relay')}; A watches "
+                           f"{res.facts['watching_on_a'][:300]}")
                 elif not seen["received_on_a"]:
                     heard = ("B names A as viewing it" if viewers
                              else "nor did A's word that it views it reach B")
