@@ -314,13 +314,18 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
         "Ada's connection sent nothing while the others read her record"
     );
 
-    // Ada's undo takes the paste back exactly.
+    // Ada's undo takes the paste back exactly, as a change of its own sent on her connection.
+    let shared = documents_sent(&sent);
     window.send(&[ToApp::Undo]);
     settle(&mut host, &mut window);
     assert_eq!(
         body_of(&host, &note),
         before,
         "undo takes the paste back exactly"
+    );
+    assert!(
+        documents_sent(&sent) > shared,
+        "the undo went out on the connection"
     );
 }
 
