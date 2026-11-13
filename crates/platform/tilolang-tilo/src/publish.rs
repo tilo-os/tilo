@@ -185,18 +185,36 @@ pub fn action_type(
     planner: &Arc<dyn Planner>,
     words: &dyn Words,
 ) -> Arc<ActionType> {
-    let params: Vec<ActionParam> = meta
-        .arguments(&action.params)
+    let params = published_params(meta, action, words);
+    let build = build_of(meta, kind, action, planner);
+    let (label, placeholder) = naming_of(action, params.len(), words);
+    let spec = spec_of(meta, action, label, placeholder, params, build);
+    Arc::clone(described(spec, action, words).action_type())
+}
+
+/// The action's parameters, each with what it is called where a person gives it (a form, a
+/// consent sheet) in the reader's language.
+fn published_params(meta: &Meta, action: &ActionMeta, words: &dyn Words) -> Vec<ActionParam> {
+    meta.arguments(&action.params)
         .iter()
         .map(|param| {
-            // What the parameter is called where a person gives it (a form, a consent sheet).
             let key = tilolang::messages::param_key(&action.id, &param.name);
             published_param(meta, param).titled(words.word(&key, &[], &param.words()))
         })
-        .collect();
+        .collect()
+}
+
+/// The build of the action's type: it runs `planner` on the subject its spec is bound to, as the
+/// caller named the invocation with the arguments, and encodes what it planned.
+fn build_of(
+    meta: &Meta,
+    kind: &str,
+    action: &ActionMeta,
+    planner: &Arc<dyn Planner>,
+) -> impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static {
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());
     let planner = Arc::clone(planner);
-    let build = move |subject: &Target, args: &ActionArgs| {
+    move |subject: &Target, args: &ActionArgs| {
         let json = args.to_json();
         let caller = planner.caller();
         // What the invocation is made from, as the caller named it with the arguments.
@@ -219,9 +237,14 @@ pub fn action_type(
                 type_id: INVALID_ARGUMENTS_TYPE.to_owned(),
                 payload: message.into_bytes(),
             })
-    };
+    }
+}
+
+/// What the action is called and what its form asks for, in the reader's language. `given` is
+/// how many parameters it publishes: the rest of the declared ones are the form's.
+fn naming_of(action: &ActionMeta, given: usize, words: &dyn Words) -> (String, String) {
     // What the platform calls the action, as the compiler derived it, in the reader's words.
-    let label = label_of(
+    let mut label = label_of(
         words,
         &action.id,
         &tilolang_runtime::platform::label_of(action),
@@ -235,15 +258,27 @@ pub fn action_type(
     // so with "…", as the runtime's own surfaces say it. What the spec is given is what it does
     // not ask for — the subject, the resource it runs against — and the parameters after it are
     // the form's. The form's own placeholder names the command without the dots, which ask.
-    let mut label = label;
     if action
-        .unbound(action.params.len().saturating_sub(params.len()))
+        .unbound(action.params.len().saturating_sub(given))
         .next()
         .is_some()
         && !label.ends_with('…')
     {
         label.push('…');
     }
+    (label, placeholder)
+}
+
+/// The action's spec, under the name its declaration keeps: planned when it runs when it takes
+/// no parameters, else typed with the form its parameters make.
+fn spec_of(
+    meta: &Meta,
+    action: &ActionMeta,
+    label: String,
+    placeholder: String,
+    params: Vec<ActionParam>,
+    build: impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
     let no_params = params.is_empty();
@@ -274,13 +309,16 @@ pub fn action_type(
         .arguments(&action.params)
         .iter()
         .all(|param| param.default.is_some());
-    let spec = if defaulted && !no_params {
+    if defaulted && !no_params {
         spec.with_immediate_per_target()
     } else {
         spec
-    };
-    // In the order a native verb's declaration is made into its spec: its kind, description,
-    // icon, then whether it is destructive, which settles its confirmation.
+    }
+}
+
+/// `spec` made into its type in the order a native verb's declaration is made into it: its kind,
+/// description, icon, then whether it is destructive, which settles its confirmation.
+fn described(spec: ActionSpec, action: &ActionMeta, words: &dyn Words) -> ActionSpec {
     let mut spec = spec.of_kind(action_kind(action.class));
     if !action.doc.is_empty() {
         spec = spec.with_description(said_of(words, &action.id, "doc", None, &action.doc));
@@ -313,7 +351,7 @@ pub fn action_type(
         }
     }
     spec.type_mut().contract.settle_confirmation();
-    Arc::clone(spec.action_type())
+    spec
 }
 
 /// The action types a package's resources offer, built once per package and shared by every

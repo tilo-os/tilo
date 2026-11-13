@@ -352,7 +352,7 @@ fn rewrite_shell_names(body: &str) -> String {
     let mut word = String::new();
     // The character before the word being read: `.` means the word is a field, not a name.
     let mut before = '\0';
-    let mut flush = |word: &mut String, before: char, out: &mut String| {
+    let flush = |word: &mut String, before: char, out: &mut String| {
         if word.is_empty() {
             return;
         }
@@ -601,9 +601,10 @@ fn build_and_install(dir: &Path, package: &str) -> Result<String, String> {
     // directory goes, and a person's cache keeps no second copy of what they installed.
     let out = build_out(package);
     if let Err(error) = std::fs::remove_dir_all(&out) {
-        // ignored-failure: the install itself succeeded; a cache directory left behind costs
-        // space the next build reuses, and nothing the person was doing depended on its removal.
-        tracing::debug!(%error, "a style build's leftovers stay in the cache");
+        tilo_failure::ignored!(
+            "the install itself succeeded; a cache directory left behind costs space the next build reuses, and nothing the person was doing depended on its removal",
+            tracing::debug!(%error, "a style build's leftovers stay in the cache")
+        );
     }
     Ok(installed)
 }

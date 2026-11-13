@@ -2601,7 +2601,7 @@ impl<'a> Parser<'a> {
                     event,
                     param,
                     at,
-                    action,
+                    action: Box::new(action),
                 }
             }
             Tok::Ident(_)

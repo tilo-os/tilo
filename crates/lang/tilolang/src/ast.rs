@@ -765,7 +765,9 @@ pub enum UiKind {
         event: Ident,
         param: Option<EventParam>,
         at: Option<EventParam>,
-        action: Expr,
+        /// The handler, boxed as an expression's own operands are: a statement copies 520 bytes
+        /// around otherwise.
+        action: Box<Expr>,
     },
 }
 

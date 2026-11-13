@@ -875,7 +875,7 @@ impl SessionSearch {
         } else {
             narrowed
         };
-        let (app, kind, rest, _) = candidates.first()?.clone();
+        let (app, kind, rest, _) = candidates.first()?;
         if candidates.iter().any(|(other, ..)| *other != *app) {
             return None;
         }
