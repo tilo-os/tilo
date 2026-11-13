@@ -90,7 +90,7 @@ pub fn go_to(app: &mut Editor, timecode: &str) {
 
 /// The playhead as the transport reads it out.
 pub fn playhead(app: &mut Editor) -> String {
-    node(app, Role::Group, "Transport")
+    node(app, Role::Group, "Playback")
         .and_then(|(_, n)| n.value().map(str::to_string))
         .expect("the transport reads out the playhead")
 }

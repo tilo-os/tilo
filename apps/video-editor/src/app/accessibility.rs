@@ -8,17 +8,40 @@ use super::*;
 // Accessibility
 // ==========================================================================
 
-/// Which transport button each index addresses, with the name a reader speaks.
+/// Which transport button each index addresses, the catalogue message a
+/// reader hears, and the name the router addresses it by.
 ///
 /// The glyphs alone do not carry the meaning — two of the five pairs were once
-/// drawn near-identically — so the name is the control's real label, not a
-/// decoration on top of a picture that already says it.
-const TRANSPORT_NAMES: [(TransportAction, &str); 5] = [
-    (TransportAction::ToStart, "Jump to start"),
-    (TransportAction::StepBack, "Step back one frame"),
-    (TransportAction::PlayPause, "Play"),
-    (TransportAction::StepFwd, "Step forward one frame"),
-    (TransportAction::ToEnd, "Jump to end"),
+/// drawn near-identically — so the spoken name is the control's real label, not
+/// a decoration on top of a picture that already says it. The router's name is
+/// the English one in `MARKER_VERBS`' manner: a route must not move when the
+/// window's language does.
+const TRANSPORT_NAMES: [(TransportAction, &str, &str); 5] = [
+    (
+        TransportAction::ToStart,
+        "video-editor-transport-jump-start",
+        "jump to start",
+    ),
+    (
+        TransportAction::StepBack,
+        "video-editor-transport-step-back",
+        "step back one frame",
+    ),
+    (
+        TransportAction::PlayPause,
+        "video-editor-transport-play",
+        "play",
+    ),
+    (
+        TransportAction::StepFwd,
+        "video-editor-transport-step-forward",
+        "step forward one frame",
+    ),
+    (
+        TransportAction::ToEnd,
+        "video-editor-transport-jump-end",
+        "jump to end",
+    ),
 ];
 
 impl VideoEditorApp {
@@ -303,11 +326,23 @@ impl VideoEditorApp {
             .project
             .track(clip.track)
             .map_or_else(|| "track".into(), |t| t.name.clone());
-        format!(
-            "{} to {}, {} long, on {track}",
-            crate::timecode::timecode(clip.start, fps),
-            crate::timecode::timecode(clip.start + len, fps),
-            crate::timecode::clock(len),
+        crate::resource::CATALOG.t_args(
+            "video-editor-a11y-clip-value",
+            &[
+                (
+                    "start",
+                    ui::i18n::ArgValue::Text(crate::timecode::timecode(clip.start, fps)),
+                ),
+                (
+                    "end",
+                    ui::i18n::ArgValue::Text(crate::timecode::timecode(clip.start + len, fps)),
+                ),
+                (
+                    "length",
+                    ui::i18n::ArgValue::Text(crate::timecode::clock(len)),
+                ),
+                ("track", ui::i18n::ArgValue::Text(track)),
+            ],
         )
     }
 
@@ -315,7 +350,7 @@ impl VideoEditorApp {
     /// it so the export layer can nominate an active descendant inside.
     pub(super) fn a11y_pane(pane: Pane, children: Vec<AccessNode>) -> AccessNode {
         AccessNode::new(Role::Group)
-            .with_name(pane.label())
+            .with_name(crate::resource::CATALOG.t(pane.message()))
             .with_key(pane.key())
             .with_children(children)
     }
@@ -333,13 +368,18 @@ impl VideoEditorApp {
                 let projected = self.projected_media.contains(mid);
                 // The length the row shows: one the file never stated is
                 // said to be unknown, not read out as 0:00.
-                let mut value = format!("{}, {}", m.kind.label(), Self::bin_length(m));
-                if projected {
-                    // A source whose bytes are not here yet is a real, visible
-                    // state; saying so is the difference between "empty" and
-                    // "not fetched".
-                    value.push_str(", not downloaded yet");
-                }
+                let kind = crate::resource::CATALOG.t(m.kind.message());
+                let value = crate::resource::CATALOG.t_args(
+                    if projected {
+                        "video-editor-a11y-bin-downloading"
+                    } else {
+                        "video-editor-a11y-bin-kind-length"
+                    },
+                    &[
+                        ("kind", ui::i18n::ArgValue::Text(kind)),
+                        ("length", ui::i18n::ArgValue::Text(Self::bin_length(m))),
+                    ],
+                );
                 Some(
                     AccessNode::new(Role::ListItem)
                         .with_name(m.name.clone())
@@ -376,7 +416,7 @@ impl VideoEditorApp {
         let mut buttons: Vec<AccessNode> = TRANSPORT_NAMES
             .iter()
             .enumerate()
-            .map(|(i, (action, name))| {
+            .map(|(i, (action, message, _))| {
                 // The play button is the one whose name changes with state; a
                 // reader must hear what pressing it will do now. A running
                 // shuttle counts: pressing it there stops the shuttle, so
@@ -384,7 +424,7 @@ impl VideoEditorApp {
                 let name = if *action == TransportAction::PlayPause && self.is_moving() {
                     crate::resource::CATALOG.t("video-editor-pause")
                 } else {
-                    (*name).to_owned()
+                    crate::resource::CATALOG.t(*message)
                 };
                 AccessNode::new(Role::Button)
                     .with_name(name)
@@ -404,10 +444,11 @@ impl VideoEditorApp {
         // and a focus ring left on a dead button is how that reads wrong.
         for (which, _) in self.history_buttons(&self.regions()) {
             let can = self.undo.status().can(which);
+            let (name, description) = self.history_words(which);
             buttons.push(
                 AccessNode::new(Role::Button)
-                    .with_name(which.title())
-                    .with_description(self.undo.status().description(which))
+                    .with_name(name)
+                    .with_description(description)
                     .with_key(ui::a11y::hash_key(&which.verb()))
                     .with_state(AccessState::new().focusable(can).disabled(!can)),
             );
@@ -438,15 +479,26 @@ impl VideoEditorApp {
         let track_count = self.project.tracks.len();
         for (ti, track) in self.project.tracks.iter().enumerate() {
             let mut kids: Vec<AccessNode> = Vec::new();
-            for (name, on) in [
-                ("Mute", track.muted),
-                ("Solo", track.solo),
-                ("Lock", track.locked),
+            // The written word is what routes, so the toggle keeps its key
+            // when the spoken name changes language.
+            for (key, message, on) in [
+                ("Mute", "video-editor-toggle-mute", track.muted),
+                ("Solo", "video-editor-toggle-solo", track.solo),
+                ("Lock", "video-editor-toggle-lock", track.locked),
             ] {
                 kids.push(
                     AccessNode::new(Role::ToggleButton)
-                        .with_name(format!("{name} {}", track.name))
-                        .with_hashed_key((track.id, name))
+                        .with_name(crate::resource::CATALOG.t_args(
+                            "video-editor-a11y-track-toggle",
+                            &[
+                                (
+                                    "toggle",
+                                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(message)),
+                                ),
+                                ("track", ui::i18n::ArgValue::Text(track.name.clone())),
+                            ],
+                        ))
+                        .with_hashed_key((track.id, key))
                         .with_state(AccessState::new().focusable(true).checked(on)),
                 );
             }
@@ -475,27 +527,28 @@ impl VideoEditorApp {
             // the bar says has to be said here too, in the place a reader is
             // already standing when they ask about a track.
             let level = self.mix.track(track.id);
-            let mix_words = format!(
-                ", gain {}, pan {}{}",
-                track.gain_words(),
-                track.pan_words(),
-                if level.is_some_and(|l| l.clipped) {
-                    ", clipping"
-                } else {
-                    ""
-                }
-            );
+            let clipped = level.is_some_and(|l| l.clipped);
+            let kind = crate::resource::CATALOG.t(match track.kind {
+                TrackKind::Video => "video-editor-a11y-track-kind-video",
+                TrackKind::Audio => "video-editor-a11y-track-kind-audio",
+            });
+            let plural = if n == 1 { "" } else { "s" };
             tracks.push(
                 AccessNode::new(Role::Group)
                     .with_name(track.name.clone())
-                    .with_value(format!(
-                        "{} track, {} clip{}{mix_words}",
-                        match track.kind {
-                            TrackKind::Video => "video",
-                            TrackKind::Audio => "audio",
+                    .with_value(crate::resource::CATALOG.t_args(
+                        if clipped {
+                            "video-editor-a11y-track-value-clipping"
+                        } else {
+                            "video-editor-a11y-track-value"
                         },
-                        n,
-                        if n == 1 { "" } else { "s" }
+                        &[
+                            ("kind", ui::i18n::ArgValue::Text(kind)),
+                            ("count", ui::i18n::ArgValue::Number(n as f64)),
+                            ("plural", ui::i18n::ArgValue::Text(plural.to_owned())),
+                            ("gain", ui::i18n::ArgValue::Text(track.gain_words())),
+                            ("pan", ui::i18n::ArgValue::Text(track.pan_words())),
+                        ],
                     ))
                     .with_hashed_key(track.id)
                     .with_position(ti + 1, track_count)
@@ -530,12 +583,32 @@ impl VideoEditorApp {
             );
         }
         let mut node = VideoEditorApp::a11y_pane(Pane::Timeline, tracks);
-        node = node.with_value(format!(
-            "playhead at {}, {} of {} clips selected, timeline view starts at {}; Page Up and Page Down scroll the timeline",
-            crate::timecode::timecode(self.playhead, self.project.fps),
-            self.selection.len(),
-            self.project.clips.len(),
-            crate::timecode::timecode(self.scroll, self.project.fps),
+        node = node.with_value(crate::resource::CATALOG.t_args(
+            "video-editor-a11y-timeline-value",
+            &[
+                (
+                    "playhead",
+                    ui::i18n::ArgValue::Text(crate::timecode::timecode(
+                        self.playhead,
+                        self.project.fps,
+                    )),
+                ),
+                (
+                    "count",
+                    ui::i18n::ArgValue::Number(self.selection.len() as f64),
+                ),
+                (
+                    "total",
+                    ui::i18n::ArgValue::Number(self.project.clips.len() as f64),
+                ),
+                (
+                    "view",
+                    ui::i18n::ArgValue::Text(crate::timecode::timecode(
+                        self.scroll,
+                        self.project.fps,
+                    )),
+                ),
+            ],
         ));
         node
     }
@@ -594,7 +667,7 @@ impl VideoEditorApp {
                 InspectorRow::Field(f) => {
                     let value = self.num_value(*f);
                     let node = AccessNode::new(Role::Slider)
-                        .with_name(f.label())
+                        .with_name(crate::resource::CATALOG.t(f.message()))
                         .with_optional_value(value.map(|v| f.readout(v)))
                         // Keyed on the variant, not the label: two rows may
                         // legitimately read "Rotation" in their own sections.
@@ -648,7 +721,7 @@ impl VideoEditorApp {
         // focus lives on its group node.
         if cursor && let Some(InspectorRow::Header(target)) = rows.get(self.focus.inspector) {
             for g in &mut groups {
-                if g.key == Some(ui::a11y::hash_key(&target.label())) {
+                if g.key == Some(ui::a11y::hash_key(&target.tag())) {
                     g.state.focused = true;
                 }
             }
@@ -766,7 +839,7 @@ impl VideoEditorApp {
                     "video-editor-a11y-mask-shape",
                     &[(
                         "shape",
-                        ui::i18n::ArgValue::Text(shape.label().to_lowercase()),
+                        ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(shape.message())),
                     )],
                 ),
                 Role::RadioButton,
@@ -777,7 +850,7 @@ impl VideoEditorApp {
                     "video-editor-transition-named",
                     &[(
                         "transition",
-                        ui::i18n::ArgValue::Text(t.label().to_lowercase()),
+                        ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(t.message())),
                     )],
                 ),
                 Role::RadioButton,
@@ -828,14 +901,24 @@ impl VideoEditorApp {
             PickField::Frame(i) => {
                 let (label, w, h) = FRAME_PRESETS.get(i)?;
                 (
-                    format!("{label}, {w} by {h}"),
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-preset-size",
+                        &[
+                            ("name", ui::i18n::ArgValue::Text((*label).to_owned())),
+                            ("width", ui::i18n::ArgValue::Number(f64::from(*w))),
+                            ("height", ui::i18n::ArgValue::Number(f64::from(*h))),
+                        ],
+                    ),
                     *w == self.project.width && *h == self.project.height,
                 )
             }
             PickField::Rate(i) => {
                 let rate = RATE_PRESETS.get(i)?;
                 (
-                    format!("{} fps", rate_words(*rate)),
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-fps-shown",
+                        &[("rate", ui::i18n::ArgValue::Text(rate_words(*rate)))],
+                    ),
                     (rate - self.project.fps).abs() < 1e-6,
                 )
             }
@@ -929,9 +1012,9 @@ impl VideoEditorApp {
     ) -> AccessNode {
         let folded = self.collapsed.contains(&section);
         AccessNode::new(Role::Group)
-            .with_name(section.label())
+            .with_name(crate::resource::CATALOG.t(section.message()))
             .with_optional_value(folded.then(|| self.a11y_section_summary(section)))
-            .with_hashed_key(section.label())
+            .with_hashed_key(section.tag())
             .with_state(
                 AccessState::new()
                     .focusable(true)
@@ -991,94 +1074,152 @@ impl VideoEditorApp {
         match (section, clip) {
             (Section::Transform, Some(c)) => {
                 let g = self.geometry_at_playhead(c);
-                let mut s = format!(
-                    "scale {:.2}×, position {:+.2}, {:+.2}, rotation {:.0}°",
-                    g.scale_x, g.pos_x, g.pos_y, g.rotation
+                let geometry = crate::resource::CATALOG.t_args(
+                    "video-editor-a11y-geometry",
+                    &[
+                        (
+                            "scale",
+                            ui::i18n::ArgValue::Text(format!("{:.2}", g.scale_x)),
+                        ),
+                        ("x", ui::i18n::ArgValue::Text(format!("{:+.2}", g.pos_x))),
+                        ("y", ui::i18n::ArgValue::Text(format!("{:+.2}", g.pos_y))),
+                        (
+                            "rotation",
+                            ui::i18n::ArgValue::Text(format!("{:.0}", g.rotation)),
+                        ),
+                    ],
                 );
                 // Whether those numbers are going anywhere. Without it a
                 // reader hears one still frame's worth of a moving picture and
                 // has no way to know the section is animated at all.
                 if Self::transform_is_animated(c) {
-                    s.push_str(", animated");
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-animated",
+                        &[("geometry", ui::i18n::ArgValue::Text(geometry))],
+                    )
+                } else {
+                    geometry
                 }
-                s
             }
             (Section::Speed, Some(c)) => c.speed.label(),
             (Section::Mix, Some(c)) => match self.project.track(c.track) {
                 Some(t) => {
                     let level = self.mix.track(t.id);
-                    format!(
-                        "{}, gain {}, pan {}{}",
-                        t.name,
-                        t.gain_words(),
-                        t.pan_words(),
-                        if level.is_some_and(|l| l.clipped) {
-                            ", clipping"
-                        } else {
-                            ""
-                        }
-                    )
+                    let lane = format!("{} {}", t.gain_words(), t.pan_words());
+                    if level.is_some_and(|l| l.clipped) {
+                        crate::resource::CATALOG.t_args(
+                            "video-editor-summary-clipping",
+                            &[("level", ui::i18n::ArgValue::Text(lane))],
+                        )
+                    } else {
+                        format!("{}, {lane}", t.name)
+                    }
                 }
-                None => "no lane".into(),
+                None => crate::resource::CATALOG.t("video-editor-a11y-no-lane"),
             },
             // Worded from the same fields the visible summary reads, so a
             // reader is never told a tidier story than the screen tells.
             (Section::Key, Some(c)) => {
                 let tolerance = c.param_at(Param::KeyTolerance, at);
                 if !c.key.enabled {
-                    "off".into()
+                    crate::resource::CATALOG.t("video-editor-summary-off")
                 } else if tolerance <= 1e-6 {
-                    "on, but the tolerance keys nothing".into()
+                    crate::resource::CATALOG.t("video-editor-a11y-key-nothing")
                 } else {
-                    format!(
-                        "keying {:.0}% tolerance, {:.0}% softness, {:.0}% spill removal",
-                        tolerance * 100.0,
-                        c.param_at(Param::KeySoftness, at) * 100.0,
-                        c.param_at(Param::KeySpill, at) * 100.0
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-key-values",
+                        &[
+                            (
+                                "tolerance",
+                                ui::i18n::ArgValue::Text(format!("{:.0}", tolerance * 100.0)),
+                            ),
+                            (
+                                "softness",
+                                ui::i18n::ArgValue::Text(format!(
+                                    "{:.0}",
+                                    c.param_at(Param::KeySoftness, at) * 100.0
+                                )),
+                            ),
+                            (
+                                "spill",
+                                ui::i18n::ArgValue::Text(format!(
+                                    "{:.0}",
+                                    c.param_at(Param::KeySpill, at) * 100.0
+                                )),
+                            ),
+                        ],
                     )
                 }
             }
             (Section::Mask, Some(c)) => {
                 if c.mask.is_active() {
-                    format!(
-                        "{} {:.0}% by {:.0}%, {}",
-                        c.mask.shape.label().to_lowercase(),
-                        c.param_at(Param::MaskW, at) * 100.0,
-                        c.param_at(Param::MaskH, at) * 100.0,
-                        if c.mask.invert {
-                            "keeping the outside"
-                        } else {
-                            "keeping the inside"
-                        }
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-mask-values",
+                        &[
+                            (
+                                "shape",
+                                ui::i18n::ArgValue::Text(
+                                    crate::resource::CATALOG.t(c.mask.shape.message()),
+                                ),
+                            ),
+                            (
+                                "width",
+                                ui::i18n::ArgValue::Text(format!(
+                                    "{:.0}",
+                                    c.param_at(Param::MaskW, at) * 100.0
+                                )),
+                            ),
+                            (
+                                "height",
+                                ui::i18n::ArgValue::Text(format!(
+                                    "{:.0}",
+                                    c.param_at(Param::MaskH, at) * 100.0
+                                )),
+                            ),
+                            (
+                                "side",
+                                ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(
+                                    if c.mask.invert {
+                                        "video-editor-a11y-mask-outside"
+                                    } else {
+                                        "video-editor-a11y-mask-inside"
+                                    },
+                                )),
+                            ),
+                        ],
                     )
                 } else {
-                    "off".into()
+                    crate::resource::CATALOG.t("video-editor-summary-off")
                 }
             }
-            (Section::Effects, Some(c)) => {
-                let n = c.effects.len();
-                format!("{n} effect{}", if n == 1 { "" } else { "s" })
-            }
+            (Section::Effects, Some(c)) => crate::resource::CATALOG.t_args(
+                "video-editor-summary-effects",
+                &[("count", ui::i18n::ArgValue::Number(c.effects.len() as f64))],
+            ),
             (Section::Markers, _) => {
                 // Every marked instant the list shows -- the project's own and
                 // each clip's, which is what `layout_markers` walks and what
                 // the painted summary counts. Counting only the project's told
                 // a reader a smaller number than the panel had rows for.
                 let n = self.project.all_markers().len();
-                format!("{n} marker{}", if n == 1 { "" } else { "s" })
+                crate::resource::CATALOG.t_args(
+                    "video-editor-summary-markers",
+                    &[("count", ui::i18n::ArgValue::Number(n as f64))],
+                )
             }
             // The same words the folded header shows, so a reader is never
             // told a tidier story than the panel tells.
-            (Section::Curves, Some(c)) => {
-                curve_summary(c, self.playhead).unwrap_or_else(|| "unchanged".into())
+            (Section::Curves, Some(c)) => curve_summary(c, self.playhead)
+                .unwrap_or_else(|| crate::resource::CATALOG.t("video-editor-summary-unchanged")),
+            (Section::Title, Some(_)) => {
+                crate::resource::CATALOG.t("video-editor-a11y-title-properties")
             }
-            (Section::Title, Some(_)) => "title properties".into(),
             // Worded, not counted: the frame is the fact a reader needs from
             // this header whether or not it is folded.
             (Section::Project, _) => {
                 format_words(self.project.width, self.project.height, self.project.fps)
             }
-            _ => "collapsed".into(),
+            _ => crate::resource::CATALOG.t("video-editor-summary-collapsed"),
         }
     }
 
@@ -1567,17 +1708,14 @@ impl VideoEditorApp {
                 vec![hash_key(&clip.track), hash_key(&clip.id)]
             }
             Pane::Inspector => match self.a11y_inspector_rows().get(self.focus.inspector) {
-                Some(InspectorRow::Header(sec)) => vec![hash_key(&sec.label())],
+                Some(InspectorRow::Header(sec)) => vec![hash_key(&sec.tag())],
                 // A marker's path runs through the MARKERS section, the same
                 // shape a control's does.
                 Some(InspectorRow::Marker(m)) => {
-                    vec![hash_key(&Section::Markers.label()), hash_key(&m.id)]
+                    vec![hash_key(&Section::Markers.tag()), hash_key(&m.id)]
                 }
                 Some(InspectorRow::AddMarker) => {
-                    vec![
-                        hash_key(&Section::Markers.label()),
-                        hash_key(&ADD_MARKER_KEY),
-                    ]
+                    vec![hash_key(&Section::Markers.tag()), hash_key(&ADD_MARKER_KEY)]
                 }
                 Some(InspectorRow::Field(f)) => {
                     let key = f.a11y_key();
@@ -1596,24 +1734,57 @@ impl VideoEditorApp {
         self.perform_action(&Action::Activate, &path, state, &root)
     }
 
+    /// What a history button is called and what it would do, in the window's
+    /// language: the toolkit's own title is its source language.
+    pub(super) fn history_words(&self, which: ui::UndoRequest) -> (String, String) {
+        let name = crate::resource::CATALOG.t(match which {
+            ui::UndoRequest::Undo => "video-editor-undo",
+            ui::UndoRequest::Redo => "video-editor-redo",
+        });
+        let status = self.undo.status();
+        let description = match status.summary(which) {
+            Some(summary) => crate::resource::CATALOG.t_args(
+                "video-editor-undo-command",
+                &[
+                    ("verb", ui::i18n::ArgValue::Text(name.clone())),
+                    ("summary", ui::i18n::ArgValue::Text(summary.to_owned())),
+                ],
+            ),
+            None if !status.can(which) => crate::resource::CATALOG.t(match which {
+                ui::UndoRequest::Undo => "video-editor-nothing-to-undo",
+                ui::UndoRequest::Redo => "video-editor-nothing-to-redo",
+            }),
+            None => name.clone(),
+        };
+        (name, description)
+    }
+
     /// The hover label for whatever icon-only control sits under `p`, or
     /// `None` over anything that already carries its own words.
-    pub(super) fn tooltip_at(&self, p: Point) -> Option<&str> {
+    pub(super) fn tooltip_at(&self, p: Point) -> Option<String> {
         let r = self.regions();
         for (action, rect) in self.transport_buttons(&r) {
             if rect.contains(p) {
                 return Some(match action {
-                    TransportAction::ToStart => "Jump to start",
-                    TransportAction::StepBack => "Step back one frame",
+                    TransportAction::ToStart => {
+                        crate::resource::CATALOG.t("video-editor-transport-jump-start")
+                    }
+                    TransportAction::StepBack => {
+                        crate::resource::CATALOG.t("video-editor-transport-step-back")
+                    }
                     TransportAction::PlayPause => {
                         if self.is_moving() {
-                            "Pause"
+                            crate::resource::CATALOG.t("video-editor-pause")
                         } else {
-                            "Play"
+                            crate::resource::CATALOG.t("video-editor-transport-play")
                         }
                     }
-                    TransportAction::StepFwd => "Step forward one frame",
-                    TransportAction::ToEnd => "Jump to end",
+                    TransportAction::StepFwd => {
+                        crate::resource::CATALOG.t("video-editor-transport-step-forward")
+                    }
+                    TransportAction::ToEnd => {
+                        crate::resource::CATALOG.t("video-editor-transport-jump-end")
+                    }
                 });
             }
         }
@@ -1795,7 +1966,7 @@ impl VideoEditorApp {
         let key = rest.get(1).copied().unwrap_or(section_key);
         for (i, row) in rows.iter().enumerate() {
             match row {
-                InspectorRow::Header(sec) if rest.len() == 1 && hash_key(&sec.label()) == key => {
+                InspectorRow::Header(sec) if rest.len() == 1 && hash_key(&sec.tag()) == key => {
                     self.focus.inspector = i;
                     self.reveal_inspector_focus();
                     return match action {
@@ -2013,7 +2184,7 @@ impl VideoEditorApp {
                 _ => None,
             });
         match section {
-            Some(sec) => vec![ui::a11y::hash_key(&sec.label()), key],
+            Some(sec) => vec![ui::a11y::hash_key(&sec.tag()), key],
             None => vec![key],
         }
     }

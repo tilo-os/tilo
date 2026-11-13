@@ -127,20 +127,41 @@ impl VideoEditorApp {
     pub(super) fn opened_notice(path: &Path, project: &crate::model::Project) -> Notice {
         let name = crate::project_file::label(path);
         let missing = crate::project_file::missing_sources(project);
+        let named = crate::resource::CATALOG.t_args(
+            "video-editor-opened",
+            &[("name", ui::i18n::ArgValue::Text(name.clone()))],
+        );
         if missing.is_empty() {
-            return Notice::ok(format!("Opened {name}"));
+            return Notice::ok(named);
         }
         let absent = missing.len();
         let names: Vec<&str> = missing.iter().take(3).map(|(n, _)| n.as_str()).collect();
         let listed = names.join(", ");
         let tail = if absent > names.len() {
-            format!("{listed} and {} more", absent - names.len())
+            crate::resource::CATALOG.t_args(
+                "video-editor-import-more",
+                &[
+                    ("why", ui::i18n::ArgValue::Text(listed)),
+                    (
+                        "hidden",
+                        ui::i18n::ArgValue::Number((absent - names.len()) as f64),
+                    ),
+                ],
+            )
         } else {
             listed
         };
         // Opened, but not everything came with it: a warning, not a success
         // and not a failure.
-        Notice::warning(format!("Opened {name} — {MEDIA_NOT_LOCAL}: {tail}"))
+        let state = crate::resource::CATALOG.t(MEDIA_NOT_LOCAL);
+        Notice::warning(crate::resource::CATALOG.t_args(
+            "video-editor-opened-partly",
+            &[
+                ("name", ui::i18n::ArgValue::Text(name)),
+                ("state", ui::i18n::ArgValue::Text(state)),
+                ("sources", ui::i18n::ArgValue::Text(tail)),
+            ],
+        ))
     }
 
     /// Answer Export project file: write the project as a project file to
@@ -162,8 +183,9 @@ impl VideoEditorApp {
                         return Err("the project file export was cancelled".into());
                     }
                     later.run(cx, |app| {
-                        app.project_notice
-                            .show(Notice::ok("Exported the project file"));
+                        app.project_notice.show(Notice::ok(
+                            crate::resource::CATALOG.t("video-editor-exported-project"),
+                        ));
                     });
                     Ok(ui::framework::Effected::done())
                 },
@@ -174,14 +196,21 @@ impl VideoEditorApp {
         // sandbox the grant is for the file chosen, not for siblings beside
         // it. The header's length is what catches a write cut short.
         if let Err(e) = crate::files::save(&path, &bytes) {
-            let reason = format!("Could not export: {e}");
+            let reason = crate::resource::CATALOG.t_args(
+                "video-editor-export-failed",
+                &[("reason", ui::i18n::ArgValue::Text(e.to_string()))],
+            );
             self.project_notice.show(Notice::failed(reason.clone()));
             return Err(reason);
         }
-        self.project_notice.show(Notice::ok(format!(
-            "Exported {}",
-            crate::project_file::label(&path)
-        )));
+        self.project_notice
+            .show(Notice::ok(crate::resource::CATALOG.t_args(
+                "video-editor-exported-name",
+                &[(
+                    "name",
+                    ui::i18n::ArgValue::Text(crate::project_file::label(&path)),
+                )],
+            )));
         Ok(ui::framework::Effected::done())
     }
 
@@ -201,7 +230,7 @@ impl VideoEditorApp {
         }
         let name = self.export.suggested_filename(&self.project.name);
         let ext = self.export.container.extension();
-        self.export_notice = Some("Choose where to save…".to_string());
+        self.export_notice = Some(crate::resource::CATALOG.t("video-editor-save-where"));
         if crate::export::renders_by_steps() {
             // A page saves by contents: the file is chosen now, while the
             // press that asked for it still lets the page open its Save
@@ -257,7 +286,16 @@ impl VideoEditorApp {
                 // No portal on this box. Say where the file will go rather than
                 // silently dropping it somewhere the user will never look.
                 let fallback = crate::export::output_path(&self.export, &self.project);
-                self.export_notice = Some(format!("{reason} — saving to {}", fallback.display()));
+                self.export_notice = Some(crate::resource::CATALOG.t_args(
+                    "video-editor-export-saving-to",
+                    &[
+                        ("reason", ui::i18n::ArgValue::Text(reason)),
+                        (
+                            "path",
+                            ui::i18n::ArgValue::Text(fallback.display().to_string()),
+                        ),
+                    ],
+                ));
                 self.begin_export_to(fallback);
             }
             None => {}
@@ -377,10 +415,9 @@ impl VideoEditorApp {
             return None;
         }
         let names: Vec<&str> = missing.iter().map(|(name, _)| name.as_str()).collect();
-        let it = if names.len() == 1 { "it" } else { "them" };
-        Some(format!(
-            "This cut refers to {}. Bring {it} onto this device first.",
-            names.join(", "),
+        Some(crate::resource::CATALOG.t_args(
+            "video-editor-export-missing-sources",
+            &[("sources", ui::i18n::ArgValue::Text(names.join(", ")))],
         ))
     }
 }
@@ -409,7 +446,8 @@ fn bring_in_project(
     // The name follows the file unless the file's own project carries a
     // real one — a project still called "Untitled" opened from
     // `Holiday.qvp` should read as Holiday.
-    if (project.name.trim().is_empty() || project.name == "Untitled")
+    let untitled = crate::resource::CATALOG.t("video-editor-untitled");
+    if (project.name.trim().is_empty() || project.name == untitled || project.name == "Untitled")
         && let Some(n) = crate::project_file::name_from_path(path)
     {
         project.name = n;
@@ -419,7 +457,9 @@ fn bring_in_project(
     let replaced = !holds_nothing(&cx.live().get());
     let mut notice = VideoEditorApp::opened_notice(path, &project);
     if replaced {
-        notice.text.push_str(". Undo to go back");
+        // The notice carries the way back as its Undo action; saying so in
+        // words as well would be telling a person how to use the button in
+        // front of them.
         notice.action = Some(super::notices::NoticeAction::Undo);
     }
     cx.submit(crate::resource::load_project(&project));

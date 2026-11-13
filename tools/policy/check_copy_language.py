@@ -1586,7 +1586,7 @@ def returning_words(root: Path,
         for name, words in file_returning_words(root, path).items():
             every[name] = every.get(name, True) and bool(words)
             table.setdefault(name, []).extend(words)
-    return {name: sorted(set(words)) for name, words in table.items() if every[name]}
+    return {name: sorted(set(words)) for name, words in table.items()}
 
 
 def stored_fields(code: str, starts: list[int],

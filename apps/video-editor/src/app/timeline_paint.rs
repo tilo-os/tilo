@@ -847,9 +847,9 @@ impl VideoEditorApp {
         // mistaken for one whose footage is here, and name which kind of
         // problem it is when the clip is wide enough to hold the words.
         let unusable = if self.media_is_unreadable(clip.media) {
-            Some(MEDIA_UNREADABLE)
+            Some(crate::resource::CATALOG.t(MEDIA_UNREADABLE))
         } else if self.media_is_projected(clip.media) {
-            Some(MEDIA_NOT_LOCAL)
+            Some(crate::resource::CATALOG.t(MEDIA_NOT_LOCAL))
         } else {
             None
         };
@@ -862,7 +862,7 @@ impl VideoEditorApp {
                 radius,
             );
             if cr.width() > 118.0 && inner.height() > 14.0 {
-                let w = ui::widget::BadgeFace::intrinsic_width(msg, ctx.text, theme);
+                let w = ui::widget::BadgeFace::intrinsic_width(&msg, ctx.text, theme);
                 let h = ui::widget::BadgeFace::height(theme);
                 let ctr = inner.center();
                 let pill = Rect::new(
@@ -871,7 +871,7 @@ impl VideoEditorApp {
                     ctr.x + w / 2.0,
                     ctr.y + h / 2.0,
                 );
-                ui::widget::BadgeFace::new(pill, msg)
+                ui::widget::BadgeFace::new(pill, &msg)
                     .style(ui::widget::ChipStyle::Tinted(ui::widget::Tone::Warning))
                     .paint(ctx.scene, ctx.transform, ctx.text, theme);
             }

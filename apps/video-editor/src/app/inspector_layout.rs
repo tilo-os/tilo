@@ -450,7 +450,7 @@ impl VideoEditorApp {
         l.transition_y = y + 25.0;
         let labels: Vec<String> = Transition::ALL
             .iter()
-            .map(|t| t.label().to_string())
+            .map(|t| crate::resource::CATALOG.t(t.message()))
             .collect();
         for (t, rect) in
             Transition::ALL
@@ -503,6 +503,8 @@ impl VideoEditorApp {
         // Tone curves, video only — it is the same grade the three sliders
         // above start, so it sits directly under them.
         if is_video && header(&mut l, &mut y, Section::Curves) {
+            // The curve channels read "RGB", "R", "G" and "B" in every
+            // language, so they are their own labels.
             let labels: Vec<String> = crate::curve::Channel::ALL
                 .iter()
                 .map(|c| c.label().to_string())
@@ -738,7 +740,7 @@ impl VideoEditorApp {
             if open {
                 let labels: Vec<String> = crate::model::MaskShape::ALL
                     .iter()
-                    .map(|s| s.label().to_string())
+                    .map(|s| crate::resource::CATALOG.t(s.message()))
                     .collect();
                 for (shape, rect) in crate::model::MaskShape::ALL
                     .iter()
@@ -788,7 +790,7 @@ impl VideoEditorApp {
             l.breaks.push(y);
             let labels: Vec<String> = TextAlign::ALL
                 .iter()
-                .map(|a| a.label().to_string())
+                .map(|a| crate::resource::CATALOG.t(a.message()))
                 .collect();
             for (a, rect) in TextAlign::ALL
                 .iter()

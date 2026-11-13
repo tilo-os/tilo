@@ -412,3 +412,271 @@ video-editor-project-trim-in-here = Clipanfang bis zum Abspielkopf kürzen
 video-editor-project-trim-out-here = Clipende bis zum Abspielkopf kürzen
 video-editor-project-place-two-angles-here = Nebeneinander platzieren
 video-editor-project-trim-mix = Mischung passend kürzen
+
+## What the editor's panes are called
+video-editor-pane-bin = Medienpool
+video-editor-pane-transport = Wiedergabe
+video-editor-pane-timeline = Zeitleiste
+video-editor-pane-inspector = Inspektor
+
+## The inspector's sections, and what a folded one reports
+video-editor-section-curves = Farbkurven
+video-editor-section-transform = Transformieren
+video-editor-section-speed = Tempo
+video-editor-section-mix = Pegel
+video-editor-section-key = Freisteller
+video-editor-section-mask = Maske
+video-editor-section-title = Titel
+video-editor-section-effects = Effekte
+video-editor-section-markers = Marker
+video-editor-section-project = Projekt
+video-editor-summary-cropped = beschnitten
+video-editor-summary-animated = animiert
+video-editor-summary-moved = verschoben
+video-editor-summary-clipping = { $level }, übersteuert
+video-editor-summary-bypassed = { $channels }, aus
+video-editor-summary-curve-amount = { $channels } bei { $percent } %
+video-editor-summary-inverted = { $shape }, umgekehrt
+video-editor-summary-key-nothing = an, stanzt nichts aus
+video-editor-summary-keyed = { $percent } % freigestellt
+video-editor-summary-title-untitled = noch kein Text
+video-editor-summary-effects = { $count ->
+    [one] { $count } Effekt
+   *[other] { $count } Effekte
+}
+video-editor-summary-markers = { $count ->
+    [one] { $count } Marker
+   *[other] { $count } Marker
+}
+
+## What the inspector's controls are called
+video-editor-field-opacity = Deckkraft
+video-editor-field-volume = Lautstärke
+video-editor-field-brightness = Helligkeit
+video-editor-field-contrast = Kontrast
+video-editor-field-saturation = Sättigung
+video-editor-field-fade-in = Einblenden
+video-editor-field-fade-out = Ausblenden
+video-editor-field-transition-length = Übergangslänge
+video-editor-field-scale-x = Skalierung X
+video-editor-field-scale-y = Skalierung Y
+video-editor-field-position-x = Position X
+video-editor-field-position-y = Position Y
+video-editor-field-rotation = Drehung
+video-editor-field-crop-left = Links
+video-editor-field-crop-right = Rechts
+video-editor-field-crop-top = Oben
+video-editor-field-crop-bottom = Unten
+video-editor-field-key-tolerance = Toleranz
+video-editor-field-key-softness = Weichheit
+video-editor-field-key-spill = Spill entfernen
+video-editor-field-mask-x = Mitte X
+video-editor-field-mask-y = Mitte Y
+video-editor-field-mask-width = Breite
+video-editor-field-mask-height = Höhe
+video-editor-field-mask-rotation = Drehung
+video-editor-field-mask-feather = Weichzeichnen
+video-editor-field-speed = Rate
+video-editor-field-title-size = Größe
+video-editor-field-title-backdrop = Hintergrund
+video-editor-field-curve-amount = Menge
+video-editor-field-track-gain = Pegel
+video-editor-field-track-pan = Panorama
+
+## The five transport buttons
+video-editor-transport-play = Wiedergabe
+video-editor-transport-step-back = Ein Bild zurück
+video-editor-transport-step-forward = Ein Bild vor
+video-editor-transport-jump-start = Zum Anfang
+video-editor-transport-jump-end = Zum Ende
+
+## Why a source's bytes cannot be used, on the bin row, the clip and the
+## preview alike
+video-editor-media-not-local = Nicht auf diesem Gerät
+video-editor-media-not-local-short = Nicht auf Gerät
+video-editor-media-unreadable = Medien unlesbar
+video-editor-media-unreadable-short = Unlesbar
+
+## Effects, mask shapes, alignment, media kinds and transitions
+video-editor-effect-grayscale = Graustufen
+video-editor-effect-sepia = Sepia
+video-editor-effect-invert = Invertieren
+video-editor-effect-warm = Warm
+video-editor-effect-cool = Kühl
+video-editor-effect-vignette = Vignette
+video-editor-mask-off = Aus
+video-editor-mask-rect = Rechteck
+video-editor-mask-ellipse = Ellipse
+video-editor-align-left = Links
+video-editor-align-centre = Mitte
+video-editor-align-right = Rechts
+video-editor-kind-video = Video
+video-editor-kind-audio = Audio
+video-editor-kind-image = Bild
+video-editor-kind-title = Titel
+video-editor-transition-cut = Schnitt
+video-editor-transition-dissolve = Überblendung
+video-editor-transition-fade = Blende
+video-editor-transition-dip = Schwarzblende
+video-editor-transition-wipe = Wischen
+video-editor-interp-linear = Linear
+video-editor-interp-hold = Halten
+video-editor-interp-ease = Weich
+video-editor-speed-shown = { $rate }×
+video-editor-speed-shown-reverse = { $rate }× rückwärts
+
+## The project's own format
+video-editor-format-set-by-clip = Vom ersten Clip festgelegt
+video-editor-format-shown = { $width }×{ $height }, { $fps } fps
+video-editor-format-size = { $width }×{ $height }
+
+## The export sheet
+video-editor-export-resolution = Auflösung
+video-editor-export-format = Format
+video-editor-fps-shown = { $rate } fps
+
+## What a run of the inspector is called, and the buttons its rows carry
+video-editor-its-track = seine Spur
+video-editor-selection-count = { $count ->
+    [one] { $count } Clip ausgewählt
+   *[other] { $count } Clips ausgewählt
+}
+video-editor-selection-count-locked = { $count ->
+    [one] { $count } Clip ausgewählt, teils gesperrt
+   *[other] { $count } Clips ausgewählt, teils gesperrt
+}
+video-editor-selection-on-track = Auf { $track }
+video-editor-selection-on-track-locked = Auf { $track }, gesperrt
+video-editor-match-media = An Medien anpassen
+video-editor-marker-edit-note = Notiz bearbeiten
+video-editor-marker-rename = Umbenennen
+video-editor-marker-delete = Löschen
+video-editor-play-backwards = Rückwärts abspielen
+video-editor-key-a-colour = Farbe freistellen
+video-editor-invert-button = Umkehren
+video-editor-bold = Fett
+video-editor-italic = Kursiv
+video-editor-effect-move-up = Nach oben
+video-editor-effect-move-down = Nach unten
+video-editor-effect-remove = Effekt entfernen
+
+## The keyboard's, the menus' and the timeline's words
+video-editor-key-remove = Keyframe hier entfernen
+video-editor-key-add = Keyframe hier setzen
+video-editor-key-previous = Vorheriger Keyframe
+video-editor-key-next = Nächster Keyframe
+video-editor-key-remove-all = Alle Keyframes entfernen
+video-editor-menu-add-to-timeline = Auf die Zeitleiste
+video-editor-menu-rename = Umbenennen
+video-editor-menu-delete = Löschen
+video-editor-menu-mute = Spur stummschalten
+video-editor-menu-unmute = Stummschaltung aufheben
+video-editor-menu-solo = Spur solo
+video-editor-menu-unsolo = Solo aufheben
+video-editor-menu-lock = Spur sperren
+video-editor-menu-unlock = Sperre aufheben
+video-editor-menu-add-video-track = Videospur hinzufügen
+video-editor-menu-add-audio-track = Audiospur hinzufügen
+video-editor-menu-delete-track = Spur löschen
+video-editor-menu-cut = Ausschneiden
+video-editor-menu-copy = Kopieren
+video-editor-menu-duplicate = Duplizieren
+video-editor-menu-split = Am Abspielkopf teilen
+video-editor-menu-ripple-delete = Lücke schließen
+
+## What a reader is told about a lane, a clip, a source and the selection
+video-editor-a11y-clip-value = { $start } bis { $end }, { $length } lang, auf { $track }
+video-editor-a11y-bin-downloading = { $kind }, { $length }, noch nicht geladen
+video-editor-a11y-bin-kind-length = { $kind }, { $length }
+video-editor-a11y-track-toggle = { $toggle } { $track }
+video-editor-toggle-mute = Stumm für
+video-editor-toggle-solo = Solo für
+video-editor-toggle-lock = Sperre für
+video-editor-a11y-track-value = { $kind }spur, { $count } Clip, Pegel { $gain }, Panorama { $pan }
+video-editor-a11y-track-value-clipping = { $kind }spur, { $count } Clip, Pegel { $gain }, Panorama { $pan }, übersteuert
+video-editor-a11y-track-kind-video = Video
+video-editor-a11y-track-kind-audio = Audio
+video-editor-a11y-timeline-value = Abspielkopf bei { $playhead }, { $count } von { $total } Clips ausgewählt, Zeitleiste beginnt bei { $view }
+video-editor-a11y-geometry = Skalierung { $scale }×, Position { $x }, { $y }, Drehung { $rotation }°
+video-editor-a11y-animated = { $geometry }, animiert
+video-editor-a11y-no-lane = keine Spur
+video-editor-a11y-key-nothing = an, aber die Toleranz stanzt nichts aus
+video-editor-a11y-key-values = Toleranz { $tolerance } %, Weichheit { $softness } %, Spill { $spill } %
+video-editor-a11y-mask-values = { $shape } { $width } % × { $height } %, { $side }
+video-editor-a11y-mask-inside = Innenbereich behalten
+video-editor-a11y-mask-outside = Außenbereich behalten
+video-editor-a11y-title-properties = Eigenschaften des Titels
+video-editor-a11y-export-either = { $first } oder { $last }
+video-editor-summary-off = Aus
+video-editor-summary-unchanged = unverändert
+video-editor-summary-collapsed = eingeklappt
+video-editor-a11y-preset-size = { $name }, { $width } × { $height }
+video-editor-bin-size = { $height }p
+video-editor-bin-size-unknown = Größe unbekannt
+video-editor-bin-length-unknown = Länge unbekannt
+
+## Why an import was refused, and what the refused file really is
+video-editor-probe-unreadable = ließ sich nicht lesen ({ $error })
+video-editor-probe-empty = ist leer
+video-editor-probe-not-media = ist keine Mediendatei, sondern { $detected }
+video-editor-probe-unrecognised = liegt in keinem Format vor, das dieser Editor erkennt
+video-editor-file-pdf = ein PDF-Dokument
+video-editor-file-zip = ein ZIP-Archiv
+video-editor-file-elf = eine ELF-Datei
+video-editor-file-windows = eine Windows-Datei
+video-editor-file-rar = ein RAR-Archiv
+video-editor-file-gzip = ein gzip-Archiv
+video-editor-file-bzip2 = ein bzip2-Archiv
+video-editor-file-xz = ein xz-Archiv
+video-editor-file-7z = ein 7-Zip-Archiv
+video-editor-file-sqlite = eine SQLite-Datenbank
+video-editor-file-rtf = ein RTF-Dokument
+video-editor-file-office = ein Office-Dokument
+video-editor-file-binary = ein kompiliertes Programm
+video-editor-file-pem = ein Schlüssel oder Zertifikat im PEM-Format
+video-editor-file-html = eine HTML-Seite
+video-editor-file-xml = ein XML-Dokument
+video-editor-file-svg = ein SVG-Bild
+video-editor-file-playlist = eine Wiedergabeliste, nicht die Mediendatei selbst
+video-editor-file-json = ein JSON-Dokument
+video-editor-file-script = ein Skript
+video-editor-file-markup = ein Auszeichnungsdokument
+video-editor-file-text = eine Textdatei
+
+## What an import batch reports
+video-editor-import-counted = { $count ->
+    [one] { $count } Clip importiert
+   *[other] { $count } Clips importiert
+}
+video-editor-import-none = Keine Medien importiert
+video-editor-import-partial = { $count } von { $total } importiert
+video-editor-import-refused = { $head }: { $why }
+video-editor-import-more = { $why } und { $hidden } weitere
+
+## Opening and writing project files, and starting a render
+video-editor-opened = { $name } geöffnet
+video-editor-opened-partly = { $name } geöffnet. { $state }: { $sources }
+video-editor-exported-project = Projektdatei exportiert
+video-editor-exported-name = { $name } exportiert
+video-editor-export-failed = Export nicht möglich: { $reason }
+video-editor-save-where = Speicherort wählen…
+video-editor-export-saving-to = { $reason }. Gespeichert wird in { $path }
+video-editor-export-missing-sources = Dieser Schnitt verweist auf { $sources }, die auf diesem Gerät fehlen
+
+## What a search result says under its name
+video-editor-search-track = { $kind }spur
+video-editor-search-clip = In { $track } bei { $time }
+video-editor-search-effect = { $effect }-Effekt
+video-editor-search-effect-where = In { $media } auf { $track } bei { $strength } % Stärke
+video-editor-search-in-bin = { $kind } im Medienpool
+video-editor-search-used = { $kind } { $count ->
+    [one] Mal verwendet
+   *[other] Mal verwendet
+}
+video-editor-search-marker = Bei { $time }: { $note }
+video-editor-pan-centre = Mitte
+video-editor-undo = Rückgängig
+video-editor-redo = Wiederholen
+video-editor-nothing-to-undo = Nichts rückgängig zu machen
+video-editor-nothing-to-redo = Nichts zu wiederholen
+video-editor-undo-command = { $verb }: { $summary }

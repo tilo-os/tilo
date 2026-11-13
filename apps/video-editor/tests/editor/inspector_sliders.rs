@@ -277,7 +277,7 @@ fn the_masks_rotation_turns_the_mask_not_the_picture() {
     let mut app = hosting(&sample_project());
     let id = clip_of(&app.state(), "Cutaway_Market.mp4");
     select(&mut app, "Cutaway_Market.mp4");
-    press(&mut app, "Mask shape rect");
+    press(&mut app, "Mask shape Rect");
     step(&mut app, Some("Mask"), "Rotation", true);
     let clip = app.state().clip(id).unwrap().clone();
     assert!(clip.mask.rotation.abs() > 0.0, "the mask turned");

@@ -123,14 +123,16 @@ impl EffectKind {
             EffectKind::Vignette => "vignette",
         }
     }
-    pub fn label(self) -> &'static str {
+    /// The catalogue message naming this effect, painted in the inspector's
+    /// effect menu and in a folded header's summary.
+    pub fn message(self) -> &'static str {
         match self {
-            EffectKind::Grayscale => "Grayscale",
-            EffectKind::Sepia => "Sepia",
-            EffectKind::Invert => "Invert",
-            EffectKind::Warm => "Warm",
-            EffectKind::Cool => "Cool",
-            EffectKind::Vignette => "Vignette",
+            EffectKind::Grayscale => "video-editor-effect-grayscale",
+            EffectKind::Sepia => "video-editor-effect-sepia",
+            EffectKind::Invert => "video-editor-effect-invert",
+            EffectKind::Warm => "video-editor-effect-warm",
+            EffectKind::Cool => "video-editor-effect-cool",
+            EffectKind::Vignette => "video-editor-effect-vignette",
         }
     }
     pub fn from_name(s: &str) -> Option<Self> {
@@ -328,15 +330,22 @@ impl Speed {
         }
     }
     /// A short label like `2×` or `0.5× rev` for the inspector and the
-    /// timeline badge.
+    /// timeline badge, in the window's language.
     pub fn label(&self) -> String {
         let r = self.rate();
         let n = if (r - r.round()).abs() < 1e-6 {
-            format!("{}×", r.round() as i64)
+            format!("{}", r.round() as i64)
         } else {
-            format!("{r:.2}×")
+            format!("{r:.2}")
         };
-        if self.reverse { format!("{n} rev") } else { n }
+        crate::resource::CATALOG.t_args(
+            if self.reverse {
+                "video-editor-speed-shown-reverse"
+            } else {
+                "video-editor-speed-shown"
+            },
+            &[("rate", ui::i18n::ArgValue::Text(n))],
+        )
     }
 }
 
@@ -505,11 +514,12 @@ impl MaskShape {
             MaskShape::Ellipse => "ellipse",
         }
     }
-    pub fn label(self) -> &'static str {
+    /// The catalogue message for the shape, painted on its segment.
+    pub fn message(self) -> &'static str {
         match self {
-            MaskShape::None => "Off",
-            MaskShape::Rect => "Rect",
-            MaskShape::Ellipse => "Ellipse",
+            MaskShape::None => "video-editor-mask-off",
+            MaskShape::Rect => "video-editor-mask-rect",
+            MaskShape::Ellipse => "video-editor-mask-ellipse",
         }
     }
     pub fn from_name(s: &str) -> Self {
@@ -699,11 +709,12 @@ impl TextAlign {
             TextAlign::Right => "right",
         }
     }
-    pub fn label(self) -> &'static str {
+    /// The catalogue message for the alignment, painted on its segment.
+    pub fn message(self) -> &'static str {
         match self {
-            TextAlign::Left => "Left",
-            TextAlign::Center => "Center",
-            TextAlign::Right => "Right",
+            TextAlign::Left => "video-editor-align-left",
+            TextAlign::Center => "video-editor-align-centre",
+            TextAlign::Right => "video-editor-align-right",
         }
     }
     pub fn from_name(s: &str) -> Self {
@@ -823,12 +834,14 @@ impl MediaKind {
     pub fn is_generated(self) -> bool {
         matches!(self, MediaKind::Text)
     }
-    pub fn label(self) -> &'static str {
+    /// The catalogue message naming this kind, in the bin's rows and in the
+    /// spoken value of a clip.
+    pub fn message(self) -> &'static str {
         match self {
-            MediaKind::Video => "Video",
-            MediaKind::Audio => "Audio",
-            MediaKind::Image => "Image",
-            MediaKind::Text => "Title",
+            MediaKind::Video => "video-editor-kind-video",
+            MediaKind::Audio => "video-editor-kind-audio",
+            MediaKind::Image => "video-editor-kind-image",
+            MediaKind::Text => "video-editor-kind-title",
         }
     }
 }
@@ -885,13 +898,14 @@ impl Transition {
             Transition::Wipe => "wipe",
         }
     }
-    pub fn label(self) -> &'static str {
+    /// The catalogue message for the transition, painted on its segment.
+    pub fn message(self) -> &'static str {
         match self {
-            Transition::None => "Cut",
-            Transition::CrossDissolve => "Dissolve",
-            Transition::FadeIn => "Fade",
-            Transition::DipToBlack => "Dip",
-            Transition::Wipe => "Wipe",
+            Transition::None => "video-editor-transition-cut",
+            Transition::CrossDissolve => "video-editor-transition-dissolve",
+            Transition::FadeIn => "video-editor-transition-fade",
+            Transition::DipToBlack => "video-editor-transition-dip",
+            Transition::Wipe => "video-editor-transition-wipe",
         }
     }
     pub fn from_name(s: &str) -> Self {
@@ -3582,7 +3596,7 @@ mod tests {
             assert_eq!(Speed::new(0.0, false).rate(), MIN_SPEED);
             assert_eq!(Speed::new(1e9, false).rate(), MAX_SPEED);
             assert_eq!(Speed::new(2.0, false).label(), "2×");
-            assert_eq!(Speed::new(0.5, true).label(), "0.50× rev");
+            assert_eq!(Speed::new(0.5, true).label(), "0.50× reverse");
             assert!(Speed::default().is_normal());
             assert_eq!(Speed::new(2.0, true).signed(), -2.0);
         }

@@ -48,11 +48,13 @@ impl Interp {
             Interp::Ease => "ease",
         }
     }
-    pub fn label(self) -> &'static str {
+    /// The catalogue message for the shape, painted on the keyframe menu's
+    /// rows.
+    pub fn message(self) -> &'static str {
         match self {
-            Interp::Linear => "Linear",
-            Interp::Hold => "Hold",
-            Interp::Ease => "Ease",
+            Interp::Linear => "video-editor-interp-linear",
+            Interp::Hold => "video-editor-interp-hold",
+            Interp::Ease => "video-editor-interp-ease",
         }
     }
     pub fn from_name(s: &str) -> Self {
@@ -215,32 +217,6 @@ impl Param {
             Param::MaskFeather => "mask_feather".into(),
             Param::CurveMix => "curve_mix".into(),
             Param::EffectAmount(id) => format!("effect:{id}"),
-        }
-    }
-
-    pub fn label(self) -> String {
-        match self {
-            Param::Opacity => "Opacity".into(),
-            Param::Volume => "Volume".into(),
-            Param::Brightness => "Brightness".into(),
-            Param::Contrast => "Contrast".into(),
-            Param::Saturation => "Saturation".into(),
-            Param::ScaleX => "Scale X".into(),
-            Param::ScaleY => "Scale Y".into(),
-            Param::PosX => "Position X".into(),
-            Param::PosY => "Position Y".into(),
-            Param::Rotation => "Rotation".into(),
-            Param::KeyTolerance => "Key tolerance".into(),
-            Param::KeySoftness => "Key softness".into(),
-            Param::KeySpill => "Spill removal".into(),
-            Param::MaskX => "Mask X".into(),
-            Param::MaskY => "Mask Y".into(),
-            Param::MaskW => "Mask width".into(),
-            Param::MaskH => "Mask height".into(),
-            Param::MaskRotation => "Mask rotation".into(),
-            Param::MaskFeather => "Mask feather".into(),
-            Param::CurveMix => "Curve amount".into(),
-            Param::EffectAmount(_) => "Effect amount".into(),
         }
     }
 

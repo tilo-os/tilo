@@ -1310,7 +1310,7 @@ pub fn imported(
     };
     let short: String = address.chars().take(8).collect();
     let name = name.map_or_else(
-        || format!("{}-{short}", probed.kind.label().to_ascii_lowercase()),
+        || format!("{}-{short}", probed.kind.as_str()),
         str::to_owned,
     );
     Ok(MediaItem {
