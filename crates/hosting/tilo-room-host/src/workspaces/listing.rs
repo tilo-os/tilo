@@ -44,6 +44,9 @@ use tilo_user_identity::DeviceCert;
 use super::authority::WorkspaceOp;
 use super::{CollaborationError, GovernedWorkspace, Workspaces};
 
+/// Where a relay kept its public workspaces' listings before a workspace's
+/// door was part of its governance ([`Workspaces::adopt_listings_file`]).
+const LISTINGS_FILE: &str = "listings.json";
 /// How long a door's invitation and its token stay good: time for the
 /// person's device to redeem it now, not to keep it.
 const DOOR_INVITATION_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -465,6 +468,53 @@ impl Workspaces {
             }
         }
         listed
+    }
+
+    /// Take over the listings a relay kept in [`LISTINGS_FILE`] before a
+    /// workspace's door was part of its governance: each workspace that file
+    /// lists, whose door lists nothing yet, is listed again as its owner listed
+    /// it, settled by this host as the workspace's governor. The file then
+    /// moves beside the records as `listings.json.v1`, so going back to the
+    /// build that wrote it still finds it. Nothing to do when there is none.
+    ///
+    /// A listing whose workspace is gone, or whose door this host may not
+    /// settle, is left out and said; the rest are still taken over.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be read, does not parse, or cannot be moved.
+    pub(super) async fn adopt_listings_file(&self) -> Result<(), String> {
+        #[derive(serde::Deserialize)]
+        struct Kept {
+            /// Each public workspace's listing, by workspace UUID.
+            workspaces: BTreeMap<String, Listing>,
+        }
+        let path = self.inner.dir.join(LISTINGS_FILE);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        };
+        let kept: Kept = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let host = self.inner.host.cert.clone();
+        for (workspace, listing) in kept.workspaces {
+            if self.door_policy(&workspace).await.is_none() {
+                tracing::warn!(%workspace, "a listing kept before the door names a workspace this host no longer keeps");
+                continue;
+            }
+            if self.is_listed(&workspace).await {
+                continue;
+            }
+            match self.publish(&workspace, &host, listing).await {
+                Ok(_) => tracing::info!(%workspace, "listed again as it was before the door"),
+                Err(error) => {
+                    tracing::error!(%workspace, %error, "a listing kept before the door was not taken over");
+                }
+            }
+        }
+        std::fs::rename(&path, path.with_file_name(format!("{LISTINGS_FILE}.v1")))
+            .map_err(|error| format!("{}: {error}", path.display()))
     }
 
     /// The workspace UUID after each change of a workspace's door.
@@ -1399,6 +1449,62 @@ mod door_tests {
                 .unwrap_err(),
             DoorRefusal::Removed
         );
+        relay.shutdown().await;
+    }
+
+    /// A relay that kept its listings in a file of their own, before a
+    /// workspace's door was part of its governance, lists the same workspaces
+    /// after the upgrade: each is listed again as its owner listed it, and the
+    /// old file stays beside the records.
+    #[tokio::test]
+    async fn a_listing_kept_before_the_door_lists_its_workspace_after_the_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let workspace = relay
+            .workspaces()
+            .create("Sketches")
+            .await
+            .unwrap()
+            .workspace;
+        relay.shutdown().await;
+        let file = dir.path().join("rooms").join(super::LISTINGS_FILE);
+        let kept = serde_json::json!({"workspaces": {
+            workspace.clone(): {"description": "Open to look at", "defaultRole": "Viewer"},
+            "00000000-0000-4000-8000-000000000000": {"description": "Gone", "defaultRole": "Editor"},
+        }})
+        .to_string();
+        std::fs::write(&file, &kept).unwrap();
+
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let workspaces = relay.workspaces().clone();
+        assert_eq!(
+            workspaces.listing(&workspace).await,
+            Some(Listing {
+                description: "Open to look at".into(),
+                default_role: WorkspaceRole::Viewer,
+            })
+        );
+        assert_eq!(workspaces.published_rooms().await, vec![workspace.clone()]);
+        assert!(!file.exists(), "taken over once");
+        assert_eq!(
+            std::fs::read_to_string(file.with_file_name("listings.json.v1")).unwrap(),
+            kept,
+            "the old file stays beside the records"
+        );
+        relay.shutdown().await;
+
+        // The workspace's door is its governance from then on: unlisted, it
+        // stays unlisted across a restart.
+        let relay = test_host(dir.path(), &key, &owner).await;
+        relay
+            .workspaces()
+            .unpublish(&workspace, &owner)
+            .await
+            .unwrap();
+        relay.shutdown().await;
+        let relay = test_host(dir.path(), &key, &owner).await;
+        assert!(relay.workspaces().published_rooms().await.is_empty());
         relay.shutdown().await;
     }
 

@@ -262,7 +262,7 @@ pub fn heads_of(doc: &AutoCommit, workspace: &str) -> Vec<OpId> {
 /// The membership a workspace starts from: its owner's, as the `owner` row
 /// names them, with every role's preset grants; with no owner yet, the presets
 /// alone.
-fn start(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
+pub(super) fn start(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
     let owner = doc
         .get(ROOT, tilo_desktop_model::projection::WORKSPACE_OWNER_KEY)
         .ok()
@@ -325,7 +325,7 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
 
 /// The grants of a membership in the one order every device reads them in: by
 /// id. Which grant comes first is no part of what a workspace allows.
-fn order(policy: &mut WorkspacePolicy) {
+pub(super) fn order(policy: &mut WorkspacePolicy) {
     policy
         .grants
         .sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));

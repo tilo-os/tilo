@@ -942,3 +942,25 @@ mod chain_head_tests;
 pub mod fixtures;
 #[cfg(all(test, feature = "agents"))]
 pub(crate) mod tests;
+
+#[cfg(feature = "agents")]
+impl Workspaces {
+    /// Found every record of `workspace` again from the record as it reads,
+    /// when its membership came from a 0.1 release
+    /// ([`GovernedWorkspace::publish_brought_up`]). Those releases sealed a
+    /// record's writes over a history whose head is no whole-record
+    /// checkpoint, and a device opening such a record now waits for that
+    /// checkpoint and never reads it. Each record is published as the
+    /// workspace's next checkpoint of itself; its old history is archived
+    /// beside the replay, never deleted ([`Self::refound_record`]). A record
+    /// that does not read here is left as it is and named in the log: the
+    /// workspace's other records open all the same, and the operator's
+    /// `--refound` is still there for it.
+    pub(super) async fn refound_earlier_records(&self, workspace: &str) {
+        for (app, record) in self.records(workspace).await.unwrap_or_default() {
+            if let Err(error) = self.refound_record(workspace, &app, &record).await {
+                tracing::error!(%workspace, %app, %record, %error, "a record an earlier release wrote was not founded again");
+            }
+        }
+    }
+}

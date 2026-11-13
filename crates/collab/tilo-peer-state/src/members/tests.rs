@@ -1,7 +1,7 @@
 //! What the operation log promises: a workspace starts as its owner's, every
 //! device holding the same operations holds the same membership, and an
 //! operation its author could not make changes nothing.
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Change, Role, WorkspacePolicy, roles};
 use tilo_user_identity::DeviceCert;
@@ -260,4 +260,94 @@ fn an_operation_on_every_head_is_carried_onto_the_remembered_membership() {
     replay::carry(&before, &doc, &written, WORKSPACE);
     let carried = replay(&doc, WORKSPACE);
     assert_eq!(carried.members.get(&person(&ada.1)), Some(&Role::Editor));
+}
+
+/// `doc` as a 0.1 release kept it: an earlier operation and the rows it
+/// projected the membership into, each a JSON value by person.
+fn kept_by_an_earlier_release(doc: &AutoCommit, rows: &[(&str, &str, Vec<u8>)]) -> AutoCommit {
+    let mut doc = doc.clone();
+    doc.put(
+        ROOT,
+        format!("{}/genesis", earlier::EARLIER_KEY),
+        vec![0_u8],
+    )
+    .unwrap();
+    for (row, name, value) in rows {
+        let map = match doc.get(ROOT, *row).unwrap() {
+            Some((_, map)) => map,
+            None => doc.put_object(ROOT, *row, automerge::ObjType::Map).unwrap(),
+        };
+        doc.put(&map, *name, value.clone()).unwrap();
+    }
+    doc.commit();
+    doc
+}
+
+#[test]
+fn a_membership_an_earlier_release_kept_reads_the_same_once_brought_up() {
+    let owner = device(1);
+    let ana = device(3);
+    let ben = device(5);
+    let kept = kept_by_an_earlier_release(
+        &workspace(&owner.1),
+        &[
+            (
+                "members",
+                &person(&ben.1),
+                serde_json::to_vec(&Role::Viewer).unwrap(),
+            ),
+            (
+                "members",
+                &person(&ana.1),
+                serde_json::to_vec(&Role::Editor).unwrap(),
+            ),
+            (
+                "members",
+                &person(&owner.1),
+                serde_json::to_vec(&Role::Owner).unwrap(),
+            ),
+            (
+                "members_joined_v1",
+                &person(&ben.1),
+                serde_json::to_vec(&2_000_u64).unwrap(),
+            ),
+            (
+                "members_joined_v1",
+                &person(&ana.1),
+                serde_json::to_vec(&1_000_u64).unwrap(),
+            ),
+        ],
+    );
+    // Read as this layout reads it, the workspace is its owner's alone.
+    assert!(replay(&kept, WORKSPACE).members.is_empty());
+    assert!(earlier::holds_earlier_log(&kept));
+
+    let membership = earlier::membership(&kept, WORKSPACE).unwrap();
+    assert_eq!(
+        earlier::roles(&membership),
+        [
+            (person(&ana.1), Some(Role::Editor)),
+            (person(&ben.1), Some(Role::Viewer)),
+        ]
+        .into()
+    );
+    let mut brought_up = kept;
+    let written = earlier::found(
+        &mut brought_up,
+        WORKSPACE,
+        &membership,
+        (&owner.1, &owner.0),
+        AT_NS,
+    )
+    .unwrap();
+    assert_eq!(written, 2, "one operation per member, no grants to add");
+    let replayed = replay(&brought_up, WORKSPACE);
+    assert_eq!(earlier::roles(&replayed), earlier::roles(&membership));
+    assert_eq!(
+        replayed.joined.get(&person(&ana.1)),
+        Some(&1_000),
+        "each member joined when the earlier release says they did"
+    );
+    assert!(!earlier::holds_earlier_log(&brought_up));
+    assert_eq!(earlier::earlier_keys(&brought_up).len(), 3);
 }
