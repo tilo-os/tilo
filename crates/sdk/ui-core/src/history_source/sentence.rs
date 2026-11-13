@@ -22,6 +22,23 @@ impl Messages for ThreadCatalogue {
     }
 }
 
+/// The app's catalogues, saying only what they can say without what a step
+/// carried: a step title names what somebody did, never the words they wrote
+/// or the name they gave something, so a message only a value completes
+/// ("Named the workbook { $new }") is one this leaves to the framework's own
+/// words for the action.
+struct BareCatalogue;
+
+impl Messages for BareCatalogue {
+    fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
+        I18nManager::lookup_complete(key, Some(args))
+    }
+
+    fn has(&self, key: &str) -> bool {
+        I18nManager::has_message(key)
+    }
+}
+
 /// Run `read` with a reader in this thread's locale and catalogues.
 pub fn with_reader<T>(read: impl FnOnce(&Reader<'_>) -> T) -> T {
     let reader = Reader::new(&I18nManager::window_locale())
@@ -134,7 +151,11 @@ pub fn step_title(entry: &ActionContext) -> Option<String> {
     bare.what = Some(tilo_actions::Did::Verb(verb));
     bare.resource = None;
     bare.item = None;
-    let reader = Reader::new(&I18nManager::window_locale()).with_labels(&ThreadLabels);
+    // The app's words only where they stand without the value the step
+    // carried: a title that needs one is left to the action's own label.
+    let reader = Reader::new(&I18nManager::window_locale())
+        .with_app(&BareCatalogue)
+        .with_labels(&ThreadLabels);
     Some(reader.sentence(&bare))
 }
 
