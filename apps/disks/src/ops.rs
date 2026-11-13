@@ -1,27 +1,9 @@
-//! Real execution of disk operations — the app's **external side-effect
-//! boundary**.
-//!
-//! Mount / unmount / format / eject are privileged, per-machine effects
-//! against real block devices, made through udisks2 on the system bus, which
-//! has polkit authorise each one. They change the running system, never the
-//! document, so they are effects ([`crate::resource::DisksEffect`]), not
-//! actions: the functions here take no document and cannot touch it. The
-//! app starts no programs.
-//!
-//! Each is *planned* as plain data first (a [`UdisksCall`]) so the
-//! construction is unit-testable without a system bus or root; the call is
-//! made only in a build with the `live` feature.
-//!
-//! Benchmark performs a genuine sequential-read + random-seek measurement on
-//! the block device.
-//!
-//! Only a live window over this machine runs them; a screenshot or the sample
-//! machine in tests only ever builds the plans.
+//! The disk operations themselves. They change this machine, never the document, so they
+//! are effects rather than actions.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
-/// The privileged operations the app can perform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     Mount,
@@ -35,18 +17,13 @@ use block_devices::udisks::{
     IFACE_BLOCK, IFACE_DRIVE, IFACE_FILESYSTEM as IFACE_FS, object_path as udisks_object_path,
 };
 
-/// A fully-described udisks2 D-Bus method call. Kept as data so the object
-/// path / interface / method are asserted in tests without a live bus.
+/// A fully-described udisks2 D-Bus method call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UdisksCall {
-    /// Kernel device leaf name (`sdc1`) the call addresses.
     pub device: String,
-    /// The device's block object. A drive call reaches the drive through
-    /// it (`Block.Drive`).
     pub object_path: String,
     pub interface: &'static str,
     pub method: &'static str,
-    /// Target filesystem type for `Block.Format`; empty for other calls.
     pub fstype: String,
 }
 
@@ -77,7 +54,7 @@ pub fn format_call(dev_leaf: &str, fstype: &str) -> UdisksCall {
     }
 }
 
-/// Eject: power off the drive the device is, so it can be pulled out.
+/// Eject: power the drive off so it can be pulled out.
 pub fn eject_call(dev_leaf: &str) -> UdisksCall {
     UdisksCall::new(dev_leaf, IFACE_DRIVE, "PowerOff")
 }
@@ -87,8 +64,6 @@ pub fn eject_call(dev_leaf: &str) -> UdisksCall {
 pub fn run_udisks(call: &UdisksCall) -> Result<(), String> {
     let udisks = block_devices::udisks::Udisks::system().map_err(|e| format!("system bus: {e}"))?;
     let device = call.device.as_str();
-    // UDisks2 picks its defaults (auto mountpoint, default mkfs options),
-    // while polkit handles authorisation.
     let reply = match call.method {
         "Mount" => udisks.mount(device).map(drop),
         "Unmount" => udisks.unmount(device),
@@ -108,9 +83,8 @@ pub fn run_udisks(call: &UdisksCall) -> Result<(), String> {
     ))
 }
 
-/// A real sequential-read + random-seek benchmark of a block device. Reads up
-/// to 64 MiB sequentially, then times 100 random 4 KiB reads. Needs read
-/// permission on `/dev/<leaf>` (root for most block devices).
+/// A real sequential-read + random-seek benchmark of a block device. Reads up to 64 MiB
+/// sequentially, then times 100 random 4 KiB reads.
 pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let path = format!("/dev/{dev_leaf}");
     let mut f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
@@ -138,7 +112,6 @@ fn benchmark_reader(f: &mut (impl Read + Seek), path: &str) -> Result<String, St
     let secs = start.elapsed().as_secs_f64().max(1e-9);
     let rate = ui::format::rate(total as f64 / secs);
 
-    // Random-seek latency across the device.
     let size = f
         .seek(SeekFrom::End(0))
         .map_err(|e| format!("seek {path}: {e}"))?;
@@ -167,8 +140,6 @@ fn benchmark_reader(f: &mut (impl Read + Seek), path: &str) -> Result<String, St
     ))
 }
 
-/// Execute an operation for real, through udisks2. Returns a status
-/// message either way.
 pub fn run(op: Op, dev_leaf: &str, fstype: Option<&str>) -> Result<String, String> {
     let dev = format!("/dev/{dev_leaf}");
     let (call, done) = match op {
@@ -239,8 +210,8 @@ mod tests {
         assert!(error.contains("/dev/null"), "{error}");
     }
 
-    /// Every device operation is a udisks2 call, which polkit authorises:
-    /// the app starts no programs.
+    /// Every device operation is a udisks2 call, which polkit authorises: the app starts no
+    /// programs.
     #[test]
     fn device_operations_are_udisks_calls() {
         let m = mount_call("sdc1");
