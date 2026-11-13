@@ -236,10 +236,21 @@ default view shell_settings for Shell
 view desk_view(a: Arrangement) {
     let d = root Desk
     let chosen = style_of(viewing)
-    if loads_style(d, chosen) {
-        show(a, view: chosen, fill)
-    } else {
-        show(a, view: "so.tilo.shell:strips", fill)
+    layers {
+        if loads_style(d, chosen) {
+            show(a, view: chosen, fill)
+        } else {
+            show(a, view: "so.tilo.shell:strips", fill)
+        }
+        // The chosen style's own settings, over whatever the style drew: the system's one
+        // settings place for a desk style, opened from the bar's style menu (`style_menu`,
+        // `strips.tl`) and drawn here rather than by each style, so every style — the shipped
+        // four and any a person or agent wrote — gets settings at the same place and by the
+        // same actions (`shell.md` §6, "Two ways to change a desk"). A style that draws no bar
+        // is reached by Settings, which shows the same panel.
+        if shell.settings_open {
+            style_panel(d)
+        }
     }
 }
 

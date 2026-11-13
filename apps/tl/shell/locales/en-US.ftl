@@ -564,6 +564,15 @@ d-h5oo7js2 = Dock launcher
 d-5n4s55tz = Dock zoom
     .doc = A click on the dock's icons magnifies the item under the pointer, as macOS's Dock does.
 
+d-4zknrelh = Settings open
+    .doc = Whether the chosen style's own settings stand over the desk (`style_settings`), opened from the bar's style menu: the one place a person changes the style they show without an agent, as `shell.md` §6's "Two ways to change a desk" says.
+
+d-dwct4abs = Strips tabs
+    .doc = Strips: whether a strip of several places shows its tab bar.
+
+d-gfmzi3qr = Frames snap
+    .doc = Frames: whether a place let go on the canvas lands on the style's grid, so frames line up as they are placed.
+
 d-cejnvssb-filter-preset = Preset
 
 d-cejnvssb-filter-based_on = Based on
@@ -599,6 +608,12 @@ d-cejnvssb-filter-dock_running = Dock running
 d-cejnvssb-filter-dock_launcher = Dock launcher
 
 d-cejnvssb-filter-dock_zoom = Dock zoom
+
+d-cejnvssb-filter-settings_open = Settings open
+
+d-cejnvssb-filter-strips_tabs = Strips tabs
+
+d-cejnvssb-filter-frames_snap = Frames snap
 
 d-sfhd6wko = Bar part
     .doc = One part of the top bar, in the person's order.
@@ -918,6 +933,21 @@ d-tnecawb6 = A foreign place
 d-b3rfswle = Show place
     .doc = Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs.
 
+d-jipcl6u3 = Desk style settings
+    .doc = The desk style's own settings, and the two ways of changing a desk (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run.
+
+d-wxxxvca4 = Close
+    .doc = Closes them.
+
+d-33wxlq7h = Desk style settings
+    .doc = Shows or hides their being open: one control for both, so a person sees the state where they press it.
+
+d-zitymayc = Strip tabs
+    .doc = Whether the strip of several places shows its tab bar: the strips style's own setting.
+
+d-lfa3rl6s = Snap places to a grid
+    .doc = Whether a place let go on the framed canvas lands on the grid: the frames style's own setting.
+
 d-i6ll2n4j = Desk view
 
 d-72tgr4px = Clock
@@ -1181,6 +1211,7 @@ d-xzb2gybw = Style switch
 
 d-kssxjs7v = Style menu
     .w-showing = Showing { $style_title }
+    .w-settings-for = Settings for { $style_title }
 
 d-qrahog47 = Strips view
     .w-no-window-here-yet = No window here yet
@@ -1218,6 +1249,26 @@ d-z4vc77e6 = Place controls
 d-oyjbbzbk = Place content
 
 d-43am22do = Place view
+
+d-pjkvdmwk = Show style settings~present
+
+d-vseev2rl = Style panel
+    .w-settings-for = Settings for { $style_title }
+    .w-close = Close
+    .w-comes-from-and-its-settings-are = { $style_label } comes from { $package }, and its settings are its package's own.
+
+d-g476xvac = Desktop style settings
+    .w-show-the-top-bar = Show the top bar
+    .w-show-the-dock = Show the dock
+
+d-e3tczbcu = Strips style settings
+    .w-show-the-tabs-of-a-strip = Show the tabs of a strip
+
+d-mnbjennf = Frames style settings
+    .w-snap-places-to-a-grid = Snap places to a grid
+
+d-xwhxaimf = Spaces style settings
+    .w-spaces-shows-each-place-as-its = Spaces shows each place as its own view and has nothing to set.
 
 d-fziuz57n = Switcher
     .w-no-windows = No windows

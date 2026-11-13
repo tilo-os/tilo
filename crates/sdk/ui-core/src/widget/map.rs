@@ -28,7 +28,9 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::composition_parts::Parts;
-use crate::widget::{Element, Manual, ManualInvalidation, TaffyTreeExt, Widget, WidgetLayoutError};
+use crate::widget::{
+    Element, Manual, ManualInvalidation, MeasureConstraint, Widget, WidgetLayoutError,
+};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -205,322 +207,14 @@ struct Pan {
     active: bool,
 }
 
-/// One pin's view, hosted by the map: laid out once at its place's own size, at no zoom, and
-/// drawn, hit and reported through the camera's transform. The camera moves it and never lays
-/// it out again; only its place's size or its view's own content lays it out again.
-///
-/// The host is the region's child, and the region places it where the camera draws the pin's
-/// box: the host answers that box, transforms its view's own space onto it, and passes input,
-/// cursor shape and accessibility through the inverse ([`crate::widget::Embedded`] does the
-/// mapping). It paints nothing itself: the map draws it under the pin's motion pose.
-struct PinHost {
-    host: crate::widget::Embedded<dyn Widget>,
-    /// The pin's key in the map: how the map knows the host a rebuild carries over.
-    key: String,
-    /// The pin's place in canvas pixels: what its view is laid out at, unzoomed.
-    place: PinPlace,
-    /// What the pin's view was last laid out at, in its own canvas pixels: a size the place
-    /// changed to lays it out again, a camera move does not.
-    laid_at: Option<(f64, f64)>,
-    /// The theme its view was laid out under.
-    theme: Option<Theme>,
-    /// How tall the pin stands in its own space, unzoomed: the place's height when it names
-    /// one, else the height its view came to.
-    height: f64,
-    /// Where the pin is drawn on screen, through the camera: the pose the map's own motion
-    /// moves from.
-    screen: Rect,
-    /// From the pin's own space to the window's: the camera's zoom about the place's corner.
-    transform: Affine,
-    /// The heights the region places the pins' boxes from, and this pin's index in it: a view
-    /// that came to another height than the region placed it at asks for another solve.
-    heights: Rc<std::cell::RefCell<Vec<f64>>>,
-    index: usize,
-    /// The view came to another height than the region placed its box at, and the region has
-    /// not solved again since.
-    resize: bool,
-    /// How often the pin's view was laid out: a test counts layouts to prove a camera move lays
-    /// nothing out again.
-    layouts: usize,
-}
-
-impl PinHost {
-    fn new(
-        key: String,
-        view: Element,
-        place: PinPlace,
-        heights: Rc<std::cell::RefCell<Vec<f64>>>,
-        index: usize,
-    ) -> Self {
-        Self {
-            // A place that names how tall it stands fills it; one that does not is as tall as
-            // its view asks.
-            host: crate::widget::Embedded::boxed(view).filling(),
-            key,
-            place,
-            laid_at: None,
-            height: place.height.unwrap_or(0.0),
-            screen: Rect::ZERO,
-            transform: Affine::IDENTITY,
-            theme: None,
-            heights,
-            index,
-            resize: false,
-            layouts: 0,
-        }
-    }
-
-    /// The pin's view, laid out again when its place's size changed or the view's own content
-    /// did. Never because the camera moved. What it came to is published for the region's next
-    /// solve, which places the pin's box at the height the view stands.
-    fn layout_view(&mut self, theme: &Theme, text: &mut TextRenderer) {
-        let width = self.place.width.max(1.0);
-        let height = self.place.height.unwrap_or(0.0);
-        let size = (width, height);
-        // A place that names how tall it stands fills it; one that does not is as tall as its
-        // view asks.
-        self.host.set_filling(self.place.height.is_some());
-        let theme_changed = self
-            .theme
-            .as_ref()
-            .is_none_or(|laid| laid.text_scale != theme.text_scale || laid.tokens != theme.tokens);
-        if self.laid_at != Some(size) || theme_changed || self.host.widget().layout_needs_measure()
-        {
-            let rect = Rect::from_origin_size(Point::ORIGIN, size);
-            let _ = self.host.layout(rect, theme, text);
-            self.laid_at = Some(size);
-            self.theme = Some(theme.clone());
-            self.layouts = self.layouts.saturating_add(1);
-        }
-        let stood = self.height;
-        self.height = self.place.height.unwrap_or_else(|| self.host.laid_height());
-        if let Some(slot) = self.heights.borrow_mut().get_mut(self.index) {
-            *slot = self.height;
-        }
-        if (self.height - stood).abs() > f64::EPSILON {
-            self.resize = true;
-        }
-    }
-
-    /// Note where the region placed the pin's box: the transform its view is drawn, hit and
-    /// reported through, and the box of screen pixels it covers. The region placed the box at the
-    /// camera's zoom, so the view's own space maps onto it exactly, and a pin reads at any zoom.
-    fn attach(&mut self, rect: Rect) {
-        let zoom = if self.place.width > 0.0 {
-            rect.width() / self.place.width
-        } else {
-            1.0
-        };
-        self.transform = Affine::translate(rect.origin().to_vec2()) * Affine::scale(zoom);
-        self.screen = Rect::from_origin_size(rect.origin(), (rect.width(), self.height * zoom));
-        self.host.set_transform(self.transform);
-    }
-
-    /// Whether the view came to a height the region has not placed a box for; clears the flag.
-    fn take_resize(&mut self) -> bool {
-        std::mem::take(&mut self.resize)
-    }
-
-    /// The view this pin shows, to swap it for another (a place opened a view of its own).
-    fn view_mut(&mut self) -> &mut Element {
-        self.host.element_mut()
-    }
-
-    /// How often the pin's view was laid out (a test counts camera moves that lay nothing out).
-    #[cfg(test)]
-    fn layouts(&self) -> usize {
-        self.layouts
-    }
-}
-
-impl Widget for PinHost {
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        _theme: &Theme,
-        map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // The region places it; nothing under it is in this tree (its view has its own). The
-        // view is laid out by `Map::lay_out_views` at its own place size, not here.
-        tree.widget_leaf(Style::default(), map, self)
-    }
-
-    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // The region placed the pin's box; the view's own space maps onto it.
-        let rect = crate::widget::layout_rect(tree, node, origin);
-        self.attach(rect);
-    }
-
-    fn name(&self) -> &str {
-        "MapPin"
-    }
-
-    /// Paint the pin's view where the camera placed it: the map draws it under its own motion
-    /// pose, through the transform the region gave the host.
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.host.draw(scene, transform, text, theme, presence);
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.screen
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.host.widget().layout_needs_measure()
-    }
-
-    fn layout_needs_measure(&self) -> bool {
-        // The region places the pin's box at the height the view came to: a view that needs a
-        // measure, or that came to another height than it placed the box at, asks the region to
-        // solve again.
-        self.resize || self.host.widget().layout_needs_measure()
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.host.widget().needs_redraw() || self.host.widget().needs_animation_frame()
-    }
-
-    fn mark_drawn(&mut self) {
-        // The map drew the view under its pose this frame: what it painted is drawn.
-        self.host.widget_mut().mark_drawn();
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        self.host.handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            &mut ctx.state,
-            ctx.path,
-            ctx.handled,
-        );
-        // A press inside the pin focused something in its view: the map takes the keyboard, and
-        // keeps routing keys and the input method to the pin whose view was focused.
-        if self.host.take_focus_request() {
-            *ctx.focus_target = Some(ctx.node_id);
-        }
-    }
-
-    /// The pointer's shape over the pin's view, where the camera drew it: the view's own shape
-    /// through the inverse.
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.host.cursor_shape(point)
-    }
-
-    /// The pin in the accessibility tree: its view's own node, its bounds placed through the
-    /// camera ([`crate::widget::Embedded::accessibility`] does the mapping), so an assistive
-    /// technology reads and operates the pin where the person sees it. A view with no node of
-    /// its own is presentational: the walk collapses the pin into the pin's own controls.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.host.accessibility()
-    }
-
-    /// The pin's view is the host's own child in the tree walks (search, inspection,
-    /// accessibility), but the host lays it out itself: it has no node of its own in the
-    /// window's layout, and the walk reaches it through the host ([`Widget::lays_out_child`]).
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.host.widget()]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.host.widget_mut()]
-    }
-
-    /// The host's accessibility node *is* its view's, placed through the camera: the walk does
-    /// not visit the view again as a child (it would export it twice).
-    fn accessibility_represents_child(&self, _child_index: usize) -> bool {
-        true
-    }
-
-    fn lays_out_child(&self, _child_index: usize) -> bool {
-        true
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
-        self.host.perform_action(action, key_path, state, path)
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
-        self.host
-            .perform_semantic_action(target, action, state, path)
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.host.widget().wants_pointer_capture()
-    }
-
-    fn modal_capture(&self) -> Option<Rect> {
-        self.host.modal_capture()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // The pin's view is laid out in the [`Embedded`](crate::widget::Embedded) host's own
-        // tree, which rebuilds it when it changes (`Embedded::layout` reads the view's structure
-        // itself). Reporting it here would tell the window the nodes of *its* tree were replaced.
-        false
-    }
-
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        crate::widget::StructureChange::None
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.host.needs_animation_frame()
-    }
-
-    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
-        self.host.next_wake_deadline()
-    }
-
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        self.host.sync_boxed(state, path);
-    }
-
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
-        self.host.widget_mut().update(state, path)
-    }
-
-    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &automerge::ObjId) {
-        self.host.settle(edits, path);
-    }
-}
-
 /// See the module docs.
 pub struct Map {
-    /// The pins, in draw order: their key, place and view. Each pin's view moves into its host
-    /// (in `parts`' region) once the map is built; this holds the pins' keys and places, and a
-    /// view not yet given to a host.
+    /// The pins, in draw order: their key, place and view. Empty once the region that holds
+    /// them is built (`the region owns the pin widgets`).
     pins: Vec<(String, PinPlace, Element)>,
-    /// The map's one retained child: the explicit-placement region that holds each pin's host
-    /// and places its box at its canvas place through the camera. Kept here so the widgets it
-    /// holds outlive the tree's pointers to them.
+    /// The map's one retained child: the explicit-placement region that lays the pins out at
+    /// their canvas places through the camera. Kept here so the widgets it holds outlive the
+    /// tree's pointers to them.
     parts: Parts,
     camera: MapCamera,
     /// What the layout's explicit-placement region last answered.
@@ -541,21 +235,13 @@ pub struct Map {
     /// and glides when the person moves it (`motion::Placed`). A pin that is not in `pins` any
     /// more leaves on its own before it is forgotten.
     placed: HashMap<String, crate::motion::Placed>,
-    /// How tall each pin stands in its own space, unzoomed, in `pins` order: the place's height
-    /// when it names one, else what its view came to. The region places each pin's box from
-    /// these, so a place that names no height still places its box where its view reaches.
-    heights: Rc<std::cell::RefCell<Vec<f64>>>,
+    /// Where the region laid each pin out last, by key, written by its own solve: the rectangle a
+    /// pin's pose is taken about.
+    laid: Rc<std::cell::RefCell<HashMap<String, Rect>>>,
     /// The camera the region that places the pins reads, shared with its policy: the policy is
     /// built once and re-solved whenever the camera moves, so the map writes the camera here
     /// and the solve lays the pins out at it. `None` before the region is built.
     camera_cell: Option<Rc<std::cell::Cell<MapCamera>>>,
-    /// The theme the pins' views are laid out under, taken from the last build.
-    theme: Option<Theme>,
-    /// What the map is, for assistive technology.
-    name: Option<String>,
-    /// The pins the map holds, or the views they show, changed since the region was built: it
-    /// is built again around them.
-    structure: bool,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -599,11 +285,8 @@ impl Map {
             slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: HashMap::new(),
-            heights: Rc::default(),
+            laid: Rc::default(),
             camera_cell: None,
-            theme: None,
-            name: None,
-            structure: false,
             drop: Event::None,
             key: String::new(),
             arrived: std::collections::HashSet::new(),
@@ -790,94 +473,67 @@ impl Map {
             .and_then(|any| any.downcast_mut::<Manual>())
     }
 
-    /// Build the region that places the pins: each pin's view is laid out at its own place
-    /// size (canvas pixels, unzoomed) by its host, and the region only places each host's box
-    /// where the camera draws the pin. Panning and zooming change where the boxes stand and lay
-    /// nothing out again; a view laid out again is one whose place's size or view changed.
-    fn rebuild_region(&mut self, theme: &Theme) {
-        self.theme = Some(theme.clone());
-        // The pins' keys and places, in draw order: the region places one box per pin.
-        let keys: Vec<String> = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
-        let places: Vec<PinPlace> = self.pins.iter().map(|(_, place, _)| *place).collect();
-        // The hosts the last region held, taken back out: a pin the map still holds keeps its
-        // host, so its view, what the person is doing with it and its layout all stay; the
-        // hosts of pins the map no longer holds go with them.
-        let mut built: HashMap<String, Element> = HashMap::new();
-        if let Some(region) = self.region_mut() {
-            for child in region.take_children() {
-                let Some(key) = child
-                    .as_any()
-                    .and_then(|any| any.downcast_ref::<PinHost>())
-                    .map(|host| host.key.clone())
-                else {
-                    continue;
-                };
-                built.insert(key, child);
-            }
-        }
-        *self.heights.borrow_mut() = places
-            .iter()
-            .map(|place| place.height.unwrap_or(0.0))
-            .collect();
-        let mut hosts: Vec<Element> = Vec::with_capacity(keys.len());
-        for (index, (key, place, view)) in self.pins.iter_mut().enumerate() {
-            if let Some(mut host) = built.remove(key)
-                && let Some(pin) = host
-                    .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<PinHost>())
-            {
-                // The place it stood at may have changed in the props taken in place.
-                pin.place = *place;
-                pin.index = index;
-                hosts.push(host);
-                continue;
-            }
-            let taken = std::mem::replace(
-                view,
+    /// Build the region that places the pins on the camera: from the views it holds now (taken
+    /// back out of the region built last), at the places and zoom the map is at.
+    fn rebuild_region(&mut self, _theme: &Theme) {
+        // After a build the views live in the region; take them back to build the next one.
+        let mut views: Vec<Element> = match self.region_mut() {
+            Some(region) => region.take_children(),
+            None => Vec::new(),
+        };
+        // Fill up to the pins there are, from the views the map itself still holds.
+        while views.len() < self.pins.len() {
+            let index = views.len();
+            let view = std::mem::replace(
+                &mut self.pins[index].2,
                 Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
             );
-            hosts.push(Box::new(PinHost::new(
-                key.clone(),
-                taken,
-                *place,
-                Rc::clone(&self.heights),
-                index,
-            )));
+            views.push(view);
         }
+        views.truncate(self.pins.len());
+        let places: Vec<PinPlace> = self.pins.iter().map(|(_, place, _)| *place).collect();
+        let keys: Vec<String> = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
         // The region's policy is built once and re-solved whenever the camera moves, so it reads
         // the camera from this shared cell rather than from a copy taken here: a copy would lay
         // every pin out at the camera the region was built with, and panning, zooming and the
         // arrow keys would change the lens the map draws from and nothing where its pins stand.
         let camera: Rc<std::cell::Cell<MapCamera>> = Rc::new(std::cell::Cell::new(self.camera));
         self.camera_cell = Some(Rc::clone(&camera));
-        // How tall each pin stands, which a view that came to another height than the region
-        // placed it at updates: the region places its box there.
-        let heights: Rc<std::cell::RefCell<Vec<f64>>> = Rc::clone(&self.heights);
+        // Where the region lays each pin out, by its key: what `Map` poses the pin about this
+        // frame, written by the region's own solve.
+        let laid: Rc<std::cell::RefCell<HashMap<String, Rect>>> = Rc::clone(&self.laid);
         let mut region = Manual::new(move |cx| -> Result<Size<f32>, WidgetLayoutError> {
             let available = cx.available();
             let camera = camera.get();
-            let heights = heights.borrow();
+            let mut out: HashMap<String, Rect> = HashMap::with_capacity(places.len());
             for index in 0..cx.len() {
                 let Some(place) = places.get(index) else {
                     continue;
                 };
-                // A pin's box is its place's size at the camera's zoom: it is where the pin is
-                // drawn, never how its view is laid out (that is its host's own, unzoomed).
-                let height = place
-                    .height
-                    .unwrap_or_else(|| heights.get(index).copied().unwrap_or(0.0));
-                let rect = Rect::from_origin_size(
-                    (
-                        (place.x - camera.origin.x) * camera.zoom,
-                        (place.y - camera.origin.y) * camera.zoom,
-                    ),
-                    (
-                        (place.width * camera.zoom).max(1.0),
-                        (height * camera.zoom).max(0.0),
-                    ),
-                );
+                let width = (place.width * camera.zoom).max(1.0);
+                let size = cx
+                    .measure_child(
+                        index,
+                        Size {
+                            width: MeasureConstraint::Exact(f32_of(width)),
+                            height: place.height.map_or(MeasureConstraint::Intrinsic, |height| {
+                                MeasureConstraint::Exact(f32_of((height * camera.zoom).max(1.0)))
+                            }),
+                        },
+                    )?
+                    .size;
+                let left = (place.x - camera.origin.x) * camera.zoom;
+                let top = (place.y - camera.origin.y) * camera.zoom;
+                let height = place.height.map_or(f64::from(size.height), |height| {
+                    (height * camera.zoom).max(1.0)
+                });
+                let rect = Rect::from_origin_size((left, top), (width, height));
+                if let Some(key) = keys.get(index) {
+                    out.insert(key.clone(), rect);
+                }
                 cx.place(index, rect)?;
             }
+            *laid.borrow_mut() = out;
             // The region is its viewport: a canvas does not grow with what it holds.
             Ok(Size {
                 width: available.width.max(0.0),
@@ -885,62 +541,11 @@ impl Map {
             })
         });
         region = region.filling();
-        for host in hosts {
-            region = region.child(host);
+        for view in views {
+            region = region.child(view);
         }
         self.invalidation = region.invalidation();
         self.parts.children = vec![Box::new(region)];
-    }
-
-    /// The host of the pin at `index` in draw order, while the region holds it.
-    fn host_mut(&mut self, index: usize) -> Option<&mut PinHost> {
-        let place = self.pins.get(index)?.1;
-        let host = self
-            .region_mut()
-            .and_then(|region| region.child_mut(index))
-            .and_then(|child| child.as_any_mut())
-            .and_then(|any| any.downcast_mut::<PinHost>())?;
-        host.place = place;
-        host.index = index;
-        Some(host)
-    }
-
-    /// The host of the pin keyed `key`, while the region holds it.
-    fn host_of(&self, key: &str) -> Option<&PinHost> {
-        let region = self
-            .parts
-            .children
-            .first()?
-            .as_any()?
-            .downcast_ref::<Manual>()?;
-        let index = self.pins.iter().position(|(held, _, _)| held == key)?;
-        region.child_at(index)?.as_any()?.downcast_ref::<PinHost>()
-    }
-
-    /// Lay every pin's view out at its own place size, in the view's own space (canvas pixels,
-    /// unzoomed). Returns whether any view came to a height the region's solve has not placed a
-    /// box for yet: the region solves again so a place with no height of its own still has its
-    /// box where its view reaches. A camera move lays nothing out: only a place's size or a
-    /// view's content does, which is why this runs where the view is drawn and not every frame.
-    fn lay_out_views(&mut self, theme: &Theme, text: &mut TextRenderer) -> bool {
-        let mut resized = false;
-        let count = self.pins.len();
-        for index in 0..count {
-            if let Some(host) = self.host_mut(index) {
-                host.layout_view(theme, text);
-                resized |= host.take_resize();
-            }
-        }
-        resized
-    }
-
-    /// The pins the map holds changed: the region is built again around them (arranged, given
-    /// or swapped views), so each has its box where the camera draws it.
-    fn structure_changed(&mut self) {
-        self.dirty = true;
-        // A change in which pins the map holds, or the views they show, builds the region again
-        // around them.
-        self.structure = true;
     }
 }
 
@@ -949,13 +554,12 @@ impl Described for Map {
 
     fn from_props(key: &str, props: MapProps) -> Self {
         let MapProps {
-            name,
+            name: _,
             ground,
             pins,
             drop,
         } = props;
         let mut map = Self::new();
-        map.name = name;
         map.key = format!("map\u{1f}{key}");
         // The lens the person left this map looking through on this device: a map built again
         // around a place opened, closed or moved looks where they were looking, so the place they
@@ -989,13 +593,12 @@ impl Described for Map {
     /// place the arrangement closed standing on screen and in the accessibility tree.
     fn set_props(&mut self, props: MapProps) -> bool {
         let MapProps {
-            name,
+            name: _,
             ground,
             pins,
             drop,
         } = props;
         self.drop = drop;
-        self.name = name;
         if pins.len() != self.pins.len()
             || pins
                 .iter()
@@ -1023,21 +626,32 @@ impl Described for Map {
     }
 }
 
-/// The pins of a map: one view each. Each view is hosted by the map's region (`PinHost`), laid
-/// out at its place's own size; a change here reaches the pin's host or rebuilds the region
-/// around the pins it holds. The pins' keys and places stay in `self.pins`.
+/// The pins of a map: one view each. Once the map is built the widgets live in its region, so a
+/// change here reaches the region's children; before that, in the map's own store. Either way
+/// the pins' keys and places stay in `self.pins`, which the next layout lays out afresh.
 impl SlotViews for Map {
     fn len(&self) -> usize {
         self.pins.len()
     }
 
     fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
-        self.host_mut(index).map(PinHost::view_mut)
+        // The region holds the views once built; the pins' own until then.
+        if self.parts.children.is_empty() {
+            return self.pins.get_mut(index).map(|(_, _, view)| view);
+        }
+        let region = self
+            .parts
+            .children
+            .first_mut()?
+            .as_any_mut()?
+            .downcast_mut::<Manual>()?;
+        region.child_mut(index)
     }
 
     fn insert(&mut self, index: usize, view: Element) {
         let at = index.min(self.pins.len());
         let key = format!("pin-{at}");
+        // Keep the pins' keys and places in step; the view goes to the region when built.
         self.pins.insert(
             at,
             (
@@ -1048,18 +662,22 @@ impl SlotViews for Map {
                     width: 360.0,
                     height: None,
                 },
-                view,
+                Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
             ),
         );
-        // A pin that arrived takes its host of its own: the region built around the pins it now
-        // holds gives it a box.
-        self.structure_changed();
+        if let Some(region) = self.region_mut() {
+            region.insert_child(at, view);
+        } else if let Some((_, _, slot)) = self.pins.get_mut(at) {
+            *slot = view;
+        }
     }
 
     fn remove(&mut self, index: usize) {
         if index < self.pins.len() {
             self.pins.remove(index);
-            self.structure_changed();
+            if let Some(region) = self.region_mut() {
+                let _ = region.remove_child(index);
+            }
         }
     }
 
@@ -1067,12 +685,14 @@ impl SlotViews for Map {
         if from < self.pins.len() && to < self.pins.len() {
             let pin = self.pins.remove(from);
             self.pins.insert(to, pin);
-            self.structure_changed();
+            if let Some(region) = self.region_mut() {
+                region.move_child(from, to);
+            }
         }
     }
 
     fn replace(&mut self, index: usize, view: Element) {
-        if let Some(slot) = self.view_mut(index) {
+        if let Some(slot) = self.region_mut().and_then(|region| region.child_mut(index)) {
             *slot = view;
         } else if let Some((_, _, slot)) = self.pins.get_mut(index) {
             *slot = view;
@@ -1081,7 +701,7 @@ impl SlotViews for Map {
 }
 
 impl Map {
-    /// Draw the map's pins, each posed by its own [`crate::motion::Placed`]: a pin that just
+    /// Draw the region's pins, each posed by its own [`crate::motion::Placed`]: a pin that just
     /// arrived fades and scales in, one the person moved glides from where it stood, and one the
     /// map no longer holds leaves before it is forgotten. Every pin not drawn this frame is
     /// forgotten once its departure ends, so a map of many places only carries motion for the
@@ -1097,22 +717,30 @@ impl Map {
         let now = crate::motion::frame_now();
         let source = crate::motion::input_source();
         let motion = theme.motion();
-        // Each pin's box on screen, from its host (which the region placed and the camera
-        // transformed), and the keys the map holds now.
-        let boxes: Vec<(String, Rect)> = self
+        // What the region laid out this frame, by key, and the keys the map holds now.
+        let laid = self.laid.borrow().clone();
+        let live: std::collections::HashSet<String> = self
             .pins
             .iter()
-            .filter_map(|(key, _, _)| Some((key.clone(), self.host_of(key)?.screen)))
+            .map(|(key, _, _)| key.clone())
+            .filter(|key| laid.contains_key(key))
             .collect();
-        let live: std::collections::HashSet<String> =
-            boxes.iter().map(|(key, _)| key.clone()).collect();
-        // Bring every pin's motion up to this frame, from where the camera draws its box.
-        for (key, rect) in &boxes {
+        let keys: Vec<String> = self
+            .pins
+            .iter()
+            .map(|(key, _, _)| key.clone())
+            .filter(|key| laid.contains_key(key))
+            .collect();
+        // Bring every pin's motion up to this frame.
+        for key in &keys {
+            let Some(rect) = laid.get(key).copied() else {
+                continue;
+            };
             let placed = self
                 .placed
                 .entry(key.clone())
                 .or_insert_with(crate::motion::Placed::closed);
-            placed.follow(*rect, true, motion, source, now);
+            placed.follow(rect, true, motion, source, now);
         }
         // A pin that left the map leaves from where it last stood, then is forgotten.
         let leaving: Vec<String> = self
@@ -1133,25 +761,29 @@ impl Map {
         }
         self.placed
             .retain(|key, placed| live.contains(key) || placed.is_visible(now));
-        // Draw each pin the map holds, at its box, under its own pose. The view is drawn through
-        // the camera's transform: laid out at its place's own size, it reads at any zoom.
-        for (key, rect) in boxes {
+        // Draw each pin the region holds, under its own pose.
+        let drawn: Vec<(String, Rect)> = keys
+            .iter()
+            .filter_map(|key| {
+                let placed = self.placed.get(key)?;
+                let rect = laid.get(key).copied()?;
+                placed.is_visible(now).then_some((key.clone(), rect))
+            })
+            .collect();
+        for (key, rect) in drawn {
             let Some(placed) = self.placed.get(&key) else {
                 continue;
             };
-            if !placed.is_visible(now) {
-                continue;
-            }
             let pose = placed.pose(rect, now);
             let bounds = rect.union(pose.drawn_rect(rect));
             let Some(index) = self.pins.iter().position(|(held, _, _)| *held == key) else {
                 continue;
             };
-            let Some(host) = self.host_mut(index) else {
+            let Some(child) = self.region_mut().and_then(|region| region.child_mut(index)) else {
                 continue;
             };
             pose.paint(scene, transform, bounds, |scene, transform| {
-                host.draw(scene, transform, text, theme, presence);
+                child.draw(scene, transform, text, theme, presence);
             });
         }
     }
@@ -1328,8 +960,6 @@ impl Widget for Map {
             self.camera = camera;
         }
         self.rebuild_region(theme);
-        // The region was just built around the pins the map holds now.
-        self.structure = false;
         let node = self.parts.build(
             Style {
                 size: Size {
@@ -1415,8 +1045,6 @@ impl Widget for Map {
     }
 
     fn layout_needs_measure(&self) -> bool {
-        // The region answers for its hosts: a pin whose view came to another height, or needs a
-        // measure, asks the region to solve again.
         self.invalidation.is_pending()
             || self
                 .parts
@@ -1433,13 +1061,6 @@ impl Widget for Map {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Each pin's view is laid out at its own place size (only a place or a view that
-        // changed lays it out again, never the camera), and the region solves again where a view
-        // came to a height it has not placed a box for.
-        self.theme = Some(theme.clone());
-        if self.lay_out_views(theme, text) {
-            self.invalidation.invalidate();
-        }
         // A canvas clips what it holds: a place outside the viewport is neither drawn nor hit.
         let viewport = self.rect;
         let clips = viewport.width() > 0.0 && viewport.height() > 0.0;
@@ -1482,15 +1103,6 @@ impl Widget for Map {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    /// The canvas as a group named for what it is; its pins' views are its children, walked
-    /// through the region that places them.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name(self.name.clone()),
-        )
     }
 
     /// A pin holding the pointer — a drag it latched, a menu open in what it shows — owns input
@@ -1547,7 +1159,7 @@ impl Widget for Map {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = std::mem::take(&mut self.structure);
+        let mut dirty = false;
         for child in &mut self.parts.children {
             dirty |= child.take_structure_dirty();
         }
@@ -1555,14 +1167,6 @@ impl Widget for Map {
     }
 
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        // A pin added, removed or moved changes which widgets the map holds, so the host builds
-        // the region again: every node under the map may be gone.
-        if std::mem::take(&mut self.structure) {
-            for child in &mut self.parts.children {
-                let _ = child.take_structure_change();
-            }
-            return crate::widget::StructureChange::Rebuild;
-        }
         let mut change = crate::widget::StructureChange::None;
         for child in &mut self.parts.children {
             change = change.join(child.take_structure_change());
@@ -1633,10 +1237,15 @@ impl Widget for Map {
     }
 }
 
+/// `v` as `f32`, for the layout solver.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "logical pixels: a canvas coordinate of a view, far inside f32"
+)]
+fn f32_of(v: f64) -> f32 {
+    v as f32
+}
+
 #[cfg(test)]
 #[path = "map_motion_tests.rs"]
 mod motion_tests;
-
-#[cfg(test)]
-#[path = "map_scale_tests.rs"]
-mod scale_tests;
