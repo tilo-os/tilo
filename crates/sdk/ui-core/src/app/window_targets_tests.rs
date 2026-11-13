@@ -136,3 +136,58 @@ fn a_control_the_window_no_longer_shows_presses_nothing() {
     app.pump_floating_surface_service();
     assert_eq!(pressed.get(), 0, "the role says which control is meant");
 }
+
+/// A window whose one control does `tube.video`'s `play`, as a hosted window wraps the control
+/// its app published an action for.
+fn doing_window() -> (App, Rc<Cell<u32>>) {
+    let pressed = Rc::new(Cell::new(0));
+    let count = Rc::clone(&pressed);
+    let button =
+        crate::widget::Button::new("go", "Play").on_click(move || count.set(count.get() + 1));
+    let identified = crate::widget::Identified::new(Box::new(button), doing());
+    let column = crate::widget::Column::new().push(Box::new(identified));
+    let mut app = app_with_root(crate::State::new(), Box::new(column));
+    layout(&mut app);
+    (app, pressed)
+}
+
+/// What the window's control does: the record kind, and the operation on it.
+const DOING: (&str, &str) = ("tube.video", "play");
+
+/// [`DOING`] as a control publishes it.
+fn doing() -> String {
+    format!("{}{}{}", DOING.0, '\u{1f}', DOING.1)
+}
+
+#[test]
+fn a_control_that_runs_an_app_action_is_listed_and_pressed_by_what_it_does() {
+    let identity = doing();
+    let (mut app, pressed) = doing_window();
+    let controls = app.window_controls();
+    let control = controls
+        .iter()
+        .find(|control| control.identity.as_deref() == Some(identity.as_str()))
+        .unwrap_or_else(|| {
+            panic!(
+                "the window lists the control by what it does: {:?}",
+                controls
+                    .iter()
+                    .map(|control| &control.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        control.name, "Play",
+        "and names it in the person's language"
+    );
+    assert!(
+        control.rect.2 > 0.0 && control.rect.3 > 0.0,
+        "where a person reaches it: {:?}",
+        control.rect
+    );
+    assert!(
+        app.press_window_control(&identity, TargetAction::Activate),
+        "the window acts on the control the identity names"
+    );
+    assert_eq!(pressed.get(), 1, "and the press reached it");
+}

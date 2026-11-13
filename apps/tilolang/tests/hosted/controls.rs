@@ -103,28 +103,31 @@ impl super::Session {
     /// `ty`: the record kind and the action's id.
     pub(super) fn doing(&self, ty: &str, action: &str) -> String {
         let bundle = package(package_of(&self.app));
-        let id = bundle
+        let Some(declared) = bundle
             .meta
             .actions
             .iter()
             .find(|declared| declared.name == action || declared.id == action)
-            .map(|declared| declared.id.clone())
-            .unwrap_or_else(|| panic!("{} declares no action {action}", self.app));
-        format!("{}{PLACE}{id}", self.kind(ty))
+        else {
+            panic!("{} declares no action {action}", self.app);
+        };
+        format!("{}{PLACE}{}", self.kind(ty), declared.id)
     }
 
     /// The id the app gives the field `field`, as it is declared (`title`): what the control that
     /// edits it is known by, in the type that declares it.
     pub(super) fn field_id(&self, field: &str) -> String {
         let bundle = package(package_of(&self.app));
-        bundle
+        let Some(declared) = bundle
             .meta
             .types
             .iter()
             .flat_map(|declared| &declared.fields)
             .find(|declared| declared.name == field)
-            .map(|declared| declared.id.clone())
-            .unwrap_or_else(|| panic!("{} declares no field {field}", self.app))
+        else {
+            panic!("{} declares no field {field}", self.app);
+        };
+        declared.id.clone()
     }
 
     /// Every control the window shows, as its accessibility tree publishes it: what it does,
@@ -158,11 +161,11 @@ impl super::Session {
 
 /// The separator an identity writes between the record it acts on and what it does: what
 /// [`ui::tilo_actions::ActionAddress`] writes.
-const PLACE: char = '\u{1f}';
+pub(super) const PLACE: char = '\u{1f}';
 
 /// One control of a window as its accessibility tree publishes it.
 #[derive(Debug)]
-struct ShownControl {
+pub(super) struct ShownControl {
     /// What it does: the identity of the app action it runs, or of the field it edits. `None` for
     /// a control that runs none.
     doing: Option<String>,

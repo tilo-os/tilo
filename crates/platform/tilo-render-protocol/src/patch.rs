@@ -413,9 +413,10 @@ pub enum RowChange {
         from: u32,
         to: u32,
     },
-    /// A rendered row shows something else now.
+    /// A rendered row shows something else now: boxed, as one row is far larger than the index
+    /// changes beside it.
     Changed {
-        row: Node,
+        row: Box<Node>,
     },
     /// The list was replaced as a whole: its rows are read anew.
     Reset,

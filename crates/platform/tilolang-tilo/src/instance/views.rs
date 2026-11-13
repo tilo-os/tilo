@@ -296,7 +296,7 @@ impl Instance {
                     let changed = rows.changed(&changes.rows);
                     convert_with(&host, &*names, &handle, |convert, _| {
                         structural.extend(changed.iter().map(|row| ui::RowChange::Changed {
-                            row: convert.node(row),
+                            row: Box::new(convert.node(row)),
                         }));
                     });
                     structural

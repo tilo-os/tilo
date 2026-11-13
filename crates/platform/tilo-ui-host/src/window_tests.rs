@@ -2013,15 +2013,11 @@ fn identity_named(harness: &ui::headless::FrameHarness, name: &str) -> Option<St
         .and_then(|(_, node)| node.author_id().map(str::to_owned))
 }
 
-/// Where the control called `name` stands in the window, as assistive technology reads it.
-fn at_named(harness: &ui::headless::FrameHarness, name: &str) -> (f64, f64, f64, f64) {
-    let bounds = harness
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| node.label() == Some(name))
-        .and_then(|(_, node)| node.bounds())
-        .expect("the control is drawn where a press reaches it");
-    (bounds.x0, bounds.y0, bounds.x1, bounds.y1)
+/// The accessibility node the window describes the control `name` in.
+fn named_node(harness: &ui::headless::FrameHarness, name: &str) -> ui::accesskit::NodeId {
+    harness
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("the window draws {name:?}"))
 }
 
 #[test]
@@ -2043,16 +2039,16 @@ fn the_first_item_moves_the_windows_action_and_not_what_it_does() {
             .filter_map(|(_, node)| Some((node.label()?.to_owned(), node.author_id()?.to_owned())))
             .collect::<Vec<_>>()
     );
-    let in_the_bar = at_named(&harness, "New note");
+    let in_the_bar = named_node(&harness, "New note");
 
     // The first note: the window's columns come back, and the action stands in their header row.
     send(&mut app, &action_shell(true));
     drawn_window(&mut harness).receive();
     harness.relayout();
-    let in_the_columns = at_named(&harness, "New note");
+    let in_the_columns = named_node(&harness, "New note");
     assert_ne!(
         in_the_bar, in_the_columns,
-        "the composition draws the control somewhere else"
+        "the window drew the control again, so the node id found before it is gone"
     );
     assert_eq!(
         identity_named(&harness, "New note").as_deref(),
