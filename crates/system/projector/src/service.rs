@@ -462,6 +462,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         fn the_service_runs_one_session_and_ends_it_for_every_reason;
 
         phase service_connect_reports_progress_then_connected;
