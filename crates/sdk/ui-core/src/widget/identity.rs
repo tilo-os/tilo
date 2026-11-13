@@ -19,6 +19,7 @@ use super::{Element, Widget};
 use crate::a11y::AccessNode;
 
 /// A control and what it does.
+#[crate::component::not_a_component(framework, "the host names what a view's control does")]
 pub struct Identified {
     content: Element,
     /// The action's identity: the record kind and the operation, in ids.
