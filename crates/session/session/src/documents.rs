@@ -116,11 +116,11 @@ pub(crate) fn candidates(launches: &[Launch], lists: &AppLists) -> Vec<DocumentA
         rows.push(candidate(app, lists));
     }
     let names: Vec<String> = rows.iter().map(|row| named(&row.name)).collect();
-    for (index, row) in rows.iter_mut().enumerate() {
+    for (index, (row, own)) in rows.iter_mut().zip(&names).enumerate() {
         let shared = names
             .iter()
             .enumerate()
-            .any(|(other, name)| other != index && *name == names[index] && !name.is_empty());
+            .any(|(other, name)| other != index && name == own && !name.is_empty());
         if shared {
             row.source = source_of(&row.id, lists);
         }
