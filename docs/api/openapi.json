@@ -10,6 +10,48 @@
       "url": "https://api.tilo.sh"
     }
   ],
+  "tags": [
+    {
+      "name": "Account",
+      "description": "The API itself, the person's account and their workspaces"
+    },
+    {
+      "name": "Keys",
+      "description": "Keys a program holds, and the keys minted from them"
+    },
+    {
+      "name": "Resources",
+      "description": "What is in a workspace, by path: its fields, children and actions"
+    },
+    {
+      "name": "Actions",
+      "description": "Running an action on a resource"
+    },
+    {
+      "name": "Runs",
+      "description": "An action's run after it answered: awaiting, cancelling, undoing it"
+    },
+    {
+      "name": "Events",
+      "description": "What changes in a workspace, as it changes"
+    },
+    {
+      "name": "Webhooks",
+      "description": "A workspace's events posted to a URL"
+    },
+    {
+      "name": "Files",
+      "description": "Bytes going into a workspace and coming out of it"
+    },
+    {
+      "name": "Members",
+      "description": "The people in a workspace and their invitations"
+    },
+    {
+      "name": "Programs",
+      "description": "Several calls as one step, written in tilolang"
+    }
+  ],
   "security": [
     {
       "key": []
@@ -20,6 +62,9 @@
       "get": {
         "operationId": "getApi",
         "summary": "The API's version, and what the key reaches",
+        "tags": [
+          "Account"
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/Run"
@@ -62,6 +107,9 @@
       "get": {
         "operationId": "getAccount",
         "summary": "The person's plan and what each workspace keeps",
+        "tags": [
+          "Account"
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/Run"
@@ -98,6 +146,9 @@
       "get": {
         "operationId": "listWorkspaces",
         "summary": "Every workspace the key reaches, wherever it is hosted",
+        "tags": [
+          "Account"
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/Run"
@@ -132,6 +183,9 @@
       "post": {
         "operationId": "createWorkspace",
         "summary": "Make a workspace of the person's own",
+        "tags": [
+          "Account"
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/Run"
@@ -181,6 +235,9 @@
       "delete": {
         "operationId": "deleteWorkspace",
         "summary": "Delete a workspace of the person's own, with everything in it: final",
+        "tags": [
+          "Account"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -229,6 +286,9 @@
       "get": {
         "operationId": "listKeys",
         "summary": "This key and the keys it minted",
+        "tags": [
+          "Keys"
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/Run"
@@ -263,6 +323,9 @@
       "post": {
         "operationId": "mintKey",
         "summary": "Mint a key reaching one workspace, for an agent there",
+        "tags": [
+          "Keys"
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/Run"
@@ -312,6 +375,9 @@
       "delete": {
         "operationId": "revokeKey",
         "summary": "Revoke this key or one it minted, and every key it minted",
+        "tags": [
+          "Keys"
+        ],
         "parameters": [
           {
             "name": "grant",
@@ -320,7 +386,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The key's grant, as `GET /v1/keys` lists it"
           },
           {
             "$ref": "#/components/parameters/Run"
@@ -360,6 +426,9 @@
       "get": {
         "operationId": "listResources",
         "summary": "What is under a path: its rows and actions",
+        "tags": [
+          "Resources"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -441,6 +510,9 @@
       "get": {
         "operationId": "readResource",
         "summary": "One resource: its fields and what it holds",
+        "tags": [
+          "Resources"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -504,6 +576,9 @@
       "post": {
         "operationId": "runAction",
         "summary": "Run an action on a resource, its arguments as the body",
+        "tags": [
+          "Actions"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -591,6 +666,9 @@
       "get": {
         "operationId": "getRun",
         "summary": "A run, held until it is no longer pending for `wait` seconds",
+        "tags": [
+          "Runs"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -664,6 +742,9 @@
       "post": {
         "operationId": "cancelRun",
         "summary": "Stop a run",
+        "tags": [
+          "Runs"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -731,6 +812,9 @@
       "post": {
         "operationId": "undoRun",
         "summary": "Take back what a run changed",
+        "tags": [
+          "Runs"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -788,6 +872,9 @@
       "get": {
         "operationId": "runOutput",
         "summary": "A run's events, ending when it ends",
+        "tags": [
+          "Runs"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -842,6 +929,9 @@
       "get": {
         "operationId": "search",
         "summary": "Search the workspace by words, best first",
+        "tags": [
+          "Resources"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -914,6 +1004,9 @@
       "get": {
         "operationId": "getLink",
         "summary": "The link a person opens what a path names with",
+        "tags": [
+          "Resources"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -977,6 +1070,9 @@
       "get": {
         "operationId": "listMembers",
         "summary": "The people in the workspace, and the invitations still open",
+        "tags": [
+          "Members"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1022,6 +1118,9 @@
       "post": {
         "operationId": "invitePerson",
         "summary": "A link that brings one more person in",
+        "tags": [
+          "Members"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1080,6 +1179,9 @@
       "post": {
         "operationId": "runProgram",
         "summary": "Run a tilolang program as one step",
+        "tags": [
+          "Programs"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1138,6 +1240,9 @@
       "post": {
         "operationId": "upload",
         "summary": "Put a file's bytes into the workspace, for an action to take",
+        "tags": [
+          "Files"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1197,6 +1302,9 @@
       "get": {
         "operationId": "getContent",
         "summary": "The bytes an action made",
+        "tags": [
+          "Files"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1214,7 +1322,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "`tilo.content:<hash>`"
+            "description": "`tilo.content:<hash>`, as an upload or an action answered it"
           },
           {
             "$ref": "#/components/parameters/Run"
@@ -1252,6 +1360,9 @@
       "get": {
         "operationId": "events",
         "summary": "What happens in the workspace, as it happens",
+        "tags": [
+          "Events"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1306,6 +1417,9 @@
       "get": {
         "operationId": "listWebhooks",
         "summary": "The workspace's webhooks, without their secrets",
+        "tags": [
+          "Webhooks"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1349,6 +1463,9 @@
       "post": {
         "operationId": "createWebhook",
         "summary": "Post the workspace's events to a URL, signed",
+        "tags": [
+          "Webhooks"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1407,6 +1524,9 @@
       "delete": {
         "operationId": "deleteWebhook",
         "summary": "Stop posting to a webhook",
+        "tags": [
+          "Webhooks"
+        ],
         "parameters": [
           {
             "name": "workspace",
@@ -1424,7 +1544,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The webhook's id, as its creation answered it"
           },
           {
             "$ref": "#/components/parameters/Run"

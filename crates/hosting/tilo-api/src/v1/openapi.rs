@@ -114,6 +114,7 @@ pub fn document(apps: &[App]) -> Result<Value, String> {
                             each naming its arguments' schema.",
         },
         "servers": [{"url": "https://api.tilo.sh"}],
+        "tags": TAGS.iter().map(|(name, description)| json!({"name": name, "description": description})).collect::<Vec<_>>(),
         "security": [{"key": []}],
         "paths": paths,
         "components": {
@@ -144,6 +145,67 @@ fn parameters() -> Value {
     })
 }
 
+/// The groups operations are listed in, in order, each with what it is.
+const TAGS: &[(&str, &str)] = &[
+    (
+        "Account",
+        "The API itself, the person's account and their workspaces",
+    ),
+    (
+        "Keys",
+        "Keys a program holds, and the keys minted from them",
+    ),
+    (
+        "Resources",
+        "What is in a workspace, by path: its fields, children and actions",
+    ),
+    ("Actions", "Running an action on a resource"),
+    (
+        "Runs",
+        "An action's run after it answered: awaiting, cancelling, undoing it",
+    ),
+    ("Events", "What changes in a workspace, as it changes"),
+    ("Webhooks", "A workspace's events posted to a URL"),
+    ("Files", "Bytes going into a workspace and coming out of it"),
+    ("Members", "The people in a workspace and their invitations"),
+    ("Programs", "Several calls as one step, written in tilolang"),
+];
+
+/// The group `path` is listed in: by its first segment inside a workspace.
+fn tag_of(path: &str) -> &'static str {
+    if path.starts_with("/v1/keys") {
+        return "Keys";
+    }
+    let Some(inside) = path.strip_prefix("/v1/workspaces/{workspace}/") else {
+        return "Account";
+    };
+    match inside.split('/').next() {
+        Some("resources") if inside.contains("/actions/") => "Actions",
+        Some("runs") => "Runs",
+        Some("events") => "Events",
+        Some("webhooks") => "Webhooks",
+        Some("uploads" | "content") => "Files",
+        Some("members") => "Members",
+        Some("programs") => "Programs",
+        _ => "Resources",
+    }
+}
+
+/// What a path parameter named `name` is. Every name an operation's path uses
+/// is here: the test below fails on one that is not.
+fn path_parameter(name: &str) -> &'static str {
+    match name {
+        "workspace" => "The workspace's id",
+        "path" => "A resource path, each segment percent-encoded",
+        "action" => "The action's id",
+        "run" => "The run, as an action answered it",
+        "content" => "`tilo.content:<hash>`, as an upload or an action answered it",
+        "grant" => "The key's grant, as `GET /v1/keys` lists it",
+        "webhook" => "The webhook's id, as its creation answered it",
+        _ => "",
+    }
+}
+
 fn operation_of(operation: &Operation) -> Value {
     let mut parameters: Vec<Value> = operation
         .path
@@ -151,14 +213,7 @@ fn operation_of(operation: &Operation) -> Value {
         .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
         .map(|name| {
             json!({"name": name, "in": "path", "required": true, "schema": {"type": "string"},
-            "description": match name {
-                "workspace" => "The workspace's id",
-                "path" => "A resource path, each segment percent-encoded",
-                "action" => "The action's id",
-                "run" => "The run, as an action answered it",
-                "content" => "`tilo.content:<hash>`",
-                _ => "",
-            }})
+                   "description": path_parameter(name)})
         })
         .collect();
     parameters.extend(operation.query.iter().map(|(name, description)| {
@@ -210,6 +265,7 @@ fn operation_of(operation: &Operation) -> Value {
     let mut described = Map::new();
     described.insert("operationId".into(), json!(operation.id));
     described.insert("summary".into(), json!(operation.summary));
+    described.insert("tags".into(), json!([tag_of(operation.path)]));
     described.insert("parameters".into(), json!(parameters));
     described.insert("responses".into(), Value::Object(responses));
     let body = match operation.body {
@@ -251,6 +307,17 @@ mod tests {
         let text = described.to_string();
         for operation in OPERATIONS.iter() {
             assert!(text.contains(&format!("\"operationId\":\"{}\"", operation.id)));
+            for name in operation
+                .path
+                .split('/')
+                .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
+            {
+                assert!(
+                    !path_parameter(name).is_empty(),
+                    "{}: {{{name}}} is not described",
+                    operation.id
+                );
+            }
         }
         let schemas = described["components"]["schemas"].as_object().unwrap();
         let named: Vec<&str> = text
