@@ -15,7 +15,9 @@
 
 use crate::grant_key::GrantKey;
 use crate::store::{GrantKind, Store};
-use crate::{Config, Reply, Server, now_ms};
+use crate::{Body, Config, Reply, Server, now_ms};
+use http_body_util::BodyExt as _;
+use hyper::body::Bytes;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tilo_user_identity::DeviceCert;
@@ -131,5 +133,140 @@ impl Direct {
         }
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         self.server.dispatch(&method, path, query, &map, body).await
+    }
+
+    /// [`Self::request`]'s answer, as a binding hands it to its language:
+    /// its status, its headers and its body, whole or, for a stream of
+    /// events, a chunk at a time.
+    pub async fn answer(
+        &self,
+        method: &str,
+        target: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Answer {
+        Answer::of(self.request(method, target, headers, body).await).await
+    }
+}
+
+/// An answer of the API, as the SDKs' native parts hand it on.
+pub struct Answer {
+    pub status: u16,
+    /// Its headers, a name's values joined with `, `.
+    pub headers: Vec<(String, String)>,
+    pub body: AnswerBody,
+}
+
+/// An answer's body.
+pub enum AnswerBody {
+    /// Every byte of it.
+    Whole(Bytes),
+    /// A stream of server-sent events (`text/event-stream`), read as it comes.
+    Stream(Chunks),
+}
+
+impl Answer {
+    async fn of(reply: Reply) -> Self {
+        let (parts, body) = reply.into_parts();
+        let mut headers: Vec<(String, String)> = Vec::new();
+        for (name, value) in &parts.headers {
+            let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
+            match headers.iter_mut().find(|(seen, _)| seen == name.as_str()) {
+                Some((_, values)) => {
+                    values.push_str(", ");
+                    values.push_str(&value);
+                }
+                None => headers.push((name.as_str().to_owned(), value)),
+            }
+        }
+        let streams = parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream"));
+        let body = if streams {
+            AnswerBody::Stream(Chunks(tokio::sync::Mutex::new(Some(body))))
+        } else {
+            let Ok(whole) = body.collect().await;
+            AnswerBody::Whole(whole.to_bytes())
+        };
+        Self {
+            status: parts.status.as_u16(),
+            headers,
+            body,
+        }
+    }
+}
+
+/// A streamed body's chunks, in order.
+pub struct Chunks(tokio::sync::Mutex<Option<Body>>);
+
+impl Chunks {
+    /// The next chunk of data, or `None` once the stream has ended. Callers
+    /// may ask from any task; each chunk is answered once.
+    pub async fn next(&self) -> Option<Bytes> {
+        next_data(&mut *self.0.lock().await).await
+    }
+}
+
+/// The next chunk of data of `body`, which is `None` once it ended.
+async fn next_data(body: &mut Option<Body>) -> Option<Bytes> {
+    loop {
+        let Some(frame) = body.as_mut()?.frame().await else {
+            *body = None;
+            return None;
+        };
+        let Ok(frame) = frame;
+        if let Ok(data) = frame.into_data()
+            && !data.is_empty()
+        {
+            return Some(data);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Answer, AnswerBody};
+    use http_body_util::{BodyExt as _, StreamBody};
+    use hyper::body::{Bytes, Frame};
+
+    #[tokio::test]
+    async fn a_whole_answer_is_read_whole_and_its_repeated_headers_joined() {
+        let reply = hyper::Response::builder()
+            .status(201)
+            .header("content-type", "application/json")
+            .header("vary", "accept")
+            .header("vary", "origin")
+            .body(crate::body("{}"))
+            .unwrap();
+        let answer = Answer::of(reply).await;
+        assert_eq!(answer.status, 201);
+        assert_eq!(
+            answer.headers,
+            [
+                ("content-type".to_owned(), "application/json".to_owned()),
+                ("vary".to_owned(), "accept, origin".to_owned()),
+            ]
+        );
+        assert!(matches!(answer.body, AnswerBody::Whole(bytes) if bytes == "{}"));
+    }
+
+    #[tokio::test]
+    async fn an_event_stream_is_read_a_chunk_at_a_time_until_it_ends() {
+        let chunks = ["event: run\n", "", "data: {}\n\n"]
+            .map(|chunk| Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from(chunk))));
+        let reply = hyper::Response::builder()
+            .header("content-type", "text/event-stream; charset=utf-8")
+            .body(StreamBody::new(futures_util::stream::iter(chunks)).boxed())
+            .unwrap();
+        let AnswerBody::Stream(stream) = Answer::of(reply).await.body else {
+            panic!("an event stream is answered as a stream");
+        };
+        assert_eq!(stream.next().await.unwrap(), "event: run\n");
+        // An empty chunk is no chunk.
+        assert_eq!(stream.next().await.unwrap(), "data: {}\n\n");
+        assert!(stream.next().await.is_none());
+        assert!(stream.next().await.is_none(), "it stays ended");
     }
 }
