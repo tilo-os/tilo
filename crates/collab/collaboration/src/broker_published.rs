@@ -137,10 +137,37 @@ impl SessionResource {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
     }
 
+    /// Invoke `action` of `resource` with `arguments`, without watching it:
+    /// for a resource the app acts on and never shows, so none of its
+    /// readings crosses the wire. Blocking, bounded: call it off the frame
+    /// thread, as [`Self::invoke`].
+    ///
+    /// # Errors
+    ///
+    /// The session refused the action, no service publishes `resource`, or
+    /// there is no session to ask.
+    pub fn invoke_without_watching(
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        Self::send_invoke(Arc::from(resource), action, arguments)
+    }
+
     /// Invoke `action` of the resource with `arguments` (none for an action
     /// that takes nothing). Blocking, bounded: call it off the frame thread.
     pub fn invoke(
         &self,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        Self::send_invoke(Arc::clone(&self.resource), action, arguments)
+    }
+
+    /// Ask the session to invoke `action` of `resource` with `arguments`,
+    /// waiting for its answer.
+    fn send_invoke(
+        resource: Arc<str>,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
@@ -155,7 +182,7 @@ impl SessionResource {
         if !enqueue_sdk_command(
             &sender,
             SdkCommand::Published(PublishedCommand::Invoke {
-                resource: Arc::clone(&self.resource),
+                resource,
                 action: action.to_owned(),
                 arguments: arguments.clone(),
                 reply,

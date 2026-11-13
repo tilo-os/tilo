@@ -191,6 +191,19 @@ pub(crate) enum DeskEffect {
     },
     /// Go to the window the switcher's walk reached, and close the switcher.
     CommitSwitcher,
+    /// Show the app `app` in its window of the strip in front, or a new
+    /// window: what following a link to what plays does.
+    ShowApp {
+        #[param("The app, by its id")]
+        app: String,
+    },
+    /// Open Settings at the page `link` names (`settings://network`), through
+    /// the desk's own search: what an app with no workspace of its own asks
+    /// to send the person there.
+    OpenSettings {
+        #[param("A Settings link, such as `settings://network`; empty for Settings itself")]
+        link: String,
+    },
 }
 
 /// The surfaces the desk shows over its windows, and where each stands: the shell's own views,
@@ -210,6 +223,9 @@ pub(crate) struct Surfaces {
     pub(crate) panel: tilo_desktop::overlays::Overlays,
     /// The surface the shell's views show (`crate::overlays::Overlay`).
     pub(crate) overlays: Rc<crate::overlays::Overlays>,
+    /// The notifications the desk's own chrome counts and draws: where the one centre opens
+    /// when the desk draws it, as the bar's bell opens it.
+    pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
     /// Whether the overview is the surface up, as the desk's own widgets fold behind it and as
     /// whoever asks for the desk's state reads it. It turns with the surface itself, so a person's
     /// press answers at once rather than a frame later.
@@ -223,8 +239,22 @@ impl Surfaces {
         surface == crate::quick_settings::SURFACE && self.status_panel && !self.shell
     }
 
+    /// Whether the desk's own chrome draws the centre, rather than the shell's view of it: the
+    /// desk draws it whenever it draws the screen, and the bell counts the same one.
+    fn desk_centre(&self, surface: &str) -> bool {
+        surface == crate::overlays::Overlay::Centre.name() && !self.shell
+    }
+
     /// Show `surface` (`show-surface`): the one up closes, and any other opens.
     pub(crate) fn toggle(&self, surface: &str) {
+        if self.desk_centre(surface) {
+            // One centre: the desk's chrome draws the one the bar's bell counts, and it is asked
+            // to open or shut as the bell asks it.
+            self.notices.ask_centre(!self.notices.centre_open());
+            self.panel_closes();
+            self.settled();
+            return;
+        }
         // The quick settings are their own app, standing where the stack places its slot: a
         // press opens the slot, and the panel's app draws it there. A device without that app,
         // or one the shell covers, keeps the shell's own view of the surface.
@@ -246,6 +276,12 @@ impl Surfaces {
 
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
     pub(crate) fn open(&self, name: &str) {
+        if self.desk_centre(name) {
+            self.notices.ask_centre(true);
+            self.panel_closes();
+            self.settled();
+            return;
+        }
         if self.panel_shows(name) {
             self.clear_shell();
             self.panel
@@ -305,6 +341,10 @@ impl Surfaces {
 
     /// Close `surface` (`close-surface`), when it is the one up.
     pub(crate) fn close(&self, surface: &str) {
+        if self.desk_centre(surface) {
+            self.notices.ask_centre(false);
+            return;
+        }
         if self.panel_shows(surface) {
             self.panel
                 .close(tilo_desktop::overlays::Slot::QuickSettings);
@@ -959,6 +999,27 @@ impl Desk {
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
+
+    /// What the desk carries out by handing it to what shows it: the surface over the windows,
+    /// showing an app, and opening Settings at the page a link names, which only the session's loop
+    /// can search for. Whether `effect` was one of these.
+    fn show(&self, effect: &DeskEffect) -> Result<bool, DoorError> {
+        match effect {
+            DeskEffect::ShowSurface { surface } => self.surfaces.toggle(surface),
+            DeskEffect::ShowApp { app } => {
+                self.handle
+                    .dispatch(ChromeEffect::ShowApp { app: app.clone() })
+                    .map_err(DoorError::Failed)?;
+            }
+            DeskEffect::OpenSettings { link } => {
+                self.asks
+                    .borrow_mut()
+                    .push(DesktopAsk::OpenSettings(link.clone()));
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
 }
 
 /// The desk's resource, named `label`: what it publishes, and what the session's package describes
@@ -1009,8 +1070,7 @@ impl Service for Desk {
                 .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
-        if let DeskEffect::ShowSurface { surface } = &effect {
-            self.surfaces.toggle(surface);
+        if self.show(&effect)? {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::StopAgent { agent } = &effect {
@@ -1139,6 +1199,7 @@ mod tests {
             shell,
             panel: tilo_desktop::overlays::Overlays::new(),
             overlays: Rc::new(crate::overlays::Overlays::new()),
+            notices: tilo_desktop_surface::DesktopNotifications::default(),
             overview: Rc::new(std::cell::Cell::new(false)),
         }
     }
@@ -1164,6 +1225,16 @@ mod tests {
 
     #[test]
     fn a_surface_of_the_shells_own_closes_the_panel_that_asked_for_it() {
+        let surfaces = surfaces(true, true);
+        surfaces.open(crate::quick_settings::SURFACE);
+        surfaces.open(Overlay::Centre.name());
+        assert_eq!(surfaces.overlays.here(), Overlay::Centre.name());
+    }
+
+    /// The desk draws the one centre the bar's bell counts: a press on it asks the desk's own
+    /// chrome, as the bell asks it, and puts the panel that asked away.
+    #[test]
+    fn the_desks_own_centre_is_opened_where_the_desk_draws_it() {
         let surfaces = surfaces(true, false);
         surfaces.open(crate::quick_settings::SURFACE);
         assert!(
@@ -1171,14 +1242,34 @@ mod tests {
                 .panel
                 .is_open(tilo_desktop::overlays::Slot::QuickSettings)
         );
-        surfaces.open(Overlay::Centre.name());
-        assert_eq!(surfaces.overlays.here(), Overlay::Centre.name());
+        surfaces.toggle(Overlay::Centre.name());
+        assert_eq!(
+            surfaces.notices.take_centre_ask(),
+            Some(true),
+            "the desk's chrome is asked to open the centre"
+        );
+        assert_eq!(
+            surfaces.overlays.here(),
+            Overlay::Rest.name(),
+            "the shell draws no centre of its own over a desk that draws one"
+        );
         assert!(
             !surfaces
                 .panel
                 .is_open(tilo_desktop::overlays::Slot::QuickSettings),
             "one surface at a time: the centre is not opened behind the panel"
         );
+
+        // The centre is up: a second press closes it, as the bell's next press does.
+        surfaces.notices.set_centre_open(true);
+        surfaces.toggle(Overlay::Centre.name());
+        assert_eq!(surfaces.notices.take_centre_ask(), Some(false));
+
+        // The shell's own screen keeps its own view of the centre.
+        let screen = self::surfaces(true, true);
+        screen.toggle(Overlay::Centre.name());
+        assert_eq!(screen.overlays.here(), Overlay::Centre.name());
+        assert_eq!(screen.notices.take_centre_ask(), None);
     }
 
     #[test]

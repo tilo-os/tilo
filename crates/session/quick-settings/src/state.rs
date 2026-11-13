@@ -124,7 +124,8 @@ pub struct QuickSettingsState {
     pub device_rows: Vec<crate::hosted::HostedRow>,
     /// Which controls the panel shows, in the person's order.
     pub arrangement: settings_store::hardware::QuickSettingsConfig,
-    /// How many notifications the session keeps: the row's count.
+    /// How many notifications the person has not read, as the bell counts
+    /// them: the row's count.
     pub notifications: usize,
     /// The person's devices a Bluetooth accessory can move to, read while
     /// an accessory's page shows; `None` without a device fabric.

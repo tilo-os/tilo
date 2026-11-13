@@ -338,6 +338,15 @@ impl SessionResource {
     ) -> Result<(), String> {
         Err("Published resources need the certified collaboration service.".into())
     }
+
+    /// Nothing is reached on this transport, so no action is invoked.
+    pub fn invoke_without_watching(
+        _resource: &str,
+        _action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        Err("Published resources need the certified collaboration service.".into())
+    }
 }
 
 pub use crate::host::ContinuationMetadata;

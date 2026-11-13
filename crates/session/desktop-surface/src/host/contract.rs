@@ -157,4 +157,7 @@ pub enum DesktopAsk {
     OpenAgent(String),
     /// The person asked for their account in Settings, where billing is too.
     AccountSettings,
+    /// The person asked for Settings at the page `link` names, which only
+    /// the host can open: its search runs where the workspaces are.
+    OpenSettings(String),
 }

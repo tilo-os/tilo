@@ -348,6 +348,10 @@ pub struct Services {
     /// added, an action ran, a reading landed. A reader of the catalogue
     /// reads it again only when this moved.
     revision: u64,
+    /// Moves only when a service is added: the resources that are published
+    /// at all, which a watcher of one no service serves asks about again
+    /// then, and never at every reading of another.
+    catalogue: u64,
     /// Per service, whether what it publishes may have changed since
     /// [`Self::moved_among`] last asked: what a service that cannot say
     /// which of its readings moved is read again for.
@@ -384,7 +388,15 @@ impl Services {
     pub fn add(&mut self, service: Box<dyn Service>) {
         self.started.push(service);
         self.stirred.push(true);
+        self.catalogue = self.catalogue.wrapping_add(1);
         self.changed();
+    }
+
+    /// The resources that are published at all, as a number that moves only
+    /// when a service is added: equal revisions publish the same set.
+    #[must_use]
+    pub const fn catalogue_revision(&self) -> u64 {
+        self.catalogue
     }
 
     /// Of `followed`, the resources whose readings moved since the last

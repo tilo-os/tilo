@@ -1347,6 +1347,18 @@ impl BrowserShell {
                 | DesktopAsk::Music(_)
                 | DesktopAsk::WaitWindow(_)
                 | DesktopAsk::ForceQuitApp(_) => {}
+                // Settings at the page the link names opens in this page, as
+                // the account's own page does above.
+                DesktopAsk::OpenSettings(link) => {
+                    let resource = match link.strip_prefix("settings://") {
+                        Some(slug) => format!("settings.section:{slug}"),
+                        None => link.clone(),
+                    };
+                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
+                        app: "so.tilo.settings".into(),
+                        resource,
+                    });
+                }
                 DesktopAsk::Switcher(ask) => self.walk.ask(ask),
             }
         }

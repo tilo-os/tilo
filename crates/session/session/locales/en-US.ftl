@@ -428,6 +428,8 @@ so-tilo-session-desk-act-on-notice = Answer notification
 so-tilo-session-desk-walk-switcher = Switch windows
 so-tilo-session-desk-select-switcher = Choose window in switcher
 so-tilo-session-desk-commit-switcher = Go to chosen window
+so-tilo-session-desk-show-app = Show the app
+so-tilo-session-desk-open-settings = Open Settings
 
 ## Actions
 

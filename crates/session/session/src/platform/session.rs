@@ -521,6 +521,7 @@ impl Session {
             shell: options.shell,
             panel: overlays.clone(),
             overlays: Rc::clone(&desk_overlays),
+            notices: notices.clone(),
             overview: overview.open_flag(),
         };
         // The same handle, for the pass that keeps one surface up at a time.

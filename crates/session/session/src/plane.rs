@@ -53,6 +53,10 @@ struct Watch {
     resource: String,
     /// The services' revision this watch was last served at.
     revision: Option<u64>,
+    /// The catalogue revision, at which it was last told no service publishes
+    /// the resource: what it asks again after a service was added, and never
+    /// at every reading of one it does publish.
+    missing: Option<u64>,
     /// What it was last sent, so a change elsewhere does not re-send it.
     reading: Option<Vec<u8>>,
     sink: mpsc::UnboundedSender<Event>,
@@ -183,6 +187,7 @@ impl Link {
     /// Send the readings of the watched resources that moved.
     fn publish(&self, services: &Services) {
         let revision = services.revision();
+        let catalogue = services.catalogue_revision();
         let mut watches = self.watches.lock_recover();
         watches.retain_mut(|watch| {
             if watch.revision == Some(revision) {
@@ -190,8 +195,19 @@ impl Link {
             }
             let reading = services.read(&watch.resource).map(|value| encoded(&value));
             watch.revision = Some(revision);
-            if reading == watch.reading && watch.reading.is_some() {
-                return true;
+            if reading.is_none() {
+                // No service publishes it yet: the app is told once, and
+                // again only once a service was added, which is the only
+                // thing that can make one publish it.
+                if watch.missing == Some(catalogue) {
+                    return true;
+                }
+                watch.missing = Some(catalogue);
+            } else {
+                watch.missing = None;
+                if reading == watch.reading {
+                    return true;
+                }
             }
             watch.reading.clone_from(&reading);
             watch
@@ -233,6 +249,7 @@ impl PublishedResources for Link {
             id,
             resource: resource.to_owned(),
             revision: None,
+            missing: None,
             reading: None,
             sink,
         });
@@ -2150,6 +2167,92 @@ mod tests {
             access("so.tilo.not-installed"),
             AppActionAccess::default(),
             "an app this device did not read declared nothing"
+        );
+    }
+
+    use tilo_actions::ResourceSpec;
+
+    /// A service publishing one reading the test moves.
+    struct Counted(std::sync::Arc<std::sync::Mutex<u8>>);
+
+    impl tilo_service::Service for Counted {
+        fn resources(&self) -> Vec<ResourceSpec> {
+            vec![
+                ResourceSpec::new("test:counted", "test", "Counted").with_action(
+                    tilo_actions::ActionSpec::typed_operation(
+                        "bump",
+                        "",
+                        "",
+                        tilo_actions::OperationKind::Effect,
+                        "test.bump",
+                        Vec::new(),
+                        |_| {
+                            tilo_actions::EncodedAction::encode_operation("test.bump", &())
+                                .unwrap_or_else(|error| tilo_actions::EncodedAction {
+                                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+                                        .to_owned(),
+                                    payload: error.to_string().into_bytes(),
+                                })
+                        },
+                    ),
+                ),
+            ]
+        }
+
+        fn read(&self, resource: &str) -> Option<serde_json::Value> {
+            (resource == "test:counted")
+                .then(|| serde_json::json!({ "value": *self.0.lock().unwrap() }))
+        }
+
+        fn invoke(
+            &mut self,
+            _resource: &str,
+            _action: &str,
+            _: &Map<String, serde_json::Value>,
+        ) -> Result<Started, DoorError> {
+            Ok(Started::Done(tilo_actions::ActionOutput::default()))
+        }
+    }
+
+    /// An app watching a resource no service of this device publishes hears it
+    /// once, and again only when a service is added: a machine without a
+    /// battery does not tell it on every reading of another service.
+    #[test]
+    fn a_resource_no_service_publishes_is_told_once() {
+        let link = Link::new(std::sync::Arc::new(|| {}));
+        let (sink, mut heard) = mpsc::unbounded_channel();
+        let caller = Caller {
+            app_id: "so.tilo.quick-settings".to_owned(),
+            workspace: String::new(),
+        };
+        let _watch = link.watch(&caller, "power:battery", sink);
+        let mut services = Services::default();
+        link.publish(&services);
+        assert!(
+            matches!(heard.try_recv(), Ok(Event::Reading { reading: None, .. })),
+            "the app is told no service publishes it"
+        );
+
+        // Another service's reading moves: nothing is said of the battery
+        // again, however many revisions go by.
+        let counted = std::sync::Arc::new(std::sync::Mutex::new(1_u8));
+        services.add(Box::new(Counted(std::sync::Arc::clone(&counted))));
+        link.publish(&services);
+        // The catalogue moved with the service added, so it is asked again
+        // once, and that is all.
+        assert!(
+            matches!(heard.try_recv(), Ok(Event::Reading { reading: None, .. })),
+            "a service was added, so it is asked again once"
+        );
+        *counted.lock().unwrap() = 2;
+        services
+            .invoke("test:counted", "bump", &Map::new())
+            .expect("the service is published")
+            .expect("the bump is taken");
+        link.publish(&services);
+        assert!(
+            heard.try_recv().is_err(),
+            "a reading of another service says nothing of the battery"
         );
     }
 }

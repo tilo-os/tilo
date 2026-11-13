@@ -130,6 +130,11 @@ impl Shared {
                 DesktopAsk::AccountSettings => {
                     crate::quick_settings::open_settings(self, "settings://billing");
                 }
+                // Settings at the page a panel or a card names: the desk's own
+                // search, run here where the workspaces are.
+                DesktopAsk::OpenSettings(link) => {
+                    crate::quick_settings::open_settings(self, &link);
+                }
                 // The grant is taken back at the person's agent door, as Console takes it back:
                 // whatever this session offers it on answers, and without one the person hears
                 // that it did not happen.

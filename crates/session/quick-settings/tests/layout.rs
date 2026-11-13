@@ -1031,6 +1031,37 @@ fn a_battery_tick_changes_its_row_and_moves_nothing() {
     );
 }
 
+/// The Notifications row shows what the bar's bell counts: the unread count the session
+/// publishes, and none once the person has read them.
+#[test]
+fn the_notifications_row_shows_the_count_the_bell_counts() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("controls");
+    assert_eq!(
+        row_words(&mut app, "qs-row-notifications").and_then(|said| said.2),
+        Some("3".to_owned()),
+        "the fixture's three unread notifications are the row's count"
+    );
+
+    // One notification, nobody has read it: the row says one, as the bell does.
+    host.update(|state| state.notifications = 1);
+    app.settle();
+    assert_eq!(
+        row_words(&mut app, "qs-row-notifications").and_then(|said| said.2),
+        Some("1".to_owned()),
+        "one unread notification is one, not none"
+    );
+
+    // Read: nothing is left to count.
+    host.update(|state| state.notifications = 0);
+    app.settle();
+    assert_eq!(
+        row_words(&mut app, "qs-row-notifications").and_then(|said| said.2),
+        Some("None".to_owned()),
+        "reading them all leaves nothing to count"
+    );
+}
+
 /// Where every control on the page stands, by name.
 fn places(app: &mut HeadlessApp<QuickSettingsApp>) -> Vec<(String, Rect)> {
     let mut places: Vec<(String, Rect)> = app.harness().targets().into_iter().collect();

@@ -215,6 +215,14 @@ fn went_back(ended: ui::tilo_actions::InvocationUpdate) -> bool {
         .unwrap_or_else(|| panic!("the panel says whether it went back: {:?}", output.value))
 }
 
+/// The surface the desk shows over its windows now, as its own reading names it.
+fn here(session: &Session) -> String {
+    session
+        .read("session:desk")
+        .and_then(|desk| desk.get("here").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_default()
+}
+
 /// The panel on a laptop's screen, the size a person's session gives it: its
 /// card stands over the desk rather than on a ground of its own, and it keeps
 /// to the output instead of running past its edge.
@@ -439,6 +447,37 @@ fn the_quiet_tile_is_the_published_centres_switch() {
         );
     }
     session.stop_surface("quick-settings");
+}
+
+/// The Notifications row opens the one centre, through the desk the session publishes: the press
+/// reaches the desk as any app's does, and the panel steps aside for the centre it shows. This
+/// session draws no shell of its own, so the centre is the desk's own: its chrome is asked, and
+/// the shell's views are left at rest.
+#[test]
+fn the_notifications_row_opens_the_centre_on_the_desk() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "show-centre");
+
+    let ended = ask_ended(session, "show-centre", None);
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the row's press is carried out: {ended:?}"
+    );
+    let deadline = Instant::now() + OPENING;
+    while session.quick_settings_open() {
+        assert!(
+            Instant::now() < deadline,
+            "the panel never stepped aside for the centre"
+        );
+        pump(session);
+    }
+    assert_eq!(
+        here(session),
+        "none",
+        "the desk draws the centre itself, and the shell's views are left at rest"
+    );
 }
 
 #[test]

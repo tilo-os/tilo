@@ -432,6 +432,8 @@ so-tilo-session-desk-act-on-notice = Auf Mitteilung antworten
 so-tilo-session-desk-walk-switcher = Fenster wechseln
 so-tilo-session-desk-select-switcher = Fenster im Umschalter wählen
 so-tilo-session-desk-commit-switcher = Zum gewählten Fenster wechseln
+so-tilo-session-desk-show-app = App anzeigen
+so-tilo-session-desk-open-settings = Einstellungen öffnen
 
 ## Actions
 
