@@ -23,9 +23,6 @@ ARG UV_SHA256=c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83
 ARG BUN_VERSION=1.4.4
 ARG BUN_BASELINE_SHA256=e0446eb55995772eb9894bebae9a6be368d985a8b9271ee124486f9946eedd76
 
-RUN dnf install -y --setopt=install_weak_deps=False unzip \
-    && dnf clean all
-
 RUN set -euo pipefail \
     && curl -sSfL -o /tmp/uv.tar.gz \
          "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
@@ -34,11 +31,14 @@ RUN set -euo pipefail \
     && rm -f /tmp/uv.tar.gz \
     && uv --version
 
+# bun's archive is a zip, unpacked by the base's python3 rather than by unzip: an `unzip` from
+# one of Fedora's repositories is the newest build it holds, so installing it here would make the
+# image's content move under an unchanged tree (t.toml, image-ci-sdk).
 RUN set -euo pipefail \
     && curl -sSfL -o /tmp/bun.zip \
          "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64-baseline.zip" \
     && printf '%s  %s\n' "${BUN_BASELINE_SHA256}" /tmp/bun.zip | sha256sum -c - \
-    && unzip -q /tmp/bun.zip -d /tmp/bun \
+    && python3 -m zipfile -e /tmp/bun.zip /tmp/bun \
     && install -m 0755 /tmp/bun/bun-linux-x64-baseline/bun /usr/local/bin/bun \
     && ln -sf bun /usr/local/bin/bunx \
     && rm -rf /tmp/bun.zip /tmp/bun \

@@ -2277,8 +2277,15 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "image-ci-sdk"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: every byte it fetches is named by what it read. The base is the ci-fast image by digest,
+# uv and bun are release assets named by version and checked against the SHA-256 the Containerfile
+# holds, and the two SDK environments come from sdk/python/uv.lock and sdk/typescript/bun.lock,
+# each naming its packages with their hashes. Nothing floats: the one input that did (an `unzip`
+# from whichever build Fedora's repositories held) is gone, unpacked by the base's python3 instead
+# (os/Containerfile.ci-sdk). The hosts are the ones those reads name — the registry for the base
+# and the object storage its blobs redirect to, the release assets behind github.com's redirect,
+# PyPI, and npm.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "github.com:443", "objects.githubusercontent.com:443", "release-assets.githubusercontent.com:443", "pypi.org:443", "files.pythonhosted.org:443", "registry.npmjs.org:443"], pinned = true }
 run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-sdk)\nexport SOURCE_DATE_EPOCH\n# The SDKs' manifests and locks are the image's context: the pins and the dependencies they\n# name are baked in, so this context is the only thing the build reads.\ncontext=$TMPDIR/ci-sdk-context\nrm -rf \"$context\"\nmkdir -p \"$context/sdk/python\" \"$context/sdk/typescript\"\ncp sdk/python/pyproject.toml sdk/python/uv.lock \"$context/sdk/python/\"\ncp sdk/typescript/package.json sdk/typescript/bun.lock \"$context/sdk/typescript/\"\nbash tools/ci/publish/oci-build.sh \"$context\" os/Containerfile.ci-sdk /target/publish/ci-sdk\n"
 needs = ["source-date-ci-sdk"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -4660,9 +4667,11 @@ default = false
 
 [[check]]
 name = "os-base-x86_64"
-# The mirror answers a blob read with a redirect into object storage, whose host is no fixed
-# name: the open network, as the layers built on this image have.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the digest it pulls is os/base-snapshot.env's BASE_REF, which this check's run reads
+# (os/image/build-layer.sh base), and skopeo copies that digest and nothing else — so the answer is
+# the commit's, and asking the registry for a moving tag is not part of it. The mirror answers a
+# blob read with a redirect into its object storage, named here as `pins` names it.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh base x86_64 /target/os/x86_64/base"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/os/x86_64/base/**"]
@@ -4882,9 +4891,11 @@ default = false
 
 [[check]]
 name = "os-base-aarch64"
-# The mirror answers a blob read with a redirect into object storage, whose host is no fixed
-# name: the open network, as the layers built on this image have.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the digest it pulls is os/base-snapshot.env's BASE_REF, which this check's run reads
+# (os/image/build-layer.sh base), and skopeo copies that digest and nothing else — so the answer is
+# the commit's, and asking the registry for a moving tag is not part of it. The mirror answers a
+# blob read with a redirect into its object storage, named here as `pins` names it.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh base aarch64 /target/os/aarch64/base"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/os/aarch64/base/**"]
