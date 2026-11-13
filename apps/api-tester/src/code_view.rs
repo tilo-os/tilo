@@ -376,6 +376,10 @@ mod tests {
     use super::*;
     use ui::headless::FrameHarness;
 
+    /// The view mounted in a 600 by 400 window. Mounting runs a frame, and so does every event
+    /// and `relayout`: the view is laid out and drawn into the frame's scene, which is where
+    /// it records its folds and what it painted. No test here reads pixels, so none
+    /// rasterises that scene.
     fn harness(view: CodeView) -> FrameHarness {
         FrameHarness::for_root(ui::State::new(), view, (600, 400), Theme::dark())
     }
@@ -384,7 +388,6 @@ mod tests {
     fn the_fold_gutter_sits_beside_the_line_numbers() {
         let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
         let d = harness(CodeView::json("Body", &body));
-        let _ = d.render_rgba();
         let view = d.root::<CodeView>();
         let m = view.metrics.clone().expect("measured");
         let numbers_end = view.rect.x0 + m.pad_x + m.number_w;
@@ -402,11 +405,9 @@ mod tests {
     fn pressing_a_caret_folds_and_unfolds_its_block() {
         let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
         let mut d = harness(CodeView::json("Body", &body));
-        let _ = d.render_rgba();
         let all = d.root::<CodeView>().visible().len();
         let (caret, _) = d.root::<CodeView>().folds[0];
         d.click_at(caret.center().x, caret.center().y);
-        let _ = d.render_rgba();
         let folded = d.root::<CodeView>().visible().len();
         assert!(
             folded < all,
@@ -414,7 +415,6 @@ mod tests {
         );
         let (caret, _) = d.root::<CodeView>().folds[0];
         d.click_at(caret.center().x, caret.center().y);
-        let _ = d.render_rgba();
         assert_eq!(d.root::<CodeView>().visible().len(), all);
     }
 
@@ -463,7 +463,6 @@ mod tests {
     fn a_long_line_paints_only_what_fits() {
         let body = format!("{}\nshort", "a".repeat(1024 * 1024));
         let d = harness(CodeView::plain("Body", &body));
-        let _ = d.render_rgba();
         let view = d.root::<CodeView>();
         assert_eq!(view.visible().len(), 2);
         assert!(
@@ -480,13 +479,63 @@ mod tests {
         assert_eq!(prefix("ab", 5), "ab");
     }
 
+    /// Plain text has a row for each of its lines and no fold, whatever it looks like.
     #[test]
     fn plain_text_is_numbered_without_folds() {
-        let d = harness(CodeView::plain("Body", "one\ntwo\nthree"));
-        let _ = d.render_rgba();
-        let view = d.root::<CodeView>();
-        assert!(view.folds.is_empty());
-        assert_eq!(view.visible().len(), 3);
+        let rows: [(&str, usize); 6] = [
+            ("one\ntwo\nthree", 3),
+            ("one", 1),
+            ("", 0),
+            ("one\n", 1),
+            ("\n\n", 2),
+            ("{\n  \"a\": [\n    1\n  ]\n}", 5),
+        ];
+        for (body, lines) in rows {
+            let d = harness(CodeView::plain("Body", body));
+            let view = d.root::<CodeView>();
+            assert!(view.folds.is_empty(), "{body:?} has no folds");
+            assert_eq!(view.visible().len(), lines, "{body:?}");
+            let mut drawn: Vec<usize> = view.painted.keys().copied().collect();
+            drawn.sort_unstable();
+            assert_eq!(
+                drawn,
+                (0..lines).collect::<Vec<_>>(),
+                "{body:?}: each line was drawn"
+            );
+        }
+    }
+
+    /// A long token is cut at a whole character, and the columns asked of it cover the width
+    /// that is left at any advance.
+    #[test]
+    fn a_token_is_cut_at_a_character_within_the_columns_that_fit() {
+        for (text, count, kept) in [
+            ("grün", 2, "gr"),
+            ("grün", 4, "grün"),
+            ("ab", 2, "ab"),
+            ("ab", 0, ""),
+            ("", 0, ""),
+            ("", 3, ""),
+            ("€uro", 1, "€"),
+        ] {
+            assert_eq!(prefix(text, count), kept, "prefix({text:?}, {count})");
+        }
+        for (width, advance, columns) in [
+            (80.0, 8.0, 21),
+            (81.0, 8.0, 23),
+            (0.0, 8.0, 1),
+            (-8.0, 8.0, 1),
+            (10.0, 0.0, 21),
+            (10.0, -3.0, 21),
+            (f64::INFINITY, 8.0, usize::MAX),
+            (f64::NAN, 8.0, 1),
+        ] {
+            assert_eq!(
+                columns_within(width, advance),
+                columns,
+                "columns_within({width}, {advance})"
+            );
+        }
     }
 
     /// A browser fetches the monospace face when code first asks for it; once it arrives,
@@ -512,7 +561,6 @@ mod tests {
                 ..ui::headless::FrameOptions::default()
             },
         );
-        let _ = d.render_rgba();
         let demands = d.take_browser_font_demands();
         assert!(!demands.is_empty(), "code asks for the monospace face");
         for name in demands {
@@ -523,7 +571,6 @@ mod tests {
         }
         // An installed font asks for layout; the host runs it on its next frame.
         d.relayout();
-        let _ = d.render_rgba();
 
         let mut measure = TextRenderer::new();
         let view = d.root::<CodeView>();
