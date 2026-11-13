@@ -127,16 +127,23 @@ impl AddDevice {
         }
     }
 
-    /// The sheet with no link to show, saying why.
+    /// The sheet with no link to show, saying why in the person's words.
     #[must_use]
     pub fn refusing(reason: &str) -> Self {
         Self {
             title: word("pair-device-title"),
             description: word("pair-device-description"),
             close: word("pair-device-close"),
-            refusal: Some(words("pair-device-refused", &[("reason", reason)])),
+            refusal: Some(reason.to_owned()),
             ..Self::default()
         }
+    }
+
+    /// The sheet for a workspace no host on the web keeps: a link would lead nowhere, so it says
+    /// how to add the device nearby.
+    #[must_use]
+    pub fn nearby() -> Self {
+        Self::refusing(&word("pair-device-nearby"))
     }
 }
 
@@ -378,14 +385,13 @@ impl ResourceApp for AddDeviceApp {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["ready", "refused"]
+        &["ready", "nearby", "refused"]
     }
 
     fn fixture(fixture: &mut ui::framework::Fixture<AddDeviceLink>) {
         let device = match fixture.scenario() {
-            Some("refused") => AddDevice::refusing(
-                "Join a workspace on the web first: your new device meets this computer there.",
-            ),
+            Some("nearby") => AddDevice::nearby(),
+            Some("refused") => AddDevice::refusing(&word("pair-device-no-workspace")),
             _ => AddDevice::of(SAMPLE_LINK, "9 min"),
         };
         fixture.provide(device);

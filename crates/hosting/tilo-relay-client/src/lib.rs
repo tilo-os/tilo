@@ -82,7 +82,7 @@ pub use pairing::{
     issue_stand_in, revoke_device,
 };
 #[cfg(feature = "dial")]
-pub use pairing::{answer_pairing, decide_pairing, pending_pairings};
+pub use pairing::{answer_pairing, decide_pairing, next_pairings, pending_pairings};
 pub use sign_in::{encode, grant_label, sign_in_proof};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};

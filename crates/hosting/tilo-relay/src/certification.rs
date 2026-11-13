@@ -33,7 +33,7 @@ use tokio::sync::watch;
 
 use crate::auth::{self, HandshakeTrust};
 use crate::certify::{
-    ApproverDecision, ApproverReply, ApproverRequest, CertifyOpen, CertifyReply,
+    AWAIT_PENDING_NS, ApproverDecision, ApproverReply, ApproverRequest, CertifyOpen, CertifyReply,
     ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, MemberApproval,
     PendingCertification, PendingConfirmation, PendingDelegate,
 };
@@ -125,6 +125,10 @@ pub struct CertificationProtocol {
     /// The workspaces this host governs, whose records keep each person's
     /// devices: a certificate a root issues here joins its person's record.
     records: Arc<std::sync::OnceLock<tilo_room_host::workspaces::Workspaces>>,
+    /// Moves each time a request is queued or answered: what an approver
+    /// waiting for its person's requests to change
+    /// ([`ApproverRequest::AwaitPending`]) wakes on.
+    moved: Arc<watch::Sender<u64>>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -155,6 +159,7 @@ impl CertificationProtocol {
             workspaces,
             stand_in: Arc::default(),
             records: Arc::default(),
+            moved: Arc::new(watch::Sender::new(0)),
         }
     }
 
@@ -280,7 +285,9 @@ impl CertificationProtocol {
         }
         let user = approval.user_public_key;
         match approval.request {
-            ApproverRequest::ListPending => ApproverReply::Pending(self.pending_of(&user, now_ns)),
+            ApproverRequest::ListPending | ApproverRequest::AwaitPending { .. } => {
+                ApproverReply::Pending(self.pending_of(&user, now_ns))
+            }
             ApproverRequest::Decide {
                 request_digest,
                 decision,
@@ -302,6 +309,42 @@ impl CertificationProtocol {
                 refused("a member approves only their own device requests")
             }
         }
+    }
+
+    /// Answer `entry` with `reply`, keeping a certificate it issues in its person's record.
+    fn settle(&self, entry: &Pending, reply: CertifyReply) {
+        self.record_issued(&reply);
+        entry.answer.send_replace(Some(reply));
+        self.moved();
+    }
+
+    /// A request was queued or answered.
+    fn moved(&self) {
+        self.moved
+            .send_modify(|count| *count = count.wrapping_add(1));
+    }
+
+    /// Wait until `user`'s waiting requests are other than `known`, their
+    /// digests, or [`AWAIT_PENDING_NS`] passed.
+    async fn until_moved(&self, user: &[u8; 32], known: &[[u8; 32]]) {
+        let known: std::collections::BTreeSet<&[u8; 32]> = known.iter().collect();
+        let mut moved = self.moved.subscribe();
+        let waiting = async {
+            loop {
+                let waiting = self.pending_of(user, unix_now_ns());
+                if waiting.len() != known.len()
+                    || waiting
+                        .iter()
+                        .any(|entry| !known.contains(&entry.request_digest))
+                {
+                    return;
+                }
+                if moved.changed().await.is_err() {
+                    return;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_nanos(AWAIT_PENDING_NS), waiting).await;
     }
 
     /// `user`'s requests still waiting for an answer.
@@ -416,6 +459,7 @@ impl CertificationProtocol {
             },
         );
         drop(pending);
+        self.moved();
         Ok((digest, pairing_code, receiver))
     }
 
@@ -450,6 +494,11 @@ impl CertificationProtocol {
         approval: MemberApproval,
     ) -> Result<(), AcceptError> {
         let reply = if self.admits(approval.user_public_key).await {
+            if let ApproverRequest::AwaitPending { known } = &approval.request
+                && approval.verify(unix_now_ns()).is_ok()
+            {
+                self.until_moved(&approval.user_public_key, known).await;
+            }
             self.member_approve(approval, unix_now_ns())
         } else {
             // Said here as well as to the page: a person who cannot approve
@@ -516,6 +565,7 @@ impl CertificationProtocol {
             reply = answered(answer, wait) => reply,
             () = connection.closed() => {
                 self.lock().remove(&digest);
+                self.moved();
                 return Ok(());
             }
         };
@@ -597,6 +647,7 @@ impl CertificationProtocol {
             host_cert: self.identity.cert.clone(),
         }));
         drop(pending);
+        self.moved();
     }
 
     /// Every question still waiting for its answer.
@@ -639,7 +690,7 @@ impl CertificationProtocol {
         match request {
             // The owner's devices see the owner's requests; a member's are
             // answered by the member (`member_approve`).
-            ApproverRequest::ListPending => {
+            ApproverRequest::ListPending | ApproverRequest::AwaitPending { .. } => {
                 ApproverReply::Pending(self.pending_of(&self.identity.user_public_key, now_ns))
             }
             ApproverRequest::DelegateProposals => ApproverReply::DelegateProposals(
@@ -723,8 +774,7 @@ impl CertificationProtocol {
                         }
                     }
                 };
-                self.record_issued(&reply);
-                entry.answer.send_replace(Some(reply));
+                self.settle(entry, reply);
                 let invite = entry.entry.request.invite;
                 drop(pending);
                 if invite != [0; 16] {
@@ -965,6 +1015,60 @@ mod confirmation_tests {
             started.elapsed() < Duration::from_secs(5),
             "the request's lifetime bounds the wait, not the caller's patience"
         );
+    }
+
+    /// A person waiting for their next device hears of it as it asks: the wait ends with the
+    /// request, not with a timer.
+    #[tokio::test]
+    async fn waiting_for_a_request_ends_when_one_is_queued() {
+        let protocol = protocol();
+        let member = ed25519_dalek::SigningKey::from_bytes(&[15; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[16; 32]);
+        let user = member.verifying_key().to_bytes();
+        let waiting = {
+            let protocol = protocol.clone();
+            tokio::spawn(async move { protocol.until_moved(&user, &[]).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished(), "nothing waits yet");
+        let started = tokio::time::Instant::now();
+        let (_, code, _) = protocol
+            .enqueue_member(member_request(&member, &device), unix_now_ns(), true)
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("the wait ends as the request arrives")
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let ApproverReply::Pending(theirs) = protocol.member_approve(
+            signed(&member, ApproverRequest::AwaitPending { known: Vec::new() }),
+            unix_now_ns(),
+        ) else {
+            panic!("a list");
+        };
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs[0].pairing_code, code);
+        // What the approver already holds does not end a wait: only a change does.
+        let known = vec![theirs[0].request_digest];
+        let unchanged = {
+            let protocol = protocol.clone();
+            let known = known.clone();
+            tokio::spawn(async move { protocol.until_moved(&user, &known).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!unchanged.is_finished(), "nothing changed yet");
+        let deny = ApproverRequest::Decide {
+            request_digest: theirs[0].request_digest,
+            decision: ApproverDecision::Deny,
+        };
+        assert_eq!(
+            protocol.member_approve(signed(&member, deny), unix_now_ns()),
+            ApproverReply::Decided
+        );
+        tokio::time::timeout(Duration::from_secs(5), unchanged)
+            .await
+            .expect("the wait ends as the request is answered")
+            .unwrap();
     }
 
     #[tokio::test]

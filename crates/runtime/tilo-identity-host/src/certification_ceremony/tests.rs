@@ -495,3 +495,69 @@ fn a_share_renews_through_the_same_commitment_round_as_a_certification() {
     verify_device_cert(&cert).unwrap();
     assert!(cert.renews(&held));
 }
+
+/// What a signer that answers at once signs: its future is ready on the first poll.
+fn at_once<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    match future
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    {
+        std::task::Poll::Ready(output) => output,
+        std::task::Poll::Pending => panic!("the person's key answers at once"),
+    }
+}
+
+/// A certificate the person's whole key signs through [`PersonSigner`] is one every device
+/// verifies as the person's: the signer signs exactly the bytes the certificate's check reads.
+#[test]
+fn a_certificate_the_person_signer_signs_verifies() {
+    let key = whole(21);
+    let person = key.person();
+    let signer = PersonSigner::new(Box::new(key));
+    assert_eq!(
+        collab_types::signer::DeviceSigner::device_public_key(&signer),
+        person
+    );
+    let mut cert = DeviceCert {
+        user_public_key: person,
+        device_public_key: ed25519_dalek::SigningKey::from_bytes(&[22; 32])
+            .verifying_key()
+            .to_bytes(),
+        device_label: "Phone".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: NOW,
+        expires_at_ns: Some(NOW.checked_add(1_000_000_000).unwrap()),
+        signature: [0; 64],
+        issuer: None,
+    };
+    at_once(tilo_user_identity::sign_device_cert_async(
+        &mut cert, &signer,
+    ))
+    .unwrap();
+    tilo_user_identity::verify_device_cert_at(&cert, NOW).unwrap();
+    // Another message signed with it is the person's signature too, as a host checks an
+    // approver command.
+    let message = b"any message the person signs".to_vec();
+    let signature = at_once(collab_types::signer::DeviceSigner::sign(
+        &signer,
+        message.clone(),
+    ))
+    .unwrap();
+    let person = ed25519_dalek::VerifyingKey::from_bytes(&person).unwrap();
+    person
+        .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&signature))
+        .unwrap();
+}
+
+/// A device holding one share of the key signs nothing alone, and says so.
+#[test]
+fn a_share_alone_signs_nothing() {
+    let share = two_of_three().remove(0);
+    let signer = PersonSigner::new(Box::new(share));
+    let refused = at_once(collab_types::signer::DeviceSigner::sign(
+        &signer,
+        vec![1, 2, 3],
+    ));
+    assert!(refused.is_err());
+}

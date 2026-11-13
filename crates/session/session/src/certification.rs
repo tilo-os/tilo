@@ -8,6 +8,13 @@
 //! for any device asking to be them, and signs only when they approve it there ([`answer`], from
 //! the notification's own buttons); devices without key material say so at once. A revoked device
 //! is refused by every key holder before anyone is asked.
+//!
+//! A new device that opened the pairing link this device shows ([`crate::pairing_link`]) asks at
+//! the host the link names instead. While the link works this device waits there for it
+//! ([`watch_host`]), on its own connection as the person, not on any workspace's: the device joins
+//! the person, whichever workspace the link opened. It is put to the person in the same list and
+//! notification, and approving it has the person's key sign its certificate, which the host hands
+//! the new device.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
@@ -37,7 +44,7 @@ pub(crate) trait Keys: Send + Sync {
     /// # Errors
     ///
     /// When the person's identity cannot be opened here.
-    fn key(&self, person: [u8; 32]) -> Result<Box<dyn IdentityKey>, String>;
+    fn key(&self, person: [u8; 32]) -> Result<Box<dyn IdentityKey + Send + Sync>, String>;
     /// Whether `device` was removed from `person` .
     fn revoked(&self, person: [u8; 32], device: &[u8; 32]) -> bool;
     /// The certificate this device's fleet holds for `device` under `person` , when it holds one:
@@ -49,7 +56,7 @@ pub(crate) trait Keys: Send + Sync {
 struct StoreKeys;
 
 impl Keys for StoreKeys {
-    fn key(&self, person: [u8; 32]) -> Result<Box<dyn IdentityKey>, String> {
+    fn key(&self, person: [u8; 32]) -> Result<Box<dyn IdentityKey + Send + Sync>, String> {
         let key = crate::identity_admin::fleet_store()?
             .identity_key(&hex::encode(person))
             .map_err(|error| error.to_string())?;
@@ -88,15 +95,39 @@ pub(crate) struct Asking {
     /// The person's device that found it.
     pub(crate) via: String,
     pub(crate) asked_at_ms: u64,
-    from: DeviceId,
-    ask: Ask,
+    route: Route,
+}
+
+/// Where a device asking to be the person asked, and so where its answer goes.
+#[derive(Clone, Debug)]
+enum Route {
+    /// Another of the person's devices found it and proposed its certificate here.
+    Device { from: DeviceId, ask: Box<Ask> },
+    /// It opened this device's pairing link, and waits at the host the link names.
+    Host {
+        origin: String,
+        host: tilo_relay_client::Host,
+        person: [u8; 32],
+        device: [u8; 32],
+    },
 }
 
 impl Asking {
     /// The new device's key.
     pub(crate) const fn device(&self) -> [u8; 32] {
-        self.ask.cert.device_public_key
+        match &self.route {
+            Route::Device { ask, .. } => ask.cert.device_public_key,
+            Route::Host { device, .. } => *device,
+        }
     }
+}
+
+/// A host this device waits at for the new devices its pairing link sends there.
+struct Watch {
+    /// Until when, Unix-epoch milliseconds: when the link shown runs out.
+    until_ms: u64,
+    /// Whether it still waits; a wait that failed is not started again for the same link.
+    running: bool,
 }
 
 /// One device's part in certifications.
@@ -111,6 +142,8 @@ struct State {
     keys: Option<Arc<dyn Keys>>,
     /// The asks the person was shown, by digest: a new one is told, one that went is withdrawn.
     shown: Vec<[u8; 32]>,
+    /// The hosts this device waits at for a device its pairing link sent, by origin.
+    watching: HashMap<String, Watch>,
 }
 
 /// Each device's [`State`], by the device: one session runs one, a test several.
@@ -319,8 +352,10 @@ fn queue(local: &DeviceId, from: DeviceId, via: String, ask: Ask) {
         code: ask.code(),
         via,
         asked_at_ms: tilo_clock::unix_now_ms(),
-        from,
-        ask,
+        route: Route::Device {
+            from,
+            ask: Box::new(ask),
+        },
     };
     let expired = expired_before();
     with_state(local, |state| {
@@ -395,13 +430,20 @@ fn answer(
     }) else {
         return Ok(None);
     };
-    let person = asking.ask.cert.user_public_key;
+    let (from, ask) = match asking.route {
+        Route::Device { from, ask } => (from, ask),
+        Route::Host { host, person, .. } => {
+            answer_at_host(&local, host, person, digest, approve)?;
+            return Ok(Some(asking.label));
+        }
+    };
+    let person = ask.cert.user_public_key;
     let answer = if approve {
         let key = keys(&local).key(person)?;
         with_state(&local, |state| {
             state
                 .signer
-                .approve(key.as_ref(), &asking.ask, true, tilo_clock::unix_now_ns())
+                .approve(key.as_ref(), &ask, true, tilo_clock::unix_now_ns())
         })
     } else {
         Reply::Declined
@@ -412,13 +454,167 @@ fn answer(
     };
     reply(
         fabric,
-        &asking.from,
+        &from,
         &Answer {
-            session: asking.ask.session,
+            session: ask.session,
             reply: answer,
         },
     )?;
     refused.map_or(Ok(Some(asking.label)), Err)
+}
+
+/// Answer the device asking under `digest` at `host`: approved, the person's key certifies it there.
+/// Blocks on the host.
+fn answer_at_host(
+    local: &DeviceId,
+    host: tilo_relay_client::Host,
+    person: [u8; 32],
+    digest: [u8; 32],
+    approve: bool,
+) -> Result<(), String> {
+    let signer = ceremony::PersonSigner::new(keys(local).key(person)?);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    runtime.block_on(async {
+        let approver = tilo_relay_client::MemberApprover::new(host);
+        let answered = tilo_relay_client::answer_pairing(&approver, &signer, digest, approve).await;
+        approver.close().await;
+        answered.map(drop).map_err(|error| error.to_string())
+    })
+}
+
+/// Wait at the host at `origin` for the new devices asking to be `person` there, until `until_ms`:
+/// the pairing link this device shows names that host, and a device that opens it asks there. Each
+/// is put to the person as any device asking to be them ([`asking`]), and answered there
+/// ([`answer`]). Asking again while it waits only moves when it stops; a wait that failed is not
+/// started again until a new link is shown.
+pub(crate) fn watch_host(fabric: &dyn FabricLink, origin: &str, person: [u8; 32], until_ms: u64) {
+    let Ok(local) = local(fabric) else {
+        return;
+    };
+    let start = with_state(&local, |state| match state.watching.get_mut(origin) {
+        Some(watch) if watch.running => {
+            watch.until_ms = watch.until_ms.max(until_ms);
+            false
+        }
+        Some(watch) if watch.until_ms >= until_ms => false,
+        _ => {
+            state.watching.insert(
+                origin.to_owned(),
+                Watch {
+                    until_ms,
+                    running: true,
+                },
+            );
+            true
+        }
+    });
+    if !start {
+        return;
+    }
+    let origin = origin.to_owned();
+    let spawned = std::thread::Builder::new()
+        .name("tilo-pairing-link".into())
+        .spawn(move || {
+            if let Err(error) = wait_at_host(&local, &origin, person) {
+                tracing::warn!(%error, %origin, "this device stopped waiting for a new device");
+            }
+            with_state(&local, |state| {
+                if let Some(watch) = state.watching.get_mut(&origin) {
+                    watch.running = false;
+                }
+            });
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "could not wait for a new device");
+    }
+}
+
+/// [`watch_host`]'s wait, until the link runs out: each time the devices waiting at the host
+/// change, the list here follows them.
+fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), String> {
+    let signer = ceremony::PersonSigner::new(keys(local).key(person)?);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    runtime.block_on(async {
+        let client = tilo_workspace_directory::client()?;
+        let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
+            &client, origin,
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+        let address = info.address.ok_or("the host takes no device connections")?;
+        let host = tilo_relay_client::Host::published(&address);
+        let approver = tilo_relay_client::MemberApprover::new(host.clone());
+        let mut known = Vec::new();
+        let waited = loop {
+            let until_ms = with_state(local, |state| {
+                state.watching.get(origin).map_or(0, |watch| watch.until_ms)
+            });
+            if tilo_clock::unix_now_ms() >= until_ms {
+                break Ok(());
+            }
+            let pending =
+                match tilo_relay_client::next_pairings(&approver, &signer, known.clone()).await {
+                    Ok(pending) => pending,
+                    Err(error) => break Err(error.to_string()),
+                };
+            known = pending.iter().map(|entry| entry.request_digest).collect();
+            follow_host(local, origin, &host, person, pending);
+            wake();
+        };
+        approver.close().await;
+        waited
+    })
+}
+
+/// Put the devices `pending` at the host at `origin` to the person, in place of those that asked
+/// there before: one answered elsewhere, or gone, is no longer asked here.
+fn follow_host(
+    local: &DeviceId,
+    origin: &str,
+    host: &tilo_relay_client::Host,
+    person: [u8; 32],
+    pending: Vec<tilo_relay_protocol::certify::PendingCertification>,
+) {
+    let expired = expired_before();
+    with_state(local, |state| {
+        let digests: Vec<[u8; 32]> = pending.iter().map(|entry| entry.request_digest).collect();
+        state.asking.retain(|asking| match &asking.route {
+            Route::Host { origin: at, .. } => at != origin || digests.contains(&asking.digest),
+            Route::Device { .. } => true,
+        });
+        for entry in pending {
+            // Asked when the host queued it: one the person did not answer in time stays gone.
+            let asked_at_ms = entry.requested_at_ns / 1_000_000;
+            if entry.request.user_public_key != person
+                || asked_at_ms <= expired
+                || state
+                    .asking
+                    .iter()
+                    .any(|asking| asking.digest == entry.request_digest)
+            {
+                continue;
+            }
+            state.asking.push(Asking {
+                digest: entry.request_digest,
+                label: entry.request.device_label.clone(),
+                code: entry.pairing_code,
+                via: String::new(),
+                asked_at_ms,
+                route: Route::Host {
+                    origin: origin.to_owned(),
+                    host: host.clone(),
+                    person,
+                    device: entry.request.device_public_key,
+                },
+            });
+        }
+    });
 }
 
 /// The banner button that answers the device asking under `digest` here: approving lets it act as
@@ -741,8 +937,8 @@ mod tests {
             self.key.holds_key()
         }
 
-        fn sign_whole(&self, digest: &[u8; 32]) -> Result<Option<[u8; 64]>, String> {
-            self.key.sign_whole(digest)
+        fn sign_whole(&self, message: &[u8]) -> Result<Option<[u8; 64]>, String> {
+            self.key.sign_whole(message)
         }
 
         fn commit(&self) -> Option<(SigningRound1Commitment, SigningSessionNonces)> {
@@ -760,7 +956,10 @@ mod tests {
     }
 
     impl Keys for Held {
-        fn key(&self, _person: [u8; 32]) -> Result<Box<dyn ceremony::IdentityKey>, String> {
+        fn key(
+            &self,
+            _person: [u8; 32],
+        ) -> Result<Box<dyn ceremony::IdentityKey + Send + Sync>, String> {
             Ok(Box::new(self.clone()))
         }
 
@@ -781,7 +980,10 @@ mod tests {
     struct NoKey;
 
     impl Keys for NoKey {
-        fn key(&self, _person: [u8; 32]) -> Result<Box<dyn ceremony::IdentityKey>, String> {
+        fn key(
+            &self,
+            _person: [u8; 32],
+        ) -> Result<Box<dyn ceremony::IdentityKey + Send + Sync>, String> {
             Err("this device holds nothing of your identity".into())
         }
 
@@ -1176,7 +1378,10 @@ mod tests {
     }
 
     impl Keys for HeldKeys {
-        fn key(&self, _person: [u8; 32]) -> Result<Box<dyn ceremony::IdentityKey>, String> {
+        fn key(
+            &self,
+            _person: [u8; 32],
+        ) -> Result<Box<dyn ceremony::IdentityKey + Send + Sync>, String> {
             Ok(Box::new(Held {
                 key: Arc::clone(&self.root),
                 revoked: false,
@@ -1283,5 +1488,186 @@ mod tests {
         let due = tilo_identity_host::provisioning::joined_device_renewal_due(&joined.paths, now)
             .expect("a lapsed joined certificate is due");
         assert_eq!(due, joined.held);
+    }
+
+    /// A clipboard nobody reads.
+    struct Nowhere;
+
+    impl crate::platform::clipboard::Clipboard for Nowhere {
+        fn copy(&self, _text: String, _kept_for: Duration) {}
+    }
+
+    /// The asks waiting at `link`'s device, once one shows `code`.
+    fn asked_with(link: &SharedLink, code: &str) -> Asking {
+        let deadline = Instant::now().checked_add(Duration::from_secs(60)).unwrap();
+        loop {
+            if let Some(asking) = asking(link.as_ref())
+                .into_iter()
+                .find(|asking| asking.code == code)
+            {
+                return asking;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the new device was never asked here"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A host of the person whose key `root` is, on this machine, serving the web a new device
+    /// opens a pairing link on.
+    async fn person_host(
+        root: &Arc<runtime_identity::SigningIdentity>,
+        state: &std::path::Path,
+    ) -> (tilo_relay::daemon::Relay, tilo_relay::web::WebHandle) {
+        let person = root.person();
+        let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let mut host_cert = DeviceCert {
+            user_public_key: person,
+            device_public_key: host_key.verifying_key().to_bytes(),
+            device_label: "Home".into(),
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        let root_signer = ceremony::PersonSigner::new(Box::new(Held {
+            key: Arc::clone(root),
+            revoked: false,
+        }));
+        tilo_user_identity::sign_device_cert_async(&mut host_cert, &root_signer)
+            .await
+            .unwrap();
+        let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
+            tilo_relay::RelayConfig {
+                state_root: state.join("host"),
+                ..tilo_relay::RelayConfig::default()
+            },
+            tilo_relay::daemon::RelayIdentity {
+                user_public_key: person,
+                device_signing_key: host_key,
+                device_cert: host_cert,
+                revocations: tilo_user_identity::RevocationList::new(),
+            },
+            test_relay::relay_mode(),
+        )
+        .await
+        .unwrap();
+        let web = relay
+            .serve_web(tilo_relay::web::WebConfig {
+                listen: "127.0.0.1:0".parse().unwrap(),
+                tls: tilo_relay::web::TlsSource::Development {
+                    hosts: vec!["localhost".into(), "127.0.0.1".into()],
+                    store: Some(state.join("web-dev-identity")),
+                },
+                allowed_origins: Vec::new(),
+                plain_listen: Some("127.0.0.1:0".parse().unwrap()),
+                public_origin: None,
+                fetch_proxy: None,
+                door: None,
+                link: None,
+            })
+            .await
+            .unwrap();
+        (relay, web)
+    }
+
+    /// The whole of adding a device from this computer: it shows the pairing link, a new device
+    /// opens it and asks at the host the link names, this computer puts it to the person with the
+    /// code both show, and once they approve, the new device is theirs.
+    #[test]
+    fn a_device_that_opens_the_link_becomes_the_persons_once_they_approve_here() {
+        let (_root_dir, root) = identity();
+        let person = root.person();
+        let root = Arc::new(root);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // The person's host on this machine, serving the web a new device opens the link on.
+        let state = tempfile::tempdir().unwrap();
+        let (relay, web) = runtime.block_on(person_host(&root, state.path()));
+        let origin = web.plain_origin.clone().unwrap();
+
+        // This laptop holds the person's key and shows the link.
+        let (laptop, _other, laptop_id, _) = pair([0x62; 32], [0x63; 32]);
+        set_keys(
+            &laptop_id,
+            Arc::new(Held {
+                key: Arc::clone(&root),
+                revoked: false,
+            }),
+        );
+        let adding = crate::pair_device::Adding::new(std::rc::Rc::new(Nowhere));
+        let shown = adding.device(
+            Ok(crate::pair_device::Place {
+                site: format!("{origin}/"),
+                origin: origin.clone(),
+                room: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
+                person,
+            }),
+            tilo_clock::unix_now_ms(),
+        );
+        assert!(shown.refusal.is_none(), "{:?}", shown.refusal);
+        let waiting = adding.waiting().unwrap();
+        watch_host(
+            laptop.as_ref(),
+            &waiting.origin,
+            waiting.person,
+            waiting.until_ms,
+        );
+
+        // The phone opens it: it names the person and the host, and the phone asks there.
+        let phone = ed25519_dalek::SigningKey::from_bytes(&[0x64; 32]);
+        let link = tilo_relay_client::login::PairingLink::parse(&shown.link).unwrap();
+        assert_eq!(link.user_public_key, person);
+        assert_eq!(link.host_origin, origin);
+        let (code_shown, code) = std::sync::mpsc::channel();
+        let redeemed = runtime.spawn({
+            let phone = phone.clone();
+            async move {
+                let client = tilo_workspace_directory::client().unwrap();
+                let at = tilo_relay_client::https::Origin::new(&client, &link.host_origin);
+                tilo_relay_client::login::sign_in(&at, &link, "phone", "Phone", &phone, |code| {
+                    let _ = code_shown.send(code.to_owned());
+                })
+                .await
+            }
+        });
+        let code = code.recv_timeout(Duration::from_secs(60)).unwrap();
+
+        // This laptop asks the person, with the code the phone shows, and they approve.
+        let asked = asked_with(&laptop, &code);
+        assert_eq!(asked.label, "Phone");
+        assert_eq!(asked.device(), phone.verifying_key().to_bytes());
+        assert_eq!(
+            answer(laptop.as_ref(), asked.digest, true).unwrap(),
+            Some("Phone".to_owned())
+        );
+
+        // The phone is the person's device now.
+        let signed_in = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), redeemed).await })
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(signed_in.cert.user_public_key, person);
+        assert_eq!(
+            signed_in.cert.device_public_key,
+            phone.verifying_key().to_bytes()
+        );
+        tilo_user_identity::verify_device_cert(&signed_in.cert).unwrap();
+        assert!(
+            asking(laptop.as_ref())
+                .iter()
+                .all(|asking| asking.digest != asked.digest),
+            "an answered device asks no more"
+        );
+        drop(web);
+        runtime.block_on(relay.shutdown());
     }
 }

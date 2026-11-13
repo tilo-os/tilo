@@ -243,8 +243,8 @@ pub trait IdentityKey {
     fn person(&self) -> [u8; 32];
     /// Whether this device holds the whole key or a share of it.
     fn holds_key(&self) -> bool;
-    /// `Some` signature when this device holds the whole key.
-    fn sign_whole(&self, digest: &[u8; 32]) -> Result<Option<[u8; 64]>, String>;
+    /// `Some` signature over `message` when this device holds the whole key.
+    fn sign_whole(&self, message: &[u8]) -> Result<Option<[u8; 64]>, String>;
     /// `Some` commitment when this device holds a share.
     fn commit(&self) -> Option<(SigningRound1Commitment, SigningSessionNonces)>;
     /// This share's partial signature over `digest`.
@@ -266,11 +266,11 @@ impl IdentityKey for runtime_identity::SigningIdentity {
         self.is_single_device() || self.threshold() >= 2
     }
 
-    fn sign_whole(&self, digest: &[u8; 32]) -> Result<Option<[u8; 64]>, String> {
+    fn sign_whole(&self, message: &[u8]) -> Result<Option<[u8; 64]>, String> {
         if !self.is_single_device() {
             return Ok(None);
         }
-        self.sign(digest)
+        self.sign(message)
             .map(Some)
             .map_err(|error| error.to_string())
     }
@@ -293,6 +293,40 @@ impl IdentityKey for runtime_identity::SigningIdentity {
     ) -> Result<SigningRound2Partial, String> {
         self.threshold_sign_round2(nonces, digest, commitments)
             .map_err(|error| error.to_string())
+    }
+}
+
+/// The person's root as a signer, on a device that holds it whole: what signs a certificate for a
+/// new device of theirs, and the approver commands a host takes from the person's root. A device
+/// that holds only a share of it refuses, saying so: such a key signs only with the person's other
+/// devices, through [`Gathering`].
+pub struct PersonSigner(Box<dyn IdentityKey + Send + Sync>);
+
+impl PersonSigner {
+    /// `key` signing as the person.
+    #[must_use]
+    pub fn new(key: Box<dyn IdentityKey + Send + Sync>) -> Self {
+        Self(key)
+    }
+}
+
+impl collab_types::signer::DeviceSigner for PersonSigner {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.0.person()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
+        use collab_types::signer::SignError;
+        let signed = match self.0.sign_whole(&message) {
+            Ok(Some(signature)) => Ok(signature),
+            Ok(None) => Err(SignError(
+                "this device holds only part of your identity's key, so your other devices sign \
+                 with it"
+                    .into(),
+            )),
+            Err(error) => Err(SignError(error)),
+        };
+        Box::pin(std::future::ready(signed))
     }
 }
 

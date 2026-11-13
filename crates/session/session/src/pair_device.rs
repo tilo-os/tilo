@@ -1,11 +1,13 @@
 //! "Add a device": the link that makes a new device of the person one of theirs, kept current while
 //! its sheet is up.
 //!
-//! The link is the workspace link to the workspace in front, through the site this computer's web
-//! is on, carrying the person's root and a fresh invite ([`crate::pairing_link`]). One invite is
-//! open at a time: asking while it works answers the same link, so a sheet left on screen keeps
-//! showing the code that admits the person's device, and asking once it ran out makes a new one, so
-//! the code on screen is never one that admits nothing.
+//! The link is the workspace link to the workspace in front, at the host that keeps it, carrying
+//! the person's root and a fresh invite ([`crate::pairing_link`]). One invite is open at a time:
+//! asking while it works answers the same link, so a sheet left on screen keeps showing the code
+//! that admits the person's device, and asking once it ran out makes a new one, so the code on
+//! screen is never one that admits nothing. While a link works, this device waits at its host for
+//! the device that opens it ([`crate::certification::watch_host`]). A workspace no host on the web
+//! keeps has no link: the sheet says to add the device nearby.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,13 +24,29 @@ use crate::platform::clipboard::Clipboard;
 /// the device.
 const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
 
-/// Where a pairing link goes: the web the person's workspaces are on, the workspace in front, and
-/// the person whose device a newcomer becomes.
+/// Where a pairing link goes: the page it opens on, the host that keeps the workspace in front, that
+/// workspace, and the person whose device a newcomer becomes.
 pub(crate) struct Place {
     pub site: String,
     pub origin: String,
     pub room: String,
     pub person: [u8; 32],
+}
+
+/// Why there is no link to show: the device is added nearby instead, or why not even that.
+pub(crate) enum NoLink {
+    /// No host on the web keeps the workspace in front, so a link would lead nowhere.
+    Nearby,
+    /// The catalogue key saying why.
+    Because(&'static str),
+}
+
+/// The host a link shown now sends a new device to, and until when.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Waiting {
+    pub origin: String,
+    pub person: [u8; 32],
+    pub until_ms: u64,
 }
 
 /// The link the sheet shows, and what its presses do.
@@ -38,6 +56,8 @@ pub(crate) struct Adding {
     /// The link last put on the clipboard, while it is still the one shown: what the copy button
     /// says it did.
     copied: RefCell<Option<String>>,
+    /// Where the link last shown sends a new device.
+    waiting: RefCell<Option<Waiting>>,
 }
 
 impl Adding {
@@ -47,16 +67,23 @@ impl Adding {
             invites: RefCell::new(Invites::default()),
             clipboard,
             copied: RefCell::default(),
+            waiting: RefCell::default(),
         }
+    }
+
+    /// Where the link last shown sends a new device, and until when.
+    pub(crate) fn waiting(&self) -> Option<Waiting> {
+        self.waiting.borrow().clone()
     }
 
     /// The sheet at `now_ms`: the link that admits a device, or a fresh one once the one shown ran
     /// out, or why no link can be made here.
     #[must_use]
-    pub(crate) fn device(&self, place: Result<Place, String>, now_ms: u64) -> AddDevice {
+    pub(crate) fn device(&self, place: Result<Place, NoLink>, now_ms: u64) -> AddDevice {
         let place = match place {
             Ok(place) => place,
-            Err(reason) => return AddDevice::refusing(&reason),
+            Err(NoLink::Nearby) => return AddDevice::nearby(),
+            Err(NoLink::Because(key)) => return AddDevice::refusing(&tilo_sheets::word(key)),
         };
         match self.invites.borrow_mut().at(
             &place.site,
@@ -72,9 +99,17 @@ impl Adding {
                 if self.copied.borrow().as_deref() == Some(shown.link.as_str()) {
                     device.copy = device.copied.clone();
                 }
+                *self.waiting.borrow_mut() = Some(Waiting {
+                    origin: place.origin,
+                    person: place.person,
+                    until_ms: shown.expires_at_ms,
+                });
                 device
             }
-            Err(reason) => AddDevice::refusing(&reason),
+            Err(reason) => {
+                tracing::warn!(%reason, "no pairing link could be made");
+                AddDevice::refusing(&tilo_sheets::word("pair-device-no-link"))
+            }
         }
     }
 
@@ -98,7 +133,7 @@ impl Adding {
 pub(crate) fn follow(
     seat: Option<&AddDeviceSeat>,
     adding: &Adding,
-    place: impl FnOnce() -> Result<Place, String>,
+    place: impl FnOnce() -> Result<Place, NoLink>,
     now_ms: u64,
 ) {
     let Some(seat) = seat else {
@@ -121,6 +156,7 @@ impl crate::Shared {
         let now = ui::time::unix_now_ms();
         seat.show(self.adding.device(self.pairing_place(), now));
         seat.presentation().open(false);
+        self.wait_for_new_device();
     }
 
     /// Keep the sheet current while it is up: the link that admits a device, renewed once the one
@@ -132,32 +168,66 @@ impl crate::Shared {
             || self.pairing_place(),
             ui::time::unix_now_ms(),
         );
+        self.wait_for_new_device();
     }
 
-    /// Where the link goes: the site this computer's web is on, the workspace in front, and the
-    /// person whose device a newcomer becomes. Why, when this session has no such place.
-    fn pairing_place(&self) -> Result<Place, String> {
-        let site = crate::platform::directory::community_site().ok_or_else(|| {
-            "this computer is set up for no site, so a new device has nowhere to meet it".to_owned()
-        })?;
+    /// Wait at the host the link shown names for the device that opens it, until the link runs
+    /// out: what asks the person here.
+    fn wait_for_new_device(&self) {
+        if let (Some(fabric), Some(waiting)) = (self.fabric.as_ref(), self.adding.waiting()) {
+            crate::certification::watch_host(
+                fabric.as_ref(),
+                &waiting.origin,
+                waiting.person,
+                waiting.until_ms,
+            );
+        }
+    }
+
+    /// Where the link goes: the workspace in front, at the host that keeps it as the person's
+    /// directory lists it, else at the community this computer is set up for, and the person whose
+    /// device a newcomer becomes. Without either, the device is added nearby.
+    fn pairing_place(&self) -> Result<Place, NoLink> {
+        // Only a device of the person's answers the new device, on their own devices' fabric.
         let engine = self
             .engine
             .as_ref()
-            .ok_or_else(|| "this session holds no workspace's record".to_owned())?;
+            .filter(|_| self.fabric.is_some())
+            .ok_or(NoLink::Because("pair-device-not-yours"))?;
         let room = self
             .handle
             .read(|tree| {
                 tree.active_workspace()
                     .map(|workspace| workspace.id().to_string())
             })
-            .ok_or_else(|| "no workspace is in front".to_owned())?;
+            .ok_or(NoLink::Because("pair-device-no-workspace"))?;
+        let keeper = self
+            .directory_store
+            .listing(&room)
+            .and_then(|listed| listed.door)
+            .map(|door| door.origin().ascii_serialization());
+        let (site, origin) =
+            place_of(crate::platform::directory::community_site(), keeper).ok_or(NoLink::Nearby)?;
         Ok(Place {
-            site: site.to_string(),
-            origin: site.origin().ascii_serialization(),
+            site,
+            origin,
             room,
             person: engine.identity().device_cert.user_public_key,
         })
     }
+}
+
+/// The page a link opens on and the host it sends a new device to: the host that keeps the
+/// workspace (`keeper`), else the community `community`; the page is the community's, or the
+/// host's own. `None` when neither is known.
+fn place_of(community: Option<url::Url>, keeper: Option<String>) -> Option<(String, String)> {
+    let origin = keeper.or_else(|| {
+        community
+            .as_ref()
+            .map(|site| site.origin().ascii_serialization())
+    })?;
+    let site = community.map_or_else(|| format!("{origin}/"), |site| site.to_string());
+    Some((site, origin))
 }
 
 #[cfg(test)]
@@ -221,14 +291,54 @@ mod tests {
         assert_ne!(renewed.link, first.link);
     }
 
-    /// No site, no workspace, no code: the sheet says why rather than showing a link that admits
-    /// nobody.
+    /// A workspace no host on the web keeps: no link, and the sheet says to add the device nearby
+    /// rather than showing a code that admits nobody.
     #[test]
-    fn without_a_web_the_sheet_says_why_there_is_no_code() {
+    fn without_a_host_on_the_web_the_sheet_offers_nearby() {
         let (adding, _) = adding();
-        let device = adding.device(Err("this computer is on no site".to_owned()), START);
+        let device = adding.device(Err(NoLink::Nearby), START);
         assert_eq!(device.link, "");
-        assert!(device.refusal.is_some());
+        assert_eq!(device.refusal, AddDevice::nearby().refusal);
+        assert!(adding.waiting().is_none(), "nothing to wait for");
+    }
+
+    /// The host that keeps the workspace is the one the link names; the community this computer
+    /// is set up for only when none is known.
+    #[test]
+    fn the_link_names_the_host_that_keeps_the_workspace() {
+        let community = url::Url::parse(SITE).ok();
+        assert_eq!(
+            place_of(community.clone(), Some("https://door.example".to_owned())),
+            Some((SITE.to_owned(), "https://door.example".to_owned()))
+        );
+        assert_eq!(
+            place_of(community, None),
+            Some((SITE.to_owned(), "https://tilo.coffee".to_owned()))
+        );
+        assert_eq!(
+            place_of(None, Some("https://door.example".to_owned())),
+            Some((
+                "https://door.example/".to_owned(),
+                "https://door.example".to_owned()
+            ))
+        );
+        assert_eq!(place_of(None, None), None);
+    }
+
+    /// A link shown is one this device waits at its host for, until it runs out.
+    #[test]
+    fn a_shown_link_is_waited_for_until_it_runs_out() {
+        let (adding, _) = adding();
+        let shown = adding.device(Ok(place()), START);
+        assert!(shown.refusal.is_none());
+        assert_eq!(
+            adding.waiting(),
+            Some(Waiting {
+                origin: ORIGIN.to_owned(),
+                person: [0xab; 32],
+                until_ms: START + 600_000,
+            })
+        );
     }
 
     /// The sheet the session hands the seat is the one it shows: a press copies exactly the link

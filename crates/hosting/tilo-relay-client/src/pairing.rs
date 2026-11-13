@@ -301,6 +301,28 @@ pub async fn pending_pairings(
     }
 }
 
+/// [`pending_pairings`] once they are other than `known`, the request digests
+/// the caller holds: the host answers as a new device asks for `root` or one
+/// is answered, or with what waits after
+/// [`AWAIT_PENDING_NS`](tilo_relay_protocol::certify::AWAIT_PENDING_NS).
+///
+/// # Errors
+///
+/// As [`pending_pairings`].
+#[cfg(feature = "dial")]
+pub async fn next_pairings(
+    host: &impl MemberHost,
+    root: &dyn DeviceSigner,
+    known: Vec<[u8; 32]>,
+) -> Result<Vec<tilo_relay_protocol::certify::PendingCertification>, CertifyError> {
+    match approve(host, root, ApproverRequest::AwaitPending { known }).await? {
+        ApproverReply::Pending(pending) => Ok(pending),
+        _ => Err(CertifyError::Denied(
+            "the host answered something else".into(),
+        )),
+    }
+}
+
 /// Answer the pending request `request_digest` at `host`:
 /// approved, `root` certifies the device it names as a browser of that root,
 /// and the certificate it issued is answered for the root's own record.

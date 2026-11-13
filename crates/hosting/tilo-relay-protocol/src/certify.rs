@@ -154,8 +154,8 @@ pub const MEMBER_APPROVAL_LABEL: &[u8] = b"tilo member approval v1\0";
 pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
 /// An approver command from a member's root ([`CertifyOpen::Member`]): only
-/// [`ApproverRequest::ListPending`] (that member's own requests),
-/// [`ApproverRequest::Decide`] (one of them), [`ApproverRequest::Confirmations`]
+/// [`ApproverRequest::ListPending`] and [`ApproverRequest::AwaitPending`]
+/// (that member's own requests), [`ApproverRequest::Decide`] (one of them), [`ApproverRequest::Confirmations`]
 /// (what the host asks that member about actions run for them) and
 /// [`ApproverRequest::Answer`] (to one of those) are answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,7 +241,19 @@ pub enum ApproverRequest {
         /// The person's answer, for that one invocation.
         answer: ConfirmationAnswer,
     },
+    /// Read every pending request once they differ from `known`, the digests
+    /// the approver holds: answered at once when they already do, and
+    /// otherwise as a request arrives or is answered, or after
+    /// [`AWAIT_PENDING_NS`]. A device showing a pairing link hears of the new
+    /// device as it asks, rather than asking again and again.
+    AwaitPending {
+        known: Vec<[u8; 32]>,
+    },
 }
+
+/// The longest a host holds [`ApproverRequest::AwaitPending`] before it
+/// answers with what waits, changed or not.
+pub const AWAIT_PENDING_NS: u64 = 20 * 1_000_000_000;
 
 /// A page departure the person is asked to allow: what a page they are not
 /// standing at is about to send, where it goes, and the filled page it leaves
