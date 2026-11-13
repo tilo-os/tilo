@@ -1,20 +1,6 @@
-//! `PlayerHost` — mounts the app's persistent [`ui::widget::VideoPlayer`] into
-//! the watch page without rebuilding it.
-//!
-//! Tube rebuilds its whole widget tree on every structural change (the
-//! `RebuildHarness` pattern in [`crate::app`]). A `VideoPlayer` owns a live
-//! [`media::MediaEngine`] (a running `GStreamer` pipeline with real audio), so it
-//! must **survive** those rebuilds — recreating it every notice/like/navigation
-//! would restart the video. The player therefore lives in [`crate::app::TubeApp`]
-//! behind an `Rc<RefCell<_>>`; each rebuilt watch tree gets a fresh, cheap
-//! `PlayerHost` pointing at that same shared player.
-//!
-//! `PlayerHost` is the taffy node (a fixed 16:9 leaf)
-//! and forwards every `Widget` pass to the shared player. Only the host is
-//! registered in the App's `node_map`; the inner player is never aliased there,
-//! so the short `RefCell` borrows each pass takes can't overlap a raw-pointer
-//! call. The App only ever touches the player through this host or through
-//! `TubeApp`'s own (non-reentrant) short borrows.
+//! `PlayerHost` — mounts the app's persistent [`ui::widget::VideoPlayer`] into the watch page
+//! without rebuilding it. Tube rebuilds its whole widget tree on every structural change (the
+//! `RebuildHarness` pattern in [`crate::app`]).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -36,27 +22,16 @@ use ui::widget::{
     VideoPlayer, Widget, layout_rect,
 };
 
-/// A shared, persistent [`VideoPlayer`]. Cloned cheaply into each rebuilt tree.
 pub type SharedPlayer = Rc<RefCell<VideoPlayer>>;
 
-/// Stable id so headless tests can assert the watch view laid out the real
-/// video-player surface.
+/// Stable id so headless tests can assert the watch view laid out the real video-player surface.
 pub const PLAYER_HOST_ID: &str = "watch_video_surface";
 
-/// A taffy leaf that hosts the app's shared [`VideoPlayer`] at a fixed,
-/// width-driven 16:9 height.
 pub struct PlayerHost {
     player: SharedPlayer,
-    /// 16:9-derived player height (logical px).
     player_h: f32,
-    /// This host's own laid-out rect (mirrors the inner player's).
     rect: Rect,
-    /// The taffy node this host owns; the inner player is laid out against it.
     node: Option<NodeId>,
-    /// The caption lines of the open video: the host paints the one the
-    /// playhead is inside over the picture's lower edge, which the shared
-    /// player has no other door for. Empty when captions are off or the video
-    /// offers none.
     captions: Vec<crate::captions::CaptionCue>,
 }
 
@@ -71,18 +46,12 @@ impl PlayerHost {
         }
     }
 
-    /// The caption lines to show over the picture, when the person turned
-    /// them on and the video offers them.
     #[must_use]
     pub fn with_captions(mut self, captions: Vec<crate::captions::CaptionCue>) -> Self {
         self.captions = captions;
         self
     }
 
-    /// The caption line the playhead is inside, painted over the picture's
-    /// lower edge: on the media's own scrim in the media ink, above the
-    /// progress line, and above the transport when the controls are showing so
-    /// the words are never behind a control.
     fn paint_captions(
         &self,
         scene: &mut Scene,
@@ -119,9 +88,6 @@ impl PlayerHost {
         let x0 = (self.rect.center().x - f64::from(width) / 2.0 - pad_x).max(self.rect.x0);
         let x1 = (self.rect.center().x + f64::from(width) / 2.0 + pad_x).min(self.rect.x1);
         let scrim = Rect::new(x0, y0, x1, y1);
-        // A caption is a media overlay, not a control: the scrim and the line
-        // are painted together on purpose, and `paint_caption` keeps them out of
-        // reach of anything that would draw one without the other.
         let caption = CaptionOverlay {
             scrim,
             pad_x,
@@ -130,11 +96,6 @@ impl PlayerHost {
         };
         paint_caption(scene, text_renderer, theme, transform, &caption, &cue.text);
     }
-    /// Show the video's art until the player has a frame to show, so a
-    /// watch page that is still starting playback never stands empty. The
-    /// art is the player's own poster, under its controls: the thumbnail
-    /// (`url` from `store`), or without one the art generated for `title`,
-    /// the same its card shows.
     #[must_use]
     pub fn with_poster(self, store: Option<ImageStore>, url: &str, title: &str) -> Self {
         let poster = if let Some(store) = store.filter(|_| !url.is_empty()) {
@@ -170,7 +131,6 @@ impl Widget for PlayerHost {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        // Pumps the engine (pulls the freshest decoded frame + playhead).
         self.player.borrow_mut().sync(state, path);
     }
 
@@ -180,10 +140,6 @@ impl Widget for PlayerHost {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Full column width, fixed 16:9 height.
-        // The host (not the inner player) is registered in `node_map`, so events
-        // route here and delegate — the inner player is never aliased by a raw
-        // pointer.
         let node = taffy.leaf_node(Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -199,7 +155,6 @@ impl Widget for PlayerHost {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = layout_rect(taffy, node, origin);
-        // Drive the shared player's rect from this host's node.
         self.player.borrow_mut().apply_layout(taffy, node, origin);
     }
 
@@ -270,14 +225,10 @@ impl Widget for PlayerHost {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        // Fixed 16:9 slot: never layout-dirty on its own (the inner player never
-        // changes its own intrinsic size), so a playing video repaints without
-        // forcing a relayout every frame.
         false
     }
 }
 
-/// Where a caption sits and how wide it may be.
 struct CaptionOverlay {
     scrim: Rect,
     pad_x: f64,
@@ -285,7 +236,6 @@ struct CaptionOverlay {
     max_text: f64,
 }
 
-/// A caption over the picture: its scrim, then its line.
 fn paint_caption(
     scene: &mut vello::Scene,
     text_renderer: &mut ui::TextRenderer,
@@ -302,7 +252,6 @@ fn paint_caption(
     );
     let media = &theme.tokens.colors.media;
     let style = theme.text(ui::TextRole::Body);
-    // ratchet-allow(raw_paint): a caption's scrim over the video picture, content
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,

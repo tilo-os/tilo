@@ -1,11 +1,5 @@
-//! Product lifecycle around the Grayjay wire transport.
-//!
-//! The Noise key is deterministically derived from the app-scoped secret
-//! kept in the app's secret store. Only public peer routes and durable
-//! revocation tombstones are kept beside it, as [`PairedDevices`]: a setting of
-//! this device that never leaves it. All network work is serialized on
-//! one bounded worker thread so redraws never dial a phone and shutdown is
-//! bounded by the transport's socket deadlines.
+//! Product lifecycle around the Grayjay wire transport. The Noise key is deterministically derived
+//! from the app-scoped secret kept in the app's secret store.
 
 use std::sync::{Arc, Mutex, mpsc};
 use ui::time::Duration;
@@ -24,15 +18,12 @@ use ui::lock::MutexRecover as _;
 const MAX_PEERS: usize = 64;
 const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
-/// Durable, non-secret record for one locally approved Grayjay peer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerRecord {
     pub id: String,
     pub name: String,
     pub descriptor: PeerDescriptor,
     pub approved_at: i64,
-    /// Pairing authenticates the remote key, but local lifecycle approval is a
-    /// separate explicit effect. Pending peers cannot be restored or synced.
     #[serde(default)]
     pub pending_approval: bool,
     #[serde(default)]
@@ -63,8 +54,6 @@ pub enum SyncStatus {
     Error,
 }
 
-/// Render-safe sync state. It contains public fingerprints and peer metadata,
-/// never pairing codes, private keys, or portal secret bytes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncView {
     pub status: SyncStatus,
@@ -73,10 +62,6 @@ pub struct SyncView {
     pub peers: Vec<PeerRecord>,
 }
 
-/// The Grayjay devices paired with Tube on this device, approved, pending or
-/// revoked. Pairing is between this device and the person's phone, so it is a
-/// setting of this device that never leaves it. Every field is public: the
-/// key the routes authenticate stays in the secret store.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairedDevices {
     #[serde(default)]
@@ -87,7 +72,6 @@ impl SettingsSchema for PairedDevices {
     const SCOPE: Scope = Scope::DeviceLocal;
 }
 
-/// Where the sync worker keeps [`PairedDevices`].
 #[derive(Clone, Debug)]
 struct PeerStore {
     settings: Settings<PairedDevices>,
@@ -150,7 +134,6 @@ struct WorkerContext {
     events: mpsc::Sender<Event>,
 }
 
-/// UI-side handle for the bounded background worker.
 pub struct DeviceSync {
     commands: Option<mpsc::SyncSender<Command>>,
     events: mpsc::Receiver<Event>,
@@ -175,9 +158,6 @@ impl Default for DeviceSync {
 }
 
 impl DeviceSync {
-    /// Initialize the shipped backend over the app's secret store and this
-    /// device's [`PairedDevices`]. Failure to reach the secret store is
-    /// visible and fail-closed: no random replacement identity is generated.
     pub fn production(
         device_name: &str,
         secrets: &tilo_secrets::SecretStore,
@@ -197,8 +177,6 @@ impl DeviceSync {
         out
     }
 
-    /// Deterministic, secret-free lifecycle state for the offscreen visual
-    /// review mode. It never starts a worker or opens a socket.
     #[doc(hidden)]
     #[cfg(feature = "samples")]
     pub fn visual_sample() -> Self {
@@ -283,8 +261,6 @@ impl DeviceSync {
         &self.view
     }
 
-    /// Move the local text field into a `Secret` action argument and wipe the
-    /// field. The returned value must only be placed in that redacted argument.
     pub fn take_pairing_input(&self) -> String {
         let mut input = self.pairing_input.lock_recover();
         let blob = input.trim().to_string();
@@ -315,15 +291,6 @@ impl DeviceSync {
             .is_some_and(|sender| sender.try_send(command).is_ok())
     }
 
-    /// Drain worker updates without mutating the render model.
-    ///
-    /// A pulled package is returned to `TubeApp`, which imports it as library
-    /// edits through the framework's door and into the person's own watch
-    /// history, so it reaches collaborators, history and a restart like any
-    /// other change.
-    ///
-    /// The bool reports public status/fingerprint changes; the vector contains
-    /// personal state that still needs canonical import.
     pub fn pump(&mut self) -> (bool, Vec<SyncState>) {
         let mut changed = false;
         let mut pulled = Vec::new();
@@ -348,11 +315,9 @@ impl Drop for DeviceSync {
     }
 }
 
-/// The random seed Tube's Grayjay device key derives from, in the app's
-/// secret store.
+/// The random seed Tube's Grayjay device key derives from, in the app's secret store.
 const DEVICE_SEED: &str = "grayjay-device-seed";
 
-/// This device's seed from the app's secret store, created on first use.
 fn device_seed(store: &tilo_secrets::SecretStore) -> SyncResult<Zeroizing<Vec<u8>>> {
     let unavailable =
         |error: tilo_secrets::SecretError| SyncError::KeyUnavailable(error.to_string());
@@ -369,8 +334,6 @@ fn device_seed(store: &tilo_secrets::SecretStore) -> SyncResult<Zeroizing<Vec<u8
             .put_blocking(DEVICE_SEED, &seed, tilo_secrets::PutOptions { label })
             .map_err(unavailable)?;
     }
-    // Read back what the store kept, which a concurrent first run may have
-    // replaced.
     let seed = store
         .get_blocking(DEVICE_SEED)
         .map_err(unavailable)?
@@ -695,17 +658,11 @@ fn merge_sync_states(target: &mut SyncState, incoming: SyncState) {
     }
 }
 
-/// Snapshot the syncable personal state. Public catalogue ids and preferences
-/// are included; local device records and all key material are not.
 pub fn state_from_model(model: &TubeModel) -> SyncState {
     let subscriptions = model
         .subscriptions
         .iter()
         .filter_map(|id| {
-            // A paired device can know about a creator before this device has
-            // fetched its catalogue record. Preserve the vetted external URL
-            // verbatim so the subscription round-trips rather than silently
-            // disappearing from the next package we push.
             model.channel(id).map_or_else(
                 || super::normalized_subscription_url(id),
                 |channel| {
@@ -775,8 +732,6 @@ mod tests {
             };
             store.save(std::slice::from_ref(&record)).unwrap();
             assert_eq!(store.load().unwrap(), vec![record]);
-            // What the profile keeps, as any reader of it sees it: the
-            // peer's public record, never a private key or pairing code.
             let text = serde_json::Value::Object(ui::storage::settings_at(&document)).to_string();
             assert!(text.contains("public-key"), "the peer is kept: {text}");
             assert!(!text.contains("private"));

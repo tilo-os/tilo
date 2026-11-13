@@ -1,5 +1,5 @@
-//! The navigation rail through the real host loop: a click reaches the
-//! action-bound rail item, which the host routes back to the app.
+//! The navigation rail through the real host loop: a click reaches the action-bound rail item,
+//! which the host routes back to the app.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
@@ -15,8 +15,6 @@ fn names(harness: &FrameHarness) -> Vec<String> {
         .collect()
 }
 
-/// Open the rail's Settings from `screen` in a live window (a capture's
-/// controls start no effects).
 fn opens_settings_from(screen: &str) {
     let mut app = TestApp::<TubeShell>::new().unwrap();
     app.effect(&tube::actions::TubeEffect::ShowScreen {

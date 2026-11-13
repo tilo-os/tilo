@@ -1,25 +1,6 @@
-//! Live data sources: `YouTube` through rustypipe ([`crate::backend::live`])
-//! where it runs, its own web API ([`crate::innertube`]) in a browser page,
-//! where rustypipe cannot; `SponsorBlock` (segments), `DeArrow`
-//! (de-clickbait titles/thumbnails) and Return `YouTube` Dislike beside it.
-//!
-//! The rustypipe backend runs on a background [`Worker`] thread; the plain
-//! HTTP sources are async `tilo_net` requests the worker hands to the app
-//! runtime. The `--shots` path never spawns the worker, so the screenshot is
-//! populated purely from `sample.rs`. The app spawns the worker lazily on the
-//! first real interaction and folds results in through
-//! `crate::app::TubeApp::pump`.
-//!
-//! Endpoints (researched, current as of 2026):
-//! - `SponsorBlock`: `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
-//! - `DeArrow`: `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
-//! - Dislikes: `GET https://returnyoutubedislikeapi.com/votes?videoId=<id>`
-//!
-//! Playback resolves to a whole-file progressive stream (picture and sound in
-//! one file) that serves every byte range, so the shared media engine can
-//! seek and play to the end. It comes back as [`Update::StreamResolved`] and
-//! is opened into the watch page's `ui::widget::VideoPlayer` engine, which
-//! does the actual `GStreamer` decode and audio out.
+//! Live data sources: `YouTube` through rustypipe ([`crate::backend::live`]) where it runs, its own
+//! web API ([`crate::innertube`]) in a browser page, where rustypipe cannot; `SponsorBlock`
+//! (segments), `DeArrow` (de-clickbait titles/thumbnails) and Return `YouTube` Dislike beside it.
 
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::Duration;
@@ -38,50 +19,26 @@ const SPONSOR_ENDPOINT: &str = "https://sponsor.ajay.app/api/skipSegments";
 const DEARROW_ENDPOINT: &str = "https://sponsor.ajay.app/api/branding";
 const DISLIKE_ENDPOINT: &str = "https://returnyoutubedislikeapi.com/votes";
 
-/// A unit of work for the background thread.
 #[derive(Clone, Debug)]
 pub enum Request {
-    /// Fetch `SponsorBlock` + `DeArrow` data for a video being opened.
     Branding(String),
-    /// Run a search through the data-source backend.
-    Search { query: String },
-    /// Fetch the home / trending catalogue. Only a *live* backend answers this;
-    /// a failed or absent backend leaves the app in its explicit empty,
-    /// offline state rather than substituting demo content.
+    Search {
+        query: String,
+    },
     Feed,
-    /// Fetch full metadata + real "up next" recommendations for a video the
-    /// user just opened.
     VideoMeta(String),
-    /// Fetch a channel page + its uploads.
     Channel(String),
-    /// Fetch a playlist page (metadata + ordered video list).
     PlaylistPage(String),
-    /// Resolve a real, directly-playable stream URL for a watch id — off the UI
-    /// thread, since it asks `YouTube` over the network. The
-    /// resolved URL comes back as [`Update::StreamResolved`]; the actual decode +
-    /// audio out happens in the watch page's media-engine-backed `VideoPlayer`,
-    /// not here.
     PlayVideo {
         id: String,
-        /// The quality the person chose (`"720p"`, `"auto"`): the stream
-        /// resolved is no larger than it.
         quality: String,
     },
-    /// Fetch the caption tracks `id` offers, and then the track the person
-    /// chose, if there is one.
     Captions {
         id: String,
-        /// The language code of the track to download, or `None` to fetch
-        /// only the list of tracks the video offers.
         language: Option<String>,
     },
 }
 
-/// The worker's end of the result queue. Every result it posts wakes the
-/// window that asked for it, so a reply the network sends while nobody
-/// touches the app is shown at once: the window drains the queue only when it
-/// runs a frame, and without the wake it ran none until the next input or
-/// animation.
 #[derive(Clone)]
 pub struct Updates {
     tx: SyncSender<Update>,
@@ -89,15 +46,12 @@ pub struct Updates {
 }
 
 impl Updates {
-    /// Post `update`, waiting while the queue is full, and wake the window.
     pub fn send(&self, update: Update) -> Result<(), std::sync::mpsc::SendError<Update>> {
         self.tx.send(update)?;
         self.wake.wake();
         Ok(())
     }
 
-    /// Post `update` unless the queue is full, and wake the window. The
-    /// refusal is boxed: it carries the whole update back.
     pub fn try_send(
         &self,
         update: Update,
@@ -108,77 +62,53 @@ impl Updates {
     }
 }
 
-/// A result folded back into the model on the UI thread.
 #[derive(Clone, Debug)]
 pub enum Update {
     Sponsor(String, Vec<Segment>),
     DeArrow {
         video: String,
-        /// Top-voted crowdsourced title, when one outranks the original.
         title: Option<String>,
-        /// Community thumbnail URL (a frame rendered at the top-voted timestamp),
-        /// when one exists.
         thumbnail_url: Option<String>,
     },
-    /// Crowdsourced dislike count for a video (Return `YouTube` Dislike),
-    /// with the like count it reports beside it: the watch page shows both
-    /// counts or neither, and a search hit carries no like count of its own.
     Dislikes {
         video: String,
         count: u64,
         likes: Option<u64>,
     },
-    /// Live search results: the query, the ordered videos, and the playlists +
-    /// creator rows that share the query (so the type filter has all three).
     SearchResults {
         query: String,
         videos: Vec<Video>,
         playlists: Vec<Playlist>,
         channels: Vec<Channel>,
     },
-    /// A resolved playlist page + its ordered videos.
     PlaylistPage {
         playlist: Box<Playlist>,
         videos: Vec<Video>,
     },
-    /// Live home/trending catalogue — replaces the on-screen set.
     Feed(Vec<Video>),
-    /// Live video detail + its real recommendations.
     VideoMeta {
         video: Box<Video>,
         related: Vec<Video>,
     },
-    /// Real top comments for a video (fetched via rustypipe), folded onto the
-    /// watch page.
     Comments {
         video: String,
         comments: Vec<Comment>,
     },
-    /// Live channel page + uploads.
     ChannelPage {
         channel: Box<Channel>,
         uploads: Vec<Video>,
     },
-    /// Which data source is currently answering (drives the header status badge).
     Status {
         live: bool,
         label: String,
     },
-    /// No source answered a feed or search request, and why. Settles the
-    /// request so the page stops loading and says what is wrong.
     Unreached(Unreached),
-    /// A real, directly-playable stream URL resolved for a watch id. The UI
-    /// opens it into the watch page's `VideoPlayer` engine (real decode + audio).
     StreamResolved {
         video: String,
         url: String,
         has_audio: bool,
-        /// Short quality label for the status log (e.g. `360p`).
         quality: String,
     },
-    /// The caption tracks a video offers, and the lines of one of them when
-    /// the person chose it. `lines` is `None` when only the list was asked
-    /// for; `failure` says why a chosen track could not be read.
     Captions {
         video: String,
         tracks: Vec<crate::captions::CaptionTrack>,
@@ -186,47 +116,25 @@ pub enum Update {
         lines: Option<Vec<crate::captions::CaptionCue>>,
         failure: Option<String>,
     },
-    /// No source gave a playable stream for a watch id: the page says so
-    /// rather than showing its still poster as if it were about to play.
     Unplayable {
         video: String,
-        /// `YouTube`'s own words when it refused to play the video (such
-        /// as a bot check), for the page to pass on.
         said: Option<String>,
     },
-    /// The top videos `YouTube` answers for what the platform search is
-    /// asked while the person types ([`crate::suggest`]); empty when no
-    /// source answered.
     Suggestions {
         query: String,
         videos: Vec<Video>,
     },
-    /// Non-fatal note surfaced in the status log.
     Note(String),
 }
 
-/// Why a live request found no source. Only [`Unreached::Offline`] means the
-/// device has no network: a source that refuses, fails or cannot be read
-/// while the device is online is a different problem with a different fix,
-/// and calling it "offline" sends the person to check a connection that
-/// works.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unreached {
-    /// The device has no network.
     Offline,
-    /// The app runs in a browser page, the sources do not let a page read
-    /// their responses (CORS), and the host serving the page offers no fetch
-    /// proxy to relay them.
     NoRelay,
-    /// The network is up but no source answered; the last failure.
     Failed(String),
 }
 
 impl Unreached {
-    /// Classify a failed request. `online` is the device's network status,
-    /// `relay` whether the host offers a fetch proxy, and `unreadable`
-    /// whether no source gave a readable answer and the browser hid at least
-    /// one, as it hides a cross-origin refusal.
     #[must_use]
     pub fn classify(online: bool, relay: bool, unreadable: bool, last: String) -> Self {
         if !online {
@@ -238,7 +146,6 @@ impl Unreached {
         }
     }
 
-    /// [`Self::classify`] against this device's status and host.
     fn now(unreadable: bool, last: String) -> Self {
         Self::classify(
             tilo_net::status::online(),
@@ -249,20 +156,15 @@ impl Unreached {
     }
 }
 
-/// The shared client for the plain HTTP sources; `None` only if the TLS
-/// stack cannot start, which leaves those enrichments off.
 fn client() -> Option<tilo_net::Client> {
     tilo_net::Client::builder()
         .user_agent("tube/0.1 (+tilo)")
         .timeout(Duration::from_secs(8))
-        // In a page, sites without CORS headers are read through the host's
-        // fetch proxy; the desktop never uses it.
         .fetch_proxy(tilo_net::proxy::ProxyUse::CrossOrigin)
         .build()
         .ok()
 }
 
-/// GET `endpoint?query` as JSON; `None` for a 404.
 async fn get_json(
     client: &tilo_net::Client,
     endpoint: &str,
@@ -275,10 +177,6 @@ async fn get_json(
     Ok(Some(resp.error_for_status()?.json().await?))
 }
 
-/// Fetch `SponsorBlock` segments for a video via the direct
-/// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
-/// API's "no segments for this video" response) is treated as an empty list
-/// rather than an error.
 pub async fn fetch_sponsor(
     client: &tilo_net::Client,
     video_id: &str,
@@ -299,9 +197,6 @@ async fn fetch_sponsor_at(
         .unwrap_or_default())
 }
 
-/// Parse a `SponsorBlock` `/api/skipSegments?videoID=<id>` response (a flat JSON
-/// array of segment objects) into sorted [`Segment`]s. Pure (no I/O) so it is
-/// unit-tested directly. Unknown categories and malformed rows are skipped.
 pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
     let mut out = Vec::new();
     if let Some(arr) = resp.as_array() {
@@ -343,9 +238,6 @@ fn category_json() -> String {
     serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Fetch `DeArrow` branding for a video: the top-voted crowdsourced title (when it
-/// outranks the original) and a community thumbnail URL (a frame rendered at the
-/// top-voted timestamp), via `GET /api/branding?videoID=<id>`.
 pub async fn fetch_dearrow(
     client: &tilo_net::Client,
     video_id: &str,
@@ -364,13 +256,7 @@ async fn fetch_dearrow_at(
     Ok(parse_dearrow(&resp, video_id))
 }
 
-/// Parse a `DeArrow` `/api/branding?videoID=<id>` response into `(title,
-/// thumbnail_url)`. Picks the highest-scored non-original entry (a locked entry
-/// wins over vote count, matching `DeArrow`'s own precedence), and skips entries
-/// the community has voted down. Pure (no I/O) so it is unit-tested directly.
 pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String>, Option<String>) {
-    // Score an entry: locked entries win outright; otherwise by vote count.
-    // Downvoted-into-removal entries (votes < 0 and not locked) are dropped.
     let score = |e: &serde_json::Value| -> Option<i64> {
         let original = e
             .get("original")
@@ -425,17 +311,12 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
     (title, thumbnail_url)
 }
 
-/// A video's votes as Return `YouTube` Dislike reports them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Votes {
-    /// The crowdsourced dislike estimate.
     pub dislikes: u64,
-    /// The like count, when the response carries one.
     pub likes: Option<u64>,
 }
 
-/// Fetch a video's votes via Return `YouTube` Dislike
-/// (`GET /votes?videoId=<id>`).
 pub async fn fetch_votes(client: &tilo_net::Client, video_id: &str) -> anyhow::Result<Votes> {
     fetch_votes_at(client, DISLIKE_ENDPOINT, video_id).await
 }
@@ -451,8 +332,6 @@ async fn fetch_votes_at(
     parse_votes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
 }
 
-/// Parse a Return `YouTube` Dislike `/votes` response. Pure (no I/O) so it
-/// is unit-tested directly.
 pub fn parse_votes(resp: &serde_json::Value) -> Option<Votes> {
     Some(Votes {
         dislikes: resp.get("dislikes")?.as_u64()?,
@@ -460,8 +339,6 @@ pub fn parse_votes(resp: &serde_json::Value) -> Option<Votes> {
     })
 }
 
-/// Fetch one video's `SponsorBlock` segments, `DeArrow` branding and dislike
-/// count, posting each as it arrives.
 async fn branding(client: tilo_net::Client, id: String, up_tx: Updates) {
     match fetch_sponsor(&client, &id).await {
         Ok(segs) => {
@@ -497,13 +374,9 @@ async fn branding(client: tilo_net::Client, id: String, up_tx: Updates) {
     }
 }
 
-/// The background worker: drives the video backends and turns [`Request`]s
-/// into [`Update`]s.
 pub struct Worker {
     tx: SyncSender<Request>,
     rx: Receiver<Update>,
-    /// Where the platform search's live answers are asked from; `None` for
-    /// a scripted worker, whose answers the test sends.
     suggest: Option<(crate::suggest::Suggesting, Updates)>,
 }
 
@@ -515,17 +388,11 @@ impl Worker {
         let suggest = Some((crate::suggest::Suggesting::default(), up_tx.clone()));
         #[cfg(feature = "live")]
         {
-            // If the OS can't give us a thread (resource exhaustion), degrade
-            // to a worker that never produces updates rather than crashing the
-            // app: `request` sends go unread and `poll` stays empty, same as
-            // "no live data yet".
             if let Err(e) = ui::rt::spawn_thread("tube-fetch", move || live_worker(&req_rx, &up_tx))
             {
                 tracing::error!("failed to spawn the tube-fetch worker thread: {e}");
             }
         }
-        // A build without rustypipe (a browser page, where it cannot run)
-        // answers from `YouTube`'s web API as tasks on the app runtime.
         #[cfg(not(feature = "live"))]
         if let Ok(runtime) = ui::rt::try_app() {
             drop(runtime.spawn(task_worker(req_rx, up_tx)));
@@ -537,26 +404,12 @@ impl Worker {
         }
     }
 
-    /// Queue work without ever blocking the UI thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unqueued request when the bounded worker is saturated or
-    /// has stopped. Callers must surface this outcome; a one-shot navigation,
-    /// search, or playback intent is never silently discarded.
     pub fn request(&self, req: Request) -> Result<(), std::sync::mpsc::TrySendError<Request>> {
         self.tx.try_send(req)
     }
 
-    /// Ask `YouTube` for the top videos of `query`, what the platform
-    /// search is asked, answered as [`Update::Suggestions`]. Asks on the app
-    /// runtime, apart from the request queue, so a slow request never holds
-    /// it up; one request at a time, for the latest query once the typing
-    /// pauses ([`crate::suggest`]). False when nothing will answer (no
-    /// runtime to ask on), so the search does not wait for it.
     pub fn suggest(&self, query: &str) -> bool {
         let Some((suggesting, updates)) = &self.suggest else {
-            // Scripted: the test sends the answers.
             return true;
         };
         if !suggesting.want(query) {
@@ -567,7 +420,6 @@ impl Worker {
             return false;
         };
         let (suggesting, updates) = (suggesting.clone(), updates.clone());
-        // Pinned: rustypipe's query futures stay on the thread that polls them.
         drop(runtime.spawn_pinned(move || async move {
             #[cfg(feature = "live")]
             let fetch =
@@ -596,13 +448,10 @@ impl Worker {
         true
     }
 
-    /// Non-blocking drain of any results ready this frame.
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().take(MAX_UPDATES_PER_POLL).collect()
     }
 
-    /// A worker that fetches nothing: its results are what the returned
-    /// sender sends. For a test that lands a result at a moment it chooses.
     #[doc(hidden)]
     #[must_use]
     pub fn scripted(wake: ui::WakeHandle) -> (Self, Updates) {
@@ -619,11 +468,6 @@ impl Worker {
     }
 }
 
-/// The threaded worker of a build with rustypipe: every `YouTube` request
-/// goes to the one rustypipe backend. The offline sample is hermetic test
-/// data only; a failed request is reported, never answered with fabricated
-/// videos. `SponsorBlock`, `DeArrow` and the dislike count keep their own
-/// HTTP sources.
 #[cfg(feature = "live")]
 fn live_worker(requests: &Receiver<Request>, up_tx: &Updates) {
     let client = client();
@@ -636,8 +480,6 @@ fn live_worker(requests: &Receiver<Request>, up_tx: &Updates) {
             None
         }
     };
-    // Construction doesn't touch the network, so "live" waits for a real
-    // answer.
     let _ = up_tx.send(Update::Status {
         live: false,
         label: if live.is_some() {
@@ -660,7 +502,6 @@ fn live_worker(requests: &Receiver<Request>, up_tx: &Updates) {
     }
 }
 
-/// Answer one request from rustypipe.
 #[cfg(feature = "live")]
 fn answer_live(
     live: &crate::backend::live::RustyPipeBackend,
@@ -674,8 +515,6 @@ fn answer_live(
     match request {
         Request::Branding(_) => {}
         Request::Search { query } => {
-            // Always emit a (possibly empty) result so the UI drops its
-            // loading skeleton and shows real hits or an honest "no results".
             let found = live.search_items(&query);
             if found.is_ok() {
                 send_live_status(up_tx);
@@ -746,7 +585,6 @@ fn answer_live(
     }
 }
 
-/// A watch page, its recommendations and its top comments.
 #[cfg(feature = "live")]
 fn answer_watch(live: &crate::backend::live::RustyPipeBackend, id: String, up_tx: &Updates) {
     let note = |what: String| {
@@ -774,8 +612,6 @@ fn answer_watch(live: &crate::backend::live::RustyPipeBackend, id: String, up_tx
     }
 }
 
-/// The caption tracks `id` offers, and the lines of `language` when one was
-/// chosen.
 #[cfg(feature = "live")]
 fn live_captions(
     live: &crate::backend::live::RustyPipeBackend,
@@ -803,8 +639,6 @@ fn live_captions(
     }
 }
 
-/// Settle a request in a build whose rustypipe client did not start: each
-/// page stops loading and says there is no source.
 #[cfg(feature = "live")]
 fn answer_unreached(request: Request, up_tx: &Updates) {
     let update = match request {
@@ -845,10 +679,6 @@ fn send_live_status(up_tx: &Updates) {
     });
 }
 
-/// The Home catalogue and its status label: `YouTube`'s trending list, or,
-/// as that browse has been retired (it answers HTTP 400), a "popular right
-/// now" feed composed from each broad topic's most-viewed videos of the week.
-/// Every video comes from `YouTube`; `None` when nothing answered.
 #[cfg(feature = "live")]
 fn feed(
     live: &crate::backend::live::RustyPipeBackend,
@@ -881,12 +711,10 @@ fn feed(
     })
 }
 
-/// Broad, evergreen topics, so the union of their popular videos
-/// approximates a general popular feed rather than one niche.
+/// Broad, evergreen topics, so the union of their popular videos approximates a general popular
+/// feed rather than one niche.
 const POPULAR_SEEDS: [&str; 6] = ["news", "music", "gaming", "technology", "sports", "science"];
 
-/// Drop duplicate videos (same id) while preserving first-seen order — the
-/// popular seeds overlap, so the union needs a dedup pass.
 fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
     let mut seen = std::collections::HashSet::new();
     videos
@@ -895,9 +723,6 @@ fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
         .collect()
 }
 
-/// The lines of the track in `language`, if one was asked for and offered:
-/// `(lines, why-not)`. A video with no captions is not a failure — it simply
-/// offers none, and the page says so.
 async fn chosen_caption_lines(
     client: Option<&tilo_net::Client>,
     tracks: &[crate::captions::CaptionTrack],
@@ -916,7 +741,6 @@ async fn chosen_caption_lines(
     }
 }
 
-/// A caption track's `WebVTT` text.
 async fn fetch_timed_text(
     client: &tilo_net::Client,
     url: &str,
@@ -935,11 +759,6 @@ async fn fetch_timed_text(
 /// How long the timed text of a caption track may take.
 const CAPTION_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// The worker where rustypipe cannot run (a browser page): every request
-/// answered from `YouTube`'s own web API ([`crate::innertube`]) through
-/// `tilo_net` (the host's fetch proxy where a site refuses cross-origin
-/// reads). Updates are offered, never waited on: the page has one thread and
-/// the UI drains them.
 #[cfg(not(feature = "live"))]
 async fn task_worker(requests: Receiver<Request>, updates: Updates) {
     let post = |update: Update| {
@@ -969,8 +788,6 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
     }
 }
 
-/// Why `YouTube`'s web API gave no answer, as the page should say it: a
-/// refusal the browser hid (no CORS headers) is unreadable without a relay.
 #[cfg(not(feature = "live"))]
 fn unreached(error: &anyhow::Error) -> Unreached {
     let hidden = error
@@ -979,7 +796,6 @@ fn unreached(error: &anyhow::Error) -> Unreached {
     Unreached::now(hidden, format!("{error:#}"))
 }
 
-/// Answer one request in the page worker from `YouTube`'s web API.
 #[cfg(not(feature = "live"))]
 async fn answer(
     client: &tilo_net::Client,
@@ -1064,8 +880,6 @@ async fn answer(
     }
 }
 
-/// The popular feed from `YouTube`: each topic's most-viewed videos of the
-/// week, interleaved; the last failure when no topic answered.
 #[cfg(not(feature = "live"))]
 async fn youtube_popular(youtube: &crate::innertube::InnerTube) -> anyhow::Result<Vec<Video>> {
     let mut lists = Vec::new();
@@ -1156,9 +970,6 @@ mod tests {
             assert!(j.contains("music_offtopic"));
         }
         {
-            // The shape the direct `?videoID=` endpoint returns: a flat array of
-            // segment objects. Unknown categories are dropped; the rest come back
-            // sorted by start time.
             let resp = serde_json::json!([
                 {"category": "outro", "segment": [590.0, 600.0], "votes": 2},
                 {"category": "sponsor", "segment": [30.5, 45.0], "votes": 10},
@@ -1264,9 +1075,6 @@ mod tests {
 
     #[test]
     fn sources_that_fail_while_online_are_not_offline() {
-        // Case `only_a_device_without_network_is_offline`. In a page the
-        // browser hides why a cross-origin read failed; with no fetch proxy
-        // that is the answer to give, never "offline" while online.
         {
             let classify = |online, relay, unreadable| {
                 Unreached::classify(online, relay, unreadable, "HTTP 503".into())

@@ -1,25 +1,4 @@
-//! Live backend — real `YouTube` data via the pure-Rust `rustypipe` `InnerTube`
-//! client. **Compiled only under `--features live`.**
-//!
-//! `rustypipe` is async (tokio); the [`YtBackend`] trait is sync because it is
-//! driven from Tube's blocking fetch worker. This backend therefore waits on
-//! each query with the shared app runtime's `block_on`: the query future is
-//! polled on the worker thread while the runtime thread drives sockets,
-//! timers and whatever rustypipe spawns. That keeps the async dependency
-//! fully contained here — no other module learns about tokio.
-//!
-//! ## API surface used (rustypipe 0.11.x, through [`tilo_innertube`])
-//! * `search` → videos, playlists and creator rows of a query
-//! * `video_details` → a watch page: metadata, recommendations ("up next") and
-//!   the first page of comments
-//! * `player` → the stream to play ([`tilo_innertube::whole_file_stream`]),
-//!   the duration and the caption tracks
-//! * `channel_videos`, `playlist`, `trending`, `search_filter` (the popular
-//!   feed)
-//!
-//! The client is built with `no_botguard`: metadata needs no `PoToken`, and
-//! the player client [`tilo_innertube::PLAYER_CLIENT`] needs none either.
-//! rustypipe embeds `rquickjs`; no ffmpeg, no yt-dlp.
+//! Live backend — real `YouTube` data via the pure-Rust `rustypipe` `InnerTube` client.
 
 #![cfg(feature = "live")]
 
@@ -34,20 +13,16 @@ use tilo_innertube as innertube;
 use crate::backend::{BackendError, BackendOutcome, BackendResult, PlaybackSource, YtBackend};
 use crate::model::{Channel, Comment, Playlist, Video};
 
-/// A rustypipe search split into Tube's three result kinds.
 pub struct SearchItems {
     pub videos: Vec<Video>,
     pub playlists: Vec<Playlist>,
     pub channels: Vec<Channel>,
 }
 
-/// rustypipe marks channels with a `Verification` enum; map "has a badge" onto
-/// Tube's boolean `verified`.
 fn is_verified(v: Verification) -> bool {
     !matches!(v, Verification::None)
 }
 
-/// The live rustypipe-backed data source.
 pub struct RustyPipeBackend {
     rp: &'static RustyPipe,
     rt: &'static ui::rt::AppRuntime,
@@ -61,13 +36,7 @@ fn shared_client() -> Result<&'static RustyPipe, BackendError> {
     static CLIENT: std::sync::OnceLock<Result<RustyPipe, String>> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            // rustypipe's reqwest client takes the process-default TLS provider.
             tilo_net::install_crypto_provider();
-            // `no_reporter()`: rustypipe's default reporter writes a
-            // `rustypipe_reports/*.json` file into the process cwd on every
-            // parser warning. A shipped app must not litter the working
-            // directory, so disable it (warnings still degrade gracefully —
-            // core fields are extracted regardless).
             RustyPipe::builder()
                 .no_reporter()
                 .no_botguard()
@@ -78,8 +47,6 @@ fn shared_client() -> Result<&'static RustyPipe, BackendError> {
         .map_err(|e| BackendError(e.clone()))
 }
 
-/// The videos `YouTube` finds for `query`, asked on the app runtime (the
-/// platform search's suggestions); empty when it does not answer.
 #[allow(
     clippy::future_not_send,
     reason = "tilo-innertube's queries are boxed without Send so their code stays \
@@ -96,8 +63,6 @@ pub async fn suggested_videos(query: &str) -> Vec<Video> {
         .unwrap_or_default()
 }
 
-/// A watch page: the video, what `YouTube` recommends next, and its top
-/// comments (empty when they could not be read).
 pub struct Watch {
     pub video: Video,
     pub related: Vec<Video>,
@@ -106,11 +71,6 @@ pub struct Watch {
 
 impl RustyPipeBackend {
     pub fn new() -> Result<Self, BackendError> {
-        // rustypipe `tokio::spawn`s background work (the visitor-data
-        // prefetch and the connection tasks behind its HTTP client) that must
-        // keep running after the query that started it returns. On the app
-        // runtime those tasks live on the runtime thread and progress
-        // independently of this worker, which only polls its own query.
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
         let rp = rt
             .block_on(async { shared_client() })
@@ -118,9 +78,6 @@ impl RustyPipeBackend {
         Ok(Self { rp, rt })
     }
 
-    /// Wait on one rustypipe query from the calling worker thread. A query
-    /// error and a refused wait (e.g. called from inside a runtime) both come
-    /// back as the error's message.
     fn block<F, T, E>(&self, fut: F) -> Result<T, String>
     where
         F: std::future::Future<Output = Result<T, E>>,
@@ -132,8 +89,6 @@ impl RustyPipeBackend {
         }
     }
 
-    /// Run one search and split the results into videos, playlists and creator
-    /// rows, all from one `InnerTube` call.
     pub fn search_items(&self, query: &str) -> Result<SearchItems, BackendError> {
         let q = self.rp.query();
         let res = self
@@ -154,7 +109,6 @@ impl RustyPipeBackend {
         Ok(out)
     }
 
-    /// Fetch a playlist page: its metadata + ordered video list.
     pub fn playlist_page(&self, id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
         let q = self.rp.query();
         let pl = self
@@ -186,8 +140,6 @@ impl RustyPipeBackend {
         Ok((playlist, videos))
     }
 
-    /// A watch page from one `video_details` call, with the duration from
-    /// the player answer (the details carry none).
     pub fn watch(&self, id: &str) -> Result<Watch, BackendError> {
         let q = self.rp.query();
         let d = self
@@ -219,7 +171,6 @@ impl RustyPipeBackend {
             views: d.view_count,
             published: d.publish_date_txt.unwrap_or_default(),
             duration,
-            // `description` is rustypipe's `RichText`; flatten to plain text.
             description: d.description.to_plaintext(),
             likes: u64::from(d.like_count.unwrap_or(0)),
             thumbnail_url: crate::backend::yt_thumb_url(&d.id),
@@ -243,9 +194,6 @@ impl RustyPipeBackend {
         })
     }
 
-    /// The stream to play for `id`, no taller than `max_height` when there is
-    /// one that small. The error is `YouTube`'s own words when it refused to
-    /// play the video (such as a bot check), else `None`.
     pub fn play(
         &self,
         id: &str,
@@ -270,8 +218,6 @@ impl RustyPipeBackend {
         })
     }
 
-    /// The caption tracks `id` offers. Their timed text is asked for as
-    /// `WebVTT`, which [`crate::captions::parse_vtt`] reads.
     pub fn caption_tracks(
         &self,
         id: &str,
@@ -293,8 +239,6 @@ impl RustyPipeBackend {
     }
 }
 
-/// A timed-text URL asking for `WebVTT`: rustypipe names its own format
-/// (`fmt=srv3`), and of a repeated parameter `YouTube` reads the first.
 fn as_vtt(url: &str) -> String {
     let (base, query) = url.split_once('?').unwrap_or((url, ""));
     let mut params: Vec<&str> = query
@@ -305,9 +249,6 @@ fn as_vtt(url: &str) -> String {
     format!("{base}?{}", params.join("&"))
 }
 
-/// Map a rustypipe [`VideoItem`] onto Tube's [`Video`]. Fields rustypipe doesn't
-/// carry on a list item (description, likes, comments, sponsor) default empty
-/// and are filled in by a later `video_details` / `SponsorBlock` fetch.
 fn map_video_item(it: VideoItem) -> Video {
     let channel = it.channel;
     let (channel_id, channel_name, channel_avatar_url) = channel.map_or_else(
@@ -337,15 +278,6 @@ fn map_video_item(it: VideoItem) -> Video {
     }
 }
 
-/// Pick the highest-resolution thumbnail URL from a rustypipe thumbnail set
-/// (largest width×height), or the empty string when none are present. Used for
-/// channel avatars carried on feed/search items so the real creator icon loads.
-///
-/// The URL is normalized to an absolute `https:` one: rustypipe hands back
-/// **protocol-relative** URLs (`//yt3.ggpht.com/…`) for some items — notably
-/// creator rows — which the reqwest image transport cannot fetch (no scheme),
-/// so the card silently fell back to initials. Normalizing here fixes every
-/// consumer (`best_thumb` is the single extraction chokepoint).
 fn best_thumb(thumbs: &[rustypipe::model::Thumbnail]) -> String {
     thumbs
         .iter()
@@ -354,8 +286,6 @@ fn best_thumb(thumbs: &[rustypipe::model::Thumbnail]) -> String {
         .unwrap_or_default()
 }
 
-/// Promote a protocol-relative URL (`//host/path`) to `https://host/path`.
-/// Absolute and empty URLs pass through unchanged.
 fn absolute_url(url: &str) -> String {
     if let Some(rest) = url.strip_prefix("//") {
         format!("https://{rest}")
@@ -364,7 +294,6 @@ fn absolute_url(url: &str) -> String {
     }
 }
 
-/// First one/two initials of an author name, for the comment avatar chip.
 fn initials(name: &str) -> String {
     let mut out = String::new();
     for word in name.split_whitespace().take(2) {
@@ -378,8 +307,6 @@ fn initials(name: &str) -> String {
     out
 }
 
-/// Map a rustypipe [`PlaylistItem`] (a search-result stub) onto Tube's
-/// [`Playlist`]. The video list is empty until the playlist page is opened.
 fn map_playlist_item(p: PlaylistItem) -> Playlist {
     let (channel_id, channel_name) = p
         .channel
@@ -396,8 +323,6 @@ fn map_playlist_item(p: PlaylistItem) -> Playlist {
     }
 }
 
-/// Map a rustypipe [`ChannelItem`] (a search-result creator) onto Tube's
-/// [`Channel`], carrying the real avatar so the creator row shows a photo.
 fn map_channel_item(c: ChannelItem) -> Channel {
     Channel {
         id: c.id.clone(),
@@ -412,7 +337,6 @@ fn map_channel_item(c: ChannelItem) -> Channel {
     }
 }
 
-/// Map a rustypipe [`RpComment`] onto Tube's plain [`Comment`].
 fn map_comment(c: RpComment) -> Comment {
     let author = c.author.map_or_else(|| "Unknown".into(), |a| a.name);
     let initials = initials(&author);
@@ -428,8 +352,6 @@ fn map_comment(c: RpComment) -> Comment {
     }
 }
 
-/// Pull the `Video` rows out of a rustypipe search/trending/recommended list,
-/// keeping only the `Video` variants.
 fn videos_from_items(items: impl IntoIterator<Item = YouTubeItem>) -> Vec<Video> {
     items
         .into_iter()
@@ -470,8 +392,6 @@ impl YtBackend for RustyPipeBackend {
             verified: is_verified(ch.verification),
             description: ch.description.clone(),
             seed: ch.id.clone(),
-            // Real channel avatar from the channel response; the banner isn't in
-            // this payload, so the seed gradient still backs the header.
             avatar_url: best_thumb(&ch.avatar),
             banner_url: String::new(),
         };
@@ -515,10 +435,6 @@ impl YtBackend for RustyPipeBackend {
     }
 
     fn popular_search(&self, query: &str) -> BackendOutcome {
-        // "Popular right now" as a real, no-login-required query: view-count
-        // sorted, uploaded within the last week, videos only. This is genuine
-        // YouTube data (unlike the dead `FEtrending` browse) and is what the
-        // composed home feed leans on.
         let q = self.rp.query();
         let filter = SearchFilter::new()
             .item_type(ItemType::Video)
@@ -549,8 +465,6 @@ mod tests {
 
     #[test]
     fn absolute_url_promotes_protocol_relative_avatars() {
-        // rustypipe hands back protocol-relative creator-row avatar URLs; reqwest
-        // can't fetch those, so they must be promoted to https.
         assert_eq!(
             absolute_url("//yt3.ggpht.com/abc=s176"),
             "https://yt3.ggpht.com/abc=s176",

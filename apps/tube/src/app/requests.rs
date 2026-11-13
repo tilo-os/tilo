@@ -1,6 +1,6 @@
-//! The network worker behind the window: starting a bounded request without
-//! stalling input, folding a result into the model when one lands, and settling
-//! a page when the worker is saturated, stops, or finds no source at all.
+//! The network worker behind the window: starting a bounded request without stalling input, folding
+//! a result into the model when one lands, and settling a page when the worker is saturated, stops,
+//! or finds no source at all.
 
 use std::collections::HashSet;
 
@@ -11,10 +11,6 @@ use crate::model::Route;
 use super::Tube;
 
 impl Tube {
-    /// Start a bounded background request without ever stalling UI input.
-    /// Returns false only when the worker could not accept the newest intent;
-    /// in that case [`Self::request_rejected`] has already made the outcome
-    /// visible and cleared any misleading loading state.
     pub(super) fn request(&mut self, req: Request) -> bool {
         if self.worker.is_none() {
             self.worker = Some(Worker::spawn(self.wake.clone()));
@@ -32,13 +28,10 @@ impl Tube {
         true
     }
 
-    /// Make bounded-worker saturation explicit. This is a local, retryable
-    /// condition, not an offline/network failure, so never falsify the source
-    /// provenance while reporting it.
     pub(super) fn request_rejected(&mut self, request: &Request, stopped: bool) {
         const BUSY: &str = "Too many requests are pending. Please try again.";
-        // A stopped worker is Tube's own failure, not the network's: the
-        // device may well be online.
+        /// A stopped worker is Tube's own failure, not the network's: the device may well be
+        /// online.
         const STOPPED: &str = "Tube's network worker stopped. Reopen Tube to load videos.";
         let message = if stopped { STOPPED } else { BUSY };
         if stopped {
@@ -68,9 +61,6 @@ impl Tube {
         self.structure_dirty = true;
     }
 
-    /// No source answered a feed or search: settle both so neither page keeps
-    /// loading, and say why. Only a device without a network is "offline";
-    /// an online device whose sources refuse or fail gets the real reason.
     fn source_unreached(&mut self, why: &crate::api::Unreached) {
         use crate::api::Unreached;
         self.model.feed_loading = false;
@@ -92,18 +82,12 @@ impl Tube {
         }
     }
 
-    /// Request live `InnerTube` data (feed / video detail / channel), but only
-    /// when this instance is online. The offline `--shots` and test paths call
-    /// through the same navigation code, so gating here keeps them from ever
-    /// spawning the worker or reaching the network.
     pub(super) fn request_live(&mut self, req: Request) {
         if self.online {
             self.request(req);
         }
     }
 
-    /// Ask the worker for a channel page (avatar + subscriber count + uploads)
-    /// when the store only holds a bare name stub for it. Online-only.
     pub(super) fn request_channel_if_stub(&mut self, channel_id: &str) {
         if channel_id.is_empty() || self.requested_channels.contains(channel_id) {
             return;
@@ -118,8 +102,6 @@ impl Tube {
         }
     }
 
-    /// Fold any worker results into the model. Returns true if anything
-    /// changed (→ rebuild).
     #[allow(
         clippy::too_many_lines,
         reason = "one match arm per worker Update variant; the length is the number of \
@@ -134,14 +116,9 @@ impl Tube {
             return false;
         }
         let mut changed = false;
-        // Channels whose real avatar + subscriber count we still need to fetch
-        // (a video-detail response tells us the uploader id but not its photo).
-        // Collected here and fired after the borrow of `self.worker` ends.
         let mut fetch_channels: Vec<String> = Vec::new();
         for u in updates {
             match u {
-                // Segments, dislikes and comments show only on their video's
-                // own page; anywhere else a rebuild would redraw nothing new.
                 Update::Sponsor(id, segs) => {
                     let shown = watching(&self.model.route, &id);
                     if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == id) {
@@ -174,8 +151,6 @@ impl Tube {
                     likes,
                 } => {
                     changed |= watching(&self.model.route, &video);
-                    // A search hit carries no like count: the votes answer
-                    // gives the one shown beside its dislikes.
                     if let Some(likes) = likes
                         && let Some(v) = self.model.videos.iter_mut().find(|v| v.id == video)
                         && v.likes == 0
@@ -197,12 +172,8 @@ impl Tube {
                     playlists,
                     channels,
                 } => {
-                    // A response landed (possibly empty) — drop the skeleton.
                     self.model.search_loading = false;
                     self.model.search_error = None;
-                    // Record the backend's exact ordered result set for this
-                    // query (so the search screen renders it verbatim), and
-                    // fold the videos + uploader stubs into the catalogue.
                     let ids: Vec<String> = videos.iter().map(|v| v.id.clone()).collect();
                     for nv in videos {
                         self.model
@@ -221,15 +192,8 @@ impl Tube {
                             .ensure_channel_stub(&p.channel_id, &p.channel_name);
                         self.model.upsert_playlist(p);
                     }
-                    // Creator rows: fold in without clobbering a richer channel
-                    // record (a full channel page carries a banner a search row
-                    // doesn't), taking the avatar / subs / handle when missing.
                     let channel_ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
                     for c in channels {
-                        // A creator row's avatar also belongs to every video card by
-                        // that creator (matched by id OR normalized name) — stamp it
-                        // there so the dominant channel's cards get the photo even
-                        // when the video items didn't carry it.
                         self.model
                             .adopt_channel_avatar(&c.id, &c.name, &c.avatar_url);
                         if let Some(ex) = self.model.channels.iter_mut().find(|x| x.id == c.id) {
@@ -247,8 +211,6 @@ impl Tube {
                             self.model.channels.push(c);
                         }
                     }
-                    // Bridge any two records describing the same creator so every
-                    // card resolves an avatar one of them carries.
                     self.model.reconcile_channel_avatars();
                     query.clone_into(&mut self.model.search_hits_query);
                     self.model.search_hits = ids;
@@ -257,12 +219,6 @@ impl Tube {
                     if matches!(&self.model.route, Route::Search(_)) {
                         self.model.route = Route::Search(query);
                     }
-                    // Progressive avatar coverage: for a bounded set of result
-                    // uploaders that still lack a real avatar, pull their channel
-                    // page (avatar + subs) so cards fill in real creator photos over
-                    // the next frames. Guarded (`request_channel_if_stub`) so it
-                    // never re-requests, and capped so a search can't fan out into
-                    // dozens of channel fetches.
                     let mut seen = HashSet::new();
                     let stub_cids: Vec<String> = self
                         .model
@@ -299,7 +255,6 @@ impl Tube {
                     changed = true;
                 }
                 Update::Feed(vids) => {
-                    // Real home/trending catalogue — replace whatever was there.
                     self.model.adopt_live_catalogue(vids, "live (rustypipe)");
                     self.model.feed_loading = false;
                     self.model.feed_error = None;
@@ -317,8 +272,6 @@ impl Tube {
                         &video.channel_avatar_url,
                     );
                     self.model.upsert_video(*video);
-                    // Now that we know the uploader, pull its avatar + subs if we
-                    // only have a name stub (drives the watch-page channel row).
                     if !channel_id.is_empty()
                         && self
                             .model
@@ -346,11 +299,6 @@ impl Tube {
                     changed = true;
                 }
                 Update::ChannelPage { channel, uploads } => {
-                    // Stamp the fetched avatar onto every record for this creator
-                    // (matched by id OR normalized name) BEFORE upsert, so the
-                    // video cards resolve it even when the channel page's returned
-                    // id differs from the search item's channel_id — the exact
-                    // reason the dominant channel kept showing initials.
                     self.model.adopt_channel_avatar(
                         &channel.id,
                         &channel.name,
@@ -371,8 +319,6 @@ impl Tube {
                     changed = true;
                 }
                 Update::Status { live, label } => {
-                    // Provenance only: a request that found no source settles
-                    // its page through `Update::Unreached`.
                     if self.model.data_source.live != live || self.model.data_source.label != label
                     {
                         self.model.data_source = crate::model::DataSource { live, label };
@@ -396,8 +342,6 @@ impl Tube {
                     lines,
                     failure,
                 } => {
-                    // A list (or lines) for a page that has moved on is
-                    // dropped: one video's words never land on another's.
                     if watching(&self.model.route, &video) {
                         self.model.captions_of = video;
                         self.model.caption_tracks = tracks;
@@ -414,8 +358,6 @@ impl Tube {
                             (None, _, _) => {
                                 self.model.captions.clear();
                                 self.model.captions_notice = None;
-                                // The person may have chosen a track before
-                                // this list arrived; take it up now it is here.
                                 self.load_chosen_captions();
                             }
                         }
@@ -423,7 +365,6 @@ impl Tube {
                     }
                 }
                 Update::Unplayable { video, said } => {
-                    // Only the page still open on it says so.
                     if matches!(&self.model.route, Route::Watch(id) if *id == video) {
                         self.model.playing = false;
                         self.model.unplayable = Some(crate::model::Unplayable { video, said });
@@ -438,16 +379,10 @@ impl Tube {
                     self.take_suggestions(query, videos);
                 }
                 Update::Note(n) => {
-                    // Worker status notes (backend ready, stream host, seed
-                    // failures, …) are developer diagnostics — log them, don't
-                    // clutter the watch page with debug toasts. Genuine
-                    // user-facing feedback (auto-skip, link copied) is pushed
-                    // as a notice directly from its action, not via `Note`.
                     tracing::debug!(note = %n, "tube worker note");
                 }
             }
         }
-        // Fire the deferred channel fetches now the `self.worker` borrow is done.
         for cid in fetch_channels {
             self.request_channel_if_stub(&cid);
         }

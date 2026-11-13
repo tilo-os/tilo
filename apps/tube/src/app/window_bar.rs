@@ -1,7 +1,5 @@
-//! Tube's controls, as slots in the window's bar ([`ui::window_toolbar`]):
-//! the shell's sidebar toggle and Back, the screen's name as the location,
-//! and Clear history on the History screen. The bar's search is Tube's
-//! search; the window draws no header row.
+//! Tube's controls, as slots in the window's bar ([`ui::window_toolbar`]): the shell's sidebar
+//! toggle and Back, the screen's name as the location, and Clear history on the History screen.
 
 use ui::widget::NavShell;
 use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
@@ -14,7 +12,6 @@ use crate::model::Route;
 use crate::screens;
 
 impl TubeApp {
-    /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();
         let tube = self.tube.borrow();
@@ -39,8 +36,6 @@ impl TubeApp {
         toolbar
     }
 
-    /// Run what the person did in the window's bar: the shell's own slots,
-    /// then Tube's. Returns whether anything was asked of Tube.
     pub(super) fn take_window_toolbar_events(&mut self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {

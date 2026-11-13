@@ -1,8 +1,6 @@
-//! CPU cost of the interactions a person feels in Tube on a feed of real-size
-//! thumbnails: the frames while thumbnails stream in, scrolling, resizing and
-//! opening a page. Budgets apply to optimised builds only.
-//!
-//! `cargo test --profile thin-app -p tube --test perf_budget -- --nocapture`
+//! CPU cost of the interactions a person feels in Tube on a feed of real-size thumbnails: the
+//! frames while thumbnails stream in, scrolling, resizing and opening a page. Budgets apply to
+//! optimised builds only.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -61,7 +59,6 @@ fn budget(label: &str, value: u64, limit: u64) {
     }
 }
 
-/// A Home feed whose every card has its own thumbnail URL.
 fn feed() -> (Framed<TubeApp>, ui::ImageStore) {
     let bytes = thumbnail();
     let fetch: ui::Fetcher = Arc::new(move |_url: &str| Some(bytes.clone()));
@@ -89,7 +86,6 @@ fn feed_with_thumbnails() {
         "perf tube cold start (build + first frame): {:?}",
         t.elapsed()
     );
-    // Frames while thumbnails decode off-thread and fold in.
     let mut loading = Vec::new();
     for _ in 0..400 {
         let t = Instant::now();
@@ -129,8 +125,6 @@ fn feed_with_thumbnails() {
     budget("tube resize step", p50, 8_000);
 }
 
-/// Tube as every host mounts it (the framework app, not the bare widget),
-/// on the sample catalogue at the Yoga's logical size.
 fn hosted() -> ui::framework::testing::TestApp<tube::TubeShell> {
     let mut app = ui::framework::testing::TestApp::<tube::TubeShell>::new().unwrap();
     app.harness().resize(VIEWPORT).unwrap();
@@ -175,10 +169,6 @@ fn route(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> tube::mo
         .expect("the window shows Tube")
 }
 
-/// Opening the window: the framework app's construction and first frame.
-/// The media engine is the costly part a window does not need until
-/// something plays (its first construction starts `GStreamer`: 0.8 s on the
-/// builder), so a window that has only browsed has none.
 #[test]
 fn hosted_window_opens_without_starting_the_media_engine() {
     let t = Instant::now();
@@ -200,7 +190,6 @@ fn hosted_window_opens_without_starting_the_media_engine() {
     );
 }
 
-/// Opening a video from Home and going back: the click a person makes most.
 #[test]
 fn hosted_open_a_video_and_go_back() {
     let mut app = hosted();
@@ -230,7 +219,6 @@ fn hosted_open_a_video_and_go_back() {
     budget("tube back to Home", p50, 16_000);
 }
 
-/// Moving the pointer over the Home grid: every motion is a hover change.
 #[test]
 fn hosted_pointer_over_the_feed() {
     let mut app = hosted();
@@ -246,10 +234,6 @@ fn hosted_pointer_over_the_feed() {
     budget("tube pointer motion", p50, 2_000);
 }
 
-/// Results the network answers while a person looks at Home, each folded
-/// in the frame after it lands: a video's dislikes (shown only on its own
-/// page, so Home has nothing to redraw) and a crowdsourced title (shown on
-/// its card, so Home is rebuilt).
 #[test]
 fn hosted_frames_while_results_land() {
     let mut app = hosted();
@@ -293,8 +277,6 @@ fn hosted_frames_while_results_land() {
     budget("tube frame folding a result Home shows", p50, 6_000);
 }
 
-/// A playing video on its watch page: each new frame is a picture, the same
-/// size as the last, so it repaints and lays nothing out.
 #[test]
 fn hosted_playing_video_frames_lay_nothing_out() {
     let mut app = hosted();
@@ -303,7 +285,6 @@ fn hosted_playing_video_frames_lay_nothing_out() {
     app.settle();
     app.with_surface::<TubeApp, _>(TubeApp::play_synthesized_for_test)
         .expect("the window shows Tube");
-    // Let the first frames land and the page settle around the player.
     for _ in 0..10 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         app.harness().poll_frame().unwrap();

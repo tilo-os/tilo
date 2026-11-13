@@ -1,12 +1,4 @@
 //! Click-driven interaction tests.
-//!
-//! These build the real widget tree, run the real five-pass layout, resolve
-//! affordances by their laid-out rect, and inject real winit pointer events
-//! through `Widget::handle_event` — the exact production path (`ActionBus` drain →
-//! `TubeApp::apply`). No app-level shortcuts: a passing test means a real click
-//! at the real coordinates did the real thing. Controls that change the shared
-//! library go through the framework's door and are driven through the
-//! framework app in `resource.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -43,7 +35,6 @@ fn mount_at(app: TubeApp, viewport: (u32, u32), theme: Theme) -> Framed<TubeApp>
     framed
 }
 
-/// Click the control the host exports under `name`, then lay out again.
 fn click_control(framed: &mut Framed<TubeApp>, name: &str) {
     let harness = Framed::harness_mut(framed);
     let centre = harness
@@ -59,7 +50,6 @@ fn click_control(framed: &mut Framed<TubeApp>, name: &str) {
     harness.relayout();
 }
 
-/// Click the widget with test id `id`, then lay out again.
 fn click_id(framed: &mut Framed<TubeApp>, id: &str) {
     let harness = Framed::harness_mut(framed);
     harness
@@ -68,7 +58,6 @@ fn click_id(framed: &mut Framed<TubeApp>, id: &str) {
     harness.relayout();
 }
 
-/// Whether the window bar's navigation offers Back.
 fn bar_offers_back() -> bool {
     ui::window_toolbar::declared().is_some_and(|bar| !bar.leading.is_empty())
 }
@@ -105,9 +94,6 @@ fn image_draws(framed: &Framed<TubeApp>) -> usize {
         .count()
 }
 
-/// Paint the actual persistent player mounted by the watch page, including
-/// its shared controls. Window and poster material caches are outside this
-/// measurement, so only the timeline's additional segment fills differ.
 fn player_draws(app: TubeApp) -> usize {
     fn paint_player(widget: &mut dyn Widget, scene: &mut vello::Scene) -> bool {
         if widget.name() == "PlayerHost" {
@@ -194,8 +180,6 @@ impl Harness {
     }
 }
 
-/// A live Tube window, wide enough for the docked rail: a capture's controls
-/// start no effects.
 fn live_app() -> ui::framework::testing::TestApp<tube::TubeShell> {
     let mut app = ui::framework::testing::TestApp::<tube::TubeShell>::new().unwrap();
     #[allow(
@@ -208,7 +192,6 @@ fn live_app() -> ui::framework::testing::TestApp<tube::TubeShell> {
     app
 }
 
-/// A hermetic catalogue in the actual live host, retaining typed effects.
 fn live_catalogue() -> ui::framework::testing::TestApp<tube::TubeShell> {
     let mut app = live_app();
     app.with_surface::<TubeApp, _>(|surface| {
@@ -245,11 +228,7 @@ fn route(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> Route {
 
 #[test]
 fn the_rail_and_cards_navigate_and_back_returns() {
-    // Case `rail_items_open_their_destinations`.
     {
-        // The app boots on Home (never into a fake/placeholder video). Click the
-        // "Trending" rail item and prove the route follows: the rail item is
-        // bound to the show-screen effect the window's host answers.
         let mut app = live_app();
         assert_eq!(route(&mut app), Route::Home, "the app boots on Home");
 
@@ -260,7 +239,6 @@ fn the_rail_and_cards_navigate_and_back_returns() {
             "clicking the Trending tab navigates to Trending"
         );
     }
-    // Case `a_card_opens_its_video_and_escape_goes_back`.
     {
         let mut framed = mount(TubeApp::sample());
         click_id(&mut framed, "video_card_vid_donut");
@@ -273,13 +251,11 @@ fn the_rail_and_cards_navigate_and_back_returns() {
         Framed::harness_mut(&mut framed).relayout();
         assert_eq!(framed.route_for_test(), Route::Home, "Escape goes back");
     }
-    // Case `a_creator_tile_opens_the_creator`.
     {
         let mut framed = mount(TubeApp::sample().with_route_shot(Route::Subscriptions));
         click_id(&mut framed, "creator_ch_kurz");
         assert_eq!(framed.route_for_test(), Route::Channel("ch_kurz".into()));
     }
-    // Case `a_browsed_page_shows_back_and_it_returns`.
     for destination in [
         Route::Watch("vid_donut".into()),
         Route::Channel("ch_kurz".into()),
@@ -312,7 +288,6 @@ fn the_rail_and_cards_navigate_and_back_returns() {
             "Back returns to the page the content was opened from"
         );
     }
-    // Case `the_watch_page_gear_opens_settings`.
     {
         let mut framed = mount(TubeApp::sample().with_route_shot(Route::Watch("vid_donut".into())));
         click_control(&mut framed, "Playback settings");
@@ -324,14 +299,10 @@ fn the_rail_and_cards_navigate_and_back_returns() {
 fn another_rail_destination_navigates() {
     {
         let mut app = live_app();
-        // And a second tab, to prove it isn't a one-off.
         click(&mut app, "nav_settings");
         assert_eq!(route(&mut app), Route::Settings);
     }
-    // Case `shared_queue_is_a_real_navigation_destination`.
     {
-        // The queue has both a visible rail destination and a canonical navigation
-        // action, rather than being an agent-only collection hidden behind Ctrl+K.
         let mut app = live_app();
         click(&mut app, "nav_queue");
         assert_eq!(route(&mut app), Route::Queue);
@@ -361,8 +332,6 @@ fn rail_click_survives_a_layout_refresh_between_motion_and_press() {
     let centre = queue.center();
     app.harness()
         .send(&ui::synthetic_input::cursor_moved(centre.x, centre.y));
-    // An actual viewport change forces the host's composition/layout passes,
-    // unlike a fixture-only model flag that cached layout may never observe.
     app.harness().resize((VIEWPORT.0 + 1, VIEWPORT.1)).unwrap();
     assert!(
         app.harness()
@@ -402,7 +371,6 @@ fn rail_click_survives_a_layout_refresh_between_motion_and_press() {
 
 #[test]
 fn pages_lay_out_without_overlap_at_every_size() {
-    // Case `watch_page_parts_stack_in_reading_order`.
     for (viewport, scale) in [((1280, 800), 1.0), ((800, 600), 1.0), ((1280, 800), 2.0)] {
         let framed = mount_at(
             TubeApp::sample().with_route_shot(Route::Watch("vid_rust_async".into())),
@@ -421,7 +389,6 @@ fn pages_lay_out_without_overlap_at_every_size() {
             "the details sit under the player at {viewport:?} ×{scale}: {player:?} / {creator:?}"
         );
     }
-    // Case `a_short_grid_keeps_the_card_size_of_a_full_one`.
     for viewport in [(1280, 800), (800, 600)] {
         let width_on = |route: Route| {
             let framed = mount_at(
@@ -448,7 +415,6 @@ fn pages_lay_out_without_overlap_at_every_size() {
             "a creator's three videos are as wide as Home's at {viewport:?}: {home} vs {channel}; Home grids={home_grids:?}, extent={home_extent}; creator grids={channel_grids:?}, extent={channel_extent}"
         );
     }
-    // Case `home_cards_never_overlap`.
     for (viewport, scale) in [((1280, 800), 1.0), ((560, 800), 1.0), ((1280, 800), 2.0)] {
         let framed = mount_at(
             TubeApp::sample(),
@@ -468,11 +434,7 @@ fn pages_lay_out_without_overlap_at_every_size() {
             }
         }
     }
-    // Case `selected_nav_tab_is_visible_and_addressable_after_switch`.
     {
-        // After navigating, the selected tab must still resolve (it's re-rendered
-        // with the accent fill, same test_id) — i.e. selection is real, not a
-        // rendering dead-end.
         let mut app = live_app();
         click(&mut app, "nav_home");
         assert_eq!(route(&mut app), Route::Home);
@@ -481,13 +443,7 @@ fn pages_lay_out_without_overlap_at_every_size() {
             "the now-selected Home tab is still in the laid-out tree"
         );
     }
-    // Case `back_goes_to_the_narrow_rail_through_a_real_click`.
     {
-        // Too narrow for the rail beside the grid, the window shows one
-        // screen at a time and keeps the page it showed, a top-level page
-        // with no Back. The bar's sidebar toggle must go to the rail, and
-        // choosing a destination there must show its page, via real clicks,
-        // not app.apply.
         let mut app = live_app();
         app.harness().resize((340, 800)).unwrap();
         app.harness().relayout();
@@ -523,10 +479,6 @@ fn search_inputs_are_present_and_navigate() {
         app.harness()
             .set_theme(Theme::dark().with_text_scale(scale));
         if viewport.0 < 800 {
-            // At its first text size the window docks the rail beside the
-            // grid; the larger text leaves no room for both, so it shows one
-            // screen at a time and keeps the page it was on. The bar's
-            // sidebar toggle goes to the rail.
             let on_rail = app
                 .with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
                 .expect("the window shows Tube");
@@ -537,7 +489,6 @@ fn search_inputs_are_present_and_navigate() {
             }
             click(&mut app, "nav_home");
         }
-        // The window bar's search opens platform search narrowed to Tube.
         app.harness()
             .open_search(&ui::search::SearchRequest::this_app())
             .expect("the window bar's search opens");
@@ -581,13 +532,8 @@ fn search_inputs_are_present_and_navigate() {
             "search does not replace the app's page"
         );
     }
-    // Case `search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved`.
     {
-        // From a results list, opening a video and pressing Back must land on the
-        // EXACT same search results, with the scroll position preserved — all
-        // through real clicks on real widgets.
         let query = "rust";
-        // Use several sample video ids so the results list is long enough to scroll.
         let sample = tube::sample::model();
         let ids: Vec<String> = sample.videos.iter().map(|v| v.id.clone()).collect();
         assert!(
@@ -611,9 +557,6 @@ fn search_inputs_are_present_and_navigate() {
             .expect("results grid laid out")
             .y0;
 
-        // Open a *visible* result via a real click. The first result is now above
-        // the clipped viewport, so activating it would be a synthetic off-screen
-        // click rather than a user-visible search interaction.
         let opened = ids
             .iter()
             .find(|id| {
@@ -634,7 +577,6 @@ fn search_inputs_are_present_and_navigate() {
             "clicking a result opens its watch page"
         );
 
-        // Press the window bar's Back.
         assert!(
             h.has_id("back_btn"),
             "the Back affordance is present on the watch page"
@@ -647,7 +589,6 @@ fn search_inputs_are_present_and_navigate() {
         );
         assert!(h.has_id("video_grid"), "the results list is rendered again");
 
-        // Scroll position preserved: the grid resumes where it was, not reset to top.
         let grid_after_back = h
             .rect_by_id("video_grid")
             .expect("results grid re-laid out")
@@ -659,8 +600,6 @@ fn search_inputs_are_present_and_navigate() {
     }
 }
 
-/// Search from the window bar: a hit opens what it names, and anything
-/// else typed searches `YouTube` for it, with Enter alone.
 #[test]
 fn platform_search_opens_hits_and_searches_youtube() {
     let open_search = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
@@ -682,7 +621,6 @@ fn platform_search_opens_hits_and_searches_youtube() {
     open_search(&mut app);
     app.harness().type_text("compositor");
     app.settle();
-    // Past the row that searches `YouTube`, which leads.
     app.harness().key("ArrowDown");
     app.settle();
     app.harness().key("Enter");
@@ -704,12 +642,7 @@ fn platform_search_opens_hits_and_searches_youtube() {
 
 #[test]
 fn watch_page_lays_out_player_pills_and_timeline() {
-    // Case `watch_view_lays_out_the_shared_video_player_surface`.
     {
-        // The watch page mounts the app's persistent, media-engine-backed
-        // `ui::widget::VideoPlayer` (via `PlayerHost`) as its player surface. Assert
-        // it is laid out in the real widget tree on a watch route — proof the shared
-        // player reaches the screen.
         let app = TubeApp::sample().with_route_shot(Route::Watch("vid_donut".into()));
         let h = Harness::new(app, VIEWPORT);
         assert!(
@@ -721,10 +654,7 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             "the watch page lays out the shared video-player surface"
         );
     }
-    // Case `non_watch_views_have_no_video_player_surface`.
     {
-        // The dual: off a watch route (Home) the player surface must not be in the
-        // tree — the surface is scoped to the watch page, not always-on.
         let app = TubeApp::sample().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1));
         let h = Harness::new(app, VIEWPORT);
         assert_eq!(h.app.route_for_test(), Route::Home);
@@ -733,12 +663,7 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             "the video-player surface only exists on the watch page"
         );
     }
-    // Case `watch_player_is_height_driven_16x9_centered_and_clear_of_the_scrollbar`.
     {
-        // The player is sized by available HEIGHT (a true 16:9 box capped near ~65%
-        // of the viewport height), centered horizontally in the content lane, and
-        // clear of the reserved scrollbar gutter on the right — never a wide, short
-        // strip that overlaps the bar.
         let h = Harness::new(watch_app(), VIEWPORT);
         let player = h
             .rect_by_id("watch_video_surface")
@@ -749,13 +674,10 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             .get_rect()
             .x1; // docked rail width (86)
         let viewport_h = f64::from(VIEWPORT.1);
-        // The content lane: the split's content pane minus the reserved scrollbar
-        // gutter on the right.
         let lane_left = content_left;
         let lane_right =
             f64::from(VIEWPORT.0) - f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
 
-        // 16:9 aspect.
         let aspect = player.width() / player.height();
         assert!(
             (aspect - 16.0 / 9.0).abs() < 0.03,
@@ -763,7 +685,6 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             player.width(),
             player.height()
         );
-        // Height-driven: ~65% of the viewport height, not a fixed pixel cap.
         assert!(
             player.height() > 0.55 * viewport_h && player.height() <= 0.66 * viewport_h + 2.0,
             "player height {} should be ~65% of the {viewport_h}px viewport (bigger video)",
@@ -775,8 +696,6 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             "player centered in the content lane (center.x={}, lane center {lane_center})",
             player.center().x
         );
-        // Clear of the scrollbar gutter: the player's right edge never reaches the
-        // reserved bar lane.
         assert!(
             player.x1 <= lane_right + 0.5,
             "player right edge {} must stay left of the scrollbar lane ({lane_right})",
@@ -788,11 +707,7 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             player.x0
         );
     }
-    // Case `watch_page_lays_out_dislikes_pill_and_sponsorblock_timeline`.
     {
-        // The Return YouTube Dislike pill and the SponsorBlock segment timeline are
-        // both real widgets on the watch page (WATCH_ID carries sponsor segments and
-        // a seeded dislike count). Assert they're laid out in the real tree.
         let h = Harness::new(watch_app(), VIEWPORT);
         assert!(
             h.has_id("tube-dislikes"),
@@ -819,14 +734,6 @@ fn watch_page_lays_out_player_pills_and_timeline() {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// text-entry surfaces must be reachable
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// watch-page affordances
-// ---------------------------------------------------------------------------
 
 const WATCH_ID: &str = "vid_rust_async";
 
@@ -858,18 +765,11 @@ fn share_copies_a_link_through_a_real_click() {
             .unwrap(),
         "not liked to start"
     );
-    // with_surface runs another host tick and relayout, which can start new
-    // presentation work. Settle after that final inspection so click_named's
-    // target rectangle stays valid through the real hover/press/release path.
-    // settle() above flushes effects but does not await the NavShell entrance.
     assert!(
         app.harness()
             .settle_for_capture(tilo_test_env::hang_bound()),
         "the watch page must finish its entrance before clicking Share"
     );
-    // Observe the real effect through the window bar's notice.
-    // Under a busy shard, the click can enqueue work beyond the next host
-    // tick, so inspect the model only after that effect has appeared.
     tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click begins");
     app.harness().click_named("watch_copy_link").unwrap();
     tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click returned");
@@ -928,8 +828,6 @@ fn share_copies_a_link_through_a_real_click() {
     );
 }
 
-/// The settled watch page with the pointer resting on "Copy link", fed by a
-/// worker whose results the test lands; and that button's identity.
 fn hovering_copy_link() -> (
     ui::framework::testing::TestApp<tube::TubeShell>,
     tube::api::Updates,
@@ -961,9 +859,6 @@ fn copy_link_identity(app: &mut ui::framework::testing::TestApp<tube::TubeShell>
     std::ptr::from_ref(button).cast::<()>().addr()
 }
 
-/// A worker result lands, as the network answering does, and the next
-/// frame folds it: the watch page is rebuilt with fresh widgets while the
-/// pointer stays where it was.
 fn land_worker_result(
     app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
     results: &tube::api::Updates,
@@ -1008,8 +903,6 @@ fn link_copied(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> bo
     })
 }
 
-/// A person hovers "Copy link", the page updates under the still pointer,
-/// and they click. The click must not be lost.
 #[test]
 fn a_click_after_a_worker_result_rebuilt_the_page_still_shares() {
     let (mut app, results, button) = hovering_copy_link();
@@ -1022,7 +915,6 @@ fn a_click_after_a_worker_result_rebuilt_the_page_still_shares() {
     );
 }
 
-/// As above, but the worker result lands while the button is held down.
 #[test]
 fn a_worker_result_between_press_and_release_still_shares() {
     let (mut app, results, button) = hovering_copy_link();
@@ -1035,9 +927,6 @@ fn a_worker_result_between_press_and_release_still_shares() {
     );
 }
 
-/// The library changes while Share is held down, by this person's own
-/// committed edit or a collaborator's: the page is rebuilt from the new
-/// library, and the release still shares.
 #[test]
 fn a_library_update_between_press_and_release_still_shares() {
     use ui::tilo_resource::Invoke;
@@ -1067,34 +956,12 @@ fn a_library_update_between_press_and_release_still_shares() {
     }
 }
 
-// The play/pause and scrub transport now live in the shared `VideoPlayer`'s
-// controls overlay (driven by the `media::MediaEngine`), and SponsorBlock
-// auto-skip runs against the engine playhead each frame. Those paths are proven
-// against the real engine in `app.rs`'s `toggle_play_drives_the_engine` and
-// `auto_skip_seeks_the_engine_past_a_sponsor_segment` unit tests — the headless
-// click harness can't address the player's in-surface controls by id.
-
-// ---------------------------------------------------------------------------
-// settings-page controls
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// responsive nav rail — hamburger via a real click
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Scroll-performance + responsive-grid + real-image regressions
-// ---------------------------------------------------------------------------
-
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
 fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
-    // Case `home_grid_fills_the_row_with_no_right_gutter_across_widths`:
-    // The responsive grid fills each row edge-to-edge — no blank gutter on the
-    // right — and adds columns as the window widens. Driven at three widths.
     {
         let mut columns_per_width = Vec::new();
         for w in [1040.0_f32, 1360.0, 1760.0] {
@@ -1112,7 +979,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
                 cards.len()
             );
 
-            // The top row: cards sharing the smallest y0.
             let top_y = cards.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min);
             let mut top: Vec<&vello::kurbo::Rect> = cards
                 .iter()
@@ -1135,7 +1001,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
                     w0,
                 );
             }
-            // No right gutter: the rightmost card reaches the grid's right edge.
             let right = top.last().unwrap().x1;
             assert!(
                 (grid.x1 - right).abs() < 2.0,
@@ -1145,21 +1010,14 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
                 grid.x1 - right,
             );
         }
-        // Responsive: a wider window fits strictly more columns than a narrow one.
         assert!(
             columns_per_width.last() > columns_per_width.first(),
             "columns must grow with width: {columns_per_width:?}",
         );
     }
-    // Case `home_channel_avatars_render_the_fetched_photo`:
-    // A real creator avatar (fetched + decoded through the `ImageStore`) is
-    // painted on the Home cards — not the initials-only fallback. Drives the
-    // whole Home screen with a seeded store and asserts an IMAGE draw reaches
-    // the scene.
     {
         use std::sync::Arc;
 
-        // A solid-green PNG the store's decoder accepts.
         fn png_bytes() -> Vec<u8> {
             let (w, h) = (8u32, 8u32);
             let mut rgba = Vec::new();
@@ -1173,21 +1031,15 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         let bytes = png_bytes();
         let fetch: ui::Fetcher = Arc::new(move |_url: &str| Some(bytes.clone()));
         let store = ui::ImageStore::new(&fetch);
-        // Pre-warm so the single sync in the first frame resolves it immediately.
         let _ = store.get(avatar_url);
         store.block_until_idle(tilo_test_env::hang_bound());
 
-        // A Home model whose videos carry NO thumbnail URL (so the only image that
-        // can paint is the avatar) and whose uploader has a real avatar URL.
         let mut model = tube::sample::model();
         model.route = Route::Home;
         for v in &mut model.videos {
             v.thumbnail_url.clear();
         }
         let cid = model.videos[0].channel_id.clone();
-        // Set the avatar URL on that uploader's channel record.
-        // `channels` is walked via the model's public accessor; set through a fresh
-        // channel upsert so the avatar URL lands on the record the card reads.
         let found = if let Some(ch) = model.channels.iter_mut().find(|c| c.id == cid) {
             ch.avatar_url = avatar_url.to_string();
             true
@@ -1207,13 +1059,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             "a real decoded creator avatar must paint (IMAGE draw), got initials only",
         );
     }
-    // Case `reconciled_avatars_render_on_the_majority_of_home_cards`:
-    // The yt-dlp/rustypipe channel-record mismatch: most cards are uploaded by
-    // one creator whose *primary* channel record carries NO avatar, while a
-    // second record (a creator row, different id, same name) does. After
-    // `reconcile_channel_avatars` every card for that creator must resolve the
-    // real avatar — proving the reconciliation fixes the MAJORITY, not just one
-    // row.
     {
         use std::sync::Arc;
         use tube::model::{Channel, TubeModel, Video};
@@ -1234,9 +1079,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         let _ = store.get(avatar_url);
         store.block_until_idle(tilo_test_env::hang_bound());
 
-        // 12 videos all uploaded by "Creator X" via its PRIMARY record (id UC_A),
-        // which has NO avatar (the yt-dlp record). No thumbnails, so the only image a
-        // card can paint is the avatar.
         let mut model = TubeModel::default();
         for i in 0..12 {
             model.videos.push(Video {
@@ -1261,7 +1103,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
                 live: false,
             });
         }
-        // The primary uploader record (id UC_A) — NO avatar.
         model.channels.push(Channel {
             id: "UC_A".into(),
             name: "Creator X".into(),
@@ -1273,8 +1114,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             avatar_url: String::new(),
             banner_url: String::new(),
         });
-        // A SECOND record for the same creator (different id, same name) that DOES
-        // carry the avatar — the rustypipe creator row.
         model.channels.push(Channel {
             id: "UC_B".into(),
             name: "Creator X".into(),
@@ -1287,7 +1126,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             banner_url: String::new(),
         });
 
-        // Before reconciliation: the cards read UC_A (empty) → initials only.
         let app_before = TubeApp::sample()
             .with_viewport(1280.0, 900.0)
             .with_model_for_test(model.clone())
@@ -1309,9 +1147,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         let mut h = Harness::new(app, (1280.0, 900.0));
         let avatars_after = h.image_draw_count();
 
-        // A 1280×900 Home shows several rows of cards; after reconciliation the
-        // MAJORITY of the visible cards must paint a real avatar (many IMAGE draws),
-        // not the single row that happened to carry one.
         assert!(
             avatars_after >= 4,
             "the majority of visible cards must show a real avatar after reconcile \
@@ -1322,15 +1157,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             "reconciliation must increase real-avatar coverage (before={avatars_before}, after={avatars_after})",
         );
     }
-    // Case `laid_out_home_does_not_demand_relayout_a_scroll_perf_guard`:
-    // Scroll-perf guard: after a fully laid-out + drawn frame, NO widget in the
-    // Home tree may still demand a layout re-measure. A widget that reports "dirty"
-    // forever — e.g. an avatar keyed off a draw-time cache while it's culled
-    // off-screen — forces the enclosing `NavSplit` to rebuild a cosmic-text
-    // `FontSystem` + re-solve the whole content pane on EVERY scroll frame, measured
-    // at ~26 ms/frame when this regresses.
     {
-        // A large catalogue so most cards (and their avatars) are culled off-screen.
         let mut model = tube::sample::model();
         model.route = Route::Home;
         let base = model.videos.clone();
@@ -1347,8 +1174,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             .with_viewport(1280.0, 900.0)
             .with_model_for_test(model);
         let mut h = Harness::new(app, (1280.0, 900.0));
-        // One real drawn frame (visible widgets warm their caches, off-screen ones
-        // are culled — exactly the state a scroll leaves the tree in).
         let _ = h.image_draw_count();
 
         assert!(
@@ -1361,7 +1186,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
 
 #[test]
 fn fetched_images_reach_the_scene() {
-    // Case `home_cards_paint_fetched_thumbnails`.
     {
         let thumb = "http://test.local/thumb.png";
         let bytes = png([20, 200, 60, 255]);
@@ -1385,7 +1209,6 @@ fn fetched_images_reach_the_scene() {
             "the decoded thumbnails paint on the Home cards"
         );
     }
-    // Case `the_watch_page_paints_the_creator_avatar`.
     {
         let avatar = "http://test.local/avatar.png";
         let bytes = png([200, 60, 20, 255]);
@@ -1413,7 +1236,6 @@ fn fetched_images_reach_the_scene() {
     }
 }
 
-/// Leaf widgets that still ask for a layout re-measure.
 fn measure_demands(w: &dyn Widget, path: &str, out: &mut Vec<String>) {
     let here = format!("{path}/{}", w.name());
     let children = w.children();
@@ -1430,8 +1252,6 @@ fn measure_demands(w: &dyn Widget, path: &str, out: &mut Vec<String>) {
 
 #[test]
 fn laid_out_pages_do_not_demand_a_relayout_while_scrolling() {
-    // A widget that reports itself dirty forever makes the host re-solve the
-    // whole page on every scroll frame, which is the scroll-jank regression.
     for route in [
         Route::Home,
         Route::Subscriptions,
@@ -1449,9 +1269,6 @@ fn laid_out_pages_do_not_demand_a_relayout_while_scrolling() {
     }
 }
 
-/// The shared settings switch keeps its named, stateful semantic surface;
-/// activation crosses the real typed effect boundary and pointer hit-testing
-/// stays within the switch rather than its whole form row.
 #[test]
 fn shared_settings_toggle_exposes_state_and_applies_the_preference() {
     let mut app = live_app();
@@ -1549,8 +1366,6 @@ fn draw_cards(
         .sum()
 }
 
-/// Missing fetched media still paints the actual shared card and banner
-/// placeholders, without submitting any decoded IMAGE draw.
 #[test]
 fn unfetched_media_paints_shared_placeholders() {
     for route in [Route::Home, Route::Channel("ch_kurz".into())] {
@@ -1581,8 +1396,6 @@ fn unfetched_media_paints_shared_placeholders() {
     }
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(
