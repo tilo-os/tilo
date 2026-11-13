@@ -18,7 +18,7 @@ pub(crate) struct Custody {
     host: HostIdentity,
     principal: String,
     device: String,
-    workspace: u64,
+    workspace: collab_types::WorkspaceId,
     active: AtomicBool,
     generation: AtomicU64,
 }
