@@ -33,11 +33,6 @@ use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
 mod covered_records;
-mod durable_before_owner;
-pub(crate) use durable_before_owner::{
-    DURABLE_BASE_VERSION, DurableV4, DurableV5, DurableV6, GOVERNANCE_LAYOUT_BEFORE,
-    durable_base_version,
-};
 mod member_records;
 use member_records::{empty_genesis, empty_genesis_op};
 mod facades;
@@ -99,6 +94,11 @@ mod admitting;
 mod authority;
 mod construction;
 mod durable;
+#[cfg(test)]
+pub(crate) use durable::{
+    DURABLE_BASE_VERSION, Durable, DurableV4, DurableV5, DurableV6, GOVERNANCE_LAYOUT_BEFORE,
+    durable_base_version,
+};
 mod receiving;
 mod records;
 mod sealing;
@@ -588,6 +588,9 @@ mod administrators_tests;
 #[cfg(test)]
 #[path = "state/admitting_tests.rs"]
 mod admitting_tests;
+#[cfg(test)]
+#[path = "state/durable_tests.rs"]
+mod durable_tests;
 #[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;
