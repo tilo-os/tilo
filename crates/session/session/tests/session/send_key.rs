@@ -120,13 +120,22 @@ fn tab_apps(session: &Session) -> Vec<String> {
 }
 
 /// The send key over a desk with no window in front opens Chat, which is what a send with nothing
-/// to be about has always opened.
+/// to be about has always opened, on a device that has Chat.
 #[test]
 fn the_send_key_over_an_empty_desk_opens_chat() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         collab: false,
+        lists: tilo_session::Lists::fixed(tilo_session::AppLists {
+            applications: vec![tilo_desktop_search::providers::AppEntry {
+                id: "so.tilo.chat".into(),
+                title: "Chat".into(),
+                category: None,
+                description: None,
+            }],
+            ..tilo_session::AppLists::default()
+        }),
         ..Options::default()
     });
     session.step(Duration::from_millis(1)).expect("a frame");
