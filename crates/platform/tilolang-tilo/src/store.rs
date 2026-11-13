@@ -859,6 +859,12 @@ impl TiloStore {
             .collect()
     }
 
+    /// Whether the store holds chunk `chunk`.
+    #[must_use]
+    pub(crate) fn holds_chunk(&self, chunk: ChunkNo) -> bool {
+        self.held().chunks.mirror(chunk).is_some()
+    }
+
     /// What the store did so far.
     #[must_use]
     pub fn stats(&self) -> StoreStats {

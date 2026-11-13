@@ -348,6 +348,14 @@ impl Chunks {
         }
     }
 
+    /// Keep only the chunks `keep` says to.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(ChunkNo) -> bool) {
+        if !keep(FIRST) {
+            self.first = None;
+        }
+        self.more.retain(|chunk, _| keep(*chunk));
+    }
+
     /// The number of the chunk the resource `id` is stored in, as the record's manifest places
     /// it: [`FIRST`] for a resource the manifest does not name.
     #[must_use]

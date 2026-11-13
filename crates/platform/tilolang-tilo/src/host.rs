@@ -179,10 +179,13 @@ pub(crate) struct HostInner {
     /// The resource the last action planned returned, whoever invoked it, with the action:
     /// what its invocation answers.
     returned: RefCell<Option<(String, ResourceRef)>>,
-    /// The chunks of the workspace record this replica holds, as the host was last given them,
-    /// shared with the store's chunk loader: a chunk the store was not sent is read from here
-    /// when a read or a write reaches it.
+    /// The chunks of the workspace record this replica holds that the store does not, shared
+    /// with the store's chunk loader: a chunk the store was not sent is read from here when a
+    /// read or a write reaches it. A chunk the store holds is left out: a second holder of the
+    /// record's document would make the record's next write copy the whole of it.
     chunks: Rc<RefCell<crate::chunk::Chunks>>,
+    /// The heads of the record's chunks as the host was last given them.
+    synced: RefCell<crate::chunk::Stamps>,
     /// Whether the store's chunk loader reads [`Self::chunks`].
     chunk_loader: Cell<bool>,
     /// When the packages' triggers next have something to run.
@@ -960,7 +963,9 @@ impl Host {
         // The chunks of the record the caller holds: the store reads them as it reaches into
         // them, and an index over a record whose manifest names chunks it does not hold yet
         // waits for them rather than build over the record's own chunk alone.
-        let chunks = Rc::new(RefCell::new(opening.chunks.cloned().unwrap_or_default()));
+        let chunks = opening.chunks.cloned().unwrap_or_default();
+        let synced = RefCell::new(chunks.heads());
+        let chunks = Rc::new(RefCell::new(chunks));
         if opening.chunks.is_some() {
             let source = Rc::clone(&chunks);
             store.set_chunk_loader(Box::new(move |chunk| {
@@ -991,6 +996,7 @@ impl Host {
             suspended: RefCell::default(),
             produced: RefCell::default(),
             returned: RefCell::default(),
+            synced,
             chunks,
             chunk_loader: Cell::new(can_load_chunks),
             triggers,
@@ -1413,12 +1419,11 @@ impl Host {
         // arrives later is read with the changes it has then. A frame that brings no change
         // keeps the cell as it stands: taking the record in is a copy of its manifest, which
         // every frame of a large workspace would pay.
-        let moved = {
-            let held = self.inner.chunks.borrow();
-            held.heads() != record.heads()
-        };
+        let heads = record.heads();
+        let moved = *self.inner.synced.borrow() != heads;
         if moved {
             *self.inner.chunks.borrow_mut() = record.clone();
+            *self.inner.synced.borrow_mut() = heads;
         }
         if !self.inner.chunk_loader.replace(true) {
             let chunks = Rc::clone(&self.inner.chunks);
@@ -1428,7 +1433,12 @@ impl Host {
         }
         // The lists a window opens over must hold every row the workspace does, and an index
         // that reflects fewer chunks than the manifest names cannot say the rows it lacks.
-        (moved && self.inner.store.sync_held(record)) | self.inner.store.load_short()
+        let synced = (moved && self.inner.store.sync_held(record)) | self.inner.store.load_short();
+        self.inner
+            .chunks
+            .borrow_mut()
+            .retain(|chunk| !self.inner.store.holds_chunk(chunk));
+        synced
     }
 
     /// Bring the runtime's view of a record kept as one document up to date; see
