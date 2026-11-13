@@ -46,10 +46,16 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
   stack.sh logs NAME     a service's log (relay, tls, api, web, discord, releases, mail)
   stack.sh mail          the mail the door sent (wait-list confirmations,
                          invitations), with the links in each
-  stack.sh owner KEY     declare the person with user public key KEY an owner
+  stack.sh owner [KEY]   declare the person with user public key KEY an owner
                          of the Lounge (its roles file): the door, which takes
                          people by invitation as production's does, lets
-                         them in, and they invite the others
+                         them in, and they invite the others. Without KEY,
+                         the identity this computer's tilo command holds
+                         (tilo login --new-identity makes it, once), whose
+                         key it then approves: an export TILO_API_KEY=… line
+                         in $state/operator.env, with which
+                         tilo members invite -w Lounge prints an invite link.
+                         `up` does this on its own (TILO_SH_OWNER=0 not)
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -110,7 +116,7 @@ Images: TILO_SH_IMAGE_LOUNGE, TILO_SH_IMAGE_API and TILO_SH_IMAGE_WEB name an
 OCI archive or a registry reference instead of this checkout's t build (e.g.
 the registry.tilo.so/tilo/lounge@sha256:… production pins).
 TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
-root through sudo).
+root through sudo). TILO_SH_OWNER=0 declares no owner on up.
 State: TILO_SH_STATE (default \${XDG_STATE_HOME:-~/.local/state}/tilo-sh-local).
 Needs t, bwrap, curl, python3, wasm-bindgen and wasm-opt (for the bundle);
 with --images, podman (rootless is fine) instead of bwrap and the toolchain.
@@ -445,6 +451,11 @@ start_mail() {
 # gets in to invite the others. The relay takes the file in within seconds.
 declare_owner() {
   local key=${1:-}
+  local tilo=''
+  if [[ -z $key ]]; then
+    tilo=$(find_tilo)
+    key=$("$tilo" login --new-identity) || die "the tilo command made no identity ($tilo login --new-identity)"
+  fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab that opened the site names it in its localStorage key tilo-own-workspace-named:ORIGIN:KEY)'
   [[ -f $state/secrets/roles.json ]] || die 'the stack has not run here yet: stack.sh up'
   python3 -I - "$state/secrets/roles.json" "$key" <<'PY'
@@ -460,6 +471,16 @@ with open(tmp, 'w') as out:
 os.replace(tmp, path)
 PY
   say "$key is declared an owner of the Lounge ($state/secrets/roles.json)"
+  [[ -n $tilo ]] || return 0
+  # The identity approves its own key, as its Tilo on the web would: the
+  # door lets it in once the relay has read the roles file.
+  if [[ ! -s $state/operator.env ]] || ! grep -q "# $key\$" "$state/operator.env"; then
+    local made
+    made=$(TILO_API_URL=$api_origin "$tilo" keys create 'stack.sh operator') \
+      || die "the identity's key was not approved (TILO_API_URL=$api_origin $tilo keys create)"
+    (umask 077 && printf '%s\n# %s\n' "$made" "$key" > "$state/operator.env")
+  fi
+  say "its key: eval \"\$(head -1 $state/operator.env)\"; then TILO_API_URL=$api_origin tilo members invite -w Lounge prints an invite link"
 }
 
 # The mails the door sent, oldest first: who to, the subject and the links in
@@ -1225,6 +1246,11 @@ up() {
     seed "$(cat "$state/relay/lounge/room-id")"
   fi
   say "up in $((SECONDS - began))s ($mode)"
+  # The operator is the Lounge's owner from the start, as this computer's tilo
+  # identity: one command away from an invite link.
+  if [[ ${TILO_SH_OWNER:-1} != 0 ]]; then
+    (declare_owner) || say 'no tilo identity declared an owner (stack.sh owner KEY declares one)'
+  fi
   status
 }
 

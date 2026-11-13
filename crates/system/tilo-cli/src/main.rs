@@ -46,6 +46,7 @@ mod desktop;
 mod docs;
 mod health;
 mod hosted;
+mod identity;
 mod login;
 mod mcp;
 mod nouns;
@@ -296,7 +297,17 @@ enum Cmd {
                       computer already set up, a sign-in code (\"Sign in with your agent\") signs that tab in as you.")]
     Login {
         /// The code your Tilo tab shows, like K7Q-MX2P.
-        code: String,
+        #[arg(required_unless_present = "new_identity")]
+        code: Option<String>,
+        /// Instead: make a Tilo identity whose root this computer holds (or
+        /// say it has one), and print its user public key. A host's operator
+        /// declares that key an owner; `tilo keys create` then approves its
+        /// keys here, with no browser.
+        #[arg(long, conflicts_with_all = ["code", "agent"])]
+        new_identity: bool,
+        /// The new identity's name, as workspaces show it.
+        #[arg(long, requires = "new_identity")]
+        name: Option<String>,
         /// The agent that runs here, as your workspace shows it; found by
         /// itself when not given (Claude Code, Codex, Gemini CLI, ...).
         #[arg(long)]
@@ -944,7 +955,18 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Agent { cmd } => agent::run(cmd),
-        Cmd::Login { code, agent, site } => login::login(&code, agent.as_deref(), site.as_deref()),
+        Cmd::Login {
+            new_identity: true,
+            name,
+            ..
+        } => identity::new_identity(name.as_deref()),
+        Cmd::Login {
+            code, agent, site, ..
+        } => login::login(
+            code.as_deref().unwrap_or_default(),
+            agent.as_deref(),
+            site.as_deref(),
+        ),
         Cmd::Mcp => mcp::serve(),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),

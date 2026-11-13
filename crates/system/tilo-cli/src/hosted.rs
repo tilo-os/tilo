@@ -752,10 +752,16 @@ async fn create_key(
             .unwrap_or(2)
             .max(1),
     );
-    eprintln!(
-        "Approve the key in your Tilo:\n\n  {}\n\nWaiting for you…",
-        field("approve_url")
-    );
+    // A computer that holds the person's root approves as their Tilo would.
+    if let Some(person) = crate::identity::held()? {
+        crate::identity::approve(&person, field("approve_url")).await?;
+        eprintln!("Approved here, as {}.", person.name);
+    } else {
+        eprintln!(
+            "Approve the key in your Tilo:\n\n  {}\n\nWaiting for you…",
+            field("approve_url")
+        );
+    }
     loop {
         tokio::time::sleep(interval).await;
         let answer = http

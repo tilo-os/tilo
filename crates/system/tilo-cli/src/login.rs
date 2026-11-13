@@ -58,7 +58,7 @@ const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where the
 /// The HTTPS client every request here goes through.
 static CLIENT: OnceLock<tilo_net::Client> = OnceLock::new();
 
-fn http() -> tilo_net::Client {
+pub(crate) fn http() -> tilo_net::Client {
     CLIENT.get_or_init(tilo_net::Client::new).clone()
 }
 
@@ -275,7 +275,7 @@ pub fn logged_in() -> bool {
 }
 
 /// This computer's name, as a device label says it.
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
         .map(|name| name.trim().to_owned())
