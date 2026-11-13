@@ -8,33 +8,27 @@
 //!     TRUST_DIR  default /usr/share/tilo/release (trust.env, root.crt)
 //! ```
 //!
-//! Exits 0 only when the parsed policy proves the requirement. Anything this
-//! check cannot prove (an unreadable file, malformed JSON, a duplicate key, an
-//! unknown requirement field, missing release trust) is a failure, never a
-//! pass: exit 1 with the reason on stdout, exit 2 for a usage error. The boot
-//! security audit (`tilo-security-audit`) runs it; it only reads, never
-//! repairs.
+//! Exits 0 only when the parsed policy proves the requirement; anything it cannot
+//! prove (an unreadable file, malformed JSON, a duplicate key, an unknown
+//! requirement field, missing release trust) exits 1 with the reason on stdout, and
+//! a usage error exits 2. It only reads, never repairs.
 //!
-//! The release requirement depends on the installed trust. Without
-//! `TRUST_DIR/root.crt` it is the pinned release key (`keyPath`); with it, a
-//! certificate chain to that offline root (`fulcio`: the e-mail identity
-//! `os-images@<domain>` and the OIDC-issuer value of the current epoch from
-//! `TRUST_DIR/trust.env`). An image that carries the root but whose policy
-//! still pins the bare key has been downgraded, and fails. Either way the
-//! signature must carry a transparency-log entry (`rekorPublicKeyPath`).
+//! The release requirement depends on the installed trust: without
+//! `TRUST_DIR/root.crt` the pinned release key (`keyPath`); with it, a certificate
+//! chain to that offline root (`fulcio`: the e-mail identity `os-images@<domain>`
+//! and the OIDC-issuer value of the current epoch from `TRUST_DIR/trust.env`). An
+//! image that carries the root but whose policy still pins the bare key has been
+//! downgraded, and fails. Either way the signature must carry a transparency-log
+//! entry (`rekorPublicKeyPath`).
 //!
-//! The rules mirror containers-policy.json(5): requirements in a scope's list
-//! are `AND`ed, and the most specific docker scope wins. So every required
-//! scope must exist and hold only release requirements, and no scope at or
-//! beneath a Tilo namespace (a tag, a digest, a sibling repository, the
-//! namespace itself) may accept anything less than that or an outright
-//! reject. The repositories Tilo publishes but a machine must never run
-//! unsigned are checked by their effective rule, whichever scope supplies it.
-//!
-//! The default must be a reject, and `insecureAcceptAnything` may appear only
-//! where `tools/signing/release_trust.py` (which writes the policy, with the
-//! reasons) allows it: public registries a person pulls from by choice, and
-//! local transports that fetch nothing.
+//! The rules mirror containers-policy.json(5): requirements in a scope's list are
+//! `AND`ed and the most specific docker scope wins, so every required scope must
+//! hold only release requirements, and no scope at or beneath a Tilo namespace (a
+//! tag, a digest, a sibling repository, the namespace itself) may accept anything
+//! less or an outright reject. The default must be a reject, and
+//! `insecureAcceptAnything` may appear only where `tools/signing/release_trust.py`
+//! (which writes the policy, with the reasons) allows it: public registries a
+//! person pulls from by choice, and local transports that fetch nothing.
 
 mod json;
 
@@ -49,8 +43,7 @@ pub const DEFAULT_TRUST_DIR: &str = "/usr/share/tilo/release";
 pub const PINNED_KEY: &str = "/usr/share/tilo/cosign.pub";
 pub const INSTALLED_ROOT: &str = "/usr/share/tilo/release/root.crt";
 pub const INSTALLED_REKOR: &str = "/usr/share/tilo/release/rekor.pub";
-/// The operational-certificate purpose OS images and the legacy guest are
-/// signed under.
+/// The purpose OS images and the legacy guest are signed under.
 pub const PURPOSE: &str = "os-images";
 /// The scopes Tilo OS images are pulled and updated from.
 pub const REQUIRED_SCOPES: [&str; 2] = ["registry.tilo.so/tilo/tilo", "code.tilo.so/tilo/tilo"];
@@ -460,7 +453,6 @@ pub struct DeveloperOverride {
     pub key: String,
 }
 
-/// What a policy failed on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     /// The policy does not prove the requirement (`PolicyError`).
