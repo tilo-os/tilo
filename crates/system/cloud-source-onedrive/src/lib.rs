@@ -1,10 +1,5 @@
 //! `OneDrive` as a [`cloud_source::CloudSource`], over Microsoft Graph.
 //!
-//! One provider covers consumer `OneDrive`, `OneDrive` for Business and
-//! `SharePoint` document libraries: all three are a Graph `drive`, addressed
-//! by its id. A mount is a folder of that drive (the drive root, or any
-//! folder below it).
-//!
 //! - **Items by id, with paths.** [`ItemId`]s are Graph item ids. Creating
 //!   addresses the new item by path below its parent
 //!   (`items/{parent}:/{name}:`); [`OneDriveSource::item_at`] resolves a path
@@ -63,7 +58,6 @@ use graph::{Drive, DriveItem, DriveType, Page, Permission, Version};
 use http::{Auth, Http};
 use tilo_lock::MutexRecover as _;
 
-/// Microsoft Graph v1.0.
 pub const GRAPH_API: &str = "https://graph.microsoft.com/v1.0/";
 /// Upload fragments must be multiples of this (320 KiB).
 pub const FRAGMENT_UNIT: u64 = 320 * 1024;
@@ -75,26 +69,21 @@ pub const MAX_UPLOAD_CHUNK: u64 = 191 * FRAGMENT_UNIT;
 /// the mount root.
 const MAX_DEPTH: usize = 512;
 
-/// Which drive to mount.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DriveSelector {
-    /// The signed-in person's own `OneDrive` (`/me/drive`).
     Me,
     /// A drive by id: another person's `OneDrive` for Business shared with
     /// them, or a `SharePoint` document library.
     Id(String),
 }
 
-/// Which folder of the drive is the mount root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RootSelector {
     DriveRoot,
     Item(String),
-    /// A path below the drive root, `/`-separated.
     Path(String),
 }
 
-/// What to mount. Contains no secret.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OneDriveConfig {
     /// The Graph endpoint, ending in `/`: [`GRAPH_API`], or a national
@@ -108,7 +97,6 @@ pub struct OneDriveConfig {
 }
 
 impl OneDriveConfig {
-    /// The whole of the signed-in person's `OneDrive`.
     pub fn me() -> Self {
         Self {
             api: GRAPH_API.to_owned(),
@@ -140,7 +128,6 @@ pub struct Mount {
     pub upload_chunk: u64,
 }
 
-/// A mounted `OneDrive` folder.
 #[derive(Clone)]
 pub struct OneDriveSource {
     mount: Arc<Mount>,
@@ -150,7 +137,6 @@ pub struct OneDriveSource {
     scope: Arc<Mutex<HashMap<String, bool>>>,
 }
 
-/// The persisted form of a delta [`Cursor`].
 #[derive(Serialize, Deserialize)]
 struct DeltaCursor {
     link: String,
@@ -221,7 +207,6 @@ impl OneDriveSource {
         Ok(Self::with_http(mount, http))
     }
 
-    /// A source for an already resolved mount. No request is made.
     pub fn new(mount: Mount, credentials: Arc<dyn CredentialSource>) -> Result<Self> {
         Ok(Self::with_http(mount, Http::new(credentials)?))
     }
@@ -236,12 +221,10 @@ impl OneDriveSource {
         }
     }
 
-    /// The resolved mount, for persisting.
     pub fn mount(&self) -> &Mount {
         &self.mount
     }
 
-    /// `…/drives/{drive-id}/`.
     fn drive_url(&self) -> String {
         format!(
             "{}drives/{}/",
@@ -250,12 +233,10 @@ impl OneDriveSource {
         )
     }
 
-    /// `…/drives/{drive-id}/items/{id}`.
     fn item_url(&self, id: &str) -> String {
         format!("{}items/{}", self.drive_url(), paths::encode_segment(id))
     }
 
-    /// `…/items/{parent}:/{name}:`, addressing a child by name.
     fn child_url(&self, parent: &str, name: &str) -> Result<String> {
         if !paths::valid_name(name) {
             return Err(Error::InvalidResponse("file name"));
@@ -315,7 +296,6 @@ impl OneDriveSource {
         self.scope.lock_recover()
     }
 
-    /// Whether `folder` is the mount root or lies below it.
     fn inside(&self, folder: &str) -> Result<bool> {
         let (root, drive_root) = (&self.mount.root, &self.mount.drive_root);
         if root == drive_root {
@@ -386,7 +366,6 @@ impl OneDriveSource {
         }
         let failure = http::failure(response);
         if failure.status == StatusCode::GONE {
-            // resyncRequired: start over, where Graph says.
             return Ok(Err(failure.location));
         }
         Err(self.http.error(failure, Auth::Bearer))
@@ -734,7 +713,6 @@ impl CloudSource for OneDriveSource {
                 None => break,
             }
         }
-        // Graph lists newest first; keep that order for equal timestamps.
         out.sort_by_key(|info| std::cmp::Reverse(info.modified));
         Ok(out)
     }
@@ -762,7 +740,6 @@ impl CloudSource for OneDriveSource {
         if !status.is_success() {
             return Err(self.http.error(http::failure(response), Auth::Bearer));
         }
-        // Served directly: the whole body, cut to the range here.
         let total = response
             .content_length()
             .ok_or(Error::InvalidResponse("download length"))?;
