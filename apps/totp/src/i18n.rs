@@ -1,13 +1,8 @@
-//! Authenticator's Fluent catalogue.
-//!
-//! User-facing strings are keys, never literals, resolved through the toolkit's
-//! [`mod@ui::i18n`] manager. The catalogue is embedded with `include_str!`, so there
-//! is no build step and no runtime file I/O — a `--shots` render and a unit test
-//! resolve the same strings a live session does.
+//! Authenticator's Fluent catalogue, resolved through the toolkit's i18n
+//! manager.
 
 ui::embedded_catalog!(pub fn, ["de-DE", "en-US"]);
 
-/// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
     CATALOG.ensure();
 }
@@ -18,8 +13,7 @@ mod tests {
 
     #[test]
     fn every_key_the_app_uses_resolves_to_a_real_string() {
-        // A key that resolves to itself is a key with no catalogue entry — the
-        // failure mode that ships an untranslatable literal to a screen.
+        // A key that resolves to itself has no catalogue entry.
         for key in [
             "totp-add-title-add",
             "totp-add-title-edit",
@@ -50,9 +44,7 @@ mod tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source
-/// catalogue beside it.
+/// German copy comes from `locales/de-DE.ftl`, not the English catalogue.
 #[cfg(test)]
 mod german_window {
     #[test]

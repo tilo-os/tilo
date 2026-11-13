@@ -1,16 +1,7 @@
-//! The account list — the app's main screen.
-//!
-//! One [`ListRowFace`] per account: the account's avatar, its issuer and
-//! account name, and, hovered, the row's actions. The rotating code and its
-//! countdown ring sit in the row's trailing column, drawn from the live
-//! wall clock every frame, so the list animates without any timer plumbing.
-//! A shared account whose key is not on this device shows a "Set up" button
-//! there instead of a code.
-//!
-//! Interaction is reported to the app as [`ListEvent`]s
-//! ([`AccountList::take_events`]): clicking a row selects it, clicking its
-//! code copies it, and the hover actions edit, reorder and delete it. With no
-//! accounts the list is empty; the view's empty state stands over it.
+//! The account list: one row per account with its avatar, its names, its
+//! rotating code and countdown ring, and its hover actions. Codes are drawn from
+//! the wall clock each frame, so no timer drives them. Interaction comes back as
+//! [`ListEvent`]s from [`AccountList::take_events`].
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -30,17 +21,14 @@ use ui::widget::{
 use crate::model::{Account, AccountId, account_color};
 use crate::totp;
 
-/// Seconds left in a period at which the countdown ring turns to a warning.
 pub(crate) const EXPIRING_SECONDS: u32 = 5;
-/// The widest six- and eight-digit codes, which size the code column so
-/// every row's code and ring line up whichever account is shown.
+/// The widest six- and eight-digit codes, which size the code column.
 const CODE_PROBE: &str = "0000\u{2009}0000";
 
-/// What the user did in the list, drained by the app each frame.
+/// What the user did in the list, drained each frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListEvent {
     Copy(AccountId),
-    /// Show this row's code for a few seconds, then veil it again.
     Reveal(AccountId),
     Select(AccountId),
     Edit(AccountId),
@@ -51,18 +39,15 @@ pub enum ListEvent {
     SetUp(AccountId),
 }
 
-/// Which part of a row the pointer is over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Zone {
     Body,
-    /// The code and ring: copies the code.
     Code,
-    /// One of the row's hover actions, by index in its command list.
+    /// A hover action, by index in the row's command list.
     Action(usize),
     SetUp,
 }
 
-/// A hover action of a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowCommand {
     Edit,
@@ -103,8 +88,7 @@ impl RowCommand {
     }
 }
 
-/// The commands of the row at `index` among `count`: reordering offers only
-/// the directions that exist.
+/// Reordering offers only the directions that exist.
 fn commands(index: usize, count: usize) -> Vec<RowCommand> {
     let mut commands = vec![RowCommand::Edit];
     if index > 0 {
@@ -117,16 +101,13 @@ fn commands(index: usize, count: usize) -> Vec<RowCommand> {
     commands
 }
 
-/// Sizes the rows are laid out with, measured from the theme and the live
-/// text renderer so they grow with the text scale.
+/// Row sizes, measured from the theme and the text renderer so they grow with
+/// the text scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Metrics {
     row_h: f64,
-    /// Inset from a row's edges, and the gap between its parts.
     pad: f64,
     gap: f64,
-    /// Space above the first row and below the last, and around the code's
-    /// hover pill.
     edge: f64,
     ring: f64,
     code_w: f64,
@@ -146,7 +127,6 @@ impl Metrics {
             pad: f64::from(spacing.s3),
             gap: f64::from(spacing.s3),
             edge,
-            // A small ring that holds the seconds left.
             ring: ProgressRingFace::new(0.0)
                 .size(ProgressRingSize::Small)
                 .value("30")
@@ -156,59 +136,44 @@ impl Metrics {
         }
     }
 
-    /// Width of a code row's trailing control: the code, a gap and the ring.
     fn code_control(&self) -> f64 {
         self.ring + self.gap + self.code_w
     }
 }
 
-/// The rotating code's style: a `Title` in the secret kind, so the digits
-/// are tabular and unambiguous.
+/// The code's style: a `Title` in the secret kind, so its digits are tabular and
+/// unambiguous.
 fn code_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Title).with_kind(TextKind::Secret)
 }
 
-/// Where the parts of one row are, relative to the row's top-leading corner
-/// so they follow it as the list scrolls.
+/// Where the parts of one row are, relative to the row's top-leading corner.
 #[derive(Clone, Debug, Default)]
 struct RowLayout {
-    /// What the [`ListRowFace`] paints: the whole row.
     face: Rect,
-    /// The width the face reserves at its trailing edge for the code and
-    /// ring, or for the "Set up" button and its caption.
     trailing: f64,
-    /// What a row without a key says about it, left of its button; empty when
-    /// the row is too narrow to say it.
+    /// What a row without a key says about it; empty when the row is too narrow to
+    /// say it.
     caption: Rect,
-    /// The code and ring's hover and hit area; empty for a row without a key.
     code: Rect,
-    /// The "Set up" button; empty for a row with a key.
     set_up: Rect,
-    /// The hover actions, in command order.
     actions: Vec<Rect>,
 }
 
 pub struct AccountList {
-    /// The area the list fills: below the window's header row.
     rect: Rect,
-    /// The readable column inside it that rows stand in.
     column: Rect,
     accounts: Vec<Account>,
     selected: Option<AccountId>,
     scroller: ScrollRegion,
-    /// The theme of the last paint, which the scroll region's lanes, steps
-    /// and fade read between paints.
     theme: Theme,
     hover: Option<(usize, Zone)>,
     last_mouse: Point,
     events: Vec<ListEvent>,
-    /// Measured on each paint and read back by hit-testing and the
-    /// accessibility bounds, so the rows the pointer targets are the rows that
-    /// were painted. `None` until the first paint.
+    /// Measured each paint; hit-testing and the accessibility bounds read the same
+    /// layout. `None` until the first paint.
     metrics: Option<Metrics>,
     layouts: Vec<RowLayout>,
-    /// The empty state's action, once painted.
-    /// The one row whose code is shown, and when the veil returns.
     revealed: Option<(AccountId, ui::time::Instant)>,
 }
 
@@ -236,7 +201,6 @@ impl AccountList {
         }
     }
 
-    /// Replace the (already ordered) accounts the list shows.
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
         self.accounts = accounts;
         self.layouts.clear();
@@ -251,7 +215,6 @@ impl AccountList {
         self.selected
     }
 
-    /// Place the list in `rect`; rows stand in `column`, a readable strip of it.
     pub fn set_viewport(&mut self, rect: Rect, column: Rect) {
         self.rect = rect;
         self.column = column;
@@ -271,14 +234,12 @@ impl AccountList {
         self.accounts.is_empty()
     }
 
-    /// Show `index`'s row hovered, as a capture of the hover state needs.
     pub(crate) fn stage_hover(&mut self, index: usize, code: bool) {
         self.hover = Some((index, if code { Zone::Code } else { Zone::Body }));
     }
 
-    /// The current painted bounds of an account's row, when it is on screen.
-    /// The root uses it to export its virtual accessibility list, so assistive
-    /// technology and pointer hit-testing describe the same scrolled geometry.
+    /// The painted bounds of a row, which the accessibility list and hit-testing
+    /// share.
     pub fn account_bounds(&self, id: AccountId) -> Option<Rect> {
         self.accounts
             .iter()
@@ -287,19 +248,15 @@ impl AccountList {
             .filter(|rect| rect.intersect(self.rect).area() > 0.0)
     }
 
-    /// Show `id`'s code for a short while. The code is unreadable at a
-    /// glance by design; this is the deliberate reveal.
     pub fn show_code(&mut self, id: AccountId) {
         self.revealed = Some((id, ui::time::now() + ui::time::Duration::from_secs(10)));
     }
 
-    /// Whether `id`'s code is shown now.
     pub fn is_revealed(&self, id: AccountId) -> bool {
         self.revealed
             .is_some_and(|(shown, until)| shown == id && ui::time::now() < until)
     }
 
-    /// Scroll so the row of `id` is fully inside the viewport.
     pub fn reveal(&mut self, id: AccountId) {
         let Some(m) = self.metrics else { return };
         let Some(index) = self.accounts.iter().position(|account| account.id == id) else {
@@ -324,16 +281,13 @@ impl AccountList {
             .set_content_size(self.column.width(), self.content_height());
     }
 
-    /// Bounding rect of visible row `i` in absolute coordinates, scrolled.
     fn row_rect(&self, i: usize) -> Rect {
         let m = self.metrics.unwrap_or_default();
         let y0 = self.rect.y0 + m.edge + i as f64 * m.row_h - self.scroller.offset().y;
         Rect::new(self.column.x0, y0, self.column.x1, y0 + m.row_h)
     }
 
-    /// Measure the rows for `theme` and place the parts of each: the layout
-    /// every paint and hit-test reads. Called at the start of each paint, and
-    /// by a test that hit-tests without painting.
+    /// Measure the rows and place their parts; every paint and hit-test reads this.
     pub(crate) fn layout(&mut self, text: &mut TextRenderer, theme: &Theme) {
         let m = Metrics::measure(text, theme);
         self.metrics = Some(m);
@@ -350,8 +304,7 @@ impl AccountList {
         let (caption_w, caption_h) =
             text.measure_style(&unkeyed, None, &theme.text(TextRole::Caption));
         let (caption_w, caption_h) = (f64::from(caption_w), f64::from(caption_h));
-        // The caption explaining the button shows when the title keeps half a
-        // utility panel's width beside it.
+        // The caption shows when the title keeps half a utility panel's width beside it.
         let caption_fits = width - (m.pad + set_up_w + m.gap + caption_w)
             >= f64::from(theme.tokens.metrics.panel_width_utility) / 2.0;
         let layouts = self
@@ -428,13 +381,11 @@ impl AccountList {
         self.layouts = layouts;
     }
 
-    /// `rect` of row `i`'s part, from its row-local `local`.
     fn at(&self, i: usize, local: Rect) -> Rect {
         let row = self.row_rect(i);
         local + vello::kurbo::Vec2::new(row.x0, row.y0)
     }
 
-    /// Which row and part is under `p`, from the layout of the last paint.
     fn hit(&self, p: Point) -> Option<(usize, Zone)> {
         if !self.scroller.content_rect().contains(p) {
             return None;
@@ -535,8 +486,7 @@ impl AccountList {
         }
         face.paint(ctx, self.at(i, layout.face));
 
-        // The inset rule between two rows hides beside a lifted one: a selected
-        // row, or the row the pointer is on.
+        // The inset rule between two rows hides beside a lifted one.
         let next_selected = self
             .accounts
             .get(i + 1)
@@ -544,8 +494,6 @@ impl AccountList {
         let next_hovered =
             self.hover.is_some_and(|(row, _)| row == i + 1) && !self.scroller.is_dragging();
         if i + 1 < self.accounts.len() && !selected && !hovered && !next_selected && !next_hovered {
-            // Where the title starts: past the avatar, which is the list-size
-            // avatar beside a secondary line and the inline size without one.
             let metrics = &theme.tokens.metrics;
             let avatar = if account.label.trim().is_empty() {
                 metrics.icon_lg
@@ -607,7 +555,6 @@ impl AccountList {
         let theme = ctx.theme;
         let row = self.row_rect(i);
         let cy = row.center().y;
-        // Hovering the code lifts it like a button: it is where you click.
         if hovered {
             paint_row_selection(
                 ctx.scene,
@@ -646,8 +593,8 @@ impl AccountList {
             );
             return;
         }
-        // Reduced motion keeps the countdown honest without sweeping: the
-        // ring steps once a second.
+        // Reduced motion keeps the countdown honest without sweeping: the ring steps
+        // once a second.
         let seconds = totp::seconds_remaining(account, now);
         let fraction = if theme.reduce_motion {
             f64::from(seconds) / f64::from(account.period.max(1))
@@ -664,29 +611,24 @@ impl AccountList {
         face.paint(ctx, ring);
     }
 
-    /// Whether the scroll bar's fade needs frames now.
     pub fn needs_animation_frame(&self) -> bool {
         self.scroller.needs_animation_frame(&self.theme)
     }
 
-    /// Step a glide after a flick to the frame's time, from the app's
-    /// `update`; returns whether the rows moved.
+    /// Step a glide after a flick; `true` when the rows moved.
     pub fn advance_scroll(&mut self) -> bool {
         self.scroller.advance()
     }
 
-    /// When the scroll bar starts to fade.
     pub fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.scroller.next_wake_deadline(&self.theme)
     }
 
-    /// Whether the scroll bar's thumb is being dragged.
     pub fn is_dragging(&self) -> bool {
         self.scroller.is_dragging()
     }
 
     pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        // The scroll region takes the wheel, touchpad gestures and its bar.
         self.scroller.handle_event(event, ctx, &self.theme);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -694,8 +636,6 @@ impl AccountList {
                 if self.scroller.is_dragging() {
                     return;
                 }
-                // The row's actions appear on hover, so the row under the
-                // pointer is resolved before its parts.
                 let p = self.last_mouse;
                 let row = (0..self.accounts.len())
                     .find(|&i| self.rect.contains(p) && self.row_rect(i).contains(p));
@@ -748,11 +688,9 @@ impl AccountList {
     }
 }
 
-/// What the account's button says when it has no key on this device.
 fn set_up_label() -> String {
     crate::i18n::CATALOG.t("totp-add-save-provision")
 }
-/// What a shared account without its key here says about itself.
 fn unkeyed_caption() -> String {
     crate::i18n::CATALOG.t("totp-a11y-unkeyed")
 }
@@ -862,7 +800,6 @@ mod tests {
                 "codes are veiled at rest; the first press reveals this row"
             );
             assert_eq!(list.selected(), Some(id));
-            // The app grants the reveal the event asked for.
             list.show_code(id);
             assert!(dispatch(&mut list, &left_press()));
             assert_eq!(
@@ -878,7 +815,6 @@ mod tests {
                 assert_eq!(list.take_events(), vec![command.event(id)]);
             }
         }
-        // Room for about three of the five sample rows: the last is off screen.
         let mut list = list(600.0, 160.0, 1.0);
         assert!(list.scroller.overflows_vertically());
         dispatch(&mut list, &cursor_at(Point::new(300.0, 110.0)));
