@@ -1,6 +1,10 @@
 //! Pure data model for the code editor: the project file tree, the set of
 //! open buffers, and language detection. No rendering, no IO, no CRDT — this
 //! layer is the in-memory source of truth the widgets read from.
+//!
+//! The [`Project`] record keeps the files and folders as a collection under
+//! `files` and each file's text as an Automerge `Text` under `buffers`, keyed
+//! by the file's id.
 
 use std::collections::BTreeMap;
 use std::io;
