@@ -468,6 +468,25 @@ fn the_floor_blocks_generations_below_it_and_admits_the_rest() {
     f.bump_floor(2);
     assert!(f.try_unseal(&t5, None).is_err());
     assert!(f.try_unseal(&t7, None).is_err());
+
+    // The header is plaintext, so generation 5's token can be rewritten to claim a bound the
+    // floor has not reached. It still reads as consistent, and the session it describes passes
+    // the floor comparison, but that is not the policy the secret was sealed to: the bound that
+    // counts is in the sealed object, and the TPM keeps the secret.
+    let mut rewritten = t5;
+    rewritten.nv_base += 10;
+    rewritten.nv_operand += 10;
+    rewritten
+        .validate()
+        .expect("the rewritten token must be self-consistent, or the TPM is not what refuses it");
+    let e = f
+        .try_unseal(&rewritten, None)
+        .expect_err("a rewritten bound must not release generation 5's secret");
+    let msg = format!("{e:#}");
+    assert!(
+        msg.contains("unsealing generation 5 failed") && !msg.contains("rollback floor"),
+        "the TPM's own policy check should refuse, after the rewritten comparison passed: {msg}"
+    );
 }
 
 // Signed policy: the point of it, and the trap in it
@@ -662,6 +681,18 @@ fn a_wrong_pin_fails_and_counts_against_the_hardware_lockout() {
         before.counter,
         after.counter,
         after.in_lockout
+    );
+
+    // The `pin` flag is plaintext in the header as well. Cleared, it makes the unlock path build
+    // a session without the PIN step, and that is not the policy the secret was sealed to.
+    let mut flag_cleared = token;
+    flag_cleared.pin = false;
+    let e = f
+        .try_unseal(&flag_cleared, None)
+        .expect_err("clearing the PIN flag must not release a PIN-sealed secret");
+    assert!(
+        format!("{e:#}").contains("unsealing generation 7 failed"),
+        "the TPM should refuse the session built without the PIN: {e:#}"
     );
 }
 

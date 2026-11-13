@@ -441,6 +441,23 @@ mod tests {
                 .to_string();
             assert!(e.contains("does not match its stated target"), "{e}");
         }
+        {
+            let mut a = approval_for(5);
+            a.version = SCHEMA_VERSION + 1;
+            let e = a
+                .validate_for(0x01D9_1100, &name())
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("approval schema version 2 is not the 1"), "{e}");
+            // Counter 0 is where an index starts, never where an increment lands.
+            let mut a = approval_for(5);
+            a.target_counter = 0;
+            let e = a
+                .validate_for(0x01D9_1100, &name())
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("approval targets counter 0"), "{e}");
+        }
     }
 
     #[test]
@@ -488,6 +505,38 @@ mod tests {
             let back = load_all(d.path()).unwrap();
             assert_eq!(back.len(), 1);
             assert_eq!(back[0].target_counter, 3);
+        }
+        {
+            // What issuance decides before it reads the authority's key: there is none here.
+            let d = tempfile::tempdir().unwrap();
+            let no_key = d.path().join("authority.pem");
+            let ws = Workspace::new(d.path());
+            let floor = counter::FloorState {
+                counter: 10,
+                base: 5,
+            };
+            let request = build_request(1, &name(), floor, &[8], 3).unwrap();
+            let issue_to = |request: &Request, up_to_floor: u64| {
+                let runner = crate::exec::Real::new();
+                issue(&runner, &ws, request, &no_key, up_to_floor, true)
+            };
+            assert!(
+                issue_to(&request, 5).unwrap().is_empty(),
+                "a floor already reached needs no approval"
+            );
+            // One batch holds at most 64 steps. A 65th means the request's base is wrong; 64 is
+            // let through, as far as the key.
+            let e = issue_to(&request, 70).unwrap_err().to_string();
+            assert!(
+                e.contains("that would be 65 approvals; more than 64 in one batch"),
+                "{e}"
+            );
+            let e = issue_to(&request, 69).unwrap_err().to_string();
+            assert!(e.contains(&format!("reading {}", no_key.display())), "{e}");
+            let mut newer = request;
+            newer.version = SCHEMA_VERSION + 1;
+            let e = issue_to(&newer, 6).unwrap_err().to_string();
+            assert!(e.contains("request schema version 2 is not the 1"), "{e}");
         }
     }
 }

@@ -207,6 +207,12 @@ mod tests {
             assert!(e.contains("already above the running generation"), "{e}");
         }
         {
+            // A floor exactly at the running generation is a state to leave alone, not a refusal.
+            let p = plan_floor(5, 5, 3, None).unwrap();
+            assert_eq!(p.target_floor, 5);
+            assert!(!p.advances());
+        }
+        {
             assert!(plan_floor(5, 0, 0, None).is_err());
         }
     }

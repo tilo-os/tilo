@@ -689,6 +689,20 @@ pub fn advance(
 mod tests {
     use super::*;
 
+    /// For what an advance decides by arithmetic alone: any tool it ran would fail the call.
+    struct NoTools;
+
+    impl Runner for NoTools {
+        fn run(
+            &self,
+            program: &str,
+            _args: &[&std::ffi::OsStr],
+            _stdin: Option<&[u8]>,
+        ) -> Result<crate::exec::Output> {
+            bail!("{program} was run")
+        }
+    }
+
     #[test]
     fn floors_map_counters_through_the_base_without_wrapping() {
         {
@@ -784,6 +798,34 @@ mod tests {
                 base: i64::MAX,
             };
             assert!(s.operand_for(u64::MAX).is_err());
+        }
+        {
+            // One advance moves the floor at most 64 steps. A 65th means the base is wrong, and
+            // is refused before any tool runs; 64 is admitted, and with no approval to spend
+            // every step is reported and the counter left where it was.
+            let d = tempfile::tempdir().unwrap();
+            let ws = Workspace::new(d.path());
+            let s = FloorState {
+                counter: 105,
+                base: 100,
+            };
+            let none = FloorApprovals {
+                authority_public_key: Path::new("authority.pem"),
+                authority_key_name: b"name",
+                approvals: &[],
+                dir: None,
+            };
+            let e = advance(&NoTools, &ws, DEFAULT_NV_INDEX, d.path(), s, 70, &none)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                e.contains("needs 65 increments, more than the 64 allowed in one step"),
+                "{e}"
+            );
+            let o = advance(&NoTools, &ws, DEFAULT_NV_INDEX, d.path(), s, 69, &none).unwrap();
+            assert_eq!(o.steps, 0);
+            assert_eq!(o.floor, s);
+            assert_eq!(o.unapproved, (106..=169).collect::<Vec<u64>>());
         }
     }
 }

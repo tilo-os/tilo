@@ -258,6 +258,15 @@ mod tests {
         {
             assert_eq!(load_base(None, &[tok(7, 42)]).unwrap(), Some(42));
         }
+        {
+            // Two tokens that disagree are as ambiguous as a token and the state file: a
+            // rewritten header does not get to pick the base.
+            let e = load_base(None, &[tok(7, 42), tok(6, 43)])
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("token 6 (generation 6) says 43"), "{e}");
+            assert!(e.contains("token 7 (generation 7) says 42"), "{e}");
+        }
     }
 
     #[test]
