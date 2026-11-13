@@ -652,7 +652,10 @@ try {
   console.log('ok: a second tab of the person enters their own workspace, and the first stays in');
 
   // -- 4. a passkey brings the same person back to that workspace ------------
-  // Kept from the person's own desktop, as "Keep with passkey" does.
+  // Kept from the person's own desktop, as "Keep with passkey" does. A
+  // passkey is made in the tab a person is looking at: the second tab opened
+  // above closed, and this one is in front again before the browser is asked.
+  await stranger.tab.send('Page.bringToFront').catch(() => {});
   const kept = await stranger.tab.evaluate(`(async () => {
     const id = ${identityModule};
     const person = await id.browserIdentity();
