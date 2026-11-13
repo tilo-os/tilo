@@ -1,24 +1,18 @@
-//! Read-only native keyboard metadata. This service neither captures input nor
-//! changes the active layout, and never accepts an include path or environment.
+//! Read-only native keyboard metadata: it neither captures input nor changes the
+//! active layout, and never accepts an include path or environment.
 
-/// Shared touch layout data and geometry for keyboards and source previews.
 pub mod touch;
 
-/// A native symbol's printable value and canonical keysym name.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Symbol {
-    /// Printable UTF-8 supplied by the native keysym compiler.
     pub text: String,
-    /// Canonical native symbol or physical-position name.
     pub name: String,
 }
 
-/// One requested physical position and its ordered modifier levels.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Key {
-    /// Canonical native symbol or physical-position name.
     pub name: String,
-    /// The focused-window physical identity, independent of the logical layout.
+    /// The focused window's physical identity, independent of the logical layout.
     pub physical: winit::keyboard::PhysicalKey,
     /// Ordered native modifier levels; no silent truncation.
     pub levels: Vec<Vec<Symbol>>,
@@ -27,29 +21,24 @@ pub struct Key {
 /// An explicit native observation failure; absence never becomes a fake map.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
-    /// This host has no native metadata provider.
     Unsupported,
-    /// Model, symbol selection, or bounded options are invalid.
     InvalidRequest,
-    /// Fixed installed metadata is unavailable or does not compile.
     Unavailable,
-    /// Installed metadata contains an unknown key or exceeds output bounds.
     InvalidMetadata,
 }
 
 impl Error {
     /// This host has no native metadata provider at all, rather than one that
-    /// failed: a caller that needs a keyboard drawing has nothing to draw from.
+    /// failed.
     #[must_use]
     pub fn is_unsupported(&self) -> bool {
         matches!(self, Self::Unsupported)
     }
 }
 
-/// The keys one pass over `positions` reads for a host with no native
-/// provider: each position is present, so a drawing made from geometry alone
-/// can still be read and inspected, and none carries a legend, since no layout
-/// was compiled to say what it prints.
+/// The keys one pass over `positions` reads for a host with no native provider:
+/// each position is present, so a drawing made from geometry alone can still be
+/// read, and none carries a legend.
 #[must_use]
 pub fn unlabelled_levels(positions: &[String]) -> Vec<Key> {
     positions
@@ -79,8 +68,7 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-/// Compile an installed model/layout using fixed public metadata only.
-/// The returned keycodes identify physical positions, never typed input.
+/// Compile an installed model and layout from fixed public metadata only.
 pub fn compile(
     layout: &str,
     variant: &str,
@@ -104,8 +92,8 @@ pub fn compile(
     backend::compile(layout, variant, model, options, names)
 }
 
-/// Whether a validated layout has its symbols file in the same fixed public
-/// root used by the compiler. Missing user-defined templates are not installed.
+/// Whether a validated layout's symbols file is in the same fixed public root the
+/// compiler reads.
 pub fn is_installed(layout: &str) -> Result<bool, Error> {
     if !valid_name(layout, false) {
         return Err(Error::InvalidRequest);
