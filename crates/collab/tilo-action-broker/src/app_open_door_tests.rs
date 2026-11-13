@@ -209,14 +209,14 @@ async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
 async fn an_agents_invocation_opens_what_the_agent_may_open() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::test_support::{Grants as _, KindSet, Subject};
+            use crate::test_support::{Grantee, Grants as _, KindSet};
             let env = Environment::new();
             let (rig, launcher) = pressed_opens_rig(&env).await;
             {
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
-                workspace.allow_app(Subject::agent("scribe"), "so.tilo.chat", KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), "so.tilo.chat", KindSet::ALL);
             }
             let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();

@@ -84,7 +84,7 @@ fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
             "assistant",
             (&AnswerScope::app(NOTES), kind),
             Answer::Allow,
-            tilo_action_policy::Subject::person(member),
+            tilo_action_policy::Grantee::person(member),
         ));
     }
     policy

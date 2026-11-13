@@ -1,36 +1,36 @@
 //! Test-only mutable policy fixture. Production hosts implement `WorkspaceAuthority`.
 use crate::services::{LegacyWorkspaceProjection, WorkspaceAuthority};
 use std::sync::Arc;
-pub use tilo_action_policy::{Answer, GrantId, KindSet, Level, Role, Subject, TreePath};
+pub use tilo_action_policy::{Answer, GrantId, Grantee, KindSet, Level, Role, TreePath};
 pub use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 
 /// The grants fixtures give, in the workspace's own terms.
 pub trait Grants {
     /// Let `subject` take actions of `kinds` at `relative` (a path below the
     /// workspace). Returns the grant's id.
-    fn allow(&mut self, subject: Subject, relative: &TreePath, kinds: KindSet) -> GrantId {
+    fn allow(&mut self, subject: Grantee, relative: &TreePath, kinds: KindSet) -> GrantId {
         self.answer(subject, relative, kinds, Answer::Allow)
     }
     /// Refuse `subject` actions of `kinds` at `relative`.
-    fn deny(&mut self, subject: Subject, relative: &TreePath, kinds: KindSet) -> GrantId {
+    fn deny(&mut self, subject: Grantee, relative: &TreePath, kinds: KindSet) -> GrantId {
         self.answer(subject, relative, kinds, Answer::Deny)
     }
     /// Give `subject` `answer` for actions of `kinds` at `relative`.
     fn answer(
         &mut self,
-        subject: Subject,
+        subject: Grantee,
         relative: &TreePath,
         kinds: KindSet,
         answer: Answer,
     ) -> GrantId;
     /// Let `subject` take actions of `kinds` at the workspace `workspace`.
-    fn allow_in_workspace(&mut self, subject: Subject, workspace: &str, kinds: KindSet) -> GrantId;
+    fn allow_in_workspace(&mut self, subject: Grantee, workspace: &str, kinds: KindSet) -> GrantId;
     /// Let the agent `agent` take actions of `kinds` in the workspace.
     fn allow_agent(&mut self, agent: &str, kinds: KindSet) -> GrantId {
-        self.allow(Subject::agent(agent), &TreePath::root(), kinds)
+        self.allow(Grantee::agent(agent), &TreePath::root(), kinds)
     }
     /// Let `subject` take actions of `kinds` anywhere in the app `app`.
-    fn allow_app(&mut self, subject: Subject, app: &str, kinds: KindSet) -> GrantId {
+    fn allow_app(&mut self, subject: Grantee, app: &str, kinds: KindSet) -> GrantId {
         self.allow(subject, &TreePath::root().app(app), kinds)
     }
 }
@@ -38,7 +38,7 @@ pub trait Grants {
 impl Grants for Workspace {
     fn answer(
         &mut self,
-        subject: Subject,
+        subject: Grantee,
         relative: &TreePath,
         kinds: KindSet,
         answer: Answer,
@@ -50,11 +50,11 @@ impl Grants for Workspace {
             self.node().join(relative),
             kinds,
             answer,
-            Subject::Person(owner),
+            Grantee::person(owner),
         ))
     }
 
-    fn allow_in_workspace(&mut self, subject: Subject, workspace: &str, kinds: KindSet) -> GrantId {
+    fn allow_in_workspace(&mut self, subject: Grantee, workspace: &str, kinds: KindSet) -> GrantId {
         let owner = self.owner().cloned().unwrap_or_default();
         self.grant(tilo_action_policy::Grant::new(
             format!("fixture:{}", uuid::Uuid::new_v4()),
@@ -62,7 +62,7 @@ impl Grants for Workspace {
             TreePath::workspace(workspace),
             kinds,
             Answer::Allow,
-            Subject::Person(owner),
+            Grantee::person(owner),
         ))
     }
 }
@@ -208,7 +208,7 @@ impl crate::services::AgentRoster for TreeAgents {
         let kept = held.policy.grants.iter().any(|grant| {
             grant.node == node
                 && grant.answer == Answer::Allow
-                && matches!(&grant.subject, Subject::Agent(named) if named == agent)
+                && grant.subject.agent_id() == Some(agent)
         });
         if !kept {
             return None;
@@ -222,10 +222,7 @@ impl crate::services::AgentRoster for TreeAgents {
             .policy
             .grants
             .iter()
-            .filter_map(|grant| match &grant.subject {
-                Subject::Person(person) => Some(person.as_str()),
-                _ => None,
-            })
+            .filter_map(|grant| grant.subject.person_id())
             .collect();
         people.sort_unstable();
         people.dedup();

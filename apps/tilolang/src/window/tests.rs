@@ -1687,7 +1687,7 @@ fn an_action_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() 
             policy::ActionKind::Undoable,
         ),
         policy::Answer::Ask,
-        policy::Subject::person("ada"),
+        policy::Grantee::person("ada"),
     ));
     let standing = policy::Standing::person(policy, "ada");
     workspace

@@ -1,7 +1,7 @@
 //! Who may invoke which action.
 //!
 //! Authority is granted over the published tree of workspaces, apps,
-//! resources, items and actions. A [`Grant`] names a [`Subject`], a node ([`TreePath`]),
+//! resources, items and actions. A [`Grant`] names a [`Grantee`], a node ([`TreePath`]),
 //! the kinds of action it covers ([`KindSet`]), an [`Answer`] and a
 //! [`Lifetime`]. [`decide`] is the one function every door, host and receiver
 //! uses: the most specific covering node wins, at the same node Deny beats Ask
@@ -51,7 +51,7 @@ pub use decide::{Authority, Basis, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use door::{DoorError, DoorPolicy, ListingPolicy};
 pub use earlier::EarlierIds;
-pub use grant::{Answer, Context, Grant, GrantId, Lifetime, Role, Subject};
+pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
 pub use kind::{ActionKind, KindSet};
 pub use member::{Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId};
 pub use member_record::{member_record, member_record_id};

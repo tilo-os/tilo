@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-use tilo_action_policy::{Change, Context, Role, Subject, WorkspacePolicy, roles};
+use tilo_action_policy::{Change, Context, Grantee, Role, WorkspacePolicy, roles};
 
 use super::op::{MembershipOpCommand, OpId, SignedMembershipOp};
 
@@ -270,7 +270,7 @@ fn start(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
         .and_then(|(value, _)| value.into_string().ok());
     match owner {
         Some(owner) => WorkspacePolicy::new(workspace, owner),
-        None => WorkspacePolicy::unowned(workspace, &Subject::Role(Role::Owner)),
+        None => WorkspacePolicy::unowned(workspace, &Grantee::role(Role::Owner)),
     }
     .with_current_roles()
 }

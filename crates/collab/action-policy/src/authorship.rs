@@ -5,7 +5,7 @@
 //! authority, and never with more than its authors may: each author in the
 //! chain of code that led to an action is a delegation bounding the person
 //! ([`crate::Authority::bounded_by`]), and the minimum wins. Code an
-//! application's package wrote is that application ([`Subject::App`]): the
+//! application's package wrote is that application ([`Grantee::app`]): the
 //! workspace's grants naming the application bound it as they bound the
 //! application anywhere, a denial of it holding over everything more
 //! specific. Code a person or an agent wrote (a block in a conversation) is
@@ -18,13 +18,13 @@
 //! code is an author of its own records ([`crate::roles::app_authorship`]),
 //! trusted or not.
 
-use crate::{Answer, Grant, KindSet, Party, Subject, TreePath};
+use crate::{Answer, Grant, Grantee, KindSet, Party, TreePath};
 
 /// The grants code written by `author` holds in `workspace` as a party of its
 /// own: [`trusted`](self) code reads and makes undoable changes and asks
 /// before reaching outside, other code asks before everything.
 #[must_use]
-pub fn code_grants(workspace: &str, author: &Subject, trusted: bool) -> Vec<Grant> {
+pub fn code_grants(workspace: &str, author: &Grantee, trusted: bool) -> Vec<Grant> {
     let grant = |suffix: &str, kinds: KindSet, answer: Answer| {
         Grant::new(
             format!("code-author:{}:{suffix}", subject_key(author)),
@@ -50,7 +50,7 @@ pub fn code_grants(workspace: &str, author: &Subject, trusted: bool) -> Vec<Gran
 /// of its own records) and the grants of `workspace` naming it. The workspace's
 /// denial of the author holds over every more specific grant.
 #[must_use]
-pub fn code_party<'g>(author: &Subject, own: &'g [Grant], workspace: &'g [Grant]) -> Party<'g> {
+pub fn code_party<'g>(author: &Grantee, own: &'g [Grant], workspace: &'g [Grant]) -> Party<'g> {
     code_party_in(author, own, workspace, None)
 }
 
@@ -58,7 +58,7 @@ pub fn code_party<'g>(author: &Subject, own: &'g [Grant], workspace: &'g [Grant]
 /// an id it had before name it too.
 #[must_use]
 pub fn code_party_in<'g>(
-    author: &Subject,
+    author: &Grantee,
     own: &'g [Grant],
     workspace: &'g [Grant],
     earlier: Option<&crate::EarlierIds>,
@@ -82,11 +82,11 @@ pub fn code_party_in<'g>(
         .held_off_by(named)
 }
 
-fn subject_key(subject: &Subject) -> String {
+fn subject_key(subject: &Grantee) -> String {
     match subject {
-        Subject::Person(id) => format!("person:{id}"),
-        Subject::Agent(id) => format!("agent:{id}"),
-        Subject::App(id) => format!("app:{id}"),
+        Grantee::Member(crate::MemberId::Person(id)) => format!("person:{id}"),
+        Grantee::Member(crate::MemberId::Agent(id)) => format!("agent:{id}"),
+        Grantee::App(id) => format!("app:{id}"),
         other => other.to_string(),
     }
 }
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn trusted_code_asks_only_before_reaching_outside() {
-        let author = Subject::app("so.tilo.notes");
+        let author = Grantee::app("so.tilo.notes");
         let own = code_grants(WORKSPACE, &author, true);
         let party = code_party(&author, &own, &[]);
         assert_eq!(
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn untrusted_code_asks_except_for_its_own_records() {
-        let author = Subject::app("so.tilo.notes");
+        let author = Grantee::app("so.tilo.notes");
         let mut own = code_grants(WORKSPACE, &author, false);
         own.push(roles::app_authorship(
             WORKSPACE,
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn the_workspaces_denial_of_an_author_holds() {
-        let author = Subject::app("so.tilo.notes");
+        let author = Grantee::app("so.tilo.notes");
         let mut own = code_grants(WORKSPACE, &author, true);
         own.push(roles::app_authorship(
             WORKSPACE,
@@ -164,7 +164,7 @@ mod tests {
             TreePath::workspace(WORKSPACE),
             KindSet::ALL,
             Answer::Deny,
-            Subject::person("owner"),
+            Grantee::person("owner"),
         )];
         let party = code_party(&author, &own, &workspace);
         assert_eq!(

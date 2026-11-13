@@ -242,3 +242,8 @@ reason = "an app is no longer a kind of actor: it acts as the person whose sessi
 file = "crates/browser/tilo-browser-runtime/src/disk_key.rs"
 enum = "DiskKey"
 reason = "renamed; no stored data to keep: the page's IndexedDB rows are written again under the new names"
+
+[[break]]
+file = "crates/collab/action-policy/src/grant.rs"
+enum = "Subject"
+reason = "renamed to `Grantee`, which is a member or a role: the policy format changes with the code that reads it, and no stored grant is read back"

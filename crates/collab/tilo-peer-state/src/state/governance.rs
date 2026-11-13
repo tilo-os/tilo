@@ -3,7 +3,7 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role, Subject,
+    GrantId, Grantee, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role,
     SystemTime, Transactable, administrator_grant_id, err, governed_map, member_role_from_role,
     now_ns, workspace,
 };
@@ -1059,17 +1059,19 @@ impl PeerGovernanceMut<'_> {
                 tilo_action_policy::roles::is_legacy_administrator_grant(workspace, grant)
             })
             .filter_map(|grant| match &grant.subject {
-                Subject::Person(person) => Some(tilo_action_policy::roles::administrator_grant(
-                    workspace,
-                    person,
-                    grant.granted_by.clone(),
-                )),
+                Grantee::Member(tilo_action_policy::MemberId::Person(person)) => {
+                    Some(tilo_action_policy::roles::administrator_grant(
+                        workspace,
+                        person,
+                        grant.granted_by.clone(),
+                    ))
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
         // Every administrator moderates the workspace too.
         for grant in grants {
-            if let Subject::Person(person) = &grant.subject
+            if let Some(person) = grant.subject.person_id()
                 && grant.id == tilo_action_policy::roles::administrator_grant_id(person)
                 && grant.answer == tilo_action_policy::Answer::Allow
             {
@@ -1194,7 +1196,7 @@ impl PeerGovernanceMut<'_> {
             policy
                 .grants
                 .iter()
-                .filter(|grant| grant.subject == Subject::Person(person.clone()))
+                .filter(|grant| grant.subject == Grantee::person(person.clone()))
                 .map(|grant| Change::Revoke(grant.id.clone()))
                 .collect()
         };

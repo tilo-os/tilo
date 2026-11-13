@@ -4,7 +4,7 @@
 //! `install-app` and `request-bot`, which the room decides like any of its
 //! governance. Every member reads the version the room runs from its
 //! governance.
-use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_relay_session::workspaces::WorkspaceSummary;
 use tilo_relay_session::workspaces::govern::{self, WorkspaceLink};
 
@@ -98,11 +98,11 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
     let grant = |action: &str| {
         Grant::new(
             format!("developer:{action}:{who}"),
-            Subject::Person(who.clone()),
+            Grantee::person(who.clone()),
             roles::governance_action(&room.workspace, action),
             KindSet::ALL,
             Answer::Allow,
-            Subject::Person(hex::encode(host.cert.user_public_key)),
+            Grantee::person(hex::encode(host.cert.user_public_key)),
         )
     };
     workspaces
@@ -230,11 +230,11 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
             [7; 32],
             vec![Grant::new(
                 format!("developer:install-app:{who}"),
-                Subject::Person(who.clone()),
+                Grantee::person(who.clone()),
                 roles::governance_action(&room.workspace, governance::INSTALL_APP),
                 KindSet::ALL,
                 Answer::Allow,
-                Subject::Person(hex::encode(host.cert.user_public_key)),
+                Grantee::person(hex::encode(host.cert.user_public_key)),
             )],
         )
         .await

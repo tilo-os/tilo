@@ -1457,16 +1457,16 @@ fn shell_standing(
     person: &str,
 ) -> impl Fn() -> Option<tilo_action_policy::Standing> + 'static {
     use tilo_action_policy::{
-        Answer, Grant, KindSet, Standing, Subject, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, Standing, TreePath, WorkspacePolicy,
     };
     let mut policy = WorkspacePolicy::new(SHELL_ROOM, person);
     policy.grants.push(Grant::new(
         format!("shell:{app}:session"),
-        Subject::app(app),
+        Grantee::app(app),
         TreePath::workspace(SHELL_ROOM).app(app),
         KindSet::OUTSIDE,
         Answer::Allow,
-        Subject::person(person),
+        Grantee::person(person),
     ));
     let standing = Standing::person(policy, person);
     move || Some(standing.clone())

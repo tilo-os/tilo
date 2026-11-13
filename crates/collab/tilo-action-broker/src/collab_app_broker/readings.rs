@@ -37,7 +37,7 @@ pub(super) fn admit(
         .as_ref()
         .ok_or_else(|| REFUSED.to_owned())?;
     let now = state.policy_now_ns().map_err(|_| REFUSED.to_owned())? / 1_000_000_000;
-    let subject = tilo_action_policy::Subject::App(caller.app_id.clone());
+    let subject = tilo_action_policy::Grantee::app(caller.app_id.clone());
     let allowed = membership
         .decide_in_workspace(&caller.workspace, |workspace| {
             workspace.is_some_and(|workspace| {

@@ -305,12 +305,12 @@ pub fn workspace_shares(
         {
             continue;
         }
-        let tilo_action_policy::Subject::Person(holder) = &grant.subject else {
+        let Some(holder) = grant.subject.person_id() else {
             continue;
         };
         share(
             host.node_label(&grant.node),
-            display_name(holder, ws, tree),
+            display_name(&holder.to_owned(), ws, tree),
             grant
                 .kinds
                 .contains(tilo_action_policy::ActionKind::Undoable),
@@ -744,11 +744,11 @@ mod workspace_tests {
             w.grant(
                 tilo_action_policy::Grant::new(
                     "ada-for-a-while",
-                    tilo_action_policy::Subject::person("ada"),
+                    tilo_action_policy::Grantee::person("ada"),
                     node.app("so.tilo.notes"),
                     tilo_action_policy::KindSet::ALL,
                     tilo_action_policy::Answer::Allow,
-                    tilo_action_policy::Subject::person(ME),
+                    tilo_action_policy::Grantee::person(ME),
                 )
                 .with_lifetime(tilo_action_policy::Lifetime::Until(1_000)),
             );

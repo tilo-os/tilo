@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct WorkspaceBot {
     /// The name it shows; its directory entry while it does not run yet.
     pub name: String,
-    /// Its installation (the `Subject::Bot` id), once installed.
+    /// Its installation (the `Grantee::bot` id), once installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation: Option<String>,
     /// Its bot device's key, hex, once installed: what its presence and its

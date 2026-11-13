@@ -9,7 +9,7 @@
 )]
 
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, Confirmation, InvokeArgument,
@@ -92,11 +92,11 @@ async fn grant(
     let who = hex::encode(person.user_public_key);
     let grant = Grant::new(
         format!("test:{action}:{who}"),
-        Subject::Person(who),
+        Grantee::person(who),
         roles::governance_action(workspace, action),
         KindSet::ALL,
         Answer::Allow,
-        Subject::Person(hex::encode(owner.user_public_key)),
+        Grantee::person(hex::encode(owner.user_public_key)),
     );
     let request_id = *blake3::hash(grant.id.as_str().as_bytes()).as_bytes();
     workspaces

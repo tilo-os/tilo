@@ -168,7 +168,7 @@ fn grants_and_roles_are_the_operations_they_name() {
     let granted = roles::administrator_grant(
         WORKSPACE,
         &ada_person,
-        tilo_action_policy::Subject::Person(person(&owner.1)),
+        tilo_action_policy::Grantee::person(person(&owner.1)),
     );
     let first = op(
         &owner,

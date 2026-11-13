@@ -269,7 +269,7 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
 
 #[tokio::test]
 async fn every_settled_decision_is_announced_with_its_room() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Role, Subject};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -278,11 +278,11 @@ async fn every_settled_decision_is_announced_with_its_room() {
     let mut changes = workspaces.governance_changes();
     let deny_outside = Grant::new(
         "public-guests-no-outside",
-        Subject::Role(Role::Editor),
+        Grantee::role(Role::Editor),
         tilo_action_policy::TreePath::workspace(&created.workspace),
         KindSet::OUTSIDE,
         Answer::Deny,
-        Subject::Person(hex::encode(cert.user_public_key)),
+        Grantee::person(hex::encode(cert.user_public_key)),
     );
     workspaces
         .put_room_grants(&created.workspace, &cert, [4; 32], vec![deny_outside])
@@ -796,7 +796,7 @@ fn a_heavy_tail_compacts_and_a_light_one_does_not() {
 )]
 async fn legacy_window_write_respects_current_member_grants() {
     use collab_types::Role;
-    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let (relay, workspaces) = {
@@ -860,11 +860,11 @@ async fn legacy_window_write_respects_current_member_grants() {
             .unwrap();
         let read_only = Grant::new(
             "legacy-window-read-only-foreign",
-            Subject::ForeignDevice,
+            Grantee::ForeignDevice,
             tilo_action_policy::TreePath::workspace(&created.workspace),
             KindSet::UNDOABLE,
             Answer::Deny,
-            Subject::Person(hex::encode(cert.user_public_key)),
+            Grantee::person(hex::encode(cert.user_public_key)),
         )
         .with_lifetime(Lifetime::Until(deadline_ms));
         candidate
@@ -949,7 +949,7 @@ async fn applications_are_prepared_for_the_current_owner_only() {
             .unwrap();
         assert_eq!(
             grant.subject,
-            tilo_action_policy::Subject::App("so.tilo.chat".into())
+            tilo_action_policy::Grantee::app("so.tilo.chat")
         );
         assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));
     }

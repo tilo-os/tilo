@@ -651,12 +651,12 @@ impl ActionPlane {
         // The device is its own principal when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
         let caller = match authority.delegate.map(|delegation| delegation.subject()) {
-            Some(tilo_action_policy::Subject::Agent(agent)) => {
-                Caller::delegated_agent(agent, certificate.user_public_key, source)
-            }
-            Some(tilo_action_policy::Subject::Bot(installation)) => {
-                Caller::bot(installation, certificate.user_public_key, source)
-            }
+            Some(tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Agent(
+                agent,
+            ))) => Caller::delegated_agent(agent, certificate.user_public_key, source),
+            Some(tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(
+                installation,
+            ))) => Caller::bot(installation, certificate.user_public_key, source),
             _ => Caller::authenticated(certificate.user_public_key, source),
         };
         Ok((

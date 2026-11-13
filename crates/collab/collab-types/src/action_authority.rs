@@ -155,7 +155,7 @@ pub fn foreign_device_bound() -> Vec<tilo_action_policy::Grant> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::{ActionKind, Answer, Context, Grant, KindSet, Role, Subject};
+    use tilo_action_policy::{ActionKind, Answer, Context, Grant, Grantee, KindSet, Role};
 
     fn policy() -> AppActionAuthorityProjection {
         let mut room = WorkspacePolicy::new("room-a", "person-a");
@@ -178,11 +178,11 @@ mod tests {
             let mut invalid = original.clone();
             invalid.policy.grants.push(Grant::new(
                 "foreign",
-                Subject::person("person-b"),
+                Grantee::person("person-b"),
                 node,
                 KindSet::ALL,
                 Answer::Allow,
-                Subject::person("person-a"),
+                Grantee::person("person-a"),
             ));
             assert!(invalid.validate().is_err());
         }
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn every_restored_grant_is_narrowed_on_read() {
         let owned = WorkspacePolicy::new("room-a", "person-a");
-        let unowned = WorkspacePolicy::unowned("room-a", &Subject::Role(Role::Owner));
+        let unowned = WorkspacePolicy::unowned("room-a", &Grantee::role(Role::Owner));
         for room in [owned, unowned.with_current_roles()] {
             for app in ["so.tilo.notes", roles::SESSION_APP, roles::DEVICE_PANEL] {
                 let written = AppActionAuthorityProjection::project(&room, app, "person-a", false);
@@ -269,11 +269,11 @@ mod tests {
         let mut written = policy();
         written.policy.grants.push(Grant::new(
             "foreign",
-            Subject::person("person-b"),
+            Grantee::person("person-b"),
             TreePath::workspace("room-a").app("so.tilo.settings"),
             KindSet::ALL,
             Answer::Allow,
-            Subject::person("person-a"),
+            Grantee::person("person-a"),
         ));
         let read: AppActionAuthorityProjection =
             serde_json::from_slice(&serde_json::to_vec(&written).unwrap()).unwrap();
@@ -287,11 +287,11 @@ mod tests {
         for (id, app) in [("store", "so.tilo.store"), ("settings", "so.tilo.settings")] {
             room.grants.push(Grant::new(
                 id,
-                Subject::person("person-b"),
+                Grantee::person("person-b"),
                 TreePath::workspace("room-a").app(app),
                 KindSet::UNDOABLE,
                 Answer::Allow,
-                Subject::person("person-a"),
+                Grantee::person("person-a"),
             ));
         }
         let projection =
@@ -337,11 +337,11 @@ mod tests {
             AppActionAuthorityProjection::project(&room, "so.tilo.store", "person-a", true);
         projection.policy.grants.push(Grant::new(
             "governance",
-            Subject::person("person-a"),
+            Grantee::person("person-a"),
             roles::workspace_resource("room-a"),
             KindSet::ALL,
             Answer::Allow,
-            Subject::person("person-a"),
+            Grantee::person("person-a"),
         ));
         let bound = foreign_device_bound();
         let cx = Context::at(0);

@@ -203,14 +203,14 @@ async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_membe
     // The workspace's owner lets B invite: what a participant admits with.
     let invite = tilo_action_policy::Grant::new(
         "invite:b",
-        tilo_action_policy::Subject::person(hex::encode(cert_b.user_public_key)),
+        tilo_action_policy::Grantee::person(hex::encode(cert_b.user_public_key)),
         tilo_action_policy::roles::governance_action(
             WORKSPACE,
             tilo_action_policy::roles::governance::INVITE,
         ),
         tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person(hex::encode(cert_a.user_public_key)),
+        tilo_action_policy::Grantee::person(hex::encode(cert_a.user_public_key)),
     );
     a.commit_workspace_membership_command(
         OwnerCommitRequest {

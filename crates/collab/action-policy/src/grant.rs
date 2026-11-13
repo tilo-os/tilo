@@ -134,42 +134,49 @@ impl fmt::Display for Role {
     }
 }
 
+/// Who a grant is for.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Subject {
-    /// A person, by the lowercase hex of their user root key.
-    Person(String),
-    /// Every member holding a role preset.
+pub enum Grantee {
+    /// One member.
+    Member(crate::MemberId),
+    /// Everyone holding `role` or a higher one: a grant to `Role::Viewer` is
+    /// everyone in the workspace.
     Role(Role),
-    /// An agent acting for a person.
-    Agent(String),
     /// The work done on an issue, by its address: grants naming it bound
     /// every run of the issue, and give no one more than they hold.
     Task(String),
     /// A Shortcut run for a person.
     Shortcut(String),
     App(String),
-    /// An installed bot, by installation id. It acts for its installer and
-    /// never as them.
-    Bot(String),
     /// A person working from a device that is not one of theirs.
     ForeignDevice,
 }
 
-impl Subject {
+impl Grantee {
+    #[must_use]
+    pub fn member(member: crate::MemberId) -> Self {
+        Self::Member(member)
+    }
+
     #[must_use]
     pub fn person(id: impl Into<String>) -> Self {
-        Self::Person(id.into())
+        Self::Member(crate::MemberId::person(id))
+    }
+
+    #[must_use]
+    pub fn agent(id: impl Into<String>) -> Self {
+        Self::Member(crate::MemberId::agent(id))
+    }
+
+    #[must_use]
+    pub fn bot(id: impl Into<String>) -> Self {
+        Self::Member(crate::MemberId::bot(id))
     }
 
     #[must_use]
     pub fn role(role: Role) -> Self {
         Self::Role(role)
-    }
-
-    #[must_use]
-    pub fn agent(id: impl Into<String>) -> Self {
-        Self::Agent(id.into())
     }
 
     #[must_use]
@@ -187,29 +194,67 @@ impl Subject {
         Self::App(id.into())
     }
 
+    /// The member, when a grant names one.
     #[must_use]
-    pub fn bot(id: impl Into<String>) -> Self {
-        Self::Bot(id.into())
-    }
-}
-
-impl fmt::Display for Subject {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    pub fn as_member(&self) -> Option<&crate::MemberId> {
         match self {
-            Self::Person(id) => write!(f, "person {}", short(id)),
-            Self::Role(role) => write!(f, "every {role}"),
-            Self::Agent(id) => write!(f, "agent {id}"),
-            Self::Task(id) => write!(f, "task {id}"),
-            Self::Shortcut(id) => write!(f, "Shortcut {id}"),
-            Self::App(id) => write!(f, "app {id}"),
-            Self::Bot(id) => write!(f, "bot {}", short(id)),
-            Self::ForeignDevice => f.write_str("a device that is not theirs"),
+            Self::Member(member) => Some(member),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn person_id(&self) -> Option<&str> {
+        match self {
+            Self::Member(crate::MemberId::Person(person)) => Some(person),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        match self {
+            Self::Member(crate::MemberId::Agent(agent)) => Some(agent),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn bot_id(&self) -> Option<&str> {
+        match self {
+            Self::Member(crate::MemberId::Bot(bot)) => Some(bot),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn app_id(&self) -> Option<&str> {
+        match self {
+            Self::App(app) => Some(app),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn role_of(&self) -> Option<Role> {
+        match self {
+            Self::Role(role) => Some(*role),
+            _ => None,
         }
     }
 }
 
-fn short(id: &str) -> &str {
-    id.get(..12).unwrap_or(id)
+impl fmt::Display for Grantee {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Member(member) => member.fmt(f),
+            Self::Role(role) => write!(f, "every {role}"),
+            Self::Task(id) => write!(f, "task {id}"),
+            Self::Shortcut(id) => write!(f, "Shortcut {id}"),
+            Self::App(id) => write!(f, "app {id}"),
+            Self::ForeignDevice => f.write_str("a device that is not theirs"),
+        }
+    }
 }
 
 /// How long a grant is live.
@@ -296,12 +341,12 @@ impl fmt::Display for GrantId {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Grant {
     pub id: GrantId,
-    pub subject: Subject,
+    pub subject: Grantee,
     pub node: TreePath,
     pub kinds: KindSet,
     pub answer: Answer,
     pub lifetime: Lifetime,
-    pub granted_by: Subject,
+    pub granted_by: Grantee,
 }
 
 impl Grant {
@@ -309,11 +354,11 @@ impl Grant {
     #[must_use]
     pub fn new(
         id: impl Into<String>,
-        subject: Subject,
+        subject: Grantee,
         node: TreePath,
         kinds: KindSet,
         answer: Answer,
-        granted_by: Subject,
+        granted_by: Grantee,
     ) -> Self {
         Self {
             id: GrantId::new(id),
@@ -408,7 +453,7 @@ impl<'a> Context<'a> {
     /// Whether a grant to `granted` speaks for one of `subjects`, an app's under its earlier ids
     /// too.
     #[must_use]
-    pub fn subject_matches(&self, granted: &Subject, subjects: &[Subject]) -> bool {
+    pub fn subject_matches(&self, granted: &Grantee, subjects: &[Grantee]) -> bool {
         match self.earlier {
             Some(earlier) => earlier.subject_matches(granted, subjects),
             None => {

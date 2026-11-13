@@ -168,7 +168,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             )))
             .await
             .unwrap();
-            let person = tilo_action_policy::Subject::Person(principal_id_for_root(
+            let person = tilo_action_policy::Grantee::person(principal_id_for_root(
                 env.cert.user_public_key,
             ));
             let grant = tilo_action_policy::Grant::new(
@@ -259,7 +259,7 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                 workspace: env.route.cluster_id.clone(),
             }));
             let rig = Rig::with_services(&env, services).await;
-            let person = tilo_action_policy::Subject::Person(principal_id_for_root(
+            let person = tilo_action_policy::Grantee::person(principal_id_for_root(
                 env.cert.user_public_key,
             ));
             let grant = tilo_action_policy::Grant::new(

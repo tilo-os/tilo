@@ -30,7 +30,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, KindSet, Level, Role, Segment, Subject,
+    ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, Level, Role, Segment,
     TreePath, WorkspacePolicy,
 };
 
@@ -152,11 +152,11 @@ pub fn share_grants(
                     share_id_prefix(share),
                     role.name().to_ascii_lowercase()
                 ),
-                Subject::Role(role),
+                Grantee::role(role),
                 node.clone(),
                 access.kinds(),
                 Answer::Allow,
-                Subject::Person(sharer.to_owned()),
+                Grantee::person(sharer.to_owned()),
             )
         })
         .collect())
@@ -298,7 +298,7 @@ mod tests {
             WORKSPACE,
             "bo",
             1_000,
-            Subject::Person("ada".into()),
+            Grantee::person("ada"),
         ));
         assert!(
             !may(&edit, "bo", &edit_at(&item("p1")), ActionKind::Undoable),
@@ -320,8 +320,7 @@ mod tests {
             Answer::Allow,
             "a lapsed restriction holds nothing off"
         );
-        edit.grants
-            .push(edit.block("cy", Subject::Person("ada".into())));
+        edit.grants.push(edit.block("cy", Grantee::person("ada")));
         assert!(
             !may(&edit, "cy", &edit_at(&item("p1")), ActionKind::Read),
             "a ban keeps the person out of what the workspace shares too"
@@ -390,12 +389,12 @@ mod tests {
         );
         let grants = ok(&record).unwrap();
         assert!(grants.iter().all(|grant| is_of_share(grant, "m1")
-            && grant.granted_by == Subject::Person("ada".into())
+            && grant.granted_by == Grantee::person("ada")
             && grant.answer == Answer::Allow));
         assert!(
             !grants
                 .iter()
-                .any(|grant| grant.subject == Subject::Role(Role::Owner))
+                .any(|grant| grant.subject == Grantee::role(Role::Owner))
         );
         assert_eq!("edit".parse::<ShareAccess>(), Ok(ShareAccess::Edit));
         assert!("own".parse::<ShareAccess>().is_err());

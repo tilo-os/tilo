@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use crate::engine::Engine;
-use tilo_action_policy::{Change, Grant, Role, Subject, WorkspacePolicy};
+use tilo_action_policy::{Change, Grant, Grantee, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
@@ -276,7 +276,7 @@ fn author_on_desk(workspace: &mut Workspace, app: &str, now: u64) -> Result<bool
     let grant = tilo_action_policy::roles::app_authorship(
         &workspace.id().to_string(),
         app,
-        Subject::person(&owner),
+        Grantee::person(&owner),
     );
     workspace
         .govern_as_at(&owner, Change::Grant(grant), now)
@@ -300,12 +300,10 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
         .map(|(person, role)| (person.clone(), *role))
         .collect();
     let joined = policy.joined.clone();
-    let agents = picked_grants(&policy.grants, |grant| {
-        matches!(grant.subject, Subject::Agent(_))
-    });
+    let agents = picked_grants(&policy.grants, |grant| grant.subject.agent_id().is_some());
     let apps = picked_grants(&policy.grants, is_app);
     let held = picked_grants(&workspace.policy.grants, |grant| {
-        matches!(grant.subject, Subject::Agent(_))
+        grant.subject.agent_id().is_some()
     });
     let held_apps = picked_grants(&workspace.policy.grants, is_app);
     if workspace.policy.members == members
@@ -321,7 +319,7 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
         workspace
             .policy
             .grants
-            .retain(|grant| !matches!(grant.subject, Subject::Agent(_)));
+            .retain(|grant| !grant.subject.agent_id().is_some());
         workspace.policy.grants.extend(agents);
     }
     if held_apps != apps {
@@ -350,7 +348,7 @@ fn picked_grants<'a>(
 /// desk takes them from the governance alone. The session's own app grants are the desk's make-up
 /// ([`tilo_action_policy::roles::is_make_up`]) and stay.
 fn is_app(grant: &Grant) -> bool {
-    matches!(grant.subject, Subject::App(_)) && !tilo_action_policy::roles::is_make_up(grant)
+    grant.subject.app_id().is_some() && !tilo_action_policy::roles::is_make_up(grant)
 }
 
 /// Whether `grant` is the one making `app` an author of its own records in the workspace, as

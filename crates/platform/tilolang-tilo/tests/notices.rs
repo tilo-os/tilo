@@ -276,7 +276,7 @@ fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String
 /// `tell_and_seal`, so the action runs up to the seal it asks about.
 fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
     use tilo_action_policy::{
-        Answer, Grant, KindSet, Role, Standing, Subject, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, Role, Standing, TreePath, WorkspacePolicy,
     };
     let mut policy = WorkspacePolicy::new(WORKSPACE, "sol");
     for member in ["ada", "grace"] {
@@ -291,11 +291,11 @@ fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
         .app(TELLER_APP)
         .kind(meta.kind_of("Note"))
         .action(&tell.id);
-    let owner = Subject::person("sol");
+    let owner = Grantee::person("sol");
     policy.grants.extend([
         Grant::new(
             "tells",
-            Subject::person(who),
+            Grantee::person(who),
             node.clone(),
             KindSet::OUTSIDE,
             Answer::Allow,
@@ -304,7 +304,7 @@ fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
         // The app's own code bounds it too, and its code asks before reaching outside.
         Grant::new(
             "app-tells",
-            Subject::app(TELLER_APP),
+            Grantee::app(TELLER_APP),
             node,
             KindSet::OUTSIDE,
             Answer::Allow,

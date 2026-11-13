@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use tilo_action_policy::share::{is_of_share, share_id_prefix};
 use tilo_action_policy::{
-    ActionKind, Answer, Context, GrantId, Level, Segment, Subject, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Context, GrantId, Level, Segment, TreePath, WorkspacePolicy,
 };
 
 use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
@@ -233,7 +233,7 @@ pub fn window_shares(
         let Some((app_id, tab)) = window_of_node(&grant.node) else {
             continue;
         };
-        let Subject::Person(giver) = &grant.granted_by else {
+        let Some(giver) = grant.granted_by.person_id() else {
             continue;
         };
         if grant.node.workspace_id() != Some(policy.workspace.as_str())
@@ -257,7 +257,7 @@ pub fn window_shares(
         shares.entry(tab).or_insert_with(|| WindowShare {
             tab,
             app_id,
-            sharer: giver.clone(),
+            sharer: giver.to_owned(),
             host: host.clone(),
             until_ms,
             shows: None,
@@ -266,7 +266,7 @@ pub fn window_shares(
     // What each Tilo app's window shows: the share its sharer made beside
     // the window's, of the resource's own node.
     for grant in &policy.grants {
-        let Subject::Person(giver) = &grant.granted_by else {
+        let Some(giver) = grant.granted_by.person_id() else {
             continue;
         };
         if grant.answer != Answer::Allow

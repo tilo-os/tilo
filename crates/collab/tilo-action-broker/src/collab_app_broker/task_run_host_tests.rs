@@ -586,7 +586,7 @@ fn asking_on_the_desk(f: &Fixture, agent: &DoorAgent) -> Arc<Desk> {
                 tilo_action_policy::ActionKind::Undoable,
             ),
             tilo_action_policy::Answer::Ask,
-            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         ),
     );
     desk

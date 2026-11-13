@@ -72,7 +72,7 @@ fn admit_scribe(env: &Environment) {
     let workspace = tree.workspaces.first_mut().unwrap();
     workspace.allow_agent("scribe", KindSet::ALL);
     workspace.allow_app(
-        tilo_action_policy::Subject::agent("scribe"),
+        tilo_action_policy::Grantee::agent("scribe"),
         &env.route.app_id,
         KindSet::ALL,
     );
@@ -303,7 +303,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             let rig = Rig::new(&env).await;
             env.membership.write().workspaces[0].allow_agent("scribe", KindSet::READ);
             env.membership.write().workspaces[0].allow_app(
-                tilo_action_policy::Subject::agent("scribe"),
+                tilo_action_policy::Grantee::agent("scribe"),
                 &env.route.app_id,
                 KindSet::ALL,
             );
@@ -374,7 +374,7 @@ async fn an_application_reaches_another_applications_action_only_as_a_granted_pr
             let agent_grant =
                 env.membership.write().workspaces[0].allow_agent("scribe", KindSet::ALL);
             env.membership.write().workspaces[0].allow_app(
-                tilo_action_policy::Subject::agent("scribe"),
+                tilo_action_policy::Grantee::agent("scribe"),
                 &env.route.app_id,
                 KindSet::ALL,
             );
@@ -415,12 +415,12 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             let rig = Rig::new(&env).await;
             let workspace = env.route.cluster_id.clone();
             {
-                use crate::test_support::{Grants as _, KindSet, Subject, TreePath};
+                use crate::test_support::{Grantee, Grants as _, KindSet, TreePath};
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 workspace.deny(
-                    Subject::agent("scribe"),
+                    Grantee::agent("scribe"),
                     &TreePath::root()
                         .app(env.route.app_id.clone())
                         .any(tilo_action_policy::Level::Kind)

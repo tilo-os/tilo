@@ -154,10 +154,10 @@ impl Actor {
 
     /// The subject a grant names this actor by.
     #[must_use]
-    pub fn subject(&self) -> crate::Subject {
+    pub fn subject(&self) -> crate::Grantee {
         match self {
             Self::Member(member) => crate::granted_to(member),
-            Self::Automation(id) => crate::Subject::Shortcut(id.as_str().to_owned()),
+            Self::Automation(id) => crate::Grantee::shortcut(id.as_str().to_owned()),
         }
     }
 

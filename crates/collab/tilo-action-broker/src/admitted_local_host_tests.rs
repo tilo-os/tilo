@@ -479,7 +479,7 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
                 {
                     use crate::test_support::Grants as _;
                     env.membership.write().workspaces[0].deny(
-                        tilo_action_policy::Subject::ForeignDevice,
+                        tilo_action_policy::Grantee::ForeignDevice,
                         &tilo_action_policy::TreePath::root(),
                         tilo_action_policy::KindSet::UNDOABLE,
                     );

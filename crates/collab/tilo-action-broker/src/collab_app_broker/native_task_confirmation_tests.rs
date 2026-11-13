@@ -37,7 +37,7 @@ fn asks_first_for_notes(f: &Fixture) -> tilo_action_policy::Grant {
             tilo_action_policy::ActionKind::Undoable,
         ),
         tilo_action_policy::Answer::Ask,
-        tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
     )
 }
 

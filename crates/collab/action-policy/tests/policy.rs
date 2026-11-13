@@ -1,6 +1,6 @@
 use tilo_action_policy::{
-    Acting, ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Ids, KindSet,
-    Labels, Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, Subject, TreePath,
+    Acting, ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Grantee, Ids,
+    KindSet, Labels, Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, TreePath,
     WorkspacePolicy, decide, describe, describe_node,
     roles::{self, governance},
     sentences,
@@ -15,8 +15,8 @@ fn cx() -> Context<'static> {
     Context::at(NOW)
 }
 
-fn alice() -> Subject {
-    Subject::person(ALICE)
+fn alice() -> Grantee {
+    Grantee::person(ALICE)
 }
 
 fn mail() -> TreePath {
@@ -32,7 +32,7 @@ fn archive() -> TreePath {
 }
 
 fn grant(id: &str, node: TreePath, kinds: KindSet, answer: Answer) -> Grant {
-    Grant::new(id, alice(), node, kinds, answer, Subject::person(CAROL))
+    Grant::new(id, alice(), node, kinds, answer, Grantee::person(CAROL))
 }
 
 fn answer(grants: &[Grant], node: &TreePath, kind: ActionKind) -> Answer {
@@ -299,7 +299,7 @@ fn grants_apply_only_to_their_subject() {
     let grants = [
         Grant::new(
             "bob",
-            Subject::person(BOB),
+            Grantee::person(BOB),
             mail(),
             KindSet::ALL,
             Answer::Allow,
@@ -307,7 +307,7 @@ fn grants_apply_only_to_their_subject() {
         ),
         Grant::new(
             "editor",
-            Subject::role(Role::Editor),
+            Grantee::role(Role::Editor),
             mail(),
             KindSet::READ,
             Answer::Allow,
@@ -317,7 +317,7 @@ fn grants_apply_only_to_their_subject() {
     assert_eq!(answer(&grants, &send(), ActionKind::Read), Answer::Deny);
     let as_editor = decide(
         &grants,
-        &[alice(), Subject::role(Role::Editor)],
+        &[alice(), Grantee::role(Role::Editor)],
         &send(),
         ActionKind::Read,
         &cx(),
@@ -325,7 +325,7 @@ fn grants_apply_only_to_their_subject() {
     assert_eq!(as_editor.answer, Answer::Allow);
     let agent = decide(
         &grants,
-        &[Subject::agent(BOB)],
+        &[Grantee::agent(BOB)],
         &send(),
         ActionKind::Read,
         &cx(),
@@ -441,7 +441,7 @@ fn delegation_is_the_minimum_of_person_and_delegation() {
                 grant("person", mail(), KindSet::ALL, person_answer),
                 Grant::new(
                     "agent",
-                    Subject::agent("ag"),
+                    Grantee::agent("ag"),
                     mail(),
                     KindSet::ALL,
                     agent_answer,
@@ -449,7 +449,7 @@ fn delegation_is_the_minimum_of_person_and_delegation() {
                 ),
             ];
             let authority = Authority::person(Party::new(vec![alice()], &grants))
-                .bounded_by(Party::new(vec![Subject::agent("ag")], &grants));
+                .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
             let verdict = authority.decide(&send(), ActionKind::Outside, &cx());
             assert_eq!(verdict.answer, person_answer.min(agent_answer));
             assert_eq!(verdict.parts.len(), 2);
@@ -463,7 +463,7 @@ fn an_agent_never_does_more_than_its_person() {
         grant("person", mail(), KindSet::READ, Answer::Allow),
         Grant::new(
             "agent",
-            Subject::agent("ag"),
+            Grantee::agent("ag"),
             TreePath::root(),
             KindSet::ALL,
             Answer::Allow,
@@ -471,7 +471,7 @@ fn an_agent_never_does_more_than_its_person() {
         ),
     ];
     let authority = Authority::person(Party::new(vec![alice()], &grants))
-        .bounded_by(Party::new(vec![Subject::agent("ag")], &grants));
+        .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
     assert_eq!(
         authority.decide(&send(), ActionKind::Read, &cx()).answer,
         Answer::Allow
@@ -484,7 +484,7 @@ fn an_agent_never_does_more_than_its_person() {
     let mut restricted = grants.to_vec();
     restricted.push(grant("no-send", send(), KindSet::ALL, Answer::Deny));
     let authority = Authority::person(Party::new(vec![alice()], &restricted))
-        .bounded_by(Party::new(vec![Subject::agent("ag")], &restricted));
+        .bounded_by(Party::new(vec![Grantee::agent("ag")], &restricted));
     assert_eq!(
         authority.decide(&send(), ActionKind::Read, &cx()).answer,
         Answer::Deny
@@ -497,7 +497,7 @@ fn every_bound_applies() {
         grant("person", mail(), KindSet::ALL, Answer::Allow),
         Grant::new(
             "agent",
-            Subject::agent("ag"),
+            Grantee::agent("ag"),
             mail(),
             KindSet::ALL,
             Answer::Allow,
@@ -505,7 +505,7 @@ fn every_bound_applies() {
         ),
         Grant::new(
             "task",
-            Subject::task("t"),
+            Grantee::task("t"),
             mail(),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
@@ -513,8 +513,8 @@ fn every_bound_applies() {
         ),
     ];
     let authority = Authority::person(Party::new(vec![alice()], &grants))
-        .bounded_by(Party::new(vec![Subject::agent("ag")], &grants))
-        .bounded_by(Party::new(vec![Subject::task("t")], &grants));
+        .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants))
+        .bounded_by(Party::new(vec![Grantee::task("t")], &grants));
     assert_eq!(
         authority
             .decide(&archive(), ActionKind::Undoable, &cx())
@@ -553,7 +553,7 @@ fn the_owner_is_structural() {
     }
     // The owner's delegations still bound what acts for them.
     let agent = Authority::person(workspace.party(ALICE))
-        .bounded_by(workspace.party_of(Subject::agent("ag")));
+        .bounded_by(workspace.party_of(Grantee::agent("ag")));
     assert_eq!(
         agent.decide(&send(), ActionKind::Read, &cx()).answer,
         Answer::Deny
@@ -613,7 +613,7 @@ fn role_presets_grant_what_the_table_says() {
         (Role::Owner, [Allow, Allow, Allow, Allow, Allow, Allow]),
     ];
     for (role, expected) in table {
-        let subjects = [Subject::person("someone"), Subject::role(role)];
+        let subjects = [Grantee::person("someone"), Grantee::role(role)];
         let at =
             |node: &TreePath, kind| decide(&workspace.grants, &subjects, node, kind, &cx()).answer;
         let got = [
@@ -684,11 +684,11 @@ fn owner_cannot_be_removed_by_grant() {
     assert!(workspace.is_owner(ALICE));
     let deny = Grant::new(
         "bob-no-mail",
-        Subject::person(BOB),
+        Grantee::person(BOB),
         mail(),
         KindSet::ALL,
         Answer::Deny,
-        Subject::person(BOB),
+        Grantee::person(BOB),
     );
     workspace.grants.push(deny);
     assert!(!workspace.is_member(BOB) || workspace.role_of(BOB) == Some(Role::Editor));
@@ -745,7 +745,7 @@ fn owner_cannot_be_removed_by_grant() {
     }
     // The owner's own grant set still bounds what acts for them.
     let agent = Authority::person(workspace.party(ALICE))
-        .bounded_by(workspace.party_of(Subject::agent("ag")));
+        .bounded_by(workspace.party_of(Grantee::agent("ag")));
     assert_eq!(
         agent.decide(&send(), ActionKind::Read, &cx()).answer,
         Answer::Deny
@@ -760,7 +760,7 @@ fn grant_requires_grant_action() {
     let workspace = workspace_with_members(&[(BOB, Role::Editor)]);
     let edit = Grant::new(
         "carol-mail",
-        Subject::person(CAROL),
+        Grantee::person(CAROL),
         mail(),
         KindSet::UNDOABLE,
         Answer::Allow,
@@ -796,7 +796,7 @@ fn grant_requires_grant_action() {
         .iter()
         .find(|held| held.id == edit.id)
         .expect("recorded");
-    assert_eq!(recorded.granted_by, Subject::person(ALICE));
+    assert_eq!(recorded.granted_by, Grantee::person(ALICE));
     assert_eq!(
         Authority::person(granted.party(CAROL))
             .decide(&archive(), ActionKind::Undoable, &cx())
@@ -821,7 +821,7 @@ fn grant_requires_grant_action() {
         &bob,
         Change::Grant(Grant::new(
             "bob-gives-edit",
-            Subject::person(CAROL),
+            Grantee::person(CAROL),
             mail(),
             KindSet::UNDOABLE,
             Answer::Allow,
@@ -944,11 +944,11 @@ fn only_governors_change_membership() {
     for action in [governance::INVITE, governance::ADD_MEMBER] {
         let delegated = Grant::new(
             format!("bob-{action}"),
-            Subject::person(BOB),
+            Grantee::person(BOB),
             roles::governance_action("r", action),
             KindSet::OUTSIDE,
             Answer::Allow,
-            Subject::person(ALICE),
+            Grantee::person(ALICE),
         );
         let owner = Authority::person(workspace.party(ALICE));
         let mut next = workspace.clone();
@@ -982,11 +982,11 @@ fn only_governors_change_membership() {
     let mut workspace = workspace_with_members(&[(CAROL, Role::Commenter)]);
     workspace.grants.push(Grant::new(
         "carol-invite",
-        Subject::person(CAROL),
+        Grantee::person(CAROL),
         roles::governance_action("r", governance::INVITE),
         KindSet::OUTSIDE,
         Answer::Allow,
-        Subject::person(ALICE),
+        Grantee::person(ALICE),
     ));
     let carol = Authority::person(workspace.party(CAROL));
     assert_eq!(
@@ -1006,11 +1006,11 @@ fn ask_needs_a_witnessed_approval() {
     let mut workspace = workspace_with_members(&[(BOB, Role::Editor)]);
     workspace.grants.push(Grant::new(
         "bob-invite",
-        Subject::person(BOB),
+        Grantee::person(BOB),
         roles::governance_action("r", governance::INVITE),
         KindSet::OUTSIDE,
         Answer::Ask,
-        Subject::person(ALICE),
+        Grantee::person(ALICE),
     ));
     let bob = Authority::person(workspace.party(BOB));
     let refused = workspace.check_invite(BOB, &bob, Role::Viewer, &cx(), false);
@@ -1028,21 +1028,21 @@ fn nobody_grants_more_than_they_hold() {
     let mut workspace = workspace_with_members(&[(BOB, Role::Editor)]);
     workspace.grants.push(Grant::new(
         "bob-grant",
-        Subject::person(BOB),
+        Grantee::person(BOB),
         roles::governance_action("r", governance::GRANT),
         KindSet::OUTSIDE,
         Answer::Allow,
-        Subject::person(ALICE),
+        Grantee::person(ALICE),
     ));
     let bob = Authority::person(workspace.party(BOB));
     let to_carol = |kinds, answer| {
         Change::Grant(Grant::new(
             "to-carol",
-            Subject::person(CAROL),
+            Grantee::person(CAROL),
             mail(),
             kinds,
             answer,
-            Subject::person(BOB),
+            Grantee::person(BOB),
         ))
     };
     // Bob, an editor, holds Ask for outside effects.
@@ -1098,11 +1098,11 @@ fn nobody_grants_more_than_they_hold() {
     );
     let elsewhere = Change::Grant(Grant::new(
         "elsewhere",
-        Subject::person(CAROL),
+        Grantee::person(CAROL),
         TreePath::workspace("s"),
         KindSet::READ,
         Answer::Allow,
-        Subject::person(BOB),
+        Grantee::person(BOB),
     ));
     assert_eq!(
         granted.clone().apply(BOB, &bob, elsewhere, &cx(), false),
@@ -1116,11 +1116,11 @@ fn grant_and_revoke_are_actions() {
     let owner = Authority::person(workspace.party(ALICE));
     let edit = Grant::new(
         "bob-mail",
-        Subject::person(BOB),
+        Grantee::person(BOB),
         mail(),
         KindSet::UNDOABLE,
         Answer::Allow,
-        Subject::person(CAROL),
+        Grantee::person(CAROL),
     );
     let mut next = workspace.clone();
     next.apply(ALICE, &owner, Change::Grant(edit), &cx(), false)
@@ -1240,7 +1240,7 @@ fn a_standing_carries_the_person_and_every_bound() {
     )
     .granted(roles::agent_default(&[mail()]).assign(
         "ag",
-        &Subject::agent("ag"),
+        &Grantee::agent("ag"),
         &alice(),
         &Lifetime::UntilRevoked,
     ));
@@ -1278,7 +1278,7 @@ fn a_member_leaves_their_workspace_without_being_able_to_remove_anyone() {
         "r",
         BOB,
         NOW + 1_000,
-        Subject::person(ALICE),
+        Grantee::person(ALICE),
     ));
     let bob = Authority::person(workspace.party(BOB).clone());
     let leave = Change::RemoveMember { person: BOB.into() };
@@ -1310,7 +1310,7 @@ fn removing_a_member_drops_their_grants() {
     let mut workspace = workspace_with_members(&[(BOB, Role::Viewer)]);
     workspace.grants.push(Grant::new(
         "bob-mail",
-        Subject::person(BOB),
+        Grantee::person(BOB),
         mail(),
         KindSet::ALL,
         Answer::Allow,
@@ -1332,7 +1332,7 @@ fn removing_a_member_drops_their_grants() {
         workspace
             .grants
             .iter()
-            .all(|grant| grant.subject != Subject::person(BOB))
+            .all(|grant| grant.subject != Grantee::person(BOB))
     );
 }
 
@@ -1342,13 +1342,13 @@ fn the_agent_default_reads_and_changes_but_asks_outside() {
     preset.validate().expect("valid");
     let grants = preset.assign(
         "agent:ag",
-        &Subject::agent("ag"),
+        &Grantee::agent("ag"),
         &alice(),
         &Lifetime::UntilRevoked,
     );
     let workspace = workspace_with_members(&[(BOB, Role::Editor)]);
     let authority = Authority::person(workspace.party(ALICE))
-        .bounded_by(Party::new(vec![Subject::agent("ag")], &grants));
+        .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
     assert_eq!(
         authority
             .decide(&archive(), ActionKind::Undoable, &cx())
@@ -1370,7 +1370,7 @@ fn the_agent_default_reads_and_changes_but_asks_outside() {
     );
     // The agent of an editor asks no more than the editor does: Outside is Ask either way.
     let bob = Authority::person(workspace.party(BOB))
-        .bounded_by(Party::new(vec![Subject::agent("ag")], &grants));
+        .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
     assert_eq!(
         bob.decide(&send(), ActionKind::Outside, &cx()).answer,
         Answer::Ask
@@ -1382,7 +1382,7 @@ fn a_foreign_device_never_governs() {
     let workspace = workspace_with_members(&[]);
     let bound = roles::foreign_device_bound();
     let authority = Authority::person(workspace.party(ALICE))
-        .bounded_by(Party::new(vec![Subject::ForeignDevice], bound.iter()));
+        .bounded_by(Party::new(vec![Grantee::ForeignDevice], bound.iter()));
     assert_eq!(
         authority.decide(&send(), ActionKind::Outside, &cx()).answer,
         Answer::Ask
@@ -1536,12 +1536,12 @@ fn a_grant_written_while_the_level_was_named_for_workspaces_still_decides() {
     // A grant written while the outermost level was named for a workspace.
     let stored = serde_json::json!({
         "id": "notes-read",
-        "subject": {"person": ALICE},
+        "subject": {"member": {"person": ALICE}},
         "node": "workspace:r/app:notes/kind:notes.notebook/resource:*",
         "kinds": ["read", "undoable"],
         "answer": "allow",
         "lifetime": "until_revoked",
-        "granted_by": {"person": ALICE},
+        "granted_by": {"member": {"person": ALICE}},
     });
     let read: Grant = serde_json::from_value(stored).expect("the stored grant still loads");
     assert_eq!(
@@ -1627,7 +1627,7 @@ fn grant_sets_read_as_sentences() {
     let preset = roles::role_preset(Role::Editor, "r");
     let editor = preset.assign(
         "e",
-        &Subject::role(Role::Editor),
+        &Grantee::role(Role::Editor),
         &alice(),
         &Lifetime::UntilRevoked,
     );
@@ -1672,14 +1672,14 @@ fn a_grant_set_reads_as_a_sentence_a_person_can_check() {
     assert_eq!(sentences(&[], &Ids), "Nothing is granted.");
     let viewer = roles::role_preset(Role::Viewer, "r").assign(
         "v",
-        &Subject::role(Role::Viewer),
+        &Grantee::role(Role::Viewer),
         &alice(),
         &Lifetime::UntilRevoked,
     );
     assert_eq!(sentences(&viewer, &Ids), "workspace r: reading allowed.");
     let owner = roles::role_preset(Role::Owner, "r").assign(
         "o",
-        &Subject::role(Role::Owner),
+        &Grantee::role(Role::Owner),
         &alice(),
         &Lifetime::UntilRevoked,
     );
@@ -1706,7 +1706,7 @@ fn verdicts_explain_themselves() {
 
 #[test]
 fn a_privileged_action_needs_the_persons_own_allow() {
-    let agent = || Subject::agent("ag");
+    let agent = || Grantee::agent("ag");
     let asks = [grant("asks", mail(), KindSet::ALL, Answer::Ask)];
     let alone = Authority::person(Party::new(vec![alice()], &asks));
     assert_eq!(
@@ -1763,14 +1763,14 @@ fn a_governance_change_spends_the_once_grant_it_ran_on() {
         roles::governance_action("r", governance::GRANT),
         KindSet::of(roles::GOVERNANCE_KIND),
         Answer::Allow,
-        Subject::person(CAROL),
+        Grantee::person(CAROL),
     )
     .with_lifetime(Lifetime::Once);
     workspace.grants.push(once);
     let denial = |id: &str| {
         Change::Grant(Grant::new(
             id,
-            Subject::agent("ag"),
+            Grantee::agent("ag"),
             mail(),
             KindSet::ALL,
             Answer::Deny,
@@ -1825,7 +1825,7 @@ fn what_a_receiver_admits_is_allowed_by_the_persons_own_grants() {
                 grant("person", mail(), KindSet::ALL, person),
                 Grant::new(
                     "agent",
-                    Subject::agent("ag"),
+                    Grantee::agent("ag"),
                     mail(),
                     KindSet::ALL,
                     delegation,
@@ -1833,7 +1833,7 @@ fn what_a_receiver_admits_is_allowed_by_the_persons_own_grants() {
                 ),
             ];
             let verdict = Authority::person(Party::new(vec![alice()], &grants))
-                .bounded_by(Party::new(vec![Subject::agent("ag")], &grants))
+                .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants))
                 .decide(&send(), ActionKind::Outside, &cx());
             if verdict.answer == Answer::Allow {
                 assert_eq!(verdict.clone().privileged().answer, Answer::Allow);
@@ -2192,7 +2192,7 @@ fn built_in_roles_load_as_the_code_defines_them_and_a_workspace_keeps_its_own_gr
     }
     let adjustment = Grant::new(
         "editors-no-mail",
-        Subject::Role(Role::Editor),
+        Grantee::role(Role::Editor),
         mail(),
         KindSet::UNDOABLE,
         Answer::Deny,
@@ -2201,7 +2201,7 @@ fn built_in_roles_load_as_the_code_defines_them_and_a_workspace_keeps_its_own_gr
     stored.grants.insert(0, adjustment.clone());
     let custom = Grant::new(
         "role:editor:x",
-        Subject::Role(Role::Editor),
+        Grantee::role(Role::Editor),
         mail(),
         KindSet::READ,
         Answer::Allow,
@@ -2230,7 +2230,7 @@ fn built_in_roles_load_as_the_code_defines_them_and_a_workspace_keeps_its_own_gr
     // A workspace that holds none of a role's grants does not get them back.
     let mut bare = workspace_with_members(&[]);
     bare.grants
-        .retain(|grant| grant.subject != Subject::Role(Role::Viewer));
+        .retain(|grant| grant.subject != Grantee::role(Role::Viewer));
     assert_eq!(bare.clone().with_current_roles(), bare);
 
     // A workspace already current comes back as stored, in its own order.
@@ -2250,7 +2250,7 @@ fn the_device_panel_reads_the_session_kind_and_no_other_app_does() {
     let reads = |grants: &[Grant], app: &str| {
         decide(
             grants,
-            &[Subject::App(app.to_owned())],
+            &[Grantee::app(app.to_owned())],
             &copied(),
             ActionKind::Read,
             &cx(),
@@ -2264,7 +2264,7 @@ fn the_device_panel_reads_the_session_kind_and_no_other_app_does() {
         .iter()
         .find(|grant| roles::is_device_panel(grant))
         .expect("a new workspace grants its device's panel");
-    assert_eq!(panel.subject, Subject::App(roles::DEVICE_PANEL.to_owned()));
+    assert_eq!(panel.subject, Grantee::app(roles::DEVICE_PANEL.to_owned()));
     assert_eq!(
         panel.node,
         TreePath::workspace("r")
@@ -2287,7 +2287,7 @@ fn the_device_panel_reads_the_session_kind_and_no_other_app_does() {
         .iter()
         .find(|grant| roles::is_device_panel(grant))
         .expect("an older workspace gains the panel's grant");
-    assert_eq!(panel.granted_by, Subject::Person(ALICE.to_owned()));
+    assert_eq!(panel.granted_by, Grantee::person(ALICE.to_owned()));
     assert_eq!(reads(&gained.grants, roles::DEVICE_PANEL), Answer::Allow);
 }
 
@@ -2302,7 +2302,7 @@ fn every_workspace_lets_its_files_app_author_its_files() {
         .iter()
         .find(|grant| roles::is_files_app(grant))
         .expect("a new workspace grants its files' app");
-    assert_eq!(files.subject, Subject::App(roles::FILES_APP.to_owned()));
+    assert_eq!(files.subject, Grantee::app(roles::FILES_APP.to_owned()));
     assert_eq!(files.node, TreePath::workspace("r").app(roles::FILES_APP));
     assert_eq!(files.kinds, KindSet::READ_UNDOABLE);
     assert!(roles::is_code_defined(files) && roles::is_make_up(files));
@@ -2320,7 +2320,7 @@ fn every_workspace_lets_its_files_app_author_its_files() {
         .iter()
         .find(|grant| roles::is_files_app(grant))
         .expect("an older workspace gains the files' app's grant");
-    assert_eq!(files.granted_by, Subject::Person(ALICE.to_owned()));
+    assert_eq!(files.granted_by, Grantee::person(ALICE.to_owned()));
     assert!(gained.app_authors(roles::FILES_APP, &cx()));
 }
 
@@ -2340,7 +2340,7 @@ fn a_workspace_neither_revokes_nor_gives_a_built_in_role_grant() {
     );
     let given = Grant::new(
         "role:viewer:1",
-        Subject::Role(Role::Viewer),
+        Grantee::role(Role::Viewer),
         mail(),
         KindSet::UNDOABLE,
         Answer::Allow,

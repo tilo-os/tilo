@@ -5,7 +5,7 @@
 
 use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
 use crate::test_support::{
-    Grants as _, KindSet, Subject, TreePath, Workspace, WorkspaceSlot, WorkspaceTree,
+    Grantee, Grants as _, KindSet, TreePath, Workspace, WorkspaceSlot, WorkspaceTree,
 };
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
@@ -64,7 +64,7 @@ fn workspace() -> Workspace {
     let mut workspace = Workspace::new(WorkspaceSlot(14), "Home");
     workspace.set_owner("owner");
     workspace.deny(
-        Subject::agent("scribe"),
+        Grantee::agent("scribe"),
         &TreePath::root().app(SHEETS),
         KindSet::ALL,
     );

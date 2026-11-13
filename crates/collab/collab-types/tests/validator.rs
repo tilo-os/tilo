@@ -22,7 +22,7 @@ use collab_types::{
     validate_inbound_op, validate_replayed_inbound_op,
 };
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{Authority, Grant, Party, Subject, roles};
+use tilo_action_policy::{Authority, Grant, Grantee, Party, roles};
 
 fn t(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
@@ -179,11 +179,11 @@ fn grant_clearance(f: &mut Fixture, level: Clearance, trusted: bool) -> Ed25519P
 }
 
 fn presets() -> Vec<Grant> {
-    roles::workspace_role_grants(DEFAULT_WORKSPACE, &Subject::Role(Role::Owner))
+    roles::workspace_role_grants(DEFAULT_WORKSPACE, &Grantee::role(Role::Owner))
 }
 
 fn party(grants: &[Grant], role: Role) -> Authority<'_> {
-    Authority::person(Party::new(vec![Subject::Role(role)], grants))
+    Authority::person(Party::new(vec![Grantee::role(role)], grants))
 }
 
 fn rejection(case: &str, result: Result<(), ValidationError>) -> ValidationError {
@@ -629,11 +629,11 @@ fn a_grant_naming_a_record_names_its_channel_and_a_pattern_does_not() {
     let grant = |node: TreePath| {
         Grant::new(
             "g",
-            Subject::person("carol"),
+            Grantee::person("carol"),
             node,
             KindSet::READ,
             Answer::Deny,
-            Subject::person("owner"),
+            Grantee::person("owner"),
         )
     };
     let channel = document_channel_id("so.tilo.sheets", "room", "payroll");

@@ -16,7 +16,7 @@ use web_time::{Duration, SystemTime};
 use thiserror::Error;
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Context, Grant, Party, Subject, TreePath, roles,
+    ActionKind, Answer, Authority, Context, Grant, Grantee, Party, TreePath, roles,
 };
 
 use crate::channel::ArtifactId;
@@ -251,7 +251,7 @@ impl Default for ChannelState {
             artifact_kinds: HashMap::new(),
             room: DEFAULT_WORKSPACE.to_owned(),
             surfaces: crate::receipt::Surfaces::default(),
-            grants: roles::workspace_role_grants(DEFAULT_WORKSPACE, &Subject::Role(Role::Owner)),
+            grants: roles::workspace_role_grants(DEFAULT_WORKSPACE, &Grantee::role(Role::Owner)),
             artifact_classifications: HashMap::new(),
             channel_min_clearance: None,
             last_seq_per_author: HashMap::new(),
@@ -485,8 +485,8 @@ pub fn validate_inbound_op(
     }
 
     let subjects = [
-        Subject::Person(hex::encode(op.author.0)),
-        Subject::Role(ra.role),
+        Grantee::person(hex::encode(op.author.0)),
+        Grantee::role(ra.role),
     ];
     let grants = channel_state.grants.clone();
     let mut author = Party::new(subjects.to_vec(), &grants);

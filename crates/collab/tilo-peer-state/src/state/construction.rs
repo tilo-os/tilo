@@ -1,8 +1,8 @@
 //! Building a replica, and admitting a device into its governed history.
 
 use super::{
-    BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity, PeerCore, ROOT,
-    RevocationList, Role, Shared, StatePeer, Subject, SystemTime, VecDeque, VerifiedCertificate,
+    BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity, Grantee, PeerCore,
+    ROOT, RevocationList, Role, Shared, StatePeer, SystemTime, VecDeque, VerifiedCertificate,
     administrator_grant_id, err, held, now_ns, process_default, supersedes, workspace,
 };
 use collab_types::signer::DeviceSigner;
@@ -260,7 +260,7 @@ impl StatePeer {
         // An administrator moderates the workspace too: the two grants come and
         // go together.
         if administrator {
-            let giver = Subject::Person(hex::encode(self.core.owner));
+            let giver = Grantee::person(hex::encode(self.core.owner));
             for grant in [
                 tilo_action_policy::roles::administrator_grant(&workspace, &person, giver.clone()),
                 tilo_action_policy::roles::administrator_moderation_grant(

@@ -379,16 +379,16 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     },
                 )
                 .await;
-                use crate::test_support::{Grants as _, KindSet, Subject};
+                use crate::test_support::{Grants as _, KindSet, Grantee};
                 let target = "host:org.example.App.desktop";
                 {
                     let workspace = &mut env.membership.write().workspaces[0];
                     workspace.allow_agent("scribe", KindSet::READ);
-                    workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                    workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 }
                 let target_grant_id = (scenario != "denied").then(|| {
                     env.membership.write().workspaces[0].allow_app(
-                        Subject::agent("scribe"),
+                        Grantee::agent("scribe"),
                         target,
                         KindSet::ALL,
                     )
@@ -564,7 +564,7 @@ async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use crate::collab_app_broker::invocation_journal::{InvocationKey, InvocationOwner};
-            use crate::test_support::{Grants as _, KindSet, Subject};
+            use crate::test_support::{Grantee, Grants as _, KindSet};
             let env = Environment::new();
             let rig = Rig::new(&env).await;
             let target = "so.tilo.contacts";
@@ -572,8 +572,8 @@ async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
             {
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
-                workspace.allow_app(Subject::agent("scribe"), target, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), target, KindSet::ALL);
             }
             let workspace = env.route.cluster_id.clone();
             let app = env.route.app_id.clone();

@@ -732,7 +732,7 @@ impl StatePeer {
         let mut reissued = Vec::with_capacity(old.len());
         for grant in &old {
             let mut next = grant.clone();
-            next.granted_by = tilo_action_policy::Subject::person(hex::encode(signer));
+            next.granted_by = tilo_action_policy::Grantee::person(hex::encode(signer));
             WorkspacePolicy::check_within(&authority, &next, &cx)
                 .map_err(|refusal| refusal.to_string())?;
             reissued.push(next);

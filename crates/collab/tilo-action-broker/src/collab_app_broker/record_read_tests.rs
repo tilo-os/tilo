@@ -15,7 +15,7 @@ use crate::collab_app_broker::principal_id_for_root;
 use crate::services::{
     DocumentBytes, HostServices, LocalPersonServices, NativeDocumentReads, RecordChangeServices,
 };
-use crate::test_support::{Grants as _, KindSet, Subject, TreePath, WorkspaceSlot, WorkspaceTree};
+use crate::test_support::{Grantee, Grants as _, KindSet, TreePath, WorkspaceSlot, WorkspaceTree};
 
 const NOTES: &str = "so.tilo.lang.notes";
 const MAIL: &str = "so.tilo.lang.mail";
@@ -160,16 +160,16 @@ fn fixture_with(owner: Owner) -> Fixture {
     workspace.set_owner(person.clone());
     let workspace_id = workspace.id().to_string();
     let scribe = workspace.allow_agent("scribe", KindSet::READ);
-    workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
+    workspace.allow_app(Grantee::agent("scribe"), NOTES, KindSet::ALL);
     // Mail's changes the workspace keeps from the agent.
     workspace.deny(
-        Subject::agent("scribe"),
+        Grantee::agent("scribe"),
         &TreePath::root().app(MAIL),
         KindSet::UNDOABLE,
     );
     // One Notes record the workspace keeps from the agent, though its person may read it.
     workspace.deny(
-        Subject::agent("scribe"),
+        Grantee::agent("scribe"),
         &TreePath::root().app(NOTES).resource("private"),
         KindSet::READ,
     );

@@ -269,7 +269,7 @@ async fn local_report_admission(
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
             let once_grant = |id: &str| {
-                let principal = tilo_action_policy::Subject::Person(principal_id_for_root(
+                let principal = tilo_action_policy::Grantee::person(principal_id_for_root(
                     env.cert.user_public_key,
                 ));
                 tilo_action_policy::Grant::new(

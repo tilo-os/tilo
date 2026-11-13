@@ -112,7 +112,7 @@ fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via
     reason = "one cached policy followed through expiry, removal and replacement"
 )]
 fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
-    use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
     let (key, cert, _, other, now) = fixtures();
     let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut doc = crate::workspace::candidate(
@@ -127,11 +127,11 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     // A time-limited hold on undoable changes, rechecked at every decision.
     let hold = Grant::new(
         "hold",
-        Subject::Person(person.clone()),
+        Grantee::person(person.clone()),
         TreePath::workspace(workspace_id),
         KindSet::UNDOABLE,
         Answer::Deny,
-        Subject::person(hex::encode(other_owner().1.user_public_key)),
+        Grantee::person(hex::encode(other_owner().1.user_public_key)),
     )
     .with_lifetime(Lifetime::Until(2_001_000));
     let editor = collab_types::Role::Editor;
@@ -1062,7 +1062,7 @@ fn a_members_governance_change_is_its_roles_and_another_receiver_takes_it() {
     use crate::join::TransportHint;
     use crate::members::MembershipOpCommand;
     use crate::workspace::GovernanceRow;
-    use tilo_action_policy::{Subject, roles};
+    use tilo_action_policy::{Grantee, roles};
 
     let (mut peer, authority_key, _, _, now) = seeded();
     let (editor_key, editor_cert, editor_person) =
@@ -1095,7 +1095,7 @@ fn a_members_governance_change_is_its_roles_and_another_receiver_takes_it() {
                 &[roles::administrator_grant(
                     &workspace,
                     &hex::encode(editor_person),
-                    Subject::Person(person),
+                    Grantee::person(person),
                 )],
                 &authority_key,
                 now,

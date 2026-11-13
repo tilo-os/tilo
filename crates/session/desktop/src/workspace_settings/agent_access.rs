@@ -6,7 +6,7 @@
 //! on the action itself lifts that, and those exceptions are listed here to take back.
 
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Subject, decide};
+use tilo_action_policy::{ActionKind, Answer, Grantee, decide};
 use tilo_desktop_model::{UserId, Workspace};
 use tilo_sort::CompactSort as _;
 
@@ -91,7 +91,7 @@ pub fn answer_at(
     scope: &AnswerScope,
     kind: ActionKind,
 ) -> AnswerCell {
-    let subject = [Subject::agent(agent)];
+    let subject = [Grantee::agent(agent)];
     let cx = tilo_desktop_model::context_at(tilo_clock::unix_now());
     let decision = decide(
         admission.iter().chain(ws.policy.grants.iter()),
@@ -117,7 +117,7 @@ pub fn agent_access_rows(
     admission: &[tilo_action_policy::Grant],
     apps: &dyn AppDirectory,
 ) -> Vec<AgentAccessRow> {
-    let subject = Subject::agent(agent);
+    let subject = Grantee::agent(agent);
     let mut ids: Vec<String> = grant_subjects(ws)
         .into_iter()
         .filter(|candidate| candidate.kind == super::SubjectKind::App)
@@ -159,7 +159,7 @@ pub fn agent_exceptions(
     agent: &str,
     apps: &dyn AppDirectory,
 ) -> Vec<AgentException> {
-    let subject = Subject::agent(agent);
+    let subject = Grantee::agent(agent);
     let mut out: Vec<AgentException> = ws
         .policy
         .grants
@@ -198,7 +198,7 @@ pub fn set_agent_answers(
     answers: &[(AnswerScope, ActionKind, Option<Answer>)],
 ) -> PolicyEdit {
     let root = ws.policy.workspace.clone();
-    let by = Subject::Person(actor.clone());
+    let by = Grantee::person(actor.clone());
     let changes: Vec<_> = answers
         .iter()
         .flat_map(|(scope, kind, answer)| {

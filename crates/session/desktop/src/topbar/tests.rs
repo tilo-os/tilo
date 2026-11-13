@@ -1942,11 +1942,11 @@ fn agent_viewer_is_never_described_as_a_person() {
     let node = workspace.node();
     workspace.grant(tilo_action_policy::Grant::new(
         "agent-member:scribe",
-        tilo_action_policy::Subject::agent("scribe"),
+        tilo_action_policy::Grantee::agent("scribe"),
         node,
         tilo_action_policy::KindSet::READ,
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person("owner"),
+        tilo_action_policy::Grantee::person("owner"),
     ));
     workspace.collaborators.push(
         tilo_desktop_model::Collaborator::new("scribe", "Release Notes Agent").with_session(9),
@@ -1983,11 +1983,11 @@ fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
     let node = shared.node();
     shared.grant(tilo_action_policy::Grant::new(
         "agent-member:scribe",
-        tilo_action_policy::Subject::agent("scribe"),
+        tilo_action_policy::Grantee::agent("scribe"),
         node,
         tilo_action_policy::KindSet::READ,
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person("owner"),
+        tilo_action_policy::Grantee::person("owner"),
     ));
     shared
         .collaborators

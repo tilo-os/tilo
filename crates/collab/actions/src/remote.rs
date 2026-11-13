@@ -155,13 +155,13 @@ impl CallerPrincipal {
     /// The grant subject this principal is decided as. The one mapping every
     /// door uses, instead of each matching on the principal by hand.
     #[must_use]
-    pub fn subject(&self) -> tilo_action_policy::Subject {
-        use tilo_action_policy::Subject;
+    pub fn subject(&self) -> tilo_action_policy::Grantee {
+        use tilo_action_policy::Grantee;
         match self {
-            Self::Person(id) => Subject::Person(id.clone()),
-            Self::Agent(id) => Subject::Agent(id.clone()),
-            Self::App(id) => Subject::App(id.clone()),
-            Self::Bot(id) => Subject::Bot(id.clone()),
+            Self::Person(id) => Grantee::person(id.clone()),
+            Self::Agent(id) => Grantee::agent(id.clone()),
+            Self::App(id) => Grantee::app(id.clone()),
+            Self::Bot(id) => Grantee::bot(id.clone()),
         }
     }
 }
@@ -1849,7 +1849,7 @@ mod tests {
         let caller = Caller::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6", installer, [9u8; 32]);
         assert_eq!(
             caller.principal().subject(),
-            tilo_action_policy::Subject::Bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into())
+            tilo_action_policy::Grantee::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6")
         );
         let actor = caller.actor();
         assert_eq!(actor.id, "bot:6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6");
@@ -1863,22 +1863,22 @@ mod tests {
 
     #[test]
     fn every_principal_maps_to_its_subject() {
-        use tilo_action_policy::Subject;
+        use tilo_action_policy::Grantee;
         assert_eq!(
             CallerPrincipal::Person("p".into()).subject(),
-            Subject::Person("p".into())
+            Grantee::person("p")
         );
         assert_eq!(
             CallerPrincipal::Agent("a".into()).subject(),
-            Subject::Agent("a".into())
+            Grantee::agent("a")
         );
         assert_eq!(
             CallerPrincipal::App("x.y".into()).subject(),
-            Subject::App("x.y".into())
+            Grantee::app("x.y")
         );
         assert_eq!(
             CallerPrincipal::Bot("b".into()).subject(),
-            Subject::Bot("b".into())
+            Grantee::bot("b")
         );
     }
 

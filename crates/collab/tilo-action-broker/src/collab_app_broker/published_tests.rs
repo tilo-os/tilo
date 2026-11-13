@@ -165,13 +165,13 @@ fn panel_workspace() -> (
     crate::services::WorkspaceAuthorityHandle,
     String,
 ) {
-    use crate::test_support::{Subject, Workspace, WorkspaceSlot, WorkspaceTree};
+    use crate::test_support::{Grantee, Workspace, WorkspaceSlot, WorkspaceTree};
     let mut workspace = Workspace::new(WorkspaceSlot(41), "Readings");
     workspace.set_owner("owner");
     let workspace_id = workspace.id().to_string();
     workspace.grant(tilo_action_policy::roles::device_panel(
         &workspace_id,
-        Subject::Person("owner".into()),
+        Grantee::person("owner"),
     ));
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);

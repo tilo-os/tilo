@@ -5,7 +5,7 @@
 use super::SystemTime;
 use super::facades::PeerGovernanceMut;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Subject, roles};
+use tilo_action_policy::{Grantee, roles};
 
 impl PeerGovernanceMut<'_> {
     /// Remove `user_public_key` (when a member) with every device of theirs,
@@ -28,7 +28,7 @@ impl PeerGovernanceMut<'_> {
         let removed = candidate
             .governance_mut()
             .remove_member(user_public_key, key, now)?;
-        let block = roles::block_grant(&self.peer.core.workspace, &person, Subject::person(by));
+        let block = roles::block_grant(&self.peer.core.workspace, &person, Grantee::person(by));
         let blocked = candidate
             .governance_mut()
             .put_governed_grants(&[block], key, now)?;

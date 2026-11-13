@@ -28,7 +28,7 @@ use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use collab_types::caps::CapOverride;
-use tilo_action_policy::{Grant, GrantId, Preset, Role, Subject, WorkspacePolicy};
+use tilo_action_policy::{Grant, GrantId, Grantee, Preset, Role, WorkspacePolicy};
 
 use crate::app::AppKind;
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
@@ -705,7 +705,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
         // exposing the policy to the live tree.
         fn role_order(grant: &Grant) -> usize {
             match grant.subject {
-                Subject::Role(role) => Role::ALL
+                Grantee::Role(role) => Role::ALL
                     .iter()
                     .position(|r| *r == role)
                     .unwrap_or(Role::ALL.len()),
@@ -714,7 +714,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
         }
         fn role_index(grant: &Grant) -> Option<u64> {
             match grant.subject {
-                Subject::Role(_) => grant.id.0.rsplit(':').next()?.parse().ok(),
+                Grantee::Role(_) => grant.id.0.rsplit(':').next()?.parse().ok(),
                 _ => None,
             }
         }
@@ -837,7 +837,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             // Old appended entries had no grants map. Reconstruct their
             // canonical defaults even when this tree reuses a cached workspace.
             ws.policy.grants =
-                WorkspacePolicy::unowned(ws.id().to_string(), &Subject::Role(Role::Owner)).grants;
+                WorkspacePolicy::unowned(ws.id().to_string(), &Grantee::role(Role::Owner)).grants;
         }
         if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
             ws.sandbox = sandbox;

@@ -6,7 +6,7 @@ use automerge::ROOT;
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{ActionKind, Answer, KindSet, Subject, TreePath, roles};
+use tilo_action_policy::{ActionKind, Answer, Grantee, KindSet, TreePath, roles};
 use web_time::Duration;
 
 /// The person tests name the workspace's owner, and the device they sign with.
@@ -69,7 +69,7 @@ fn current_member_rechecks_removal() {
     // A blocked member is no longer current.
     let block = expected
         .policy
-        .block(&expected.person, Subject::person("a different person"));
+        .block(&expected.person, Grantee::person("a different person"));
     put_grant(&mut peer, &block);
     assert!(peer.permissions(source, now).is_err());
 }
@@ -168,11 +168,11 @@ fn current_member_preserves_restriction_role_semantics_and_current_certificate_e
     // A deny on one app narrows what the member may do there; it is no block.
     let deny = Grant::new(
         "denial",
-        Subject::person(person.as_str()),
+        Grantee::person(person.as_str()),
         TreePath::workspace(restricted.workspace_id()).app("so.tilo.notes"),
         KindSet::ALL,
         Answer::Deny,
-        Subject::person("a different person"),
+        Grantee::person("a different person"),
     );
     put_grant(&mut restricted, &deny);
     assert_eq!(restricted.role(&source, now).unwrap(), Role::Editor);
@@ -243,11 +243,11 @@ fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
         &mut peer,
         &Grant::new(
             "foreign-device-read",
-            Subject::ForeignDevice,
+            Grantee::ForeignDevice,
             TreePath::workspace(&workspace_id),
             KindSet::UNDOABLE.union(KindSet::OUTSIDE),
             Answer::Deny,
-            Subject::person(person.as_str()),
+            Grantee::person(person.as_str()),
         ),
     );
     assert_foreign(&peer, source, now, Role::Owner);
@@ -289,11 +289,11 @@ fn a_read_deny_below_the_workspace_refuses_only_what_it_names() {
     let read_grant = |id: &str, node: TreePath, answer: Answer| {
         Grant::new(
             id,
-            Subject::person(person.as_str()),
+            Grantee::person(person.as_str()),
             node,
             KindSet::READ,
             answer,
-            Subject::person("a different person"),
+            Grantee::person("a different person"),
         )
     };
     for grant in [
@@ -359,11 +359,11 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
     let read_grant = |id: &str, node: TreePath, answer: Answer| {
         Grant::new(
             id,
-            Subject::person(person.as_str()),
+            Grantee::person(person.as_str()),
             node,
             KindSet::READ,
             answer,
-            Subject::person("a different person"),
+            Grantee::person("a different person"),
         )
     };
     for grant in [

@@ -452,11 +452,11 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
             // A real published Agent invocation retains its original identity through
             // this Settings worker; it never borrows the worker's person certificate.
             {
-                use crate::test_support::{Grants as _, KindSet, Subject};
+                use crate::test_support::{Grantee, Grants as _, KindSet};
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("display-agent", KindSet::ALL);
                 workspace.allow_app(
-                    Subject::agent("display-agent"),
+                    Grantee::agent("display-agent"),
                     &env.route.app_id,
                     KindSet::ALL,
                 );

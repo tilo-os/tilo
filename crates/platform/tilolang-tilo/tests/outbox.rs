@@ -239,7 +239,7 @@ const WORKSPACE: &str = "workspace";
 /// up to the effect it queues before the ask about recording the letter.
 fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action_policy::Standing {
     use tilo_action_policy::{
-        Answer, Grant, KindSet, Role, Standing, Subject, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, Role, Standing, TreePath, WorkspacePolicy,
     };
     let mut policy = WorkspacePolicy::new(WORKSPACE, "sol");
     for member in ["ada", "grace"] {
@@ -254,11 +254,11 @@ fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action
         .app(RELAY_APP)
         .kind(meta.kind_of("Draft"))
         .action(&post.id);
-    let owner = Subject::person("sol");
+    let owner = Grantee::person("sol");
     policy.grants.extend([
         Grant::new(
             "posts",
-            Subject::person(who),
+            Grantee::person(who),
             node.clone(),
             KindSet::OUTSIDE,
             Answer::Allow,
@@ -267,7 +267,7 @@ fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action
         // The app's own code bounds it too, and its code asks before reaching outside.
         Grant::new(
             "app-posts",
-            Subject::app(RELAY_APP),
+            Grantee::app(RELAY_APP),
             node,
             KindSet::OUTSIDE,
             Answer::Allow,

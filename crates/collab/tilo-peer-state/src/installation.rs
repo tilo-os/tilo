@@ -5,7 +5,7 @@
 //! in the workspace.
 //!
 //! Its grants are not in this row. They are ordinary grants with
-//! `Subject::Bot(id)` in the workspace's policy, so every receiver enforces them
+//! `Grantee::bot(id)` in the workspace's policy, so every receiver enforces them
 //! with the code it already runs.
 
 use std::collections::BTreeMap;
@@ -93,7 +93,7 @@ pub struct ArmedRecord {
 /// The governed row of an installed bot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Installation {
-    /// The `Subject::Bot` id.
+    /// The `Grantee::bot` id.
     pub id: InstallationId,
     /// BLAKE3 (lowercase hex) of the program bytes the workspace keeps.
     pub program: String,

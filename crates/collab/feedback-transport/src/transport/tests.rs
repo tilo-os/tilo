@@ -38,7 +38,7 @@ fn no_member(person: &str) -> PermissionContext {
         Actor::person(person).in_workspace(WORKSPACE),
         vec![],
         ui::permissions::Standing::person(
-            policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Subject::Role(Role::Owner)),
+            policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Grantee::role(Role::Owner)),
             person,
         ),
     )
@@ -48,7 +48,7 @@ fn no_member(person: &str) -> PermissionContext {
 fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
     policy::Grant::new(
         "feedback-submit",
-        policy::Subject::person(hex::encode([12; 32])),
+        policy::Grantee::person(hex::encode([12; 32])),
         TreePath::workspace(WORKSPACE).join(&chat_action(
             "channels",
             "feedback",
@@ -57,7 +57,7 @@ fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
         )),
         kinds,
         answer,
-        policy::Subject::person(hex::encode([11; 32])),
+        policy::Grantee::person(hex::encode([11; 32])),
     )
 }
 

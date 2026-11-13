@@ -306,28 +306,29 @@ pub fn grant_given_by_label(
     ws: &Workspace,
     local_user: &str,
 ) -> Option<String> {
-    use tilo_action_policy::Subject as Who;
-    match &grant.granted_by {
-        Who::Person(id) | Who::Agent(id) if id == local_user => {
-            Some(t("workspace-settings-granted-by-you"))
-        }
-        Who::Person(id) => Some(t_args(
+    let who = &grant.granted_by;
+    if who.person_id() == Some(local_user) || who.agent_id() == Some(local_user) {
+        return Some(t("workspace-settings-granted-by-you"));
+    }
+    if let Some(id) = who.person_id() {
+        return Some(t_args(
             "workspace-settings-granted-by-person",
             &[("id", member_name_or_short_id(ws, id).into())],
-        )),
-        Who::App(id) => Some(t_args(
+        ));
+    }
+    if let Some(id) = who.app_id() {
+        return Some(t_args(
             "workspace-settings-granted-by-app",
             &[("app", id.into())],
-        )),
-        Who::Agent(id) => Some(t_args(
+        ));
+    }
+    who.agent_id().map(|id| {
+        t_args(
             "workspace-settings-granted-by-agent",
             &[("id", member_name_or_short_id(ws, id).into())],
-        )),
-        Who::Role(_) | Who::Task(_) | Who::Shortcut(_) | Who::Bot(_) | Who::ForeignDevice => None,
-    }
+        )
+    })
 }
-
-// Grant composer
 
 /// A subject the grant composer can target, and the subject axis the Permissions list groups by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -622,10 +623,10 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
         }
     }
     for grant in &ws.policy.grants {
-        if let tilo_action_policy::Subject::App(app) = &grant.subject
+        if let Some(app) = grant.subject.app_id()
             && !tilo_action_policy::roles::is_make_up(grant)
         {
-            apps.push(app.clone());
+            apps.push(app.to_owned());
         }
     }
     apps.compact_sort();
@@ -787,7 +788,7 @@ fn subject_is_person(subject: &Subject, user: &UserId) -> bool {
 
 /// Revoke every grant naming `agent` , as `actor` .
 pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> PolicyEdit {
-    let subject = tilo_action_policy::Subject::agent(agent);
+    let subject = tilo_action_policy::Grantee::agent(agent);
     let revokes = ws
         .policy
         .grants
@@ -951,47 +952,65 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
 /// The section a grant is listed in: its subject's, except that an app granted another app's action
 /// is listed under App actions.
 fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
-    use tilo_action_policy::Subject as Who;
     let names_action = grant
         .node
         .id_at(tilo_action_policy::Level::Action)
         .is_some();
-    match &grant.subject {
-        Who::App(id) => GrantSubject {
+    let subject = &grant.subject;
+    if let Some(id) = subject.app_id() {
+        return GrantSubject {
             kind: if names_action {
                 SubjectKind::AppAction
             } else {
                 SubjectKind::App
             },
-            id: id.clone(),
-        },
-        Who::Person(id) => GrantSubject {
+            id: id.to_owned(),
+        };
+    }
+    if let Some(id) = subject.person_id() {
+        return GrantSubject {
             kind: SubjectKind::Member,
-            id: id.clone(),
-        },
-        Who::Agent(id) => GrantSubject {
+            id: id.to_owned(),
+        };
+    }
+    if let Some(id) = subject.agent_id() {
+        return GrantSubject {
             kind: SubjectKind::Agent,
-            id: id.clone(),
-        },
-        Who::Role(role) => GrantSubject {
+            id: id.to_owned(),
+        };
+    }
+    if let Some(role) = subject.role_of() {
+        return GrantSubject {
             kind: SubjectKind::Role,
             id: t_args(
                 "workspace-settings-subject-role",
-                &[("role", role_label(*role).into())],
+                &[("role", role_label(role).into())],
             ),
-        },
-        Who::Task(id) | Who::Shortcut(id) => GrantSubject {
+        };
+    }
+    match subject {
+        tilo_action_policy::Grantee::Task(id) | tilo_action_policy::Grantee::Shortcut(id) => {
+            GrantSubject {
+                kind: SubjectKind::Other,
+                id: id.clone(),
+            }
+        }
+        tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(id)) => {
+            GrantSubject {
+                kind: SubjectKind::Other,
+                id: t_args(
+                    "workspace-settings-subject-bot",
+                    &[("id", short_id(id).into())],
+                ),
+            }
+        }
+        tilo_action_policy::Grantee::App(_)
+        | tilo_action_policy::Grantee::Role(_)
+        | tilo_action_policy::Grantee::Member(_) => GrantSubject {
             kind: SubjectKind::Other,
-            id: id.clone(),
+            id: t("workspace-settings-subject-foreign-device"),
         },
-        Who::Bot(id) => GrantSubject {
-            kind: SubjectKind::Other,
-            id: t_args(
-                "workspace-settings-subject-bot",
-                &[("id", short_id(id).into())],
-            ),
-        },
-        Who::ForeignDevice => GrantSubject {
+        tilo_action_policy::Grantee::ForeignDevice => GrantSubject {
             kind: SubjectKind::Other,
             id: t("workspace-settings-subject-foreign-device"),
         },
@@ -1014,9 +1033,9 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
             .grants
             .iter()
             .filter(|grant| {
-                let preset = matches!(grant.subject, tilo_action_policy::Subject::Role(_))
-                    && grant.id.as_str().starts_with("role:");
-                let admission = matches!(grant.subject, tilo_action_policy::Subject::Agent(_))
+                let preset =
+                    grant.subject.role_of().is_some() && grant.id.as_str().starts_with("role:");
+                let admission = grant.subject.agent_id().is_some()
                     && grant.id.as_str().starts_with("agent-member:");
                 let make_up = tilo_action_policy::roles::is_make_up(grant);
                 !preset && !admission && !make_up
@@ -1260,11 +1279,11 @@ mod members_tests {
             let mut ws = ws_with_two_members();
             let admin = Grant::new(
                 "peer-administers",
-                tilo_action_policy::Subject::person(PEER),
+                tilo_action_policy::Grantee::person(PEER),
                 roles::workspace_resource(&ws.policy.workspace),
                 KindSet::ALL,
                 Answer::Allow,
-                tilo_action_policy::Subject::person(OWNER),
+                tilo_action_policy::Grantee::person(OWNER),
             );
             ws.govern_as_at(OWNER, Change::Grant(admin), tilo_clock::unix_now())
                 .expect("owner delegates administration");
@@ -1296,11 +1315,11 @@ mod members_tests {
         ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
         let notes = Grant::new(
             "peer-notes",
-            tilo_action_policy::Subject::person(PEER),
+            tilo_action_policy::Grantee::person(PEER),
             ws.node().app("so.tilo.notes"),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            tilo_action_policy::Subject::person(OWNER),
+            tilo_action_policy::Grantee::person(OWNER),
         );
         ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
             .expect("owner shares an app");
@@ -1344,19 +1363,19 @@ mod agents_tests {
         ws.set_owner(OWNER);
         ws.grant(Grant::new(
             format!("agent-member:{AGENT}"),
-            tilo_action_policy::Subject::agent(AGENT),
+            tilo_action_policy::Grantee::agent(AGENT),
             ws.node(),
             KindSet::READ,
             Answer::Allow,
-            tilo_action_policy::Subject::person(OWNER),
+            tilo_action_policy::Grantee::person(OWNER),
         ));
         let notes = Grant::new(
             "scribe-notes",
-            tilo_action_policy::Subject::agent(AGENT),
+            tilo_action_policy::Grantee::agent(AGENT),
             ws.node().app("so.tilo.notes"),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            tilo_action_policy::Subject::person(OWNER),
+            tilo_action_policy::Grantee::person(OWNER),
         );
         ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
             .expect("owner grants scoped access");
@@ -1364,7 +1383,7 @@ mod agents_tests {
     }
 
     fn agent_answer(ws: &Workspace, app: &str, kind: ActionKind) -> Answer {
-        ws.subject_authority(tilo_action_policy::Subject::agent(AGENT))
+        ws.subject_authority(tilo_action_policy::Grantee::agent(AGENT))
             .decide(
                 &ws.node().app(app),
                 kind,
@@ -1396,11 +1415,11 @@ mod agents_tests {
             ws.set_owner(OWNER);
             ws.grant(Grant::new(
                 format!("agent-member:{AGENT}"),
-                tilo_action_policy::Subject::agent(AGENT),
+                tilo_action_policy::Grantee::agent(AGENT),
                 ws.node(),
                 KindSet::READ,
                 Answer::Allow,
-                tilo_action_policy::Subject::person(OWNER),
+                tilo_action_policy::Grantee::person(OWNER),
             ));
             assert_eq!(
                 ws.agent_members_at(tilo_clock::unix_now()),
@@ -1591,11 +1610,11 @@ mod permissions_tests {
                 OWNER,
                 tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
                     "editors-camera-app",
-                    tilo_action_policy::Subject::Role(CapRole::Editor),
+                    tilo_action_policy::Grantee::role(CapRole::Editor),
                     ws.node().app("so.tilo.camera"),
                     tilo_action_policy::KindSet::READ,
                     tilo_action_policy::Answer::Allow,
-                    tilo_action_policy::Subject::person(OWNER),
+                    tilo_action_policy::Grantee::person(OWNER),
                 )),
                 tilo_clock::unix_now(),
             )
@@ -1931,7 +1950,7 @@ mod permissions_tests {
             let grant = tilo_action_policy::roles::app_authorship(
                 &ws.policy.workspace,
                 "firefox",
-                tilo_action_policy::Subject::person(OWNER),
+                tilo_action_policy::Grantee::person(OWNER),
             );
             let id = grant.id.as_str().to_owned();
             ws.govern_as_at(OWNER, tilo_action_policy::Change::Grant(grant.clone()), now)

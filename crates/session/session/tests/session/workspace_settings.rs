@@ -1238,11 +1238,11 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     let front = tree.active_workspace_mut().expect("a workspace in front");
     front.policy.grants.push(tilo_action_policy::Grant::new(
         "agent-member:helper:observer",
-        tilo_action_policy::Subject::agent("helper"),
+        tilo_action_policy::Grantee::agent("helper"),
         front.node(),
         tilo_action_policy::KindSet::READ,
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::Person("ada".to_owned()),
+        tilo_action_policy::Grantee::person("ada".to_owned()),
     ));
     session.handle().replace_tree(tree);
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");

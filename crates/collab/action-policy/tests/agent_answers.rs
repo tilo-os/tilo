@@ -1,7 +1,7 @@
 //! A person's Allow, Ask first and Deny for one of their agents.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, KindSet, Subject, TreePath,
+    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, TreePath,
     WorkspacePolicy,
     agent_answers::{self, AnswerScope},
 };
@@ -19,11 +19,11 @@ fn grants(extra: Vec<Grant>) -> Vec<Grant> {
     let grant = |id: &str, kinds, answer| {
         Grant::new(
             id.to_owned(),
-            Subject::agent(AGENT),
+            Grantee::agent(AGENT),
             TreePath::workspace(WORKSPACE),
             kinds,
             answer,
-            Subject::person(PERSON),
+            Grantee::person(PERSON),
         )
     };
     let mut grants = vec![
@@ -43,7 +43,7 @@ fn decide_at(grants: &[Grant], node: &TreePath, kind: ActionKind, consequential:
         grants: grants.to_vec(),
     };
     let verdict =
-        Authority::person(policy.party_of(Subject::agent(AGENT))).decide(node, kind, &cx());
+        Authority::person(policy.party_of(Grantee::agent(AGENT))).decide(node, kind, &cx());
     verdict.parts.first().map_or(Answer::Deny, |decision| {
         agent_answers::held_to_contract(decision, consequential)
     })
@@ -63,7 +63,7 @@ fn answer(scope: &AnswerScope, kind: ActionKind, answer: Answer) -> Grant {
         AGENT,
         (scope, kind),
         answer,
-        Subject::person(PERSON),
+        Grantee::person(PERSON),
     )
 }
 
@@ -241,7 +241,7 @@ fn setting_an_answer_again_replaces_it_and_clearing_removes_it() {
         AGENT,
         (&scope, ActionKind::Outside),
         Some(Answer::Allow),
-        (Subject::person(PERSON), &held),
+        (Grantee::person(PERSON), &held),
     );
     assert_eq!(changes.len(), 2);
     assert_eq!(changes[0], Change::Revoke(first.id.clone()));
@@ -259,7 +259,7 @@ fn setting_an_answer_again_replaces_it_and_clearing_removes_it() {
         AGENT,
         (&scope, ActionKind::Outside),
         None,
-        (Subject::person(PERSON), &held),
+        (Grantee::person(PERSON), &held),
     );
     assert_eq!(cleared, vec![Change::Revoke(first.id)]);
 }

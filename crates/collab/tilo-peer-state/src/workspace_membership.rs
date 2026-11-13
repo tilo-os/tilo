@@ -362,7 +362,7 @@ pub enum SettingsChange {
     /// `lifetime` ends.
     AssignPreset {
         preset: String,
-        subject: tilo_action_policy::Subject,
+        subject: tilo_action_policy::Grantee,
         lifetime: tilo_action_policy::Lifetime,
     },
     /// Let an app use one action of another app here.

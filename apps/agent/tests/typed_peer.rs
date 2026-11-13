@@ -183,7 +183,7 @@ pub fn spawn_with_agent_grants(
     );
     workspace.set_owner(principal.clone());
     let owner_id = principal.clone();
-    let owner = tilo_action_policy::Subject::person(principal);
+    let owner = tilo_action_policy::Grantee::person(principal);
     // Agents answer in the workspace's documents, inside a turn of the
     // owner's.
     let turn = |agent: &str| {
@@ -195,7 +195,7 @@ pub fn spawn_with_agent_grants(
     let everything = |id: String, agent: &str, node: tilo_action_policy::TreePath| {
         tilo_action_policy::Grant::new(
             id,
-            tilo_action_policy::Subject::agent(agent),
+            tilo_action_policy::Grantee::agent(agent),
             node,
             tilo_action_policy::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
@@ -207,7 +207,7 @@ pub fn spawn_with_agent_grants(
     for (app, resource, action) in actions {
         workspace.grant(tilo_action_policy::Grant::new(
             format!("reviewed:{app}:other-actions"),
-            tilo_action_policy::Subject::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe"),
             workspace
                 .node()
                 .app(*app)
@@ -240,7 +240,7 @@ pub fn spawn_with_agent_grants(
             .action(*action);
         workspace.grant(tilo_action_policy::Grant::new(
             format!("refused:{app}:{resource}:{action}"),
-            tilo_action_policy::Subject::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe"),
             node,
             tilo_action_policy::KindSet::ALL,
             tilo_action_policy::Answer::Deny,

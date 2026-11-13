@@ -1,13 +1,13 @@
 use super::*;
-use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, Subject, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, Role, TreePath};
 fn editor_grant(workspace: &str) -> Grant {
     Grant::new(
         "editor-reads",
-        Subject::Role(Role::Editor),
+        Grantee::role(Role::Editor),
         TreePath::workspace(workspace),
         KindSet::READ,
         Answer::Allow,
-        Subject::Role(Role::Owner),
+        Grantee::role(Role::Owner),
     )
 }
 fn fixture() -> crate::StatePeer {

@@ -111,10 +111,10 @@ impl NativeTaskActionRequirement {
         }
         let delegation = self.turn_authority(workspace, run, looked)?;
         // The answers a person gave for this issue are grants naming it.
-        let issue = tilo_action_policy::Subject::Task(run.issue.clone());
+        let issue = tilo_action_policy::Grantee::task(run.issue.clone());
         let verdict = Authority::person(
             policy
-                .party_of(tilo_action_policy::Subject::agent(run.agent.clone()))
+                .party_of(tilo_action_policy::Grantee::agent(run.agent.clone()))
                 .with_grants(&delegation)
                 .also_as(issue.clone())
                 .with_grants(policy.grants_of(&issue)),

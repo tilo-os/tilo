@@ -6,7 +6,7 @@ use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
 use std::collections::BTreeMap;
 use tilo_action_policy::Change;
-use tilo_action_policy::{Role, Subject, roles};
+use tilo_action_policy::{Grantee, Role, roles};
 use tilo_user_identity::DeviceCert;
 
 const WORKSPACE: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
@@ -916,7 +916,7 @@ fn with_administrator() -> AutoCommit {
             Change::Grant(roles::administrator_grant(
                 WORKSPACE,
                 &person_id(admin_root()),
-                Subject::Person(person_id(owner_root())),
+                Grantee::person(person_id(owner_root())),
             )),
         ],
     );
@@ -1134,7 +1134,7 @@ fn started() -> Started {
     changes.push(Change::Grant(roles::administrator_grant(
         WORKSPACE,
         &person_of(&admin),
-        Subject::Person(person_of(&owner)),
+        Grantee::person(person_of(&owner)),
     )));
     sign(&mut doc, &(owner_key, owner.clone()), changes);
     doc.commit();

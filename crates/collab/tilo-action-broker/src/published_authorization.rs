@@ -6,7 +6,7 @@ mod tests {
     use crate::collab_app_broker::{BrokerActor, PublishedAction, PublishedSurface};
     use crate::route::CrdtRoute;
     use crate::test_support::{Workspace, WorkspaceSlot};
-    use tilo_action_policy::{Grant, KindSet, Lifetime, Role, Subject};
+    use tilo_action_policy::{Grant, Grantee, KindSet, Lifetime, Role};
 
     const OWNER: &str = "owner-person";
     const WORKSPACE: &str = "workspace-7";
@@ -226,11 +226,11 @@ mod tests {
         assert_eq!(asks(&w, &choose), Ok(true));
         w.grant(Grant::new(
             "scribe-everything",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             w.node().app(WRITER),
             KindSet::ALL,
             tilo_action_policy::Answer::Allow,
-            Subject::person(OWNER),
+            Grantee::person(OWNER),
         ));
         assert_eq!(asks(&w, &choose), Ok(true), "no grant lifts it");
         assert_eq!(
@@ -249,11 +249,11 @@ mod tests {
         assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_ok());
         w.grant(Grant::new(
             "rec-1-read-only",
-            Subject::person(member),
+            Grantee::person(member),
             collab_types::validator::document_node(&w.policy.workspace, WRITER, "rec-1"),
             KindSet::UNDOABLE,
             tilo_action_policy::Answer::Deny,
-            Subject::person(OWNER),
+            Grantee::person(OWNER),
         ));
         assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_err());
         let s2 = surface("rec-2", vec![typing.clone()]);
@@ -268,11 +268,11 @@ mod tests {
         w.grant(
             Grant::new(
                 "app-for-a-while",
-                Subject::person(member),
+                Grantee::person(member),
                 w.node().app(WRITER),
                 KindSet::UNDOABLE,
                 tilo_action_policy::Answer::Allow,
-                Subject::person(OWNER),
+                Grantee::person(OWNER),
             )
             .with_lifetime(Lifetime::Until(100_000)),
         );

@@ -143,7 +143,7 @@ use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
 use collab_types::Role as CapRole;
 #[cfg(test)]
-use tilo_action_policy::Subject;
+use tilo_action_policy::Grantee;
 use tilo_desktop_model::DesktopTree;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13011,7 +13011,7 @@ pub mod tests {
         assert_eq!(changes(&admitted, &tree), Answer::Allow);
 
         tree.workspaces[0].deny(
-            crate::test_support::Subject::ForeignDevice,
+            crate::test_support::Grantee::ForeignDevice,
             &crate::test_support::TreePath::root(),
             crate::test_support::KindSet::UNDOABLE,
         );
@@ -13037,14 +13037,14 @@ pub mod tests {
         workspace.admit(principal.clone(), Role::Moderator);
         workspace.grant(tilo_action_policy::Grant::new(
             "fixture:launches-agents",
-            crate::test_support::Subject::Person(principal.clone()),
+            crate::test_support::Grantee::person(principal.clone()),
             tilo_action_policy::roles::governance_action(
                 &workspace.id().to_string(),
                 tilo_action_policy::roles::governance::GRANT,
             ),
             crate::test_support::KindSet::OUTSIDE,
             Answer::Allow,
-            crate::test_support::Subject::Person(owner),
+            crate::test_support::Grantee::person(owner),
         ));
         let route = CrdtRoute::cluster(workspace.id().to_string());
         workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
@@ -13131,21 +13131,21 @@ pub mod tests {
         workspace.admit(bob.clone(), Role::Commenter);
         workspace.grant(tilo_action_policy::Grant::new(
             "fixture:bob-launches-agents",
-            crate::test_support::Subject::Person(bob.clone()),
+            crate::test_support::Grantee::person(bob.clone()),
             roles::governance_action(&workspace_id, governance::GRANT),
             crate::test_support::KindSet::OUTSIDE,
             Answer::Allow,
-            crate::test_support::Subject::Person(owner),
+            crate::test_support::Grantee::person(owner),
         ));
         // The bounds the agents' own records keep: scribe may change what is
         // there, reader may only read.
         use crate::test_support::{Grants as _, KindSet, TreePath};
         workspace.allow(
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             &TreePath::root(),
             KindSet::READ_UNDOABLE,
         );
-        workspace.allow(Subject::agent("reader"), &TreePath::root(), KindSet::READ);
+        workspace.allow(Grantee::agent("reader"), &TreePath::root(), KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
         let notes = workspace.node().app("so.tilo.notes");
         let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
@@ -13284,14 +13284,14 @@ pub mod tests {
         workspace.admit(other_person, crate::test_support::Role::Viewer);
         workspace.policy.joined.insert(other_person.into(), 7_000);
         workspace.allow_in_workspace(
-            crate::test_support::Subject::person("person-in-other-workspace"),
+            crate::test_support::Grantee::person("person-in-other-workspace"),
             &uuid::Uuid::new_v4().to_string(),
             crate::test_support::KindSet::READ,
         );
         let collision = workspace.allow_agent(&person, crate::test_support::KindSet::READ);
         workspace.allow_agent(tide, crate::test_support::KindSet::READ);
         workspace.allow_in_workspace(
-            crate::test_support::Subject::agent("wrong-workspace"),
+            crate::test_support::Grantee::agent("wrong-workspace"),
             &uuid::Uuid::new_v4().to_string(),
             crate::test_support::KindSet::READ,
         );

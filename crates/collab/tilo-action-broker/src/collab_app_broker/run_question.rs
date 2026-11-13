@@ -24,7 +24,7 @@ use crate::BrokerError;
 use std::sync::Arc;
 
 use tilo_action_policy::agent_answers::answer_grant;
-use tilo_action_policy::{Answer, Grant, Subject};
+use tilo_action_policy::{Answer, Grant, Grantee};
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeArgument, InvokeRequest};
 
 use super::AppBrokerState;
@@ -154,7 +154,7 @@ impl AppBrokerState {
             .map(|action| {
                 answer_grant(
                     workspace,
-                    Subject::task(issue),
+                    Grantee::task(issue),
                     (
                         &issue_answer_scope(
                             &question.app,
@@ -164,7 +164,7 @@ impl AppBrokerState {
                         action.contract.need().kind,
                     ),
                     Answer::Allow,
-                    Subject::person(person),
+                    Grantee::person(person),
                 )
             });
         let labels = |of: fn(&tilo_actions::Draft) -> &String, published: Option<&String>| {

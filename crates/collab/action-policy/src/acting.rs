@@ -1,8 +1,8 @@
 //! Who made a change: one tree, and the one admission every door takes.
 
 use crate::{
-    Actor, Admission, Answer, Asker, Authority, Context, Grant, GrantId, Invoked, MemberId, Party,
-    Reach, Refused, Subject, TreePath, WorkspacePolicy, admit,
+    Actor, Admission, Answer, Asker, Authority, Context, Grant, GrantId, Grantee, Invoked,
+    MemberId, Party, Reach, Refused, TreePath, WorkspacePolicy, admit,
 };
 
 /// [`crate::Acting::asker`] for an acting with software or a device between
@@ -49,7 +49,7 @@ impl<'a> Authority<'a> {
         // every node of the tree, as the agent's own do.
         let work = acting.cause.as_ref().map(|cause| {
             (
-                Subject::Task(cause.as_str().to_owned()),
+                Grantee::task(cause.as_str().to_owned()),
                 policy.task_grants(cause.as_str()).collect::<Vec<_>>(),
             )
         });
@@ -64,7 +64,7 @@ impl<'a> Authority<'a> {
                         ));
                         if node.foreign_device {
                             foreign_parts.push(with_work(
-                                policy.party_of(Subject::ForeignDevice).with_grants(granted),
+                                policy.party_of(Grantee::ForeignDevice).with_grants(granted),
                                 work.as_ref(),
                             ));
                         }
@@ -93,7 +93,7 @@ impl<'a> Authority<'a> {
 }
 
 /// `party`, where the work an acting was caused by names `work` too.
-fn with_work<'a>(party: Party<'a>, work: Option<&(Subject, Vec<&'a Grant>)>) -> Party<'a> {
+fn with_work<'a>(party: Party<'a>, work: Option<&(Grantee, Vec<&'a Grant>)>) -> Party<'a> {
     match work {
         Some((task, grants)) => party
             .also_as(task.clone())
@@ -104,11 +104,11 @@ fn with_work<'a>(party: Party<'a>, work: Option<&(Subject, Vec<&'a Grant>)>) -> 
 
 /// A member of `member` as a grant names it.
 #[must_use]
-pub fn granted_to(member: &MemberId) -> Subject {
+pub fn granted_to(member: &MemberId) -> Grantee {
     match member {
-        MemberId::Person(id) => Subject::person(id.clone()),
-        MemberId::Agent(id) => Subject::agent(id.clone()),
-        MemberId::Bot(id) => Subject::bot(id.clone()),
+        MemberId::Person(id) => Grantee::person(id.clone()),
+        MemberId::Agent(id) => Grantee::agent(id.clone()),
+        MemberId::Bot(id) => Grantee::bot(id.clone()),
     }
 }
 
@@ -123,7 +123,7 @@ fn software_party<'a>(
 
 /// An automation's own grants: the steps the people it runs for gave it.
 fn automation_party<'a>(id: &crate::AutomationId, granted: &'a [Grant]) -> Party<'a> {
-    Party::new(vec![Subject::shortcut(id.as_str().to_owned())], granted)
+    Party::new(vec![Grantee::shortcut(id.as_str().to_owned())], granted)
 }
 
 /// One invocation, as admission weighs it.
@@ -265,11 +265,11 @@ mod tests {
         // What the agent's turn gives it: reading and changing the workspace.
         let turn = [Grant::new(
             "turn:scribe:0",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            Subject::person("editor"),
+            Grantee::person("editor"),
         )];
         let agent_for_editor_and_owner = Acting::agent("scribe")
             .acting_for(Acting::person("editor"))
@@ -296,11 +296,11 @@ mod tests {
         let mut policy = policy();
         policy.grants.push(Grant::new(
             "scribe-may-edit",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            Subject::person("owner"),
+            Grantee::person("owner"),
         ));
         let acting = Acting::agent("scribe").acting_for(Acting::person("editor"));
         assert_eq!(
@@ -322,11 +322,11 @@ mod tests {
             .acting_for(Acting::agent("scribe").acting_for(Acting::person("editor")));
         let turn = [Grant::new(
             "turn:scribe:0",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            Subject::person("editor"),
+            Grantee::person("editor"),
         )];
         assert_eq!(
             answer(&automation, &policy, &turn, ActionKind::Undoable),
@@ -335,11 +335,11 @@ mod tests {
         );
         let given = [Grant::new(
             "automation-1:0",
-            Subject::shortcut("1"),
+            Grantee::shortcut("1"),
             TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            Subject::person("editor"),
+            Grantee::person("editor"),
         )];
         let mut granted = turn.to_vec();
         granted.extend(given);

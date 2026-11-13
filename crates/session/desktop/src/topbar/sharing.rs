@@ -224,12 +224,10 @@ impl TopBarChrome {
                     .map(|participant| (workspace, participant))
             }) {
                 let is_agent = workspace.policy.grants.iter().any(|grant| {
-                    matches!(
-                        &grant.subject,
-                        tilo_action_policy::Subject::Agent(id)
-                            if id.eq_ignore_ascii_case(&participant.id)
-                                || id.eq_ignore_ascii_case(&participant.name)
-                    )
+                    grant.subject.agent_id().is_some_and(|id| {
+                        id.eq_ignore_ascii_case(&participant.id)
+                            || id.eq_ignore_ascii_case(&participant.name)
+                    })
                 });
                 viewers.push((peer, participant.name.clone(), Some(is_agent), can_control));
             } else {

@@ -870,15 +870,15 @@ fn project(state_json: &str) -> Result<Vec<WsGrants>, serde_json::Error> {
                 continue;
             };
             if let Some(view) = cap_view(cap) {
-                by_app.entry(app.clone()).or_default().push(view);
+                by_app.entry(app.to_owned()).or_default().push(view);
             }
         }
         for grant in &ws.policy.grants {
-            let ui::tilo_actions::policy::Subject::App(app) = &grant.subject else {
+            let Some(app) = grant.subject.app_id() else {
                 continue;
             };
             if let Some(view) = grant_view(grant) {
-                by_app.entry(app.clone()).or_default().push(view);
+                by_app.entry(app.to_owned()).or_default().push(view);
             }
         }
         if by_app.is_empty() {
@@ -1554,7 +1554,7 @@ mod tests {
             );
             let action = grant_view(&Grant::new(
                 "shortcuts-freeform",
-                ui::tilo_actions::policy::Subject::App("so.tilo.shortcuts".into()),
+                ui::tilo_actions::policy::Grantee::app("so.tilo.shortcuts"),
                 ui::tilo_actions::policy::TreePath::workspace("studio")
                     .app("so.tilo.agent")
                     .any(Level::Kind)
@@ -1562,7 +1562,7 @@ mod tests {
                     .action("freeform"),
                 ui::tilo_actions::policy::KindSet::ALL,
                 ui::tilo_actions::policy::Answer::Allow,
-                ui::tilo_actions::policy::Subject::person("owner"),
+                ui::tilo_actions::policy::Grantee::person("owner"),
             ))
             .unwrap();
             assert_eq!(action.kind, "App action");
@@ -1641,11 +1641,11 @@ mod tests {
             // grant and must not render a card.
             let person = Grant::new(
                 "alice",
-                ui::tilo_actions::policy::Subject::person("alice"),
+                ui::tilo_actions::policy::Grantee::person("alice"),
                 ui::tilo_actions::policy::TreePath::workspace("workspace-1"),
                 ui::tilo_actions::policy::KindSet::ALL,
                 ui::tilo_actions::policy::Answer::Allow,
-                ui::tilo_actions::policy::Subject::person("owner"),
+                ui::tilo_actions::policy::Grantee::person("owner"),
             );
             let grants = serde_json::to_string(&vec![person]).unwrap();
             let json =

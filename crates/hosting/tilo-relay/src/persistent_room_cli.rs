@@ -1069,16 +1069,16 @@ pub(crate) async fn ensure_guest_policy(
     workspace: &str,
     cert: &DeviceCert,
 ) -> anyhow::Result<()> {
-    use tilo_action_policy::{Answer, Grant, KindSet, Role, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role, TreePath};
     // Guests are Editors; in a public workspace they must not trigger outside
     // effects from any app (sending mail, calling services).
     let deny = Grant::new(
         "public-workspace-guests-no-outside",
-        Subject::Role(Role::Editor),
+        Grantee::role(Role::Editor),
         TreePath::workspace(workspace),
         KindSet::OUTSIDE,
         Answer::Deny,
-        Subject::Person(hex::encode(cert.user_public_key)),
+        Grantee::person(hex::encode(cert.user_public_key)),
     );
     let digest = *blake3::hash(b"public-workspace-guests-no-outside/v1").as_bytes();
     workspaces
@@ -1102,7 +1102,7 @@ pub(crate) async fn settle_member_invites(
     cert: &DeviceCert,
     members_only: bool,
 ) -> anyhow::Result<()> {
-    use tilo_action_policy::{Answer, Grant, GrantId, KindSet, Role, Subject, roles};
+    use tilo_action_policy::{Answer, Grant, GrantId, Grantee, KindSet, Role, roles};
     // One request per start and setting: the same setting settled again
     // after the workspace changed writes it again, which changes nothing.
     let generation = workspaces
@@ -1116,11 +1116,11 @@ pub(crate) async fn settle_member_invites(
     if members_only {
         let invite = Grant::new(
             MEMBERS_INVITE,
-            Subject::Role(Role::Editor),
+            Grantee::role(Role::Editor),
             roles::governance_action(workspace, roles::governance::INVITE),
             KindSet::OUTSIDE,
             Answer::Allow,
-            Subject::Person(hex::encode(cert.user_public_key)),
+            Grantee::person(hex::encode(cert.user_public_key)),
         );
         workspaces
             .put_room_grants(workspace, cert, request_id, vec![invite])

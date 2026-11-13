@@ -69,7 +69,7 @@ fn directory_permission_retained_clock_expiry_invalidates_actual_bound_revision(
         let mut fixture = ActionFixture::broker();
         let grant = policy::Grant::new(
             "other",
-            policy::Subject::person("fixture-user"),
+            policy::Grantee::person("fixture-user"),
             TreePath::workspace(crate::permissions::LOCAL_WORKSPACE).app("other"),
             KindSet::UNDOABLE,
             if restrict {
@@ -77,7 +77,7 @@ fn directory_permission_retained_clock_expiry_invalidates_actual_bound_revision(
             } else {
                 Answer::Allow
             },
-            policy::Subject::person("owner"),
+            policy::Grantee::person("owner"),
         )
         .with_lifetime(policy::Lifetime::Until(105_000));
         fixture
@@ -233,11 +233,11 @@ fn directory_filtered_cache_expired_restriction_restores_republished_action() {
     let time = Arc::new(AtomicU64::new(100));
     let restriction = policy::Grant::new(
         "restriction",
-        policy::Subject::person("fixture-user"),
+        policy::Grantee::person("fixture-user"),
         TreePath::workspace(crate::permissions::LOCAL_WORKSPACE),
         KindSet::ALL,
         Answer::Deny,
-        policy::Subject::person("owner"),
+        policy::Grantee::person("owner"),
     )
     .with_lifetime(policy::Lifetime::Until(105_000));
     let mut fixture = ActionFixture::broker();

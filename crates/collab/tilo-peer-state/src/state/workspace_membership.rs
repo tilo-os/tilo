@@ -2,7 +2,7 @@ use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Change, Subject, TreePath, roles};
+use tilo_action_policy::{Change, Grantee, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -114,7 +114,7 @@ impl StatePeer {
                         &workspace,
                         who,
                         *until_ms,
-                        Subject::Person(by),
+                        Grantee::person(by),
                     )],
                     key,
                     now,
@@ -354,7 +354,7 @@ impl StatePeer {
         let member = self.membership(caller.device_public_key, now)?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
             let grant =
-                roles::app_authorship(&self.core.workspace, app, Subject::Person(member.person));
+                roles::app_authorship(&self.core.workspace, app, Grantee::person(member.person));
             if self
                 .require_governance_action(key, roles::governance::GRANT, now)
                 .is_ok()

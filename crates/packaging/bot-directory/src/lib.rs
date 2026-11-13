@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use app_cli::client::{RegistryError, VerifiedEntry};
 use app_cli::config::RegistryConfig;
 use registry_types::{BotArtifact, DirectoryRef, EntryKind, RegistryEntry, RegistryImageKind};
-use tilo_action_policy::{Grant, Labels, Rule, Subject};
+use tilo_action_policy::{Grant, Grantee, Labels, Rule};
 use tilo_automation::{ActionCatalog, Shortcut};
 
 /// A bot version the directory lists, with the exact program bytes it binds.
@@ -240,7 +240,7 @@ pub fn plan_install(
 ) -> BotInstallPlan {
     let rules = tilo_automation::grant::derived_rules(&bot.program, catalog);
     // The subject only names the preview grants; the sentence never prints it.
-    let preview_subject = Subject::Shortcut(bot.source.entry.clone());
+    let preview_subject = Grantee::shortcut(bot.source.entry.clone());
     let grants: Vec<Grant> = rules
         .iter()
         .enumerate()

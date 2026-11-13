@@ -854,12 +854,12 @@ mod tests {
     /// holds that, so neither loses their place.
     #[test]
     fn a_launched_view_opens_where_its_actor_is() {
-        use crate::test_support::{Grants as _, KindSet, Subject};
+        use crate::test_support::{Grantee, Grants as _, KindSet};
         const NOTES: &str = "so.tilo.notes";
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::READ);
         for app in [APP, NOTES] {
-            workspace.allow_app(Subject::agent("scribe"), app, KindSet::ALL);
+            workspace.allow_app(Grantee::agent("scribe"), app, KindSet::ALL);
         }
         let (state, workspace) = broker(&workspace);
         state.launchable.retain(&surface(7, &workspace));
@@ -908,10 +908,10 @@ mod tests {
 
     #[test]
     fn an_agents_first_view_opens_aside_without_taking_the_persons_focus() {
-        use crate::test_support::{Grants as _, KindSet, Subject};
+        use crate::test_support::{Grantee, Grants as _, KindSet};
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::READ);
-        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
+        workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::ALL);
         let (state, workspace) = broker(&workspace);
         state.launchable.retain(&surface(7, &workspace));
         let (streams, launches, places) = app_comes_up_placed(&state, 8);
@@ -1094,12 +1094,12 @@ mod tests {
     /// does, for that one invocation.
     #[test]
     fn an_agent_asked_first_acts_only_on_the_persons_witnessed_confirmation() {
-        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
+        use crate::test_support::{Answer, Grantee, Grants as _, KindSet, TreePath};
         use tilo_actions::remote::CatalogueQuery;
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::READ);
         workspace.answer(
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             &TreePath::root().app(APP),
             KindSet::UNDOABLE,
             Answer::Ask,
@@ -1207,10 +1207,10 @@ mod tests {
     /// reads "Editing Harbour plan", never only the app it is in.
     #[test]
     fn an_agents_step_on_an_item_names_the_item() {
-        use crate::test_support::{Grants as _, KindSet, Subject};
+        use crate::test_support::{Grantee, Grants as _, KindSet};
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::UNDOABLE);
-        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::UNDOABLE);
+        workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::UNDOABLE);
         let (state, workspace, fanout) = broker_with_fanout(&workspace);
         state
             .surfaces
@@ -1269,10 +1269,10 @@ mod tests {
     /// put a second marker on what their view already shows.
     #[test]
     fn an_agents_action_is_present_in_the_view_it_runs_in() {
-        use crate::test_support::{Grants as _, KindSet, Subject};
+        use crate::test_support::{Grantee, Grants as _, KindSet};
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::UNDOABLE);
-        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::UNDOABLE);
+        workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::UNDOABLE);
         let (state, workspace, fanout) = broker_with_fanout(&workspace);
         state
             .surfaces

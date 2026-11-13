@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{PoisonError, RwLock};
 
-use crate::{Level, Segment, Subject, TreePath};
+use crate::{Grantee, Level, Segment, TreePath};
 
 /// For each app, the ids it was published under before.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -155,17 +155,17 @@ impl EarlierIds {
     /// Whether a grant to `granted` speaks for one of `subjects`: the same subject, or the app
     /// `granted` names was renamed to an app among them.
     #[must_use]
-    pub fn subject_matches(&self, granted: &Subject, subjects: &[Subject]) -> bool {
+    pub fn subject_matches(&self, granted: &Grantee, subjects: &[Grantee]) -> bool {
         if subjects.contains(granted) {
             return true;
         }
-        let Subject::App(old) = granted else {
+        let Grantee::App(old) = granted else {
             return false;
         };
         self.successor(old).is_some_and(|app| {
             subjects
                 .iter()
-                .any(|subject| matches!(subject, Subject::App(held) if held == app))
+                .any(|subject| matches!(subject, Grantee::App(held) if held == app))
         })
     }
 }
@@ -270,12 +270,12 @@ mod tests {
     #[test]
     fn a_grant_to_the_earlier_app_is_the_renamed_apps() {
         let ids = tasks();
-        let todo = Subject::app("so.tilo.lang.todo");
-        assert!(ids.subject_matches(&todo, &[Subject::app("so.tilo.lang.tasks")]));
-        assert!(!ids.subject_matches(&todo, &[Subject::app("so.tilo.lang.notes")]));
+        let todo = Grantee::app("so.tilo.lang.todo");
+        assert!(ids.subject_matches(&todo, &[Grantee::app("so.tilo.lang.tasks")]));
+        assert!(!ids.subject_matches(&todo, &[Grantee::app("so.tilo.lang.notes")]));
         assert!(!ids.subject_matches(
-            &Subject::app("so.tilo.lang.tasks"),
-            &[Subject::app("so.tilo.lang.todo")]
+            &Grantee::app("so.tilo.lang.tasks"),
+            &[Grantee::app("so.tilo.lang.todo")]
         ));
     }
 
@@ -319,13 +319,13 @@ mod tests {
             .action("check");
         let grant = Grant::new(
             "todo",
-            Subject::person("ada"),
+            Grantee::person("ada"),
             TreePath::workspace("r").app("so.tilo.lang.todo").rest(),
             KindSet::ALL,
             Answer::Allow,
-            Subject::person("ada"),
+            Grantee::person("ada"),
         );
-        let subjects = [Subject::person("ada")];
+        let subjects = [Grantee::person("ada")];
         let cx = Context::at(0);
         let before = decide([&grant], &subjects, &node, ActionKind::Undoable, &cx);
         assert_eq!(before.answer, Answer::Deny);

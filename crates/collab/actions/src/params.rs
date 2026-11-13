@@ -122,8 +122,8 @@ pub const PICK_ANNOTATION: &str = "pick";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pick {
     /// Who: a person, an agent or an app of the workspace, as a
-    /// `tilo_action_policy::Subject`.
-    Subject,
+    /// `tilo_action_policy::Grantee`.
+    Grantee,
     /// Where: a node of the workspace's tree, as its path below the workspace.
     Node,
     /// One of the workspace's grants, by its id.
@@ -136,12 +136,12 @@ pub enum Pick {
 }
 
 impl Pick {
-    const TAGGED: [Self; 3] = [Self::Subject, Self::Node, Self::Grant];
+    const TAGGED: [Self; 3] = [Self::Grantee, Self::Node, Self::Grant];
     const RESOURCE_TAG: &str = "resource";
 
     const fn tag(&self) -> &'static str {
         match self {
-            Self::Subject => "subject",
+            Self::Grantee => "subject",
             Self::Node => "node",
             Self::Grant => "grant",
             Self::Resource { .. } => Self::RESOURCE_TAG,
@@ -2067,8 +2067,8 @@ mod rich_schema_tests {
             ActionArgs::bind_json(&params, typed_id.as_object().unwrap()).is_err(),
             "a reference names its app and kind"
         );
-        let subject = ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Subject);
-        assert_eq!(subject.pick(), Some(Pick::Subject));
+        let subject = ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Grantee);
+        assert_eq!(subject.pick(), Some(Pick::Grantee));
     }
 
     #[test]

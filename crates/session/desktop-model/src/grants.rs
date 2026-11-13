@@ -118,7 +118,7 @@ pub(crate) fn sort_presets(presets: &mut [Preset]) {
 #[cfg(test)]
 mod tests {
     use tilo_action_policy::{
-        Answer, Authority, KindSet, Level, Lifetime, Party, Preset, Rule, Subject, TreePath,
+        Answer, Authority, Grantee, KindSet, Level, Lifetime, Party, Preset, Rule, TreePath,
     };
 
     use super::*;
@@ -163,26 +163,26 @@ mod tests {
         }
         workspace.grant(Grant::new(
             "scribe-assigns-reviewer",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             preset_assign_node(&workspace_id, "Reviewer"),
             KindSet::OUTSIDE,
             Answer::Allow,
-            Subject::person("owner"),
+            Grantee::person("owner"),
         ));
         // A delegation hands out no more than it holds itself.
         workspace.grant(Grant::new(
             "scribe-reads-notes",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             TreePath::workspace(&workspace_id).app("so.tilo.notes"),
             KindSet::READ,
             Answer::Allow,
-            Subject::person("owner"),
+            Grantee::person("owner"),
         ));
-        let ada = Subject::person("ada");
+        let ada = Grantee::person("ada");
         let assign = |workspace: &mut Workspace, name: &str| {
             let snapshot = workspace.clone();
             let scribe = Authority::person(snapshot.policy.party("owner")).bounded_by(Party::new(
-                vec![Subject::agent("scribe")],
+                vec![Grantee::agent("scribe")],
                 &snapshot.policy.grants,
             ));
             workspace.assign_preset_with_at(
@@ -214,14 +214,14 @@ mod tests {
     fn app_grant(workspace: &str) -> Grant {
         Grant::new(
             "app-open",
-            Subject::app("so.tilo.caller"),
+            Grantee::app("so.tilo.caller"),
             TreePath::workspace(workspace)
                 .app("so.tilo.target")
                 .resource("target.document")
                 .action("open"),
             KindSet::ALL,
             Answer::Allow,
-            Subject::person("someone else"),
+            Grantee::person("someone else"),
         )
     }
 
@@ -246,7 +246,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             stored.granted_by,
-            Subject::person("someone else"),
+            Grantee::person("someone else"),
             "the governor does not rewrite the grantor the change names"
         );
         assert!(

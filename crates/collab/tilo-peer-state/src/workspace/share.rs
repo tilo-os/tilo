@@ -9,7 +9,7 @@
 //! may revoke in the workspace.
 use tilo_action_policy::share::{self, ShareAccess};
 use tilo_action_policy::{
-    Authority, Change, Context, Grant, GrantId, Subject, TreePath, WorkspacePolicy, roles,
+    Authority, Change, Context, Grant, GrantId, Grantee, TreePath, WorkspacePolicy, roles,
     roles::governance,
 };
 
@@ -89,7 +89,7 @@ pub fn ended_by(
     let revokes = policy
         .check_action(authority, governance::REVOKE, cx, false)
         .is_ok();
-    let sharer = Subject::Person(person.to_owned());
+    let sharer = Grantee::person(person.to_owned());
     policy
         .grants
         .iter()
@@ -196,7 +196,7 @@ fn assigned(
     if grant.node != workspace_node.join(&rule.node)
         || grant.kinds != rule.kinds
         || grant.answer != rule.answer
-        || grant.granted_by != Subject::Person(person.to_owned())
+        || grant.granted_by != Grantee::person(person.to_owned())
     {
         return Err(not_of_set());
     }

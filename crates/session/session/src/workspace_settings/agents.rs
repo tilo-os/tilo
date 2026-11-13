@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use tilo_action_policy::{Standing, Subject};
+use tilo_action_policy::Standing;
 use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_agent::{
     OWNER, WorkspaceAgents as Record, same_person, workspace_agents as actions,
@@ -495,10 +495,7 @@ impl Agents {
                 .grants
                 .iter()
                 .filter(|grant| grant.id.as_str().starts_with(&prefix))
-                .find_map(|grant| match &grant.granted_by {
-                    Subject::Person(given_by) => Some(given_by.clone()),
-                    _ => None,
-                });
+                .find_map(|grant| grant.granted_by.person_id().map(str::to_owned));
             let Some(keeper) = keeper else {
                 continue;
             };

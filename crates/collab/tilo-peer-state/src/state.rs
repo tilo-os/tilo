@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, GrantId, Subject, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Authority, Grant, GrantId, Grantee, TreePath, WorkspacePolicy,
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -125,7 +125,7 @@ pub(crate) fn agent_is_member(policy: &WorkspacePolicy, agent: &str, now: System
     let cx = tilo_action_policy::Context::at_time(now);
     let workspace = policy.node();
     policy.grants.iter().any(|grant| {
-        matches!(&grant.subject, Subject::Agent(held) if held == agent)
+        grant.subject.agent_id() == Some(agent)
             && grant.node == workspace
             && grant.answer != Answer::Deny
             && grant.is_live(&cx)

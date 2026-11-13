@@ -255,11 +255,11 @@ fn crowded_workspace(
         .chain((0..named).map(|n| {
             tilo_action_policy::Change::Grant(Grant::new(
                 format!("hidden-{n}"),
-                Subject::person(hidden.as_str()),
+                Grantee::person(hidden.as_str()),
                 collab_types::document_node(workspace, "so.tilo.chat", &format!("tab:{n}")),
                 tilo_action_policy::KindSet::READ,
                 tilo_action_policy::Answer::Deny,
-                Subject::person(hex::encode(owner.user_public_key)),
+                Grantee::person(hex::encode(owner.user_public_key)),
             ))
         }))
         .collect();

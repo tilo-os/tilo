@@ -1609,7 +1609,7 @@ mod settings_records_tests {
     use super::super::AppBrokerState;
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{
-        Grants as _, KindSet, Subject, Workspace, WorkspaceSlot, WorkspaceTree,
+        Grantee, Grants as _, KindSet, Workspace, WorkspaceSlot, WorkspaceTree,
     };
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
@@ -1758,7 +1758,7 @@ mod settings_records_tests {
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Settings");
         workspace.set_owner(owner.clone());
         workspace.allow_agent("scribe", KindSet::READ);
-        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
+        workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::ALL);
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);

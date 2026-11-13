@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use crate::{Answer, Grant, KindSet, Rule, Subject, TreePath, roles};
+use crate::{Answer, Grant, Grantee, KindSet, Rule, TreePath, roles};
 
 /// Why a program's rules cannot become a bot's grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,8 +83,8 @@ pub fn grants(
     installer: &str,
     rules: &[Rule],
 ) -> Result<Vec<Grant>, BotRuleError> {
-    let subject = Subject::bot(installation);
-    let granted_by = Subject::person(installer);
+    let subject = Grantee::bot(installation);
+    let granted_by = Grantee::person(installer);
     let prefix = grant_prefix(installation);
     let mut grants: Vec<Grant> = scoped_rules(workspace, rules)?
         .into_iter()

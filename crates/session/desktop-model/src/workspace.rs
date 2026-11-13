@@ -11,8 +11,8 @@ use collab_types::caps::{
     Subject as SandboxSubject, decide_capability,
 };
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, KindSet, Lifetime, Preset,
-    PresetError, Refusal, Role, Subject, TreePath, WorkspacePolicy, roles,
+    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet, Lifetime,
+    MemberId, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
 };
 
 use crate::app::AppId;
@@ -145,7 +145,7 @@ impl From<StoredWorkspace> for Workspace {
                 policy.rehome(identity.to_string());
                 policy
             }
-            None => WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
+            None => WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
         };
         Self {
             slot: stored.slot,
@@ -535,7 +535,7 @@ impl Workspace {
     /// The authority of `subject` acting on its own (an app, or an agent no
     /// person delegated): only what the workspace grants it.
     #[must_use]
-    pub fn subject_authority(&self, subject: Subject) -> Authority<'_> {
+    pub fn subject_authority(&self, subject: Grantee) -> Authority<'_> {
         Authority::person(self.policy.party_of(subject))
     }
 
@@ -641,7 +641,7 @@ impl Workspace {
         if self.is_owner(user) {
             return false;
         }
-        let person = Subject::Person(user.to_owned());
+        let person = Grantee::person(user.to_owned());
         self.policy.grants.retain(|grant| grant.subject != person);
         self.policy.joined.remove(user);
         self.policy.members.remove(user).is_some()
@@ -664,7 +664,7 @@ impl Workspace {
     /// on the workspace.
     #[must_use]
     pub fn is_blocked(&self, user: &str) -> bool {
-        let person = Subject::Person(user.to_owned());
+        let person = Grantee::person(user.to_owned());
         let workspace_node = self.node();
         self.policy.grants.iter().any(|grant| {
             grant.subject == person
@@ -706,7 +706,7 @@ impl Workspace {
             .map(|(person, _)| (person, None))
             .collect();
         for grant in &self.policy.grants {
-            let Subject::Person(person) = &grant.subject else {
+            let Some(person) = grant.subject.person_id() else {
                 continue;
             };
             if grant.answer != Answer::Allow
@@ -720,7 +720,7 @@ impl Workspace {
                 Lifetime::UntilRevoked => None,
                 Lifetime::Once | Lifetime::Session(_) => continue,
             };
-            let held = readers.entry(person.clone()).or_insert(until);
+            let held = readers.entry(person.to_owned()).or_insert(until);
             *held = match (*held, until) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 _ => None,
@@ -745,7 +745,7 @@ impl Workspace {
         let workspace_node = self.node();
         let mut agents: Vec<(String, KindSet)> = Vec::new();
         for grant in &self.policy.grants {
-            let Subject::Agent(agent) = &grant.subject else {
+            let Some(agent) = grant.subject.agent_id() else {
                 continue;
             };
             if grant.node != workspace_node || grant.answer == Answer::Deny || !grant.is_live(&cx) {
@@ -753,7 +753,7 @@ impl Workspace {
             }
             match agents.iter_mut().find(|(held, _)| held == agent) {
                 Some((_, kinds)) => *kinds = kinds.union(grant.kinds),
-                None => agents.push((agent.clone(), grant.kinds)),
+                None => agents.push((agent.to_owned(), grant.kinds)),
             }
         }
         agents
@@ -767,9 +767,10 @@ impl Workspace {
             .grants
             .iter()
             .find_map(|grant| match (&grant.subject, &grant.granted_by) {
-                (Subject::Agent(held), Subject::Person(person)) if held == agent => {
-                    Some(person.as_str())
-                }
+                (
+                    Grantee::Member(MemberId::Agent(held)),
+                    Grantee::Member(MemberId::Person(person)),
+                ) if held == agent => Some(person.as_str()),
                 _ => None,
             })
     }
@@ -783,7 +784,7 @@ impl Workspace {
             .grants
             .iter()
             .filter_map(|grant| match &grant.subject {
-                Subject::App(app) => Some(app.clone()),
+                Grantee::App(app) => Some(app.clone()),
                 _ => None,
             })
             .filter(|app| self.app_is_author_at(app, now))
@@ -825,7 +826,7 @@ impl Workspace {
             .grants
             .iter()
             .filter(|grant| {
-                matches!(grant.subject, Subject::Person(_))
+                grant.subject.person_id().is_some()
                     && grant.node != workspace_node
                     && grant.answer != Answer::Deny
                     && grant.is_live(&cx)
@@ -888,7 +889,7 @@ impl Workspace {
         actor: &str,
         authority: &Authority<'_>,
         name: &str,
-        subject: &Subject,
+        subject: &Grantee,
         lifetime: &Lifetime,
         now: u64,
     ) -> Result<Vec<GrantId>, PresetMutationError> {
@@ -923,7 +924,7 @@ impl Workspace {
             .assign(
                 &prefix,
                 subject,
-                &Subject::Person(actor.to_owned()),
+                &Grantee::person(actor.to_owned()),
                 lifetime,
             )
             .into_iter()
@@ -985,7 +986,7 @@ impl Workspace {
             strips: Vec::new(),
             arrangement: Arrangement::default(),
             collaborators: Vec::new(),
-            policy: WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
@@ -1084,7 +1085,7 @@ impl Default for Workspace {
             strips: Vec::new(),
             arrangement: Arrangement::default(),
             collaborators: Vec::new(),
-            policy: WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),

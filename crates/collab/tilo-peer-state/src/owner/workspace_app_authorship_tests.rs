@@ -105,12 +105,12 @@ async fn the_owners_own_grants_never_restrict_their_app_delegation() {
             candidate.governance_mut().put_governed_grants(
                 &[tilo_action_policy::Grant::new(
                     "app-open-read-only-person",
-                    tilo_action_policy::Subject::Person(person.clone()),
+                    tilo_action_policy::Grantee::person(person.clone()),
                     tilo_action_policy::TreePath::workspace(testing::WORKSPACE),
                     tilo_action_policy::KindSet::UNDOABLE
                         .union(tilo_action_policy::KindSet::OUTSIDE),
                     tilo_action_policy::Answer::Deny,
-                    tilo_action_policy::Subject::Person(person),
+                    tilo_action_policy::Grantee::person(person),
                 )],
                 &fixture.key,
                 fixture.now,
@@ -175,7 +175,7 @@ async fn the_owners_own_grants_never_restrict_their_app_delegation() {
 #[tokio::test]
 async fn an_app_action_grant_is_owner_signed_and_the_same_grant_however_often_given() {
     use crate::workspace_membership::{AppAction, SettingsChange};
-    use tilo_action_policy::Subject;
+    use tilo_action_policy::Grantee;
 
     let fixture = fixture();
     let named = AppAction::new(
@@ -212,7 +212,7 @@ async fn an_app_action_grant_is_owner_signed_and_the_same_grant_however_often_gi
                 Ok(policy
                     .grants
                     .into_iter()
-                    .filter(|grant| grant.subject == Subject::app("so.tilo.lang.today"))
+                    .filter(|grant| grant.subject == Grantee::app("so.tilo.lang.today"))
                     .collect::<Vec<_>>())
             })
             .unwrap()

@@ -314,7 +314,7 @@ fn draft(app: &mut TestApp<TlApp>) -> String {
 /// edits, Leo views, and the agent `planner` was admitted. Zoe is in the workspace's roster, but no
 /// member.
 fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
-    use ui::permissions::policy::{self, Role, Subject};
+    use ui::permissions::policy::{self, Grantee, Role};
     let me = app
         .permissions()
         .standing()
@@ -327,11 +327,11 @@ fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
     policy.members.insert("u_leo".to_owned(), Role::Viewer);
     policy.grants.push(policy::Grant::new(
         "agent-member:planner",
-        Subject::agent("planner"),
+        Grantee::agent("planner"),
         policy::TreePath::workspace(&id),
         policy::KindSet::READ_UNDOABLE,
         policy::Answer::Allow,
-        Subject::person(&me),
+        Grantee::person(&me),
     ));
     let standing = policy::Standing::person(policy, me);
     app.set_permissions(ui::permissions::PermissionContext::from_standing(

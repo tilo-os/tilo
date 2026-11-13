@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::services::HostServices;
-use crate::test_support::{Grants as _, KindSet, Role, Subject, WorkspaceSlot, WorkspaceTree};
+use crate::test_support::{Grantee, Grants as _, KindSet, Role, WorkspaceSlot, WorkspaceTree};
 
 fn owner_id() -> String {
     "a1".repeat(32)
@@ -108,9 +108,9 @@ fn fixture() -> Fixture {
     workspace.set_owner(owner_id());
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);
-    workspace.allow_app(Subject::agent("scribe"), "so.tilo.notes", KindSet::ALL);
+    workspace.allow_app(Grantee::agent("scribe"), "so.tilo.notes", KindSet::ALL);
     workspace.allow_agent("porter", KindSet::READ);
-    workspace.allow_app(Subject::agent("porter"), CONTENT_PUT_SCOPE, KindSet::ALL);
+    workspace.allow_app(Grantee::agent("porter"), CONTENT_PUT_SCOPE, KindSet::ALL);
     // A member who edits what is there but adds nothing to the workspace.
     workspace.admit("ada", Role::Commenter);
     let mut tree = WorkspaceTree::default();

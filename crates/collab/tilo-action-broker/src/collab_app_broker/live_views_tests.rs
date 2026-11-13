@@ -1,7 +1,7 @@
 use super::super::AppBrokerState;
 use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView};
 use crate::test_support::{
-    Grants as _, KindSet, Subject, TreePath, Workspace, WorkspaceSlot, WorkspaceTree,
+    Grantee, Grants as _, KindSet, TreePath, Workspace, WorkspaceSlot, WorkspaceTree,
     WorkspaceTreeHandle,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -241,7 +241,7 @@ fn a_caller_without_read_permission_is_refused_and_a_withdrawn_grant_ends_the_vi
         .find(|candidate| candidate.id().to_string() == workspace)
         .unwrap()
         .deny(
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             &TreePath::root().app(APP),
             KindSet::READ,
         );

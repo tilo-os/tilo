@@ -63,12 +63,12 @@ fn an_administrator_grant_on_the_workspaces_resource_is_rewritten_once() {
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
     let person = hex::encode(user);
-    let owner = Subject::Person(hex::encode(peer.owner()));
+    let owner = Grantee::person(hex::encode(peer.owner()));
     // The grant as workspaces held it before: on the workspace's resource, where the
     // Editor's Deny at the same node outranks it.
     let legacy = Grant::new(
         roles::administrator_grant_id(&person).as_str(),
-        Subject::Person(person.clone()),
+        Grantee::person(person.clone()),
         roles::workspace_resource(peer.workspace_id()),
         KindSet::ALL,
         Answer::Allow,
@@ -316,7 +316,7 @@ fn an_administrators_own_device_lets_an_app_author_and_an_editors_cannot() {
         .unwrap();
     assert_eq!(
         grant.granted_by,
-        tilo_action_policy::Subject::Person(hex::encode(user))
+        tilo_action_policy::Grantee::person(hex::encode(user))
     );
     assert!(
         !peer
@@ -399,7 +399,7 @@ fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_c
             &editor,
             SettingsChange::AssignPreset {
                 preset: "Readers".into(),
-                subject: tilo_action_policy::Subject::agent("scribe"),
+                subject: tilo_action_policy::Grantee::agent("scribe"),
                 lifetime: tilo_action_policy::Lifetime::UntilRevoked,
             },
             now,
@@ -414,7 +414,7 @@ fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_c
         policy
             .grants
             .iter()
-            .any(|grant| grant.subject == tilo_action_policy::Subject::agent("scribe"))
+            .any(|grant| grant.subject == tilo_action_policy::Grantee::agent("scribe"))
     );
     assert!(
         change_settings(
@@ -442,18 +442,18 @@ fn a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it() {
         .unwrap();
     let assign = SettingsChange::AssignPreset {
         preset: "Readers".into(),
-        subject: tilo_action_policy::Subject::agent("scribe"),
+        subject: tilo_action_policy::Grantee::agent("scribe"),
         lifetime: tilo_action_policy::Lifetime::UntilRevoked,
     };
     assert!(change_settings(&mut peer.clone(), &editor, assign.clone(), now).is_err());
     let owner = hex::encode(peer.owner());
     let on_set = tilo_action_policy::Grant::new(
         "assign-readers",
-        tilo_action_policy::Subject::person(hex::encode(user)),
+        tilo_action_policy::Grantee::person(hex::encode(user)),
         tilo_desktop_model::preset_assign_node(peer.workspace_id(), "Readers"),
         KindSet::OUTSIDE,
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person(owner),
+        tilo_action_policy::Grantee::person(owner),
     );
     peer.governance_mut()
         .put_governed_grants(&[on_set], &host_key, now)
@@ -487,7 +487,7 @@ fn a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it() {
 #[test]
 fn an_administrator_lets_one_app_use_another_apps_action_and_takes_it_back() {
     use crate::workspace_membership::{AppAction, SettingsChange};
-    use tilo_action_policy::{Answer, KindSet, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grantee, KindSet, TreePath};
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
     let named = AppAction::new(
@@ -511,7 +511,7 @@ fn an_administrator_lets_one_app_use_another_apps_action_and_takes_it_back() {
             .policy
             .grants
             .into_iter()
-            .filter(|grant| grant.subject == Subject::app("so.tilo.lang.today"))
+            .filter(|grant| grant.subject == Grantee::app("so.tilo.lang.today"))
             .collect()
     };
     assert!(change_settings(&mut peer, &editor, grant.clone(), now).unwrap());
@@ -527,7 +527,7 @@ fn an_administrator_lets_one_app_use_another_apps_action_and_takes_it_back() {
     );
     assert_eq!(granted.kinds, KindSet::READ_UNDOABLE);
     assert_eq!(granted.answer, Answer::Allow);
-    assert_eq!(granted.granted_by, Subject::person(hex::encode(user)));
+    assert_eq!(granted.granted_by, Grantee::person(hex::encode(user)));
     // Given again, it is the grant already there, not a second one.
     change_settings(&mut peer, &editor, grant, now).unwrap();
     assert_eq!(

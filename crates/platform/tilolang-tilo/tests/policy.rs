@@ -4,7 +4,7 @@
 use automerge::AutoCommit;
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Standing, Subject, WorkspacePolicy};
+use tilo_action_policy::{ActionKind, Answer, Grantee, Standing, WorkspacePolicy};
 use tilolang_runtime::{AgentBlock, Principal};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{Caller, PlanRequest};
@@ -61,7 +61,7 @@ fn an_agent_the_person_denied_the_app_is_denied() {
         "task-1",
         (&AnswerScope::app(APP), ActionKind::Undoable),
         Answer::Deny,
-        Subject::person("ada"),
+        Grantee::person("ada"),
     );
     let (mut ada, packages) = Replica::standing(
         "ada",

@@ -147,17 +147,17 @@ impl<R: Resource> Worker<R> {
 }
 
 fn permission(f: &Fixture, app: &str, allow: bool) {
-    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     put_grant(
         f,
         Grant::new(
             // One answer per app: setting it again replaces it.
             format!("acceptance-{app}"),
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             TreePath::workspace(workspace_id().to_string()).app(app),
             KindSet::UNDOABLE,
             if allow { Answer::Allow } else { Answer::Deny },
-            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         ),
     );
 }

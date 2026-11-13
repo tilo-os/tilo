@@ -1831,7 +1831,7 @@ impl Workspaces {
             .grants
             .iter()
             .filter_map(|grant| match &grant.subject {
-                tilo_action_policy::Subject::App(app) => Some(app.clone()),
+                tilo_action_policy::Grantee::App(app) => Some(app.clone()),
                 _ => None,
             })
             .filter(|app| policy.app_authors(app, &cx))

@@ -2,7 +2,7 @@
 use super::{GovernedIdentity, PeerCore, Role, SystemTime};
 use crate::state::MembershipError;
 use std::collections::BTreeMap;
-use tilo_action_policy::{Grant, MemberId, Subject};
+use tilo_action_policy::{Grant, Grantee, MemberId};
 use tilo_workspace_join::delegation::Delegate;
 
 trait Policy {
@@ -17,7 +17,7 @@ trait Policy {
             return Some(Role::Owner);
         }
         let role = self.members().get(person).copied()?;
-        let subject = Subject::Person(person.to_owned());
+        let subject = Grantee::person(person.to_owned());
         let node = tilo_action_policy::TreePath::workspace(workspace);
         let blocked = self.grants().iter().any(|grant| {
             grant.subject == subject

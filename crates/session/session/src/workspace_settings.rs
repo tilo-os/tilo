@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 
 use collab_types::caps::{Effect, Expiry};
 use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::{Answer, Refusal, Role, Subject};
+use tilo_action_policy::{Answer, Refusal, Role};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::PeopleNames;
@@ -892,7 +892,7 @@ fn general(
             .policy
             .grants
             .iter()
-            .filter(|grant| !matches!(grant.subject, Subject::Role(_)));
+            .filter(|grant| grant.subject.role_of().is_none());
         (
             workspace.roster().len(),
             sandbox.count().saturating_add(given.count()),

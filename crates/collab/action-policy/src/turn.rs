@@ -19,7 +19,7 @@
 //! A cause that has not reached the receiver yet is not a refusal: the op waits
 //! for it ([`Held::waits`]), the same way an op from a late joiner does.
 
-use crate::{Subject, TreePath, roles};
+use crate::{Grantee, TreePath, roles};
 
 /// The person's message an agent acts for.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -195,8 +195,8 @@ pub fn node(workspace: &str, app: &str, kind: &str) -> TreePath {
 /// The subject an agent's turn carries in a workspace: the agent, acting for
 /// its person.
 #[must_use]
-pub fn subject(agent: &str) -> Subject {
-    Subject::agent(agent)
+pub fn subject(agent: &str) -> Grantee {
+    Grantee::agent(agent)
 }
 
 #[cfg(test)]
@@ -231,7 +231,7 @@ mod tests {
         );
         assert_eq!(
             bob.first().map(|grant| grant.subject.clone()),
-            Some(Subject::agent("scribe")),
+            Some(Grantee::agent("scribe")),
             "the turn acts as the agent"
         );
 
@@ -240,11 +240,11 @@ mod tests {
         let node = node(WORKSPACE, "so.tilo.notes", "document");
         let bob_refused = crate::Grant::new(
             "bob-no-notes",
-            Subject::person(BOB),
+            Grantee::person(BOB),
             node.clone(),
             crate::KindSet::ALL,
             Answer::Deny,
-            Subject::person("governor"),
+            Grantee::person("governor"),
         );
         let policy = {
             let mut policy = crate::WorkspacePolicy::new(WORKSPACE, "governor");
@@ -317,7 +317,7 @@ mod tests {
         .unwrap();
         let node = TreePath::workspace(WORKSPACE);
         let cx = Context::at_time(tilo_clock::wall());
-        let party = Party::new(vec![Subject::agent("scribe")], &bound);
+        let party = Party::new(vec![Grantee::agent("scribe")], &bound);
         assert_eq!(
             party.decide(&node, ActionKind::Outside, &cx).answer,
             Answer::Ask
@@ -354,7 +354,7 @@ mod tests {
         })
         .unwrap();
         let cx = Context::at_time(tilo_clock::wall());
-        let party = Party::new(vec![Subject::agent("scribe")], &bound);
+        let party = Party::new(vec![Grantee::agent("scribe")], &bound);
         assert_eq!(
             party.decide(&notes, ActionKind::Undoable, &cx).answer,
             Answer::Deny
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn the_subject_of_a_turn_is_its_agent() {
-        assert_eq!(subject("scribe"), Subject::agent("scribe"));
+        assert_eq!(subject("scribe"), Grantee::agent("scribe"));
         assert_eq!(
             super::node(WORKSPACE, "so.tilo.notes", "document"),
             TreePath::workspace(WORKSPACE)

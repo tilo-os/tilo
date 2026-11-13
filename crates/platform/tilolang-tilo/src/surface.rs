@@ -188,7 +188,7 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
     }
 }
 
-/// The schema of a workspace subject as `tilo_action_policy::Subject` writes it: a person by
+/// The schema of a workspace subject as `tilo_action_policy::Grantee` writes it: a person by
 /// their key, an agent by its id.
 fn subject_schema() -> Json {
     let one = |tag: &str| {
@@ -255,7 +255,7 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
                 .with_labelled_choices(cases),
             None => built.with_schema(schema_of(meta, &Ty::Enum(key.clone()))),
         },
-        Some(Ty::Principal) => built.with_schema(subject_schema()).picking(Pick::Subject),
+        Some(Ty::Principal) => built.with_schema(subject_schema()).picking(Pick::Grantee),
         // Rich text is given as its text, or encoded whole when it holds more than text
         // (`host::argument_json`).
         Some(Ty::RichText) => built.with_schema(json!({"oneOf": [

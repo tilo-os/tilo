@@ -2,8 +2,8 @@
 //! may do right now, never beyond its own grant, never governing the workspace.
 
 use tilo_action_policy::{
-    Acting, ActionKind, Answer, Authority, Context, KindSet, Level, Refusal, Role, Rule, Standing,
-    Subject, TreePath, WorkspacePolicy, bot,
+    Acting, ActionKind, Answer, Authority, Context, Grantee, KindSet, Level, Refusal, Role, Rule,
+    Standing, TreePath, WorkspacePolicy, bot,
     roles::{self, governance},
 };
 
@@ -190,8 +190,8 @@ fn bot_grants_carry_ids_installer_and_the_governance_deny() {
     assert_eq!(grants.len(), 3);
     for grant in &grants {
         assert!(grant.id.as_str().starts_with(&bot::grant_prefix(BOT)));
-        assert_eq!(grant.subject, Subject::bot(BOT));
-        assert_eq!(grant.granted_by, Subject::person(OWNER));
+        assert_eq!(grant.subject, Grantee::bot(BOT));
+        assert_eq!(grant.granted_by, Grantee::person(OWNER));
     }
     let deny = grants.last().expect("the governance deny");
     assert_eq!(deny.node, roles::workspace_resource(WORKSPACE));
@@ -210,11 +210,11 @@ fn privileged_governance_refuses_an_installer_who_is_only_asked() {
     {
         workspace.grants.push(tilo_action_policy::Grant::new(
             format!("ask:{n}"),
-            Subject::person(EDITOR),
+            Grantee::person(EDITOR),
             roles::governance_action(WORKSPACE, action),
             KindSet::OUTSIDE,
             Answer::Ask,
-            Subject::person(OWNER),
+            Grantee::person(OWNER),
         ));
     }
     let bob = Standing::person(workspace.clone(), EDITOR);

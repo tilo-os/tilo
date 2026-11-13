@@ -181,7 +181,7 @@ fn the_palette_offers_only_what_a_row_can_take_now_with_its_own_picture_and_key(
     let mut message = message_with(an_action(
         "assign",
         "Assign to…",
-        vec![ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Subject)],
+        vec![ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Grantee)],
     ));
     message = message.with_action(an_action(
         "remove",

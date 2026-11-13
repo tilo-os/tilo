@@ -27,7 +27,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
@@ -436,11 +436,11 @@ impl TwoTenants {
         let who = hex::encode(ann.user_pk);
         let grant = Grant::new(
             format!("tenant-isolation:invite:{who}"),
-            Subject::Person(who),
+            Grantee::person(who),
             roles::governance_action(&acme.workspace, governance::INVITE),
             KindSet::ALL,
             Answer::Allow,
-            Subject::Person(hex::encode(provider.user_pk)),
+            Grantee::person(hex::encode(provider.user_pk)),
         );
         workspaces
             .put_room_grants(&acme.workspace, &host.cert, [0x11; 32], vec![grant])

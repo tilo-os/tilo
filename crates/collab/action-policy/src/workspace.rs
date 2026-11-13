@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, GrantId, Lifetime, Party, Role, Subject,
+    ActionKind, Answer, Authority, Context, Grant, GrantId, Grantee, Lifetime, Party, Role,
     TreePath, Verdict,
     roles::{self, governance},
 };
@@ -242,7 +242,7 @@ impl WorkspacePolicy {
     pub fn new(workspace: impl Into<String>, owner: impl Into<String>) -> Self {
         let workspace = workspace.into();
         let owner = owner.into();
-        let grants = roles::workspace_role_grants(&workspace, &Subject::Person(owner.clone()));
+        let grants = roles::workspace_role_grants(&workspace, &Grantee::person(owner.clone()));
         Self {
             workspace,
             owner: Some(owner),
@@ -263,7 +263,7 @@ impl WorkspacePolicy {
 
     /// A workspace with no owner yet and the role presets in place.
     #[must_use]
-    pub fn unowned(workspace: impl Into<String>, presets_by: &Subject) -> Self {
+    pub fn unowned(workspace: impl Into<String>, presets_by: &Grantee) -> Self {
         let workspace = workspace.into();
         let grants = roles::workspace_role_grants(&workspace, presets_by);
         Self {
@@ -286,7 +286,7 @@ impl WorkspacePolicy {
             let by = self
                 .owner
                 .clone()
-                .map_or(Subject::Role(Role::Owner), Subject::Person);
+                .map_or_else(|| Grantee::role(Role::Owner), Grantee::person);
             self.grants.push(roles::session_app(&self.workspace, by));
         }
         // And the one the device's panel reads the session's own readings
@@ -295,7 +295,7 @@ impl WorkspacePolicy {
             let by = self
                 .owner
                 .clone()
-                .map_or(Subject::Role(Role::Owner), Subject::Person);
+                .map_or_else(|| Grantee::role(Role::Owner), Grantee::person);
             self.grants.push(roles::device_panel(&self.workspace, by));
         }
         // And the one its files are authored through, which a workspace
@@ -304,7 +304,7 @@ impl WorkspacePolicy {
             let by = self
                 .owner
                 .clone()
-                .map_or(Subject::Role(Role::Owner), Subject::Person);
+                .map_or_else(|| Grantee::role(Role::Owner), Grantee::person);
             self.grants.push(roles::files_app(&self.workspace, by));
         }
         self
@@ -363,7 +363,7 @@ impl WorkspacePolicy {
         if self.is_owner(person) {
             return false;
         }
-        let subject = Subject::Person(person.to_owned());
+        let subject = Grantee::person(person.to_owned());
         let workspace = self.node();
         self.grants.iter().any(|grant| {
             grant.subject == subject
@@ -384,7 +384,7 @@ impl WorkspacePolicy {
     }
 
     #[must_use]
-    pub fn block(&self, person: &str, granted_by: Subject) -> Grant {
+    pub fn block(&self, person: &str, granted_by: Grantee) -> Grant {
         roles::block_grant(&self.workspace, person, granted_by)
     }
 
@@ -418,10 +418,10 @@ impl WorkspacePolicy {
 
     /// The subjects a person is known by here: themselves and their role.
     #[must_use]
-    pub fn subjects_of(&self, person: &str) -> Vec<Subject> {
-        let mut subjects = vec![Subject::Person(person.to_owned())];
+    pub fn subjects_of(&self, person: &str) -> Vec<Grantee> {
+        let mut subjects = vec![Grantee::person(person.to_owned())];
         if let Some(role) = self.role_of(person) {
-            subjects.push(Subject::Role(role));
+            subjects.push(Grantee::role(role));
         }
         subjects
     }
@@ -436,7 +436,7 @@ impl WorkspacePolicy {
             roles::block_grant_id(person),
             roles::restriction_grant_id(person),
         ];
-        let subject = Subject::Person(person.to_owned());
+        let subject = Grantee::person(person.to_owned());
         let held_off = self
             .grants
             .iter()
@@ -462,8 +462,8 @@ impl WorkspacePolicy {
         let authority = Authority::person(self.party(person));
         if foreign {
             authority.bounded_by(
-                Party::new(vec![Subject::ForeignDevice], foreign_bound)
-                    .with_grants(self.grants_of(&Subject::ForeignDevice)),
+                Party::new(vec![Grantee::ForeignDevice], foreign_bound)
+                    .with_grants(self.grants_of(&Grantee::ForeignDevice)),
             )
         } else {
             authority
@@ -473,7 +473,7 @@ impl WorkspacePolicy {
     /// The workspace's grants naming a delegation subject (an agent, an app,
     /// a task), for bounding a person's authority.
     #[must_use]
-    pub fn party_of(&self, subject: Subject) -> Party<'_> {
+    pub fn party_of(&self, subject: Grantee) -> Party<'_> {
         Party::new(vec![subject], &self.grants)
     }
 
@@ -481,7 +481,7 @@ impl WorkspacePolicy {
     /// let it change its own records there ([`roles::app_authorship`]).
     #[must_use]
     pub fn app_authors(&self, app: &str, cx: &Context<'_>) -> bool {
-        Authority::person(self.party_of(Subject::App(app.to_owned())))
+        Authority::person(self.party_of(Grantee::app(app.to_owned())))
             .decide(&self.node().app(app), ActionKind::Undoable, cx)
             .answer
             == Answer::Allow
@@ -491,11 +491,11 @@ impl WorkspacePolicy {
     pub fn task_grants<'a>(&'a self, issue: &'a str) -> impl Iterator<Item = &'a Grant> + 'a {
         self.grants
             .iter()
-            .filter(move |grant| matches!(&grant.subject, Subject::Task(task) if task == issue))
+            .filter(move |grant| matches!(&grant.subject, Grantee::Task(task) if task == issue))
     }
 
     /// The grants naming `subject`.
-    pub fn grants_of<'a>(&'a self, subject: &'a Subject) -> impl Iterator<Item = &'a Grant> + 'a {
+    pub fn grants_of<'a>(&'a self, subject: &'a Grantee) -> impl Iterator<Item = &'a Grant> + 'a {
         self.grants
             .iter()
             .filter(move |grant| &grant.subject == subject)
@@ -573,7 +573,7 @@ impl WorkspacePolicy {
     /// held off.
     fn check_not_held_off(&self, actor: &Authority<'_>, cx: &Context<'_>) -> Result<(), Refusal> {
         for subject in &actor.person.subjects {
-            let Subject::Person(person) = subject else {
+            let Grantee::Member(crate::MemberId::Person(person)) = subject else {
                 continue;
             };
             if self.is_owner(person) {
@@ -696,7 +696,7 @@ impl WorkspacePolicy {
             Change::RemoveMember { person } => self.drop_member(&person),
             Change::Ban { person } => {
                 self.drop_member(&person);
-                let block = self.block(&person, Subject::Person(actor_person.to_owned()));
+                let block = self.block(&person, Grantee::person(actor_person.to_owned()));
                 self.grants.push(block);
             }
             Change::Unban { person } => {
@@ -710,7 +710,7 @@ impl WorkspacePolicy {
                     &self.workspace,
                     &person,
                     until_ms,
-                    Subject::Person(actor_person.to_owned()),
+                    Grantee::person(actor_person.to_owned()),
                 ));
             }
             Change::Unrestrict { person } => {
@@ -735,7 +735,7 @@ impl WorkspacePolicy {
     fn drop_member(&mut self, person: &str) {
         self.members.remove(person);
         self.joined.remove(person);
-        let subject = Subject::Person(person.to_owned());
+        let subject = Grantee::person(person.to_owned());
         self.grants.retain(|grant| grant.subject != subject);
     }
 

@@ -192,10 +192,10 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                 for outcome in [0, 1, 2, 3] {
                     let f = Fixture::new();
                     put_grant(&f, tilo_action_policy::Grant::new(
-                        "store-allow", tilo_action_policy::Subject::agent("scribe"),
+                        "store-allow", tilo_action_policy::Grantee::agent("scribe"),
                         tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(STORE),
                         tilo_action_policy::KindSet::ALL, tilo_action_policy::Answer::Allow,
-                        tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                        tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
                     ));
                     f.approve();
                     let agent = f.channel(100, true);
@@ -288,10 +288,10 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             let (launch, mut launches) = tokio::sync::mpsc::unbounded_channel();
             let f = Fixture::with_launcher(Some(Arc::new(StoreLauncher(launch))));
             put_grant(&f, tilo_action_policy::Grant::new(
-                "store-allow", tilo_action_policy::Subject::agent("scribe"),
+                "store-allow", tilo_action_policy::Grantee::agent("scribe"),
                 tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(STORE),
                 tilo_action_policy::KindSet::ALL, tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
             ));
             f.approve();
             let agent = f.channel(100, true);

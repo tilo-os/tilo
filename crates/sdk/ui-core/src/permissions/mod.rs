@@ -165,7 +165,7 @@ pub fn action_node(
 
 /// A grant to `subject` of `kinds` at `relative` in [`LOCAL_WORKSPACE`].
 fn local_grant(
-    subject: policy::Subject,
+    subject: policy::Grantee,
     relative: &TreePath,
     kinds: policy::KindSet,
     until: Option<u64>,
@@ -176,7 +176,7 @@ fn local_grant(
         TreePath::workspace(LOCAL_WORKSPACE).join(relative),
         kinds,
         Answer::Allow,
-        policy::Subject::person(LOCAL_USER),
+        policy::Grantee::person(LOCAL_USER),
     );
     match until {
         Some(at) => grant.with_lifetime(policy::Lifetime::Until(at.saturating_mul(1000))),
@@ -321,7 +321,7 @@ impl PermissionContext {
             policy::WorkspacePolicy::new(workspace, person.clone())
         } else {
             let mut policy =
-                policy::WorkspacePolicy::unowned(workspace, &policy::Subject::Role(Role::Owner));
+                policy::WorkspacePolicy::unowned(workspace, &policy::Grantee::role(Role::Owner));
             policy.members.insert(person.clone(), role);
             policy
         };
@@ -352,7 +352,7 @@ impl PermissionContext {
             Standing::person(
                 policy::WorkspacePolicy::unowned(
                     LOCAL_WORKSPACE,
-                    &policy::Subject::Role(Role::Owner),
+                    &policy::Grantee::role(Role::Owner),
                 ),
                 person,
             ),
@@ -369,7 +369,7 @@ impl PermissionContext {
     ) -> Self {
         let person = person.into();
         let grant = local_grant(
-            policy::Subject::Person(person.clone()),
+            policy::Grantee::person(person.clone()),
             relative,
             kinds,
             until,
@@ -387,7 +387,7 @@ impl PermissionContext {
     /// granted exactly `kinds` at each of `nodes` (paths below the workspace):
     /// the scope an invitation gave it.
     pub fn agent_granted_at(agent: &str, nodes: &[TreePath], kinds: policy::KindSet) -> Self {
-        let subject = policy::Subject::agent(agent);
+        let subject = policy::Grantee::agent(agent);
         let grants = nodes
             .iter()
             .map(|node| local_grant(subject.clone(), node, kinds, None))
@@ -405,7 +405,7 @@ impl PermissionContext {
     #[must_use]
     pub fn permitted_at(self, relative: &TreePath, kinds: policy::KindSet) -> Self {
         let grant = local_grant(
-            policy::Subject::Person(self.user.0.clone()),
+            policy::Grantee::person(self.user.0.clone()),
             relative,
             kinds,
             None,
@@ -1309,14 +1309,14 @@ mod policy_time_tests;
 mod tests {
     use super::*;
 
-    fn grant(subject: policy::Subject, node: TreePath, kinds: policy::KindSet) -> policy::Grant {
+    fn grant(subject: policy::Grantee, node: TreePath, kinds: policy::KindSet) -> policy::Grant {
         policy::Grant::new(
             "grant",
             subject,
             node,
             kinds,
             Answer::Allow,
-            policy::Subject::person("owner"),
+            policy::Grantee::person("owner"),
         )
     }
 
@@ -1362,7 +1362,7 @@ mod tests {
                 PermissionScope::action("notes", "notes.page", page, action, ActionKind::Read)
             };
             let narrow = agent(vec![grant(
-                policy::Subject::agent("scribe"),
+                policy::Grantee::agent("scribe"),
                 workspace.join(&action_node(
                     "notes",
                     "notes.page",
@@ -1379,7 +1379,7 @@ mod tests {
             );
 
             let broad = agent(vec![grant(
-                policy::Subject::agent("scribe"),
+                policy::Grantee::agent("scribe"),
                 workspace.clone().app("notes"),
                 policy::KindSet::READ,
             )]);
@@ -1437,7 +1437,7 @@ mod tests {
                 .clone()
                 .with_standing(owner.standing().clone().acting_as(
                     policy::Actor::Member(policy::MemberId::agent("scribe")),
-                    vec![grant(policy::Subject::agent("scribe"), node.clone(), kinds)],
+                    vec![grant(policy::Grantee::agent("scribe"), node.clone(), kinds)],
                 ))
         };
         let outside = context(policy::KindSet::OUTSIDE);
@@ -1476,11 +1476,11 @@ mod tests {
                 .grants
                 .push(policy::Grant::new(
                     "terminal-read-only",
-                    policy::Subject::Role(Role::Editor),
+                    policy::Grantee::role(Role::Editor),
                     TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
                     policy::KindSet::UNDOABLE,
                     Answer::Deny,
-                    policy::Subject::person("owner"),
+                    policy::Grantee::person("owner"),
                 ));
             ctx = ctx.with_standing(standing);
             assert!(!ctx.check(&PermissionScope::app_kind(

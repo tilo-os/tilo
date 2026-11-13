@@ -15,7 +15,7 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{StatePeer, SystemTime, err};
 use crate::workspace_membership::SettingsChange;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, roles};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, roles};
 use tilo_desktop_model::projection;
 use tilo_user_identity::DeviceCert;
 
@@ -86,11 +86,11 @@ impl StatePeer {
                 // undoably: an outside effect still asks.
                 let grant = Grant::new(
                     action.grant_id().as_str(),
-                    Subject::App(action.app.clone()),
+                    Grantee::app(action.app.clone()),
                     action.node(&workspace.node()),
                     KindSet::READ_UNDOABLE,
                     Answer::Allow,
-                    Subject::person(member.person.as_str()),
+                    Grantee::person(member.person.as_str()),
                 )
                 .with_lifetime(Lifetime::UntilRevoked);
                 self.apply_member_change(
@@ -157,7 +157,7 @@ fn app_action_grants(
     workspace: &tilo_desktop_model::Workspace,
     action: &crate::workspace_membership::AppAction,
 ) -> Vec<tilo_action_policy::GrantId> {
-    let subject = Subject::App(action.app.clone());
+    let subject = Grantee::app(action.app.clone());
     let node = action.node(&workspace.node());
     workspace
         .policy

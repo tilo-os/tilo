@@ -2,7 +2,7 @@
 
 use tilo_app_id::AppId;
 
-use crate::{ActionKind, Answer, Context, Grant, GrantId, Level, Lifetime, Subject, TreePath};
+use crate::{ActionKind, Answer, Context, Grant, GrantId, Grantee, Level, Lifetime, TreePath};
 
 /// Why a party answered as it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +41,7 @@ impl<'g> Decision<'g> {
 /// 4. No grant: Deny.
 pub fn decide<'g>(
     grants: impl IntoIterator<Item = &'g Grant>,
-    subjects: &[Subject],
+    subjects: &[Grantee],
     node: &TreePath,
     kind: ActionKind,
     cx: &Context<'_>,
@@ -80,7 +80,7 @@ pub fn decide<'g>(
 /// may name them, and the workspaces they own.
 #[derive(Clone, Debug, Default)]
 pub struct Party<'g> {
-    pub subjects: Vec<Subject>,
+    pub subjects: Vec<Grantee>,
     pub grants: Vec<&'g Grant>,
     /// Nodes owned structurally: everything under them is allowed, whatever
     /// the grants say.
@@ -94,7 +94,7 @@ pub struct Party<'g> {
 
 impl<'g> Party<'g> {
     #[must_use]
-    pub fn new(subjects: Vec<Subject>, grants: impl IntoIterator<Item = &'g Grant>) -> Self {
+    pub fn new(subjects: Vec<Grantee>, grants: impl IntoIterator<Item = &'g Grant>) -> Self {
         Self {
             subjects,
             grants: grants.into_iter().collect(),
@@ -133,14 +133,14 @@ impl<'g> Party<'g> {
     /// is the agent and the issue, so grants naming either decide for it,
     /// the most specific first.
     #[must_use]
-    pub fn also_as(mut self, subject: Subject) -> Self {
+    pub fn also_as(mut self, subject: Grantee) -> Self {
         self.subjects.push(subject);
         self
     }
 
     /// [`Self::also_as`] for each of `subjects`.
     #[must_use]
-    pub fn with_also(mut self, subjects: impl IntoIterator<Item = Subject>) -> Self {
+    pub fn with_also(mut self, subjects: impl IntoIterator<Item = Grantee>) -> Self {
         self.subjects.extend(subjects);
         self
     }
@@ -154,12 +154,12 @@ impl<'g> Party<'g> {
             && self
                 .subjects
                 .iter()
-                .any(|subject| matches!(subject, Subject::Person(_)))
+                .any(|grantee| grantee.person_id().is_some())
         {
             let theirs = self
                 .subjects
                 .iter()
-                .any(|subject| matches!(subject, Subject::Person(person) if person == member));
+                .any(|grantee| grantee.person_id() == Some(member));
             let held_off = self.held_off.iter().copied().find(|grant| {
                 grant.kinds.contains(kind) && cx.covers(&grant.node, node) && grant.is_live(cx)
             });
