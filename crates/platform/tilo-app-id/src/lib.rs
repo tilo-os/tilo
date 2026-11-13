@@ -13,7 +13,7 @@ pub const MAX_APP_ID_BYTES: usize = 255;
 ///
 /// [`Self::parse`] is the one check of the grammar. An id a launcher, a manifest or a package
 /// produced is already that: [`Self::new`] takes it as it is.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AppId(String);
 
@@ -44,12 +44,6 @@ impl AppId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-impl Default for AppId {
-    fn default() -> Self {
-        Self(String::new())
     }
 }
 
