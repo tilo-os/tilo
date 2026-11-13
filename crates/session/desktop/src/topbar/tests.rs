@@ -2506,7 +2506,7 @@ fn a_member_here_in_this_workspace_gets_an_avatar() {
         "a member nobody here speaks for is not someone here",
     );
 
-    let mut joined = empty.clone();
+    let mut joined = empty;
     joined.workspaces[0].member_here(tilo_desktop_model::Member::keyed(
         "peer@11895642303397647149",
         "Bob",
@@ -2517,7 +2517,7 @@ fn a_member_here_in_this_workspace_gets_an_avatar() {
         &['B'],
         "the bar must show somebody present in this workspace",
     );
-    assert_eq!(bar.face_overflow(), 0, "one peer is not an overflow",);
+    assert_eq!(bar.face_overflow(), 0, "one peer is not an overflow");
 }
 
 /// Each reading the machine has draws its own glyph in the status cluster;

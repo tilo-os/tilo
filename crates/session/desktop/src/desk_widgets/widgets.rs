@@ -1689,7 +1689,7 @@ mod tests {
         let mut minter = IdMinter::new(7);
         let mut tree = seed_tree(&mut minter, "Desk", Vec::new());
         if let Some(workspace) = tree.workspaces.first_mut() {
-            workspace.members_here(people.iter().map(|(id, name)| Member::keyed(*id, *name)));
+            workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
         }
 
         let handle = DesktopSurface::new(tree, 7, Box::new(Tiles)).1;

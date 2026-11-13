@@ -606,7 +606,7 @@ mod tests {
 
     fn desk(people: &[(&str, &str)]) -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
-        workspace.members_here(people.iter().map(|(id, name)| Member::keyed(*id, *name)));
+        workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
         // The device a member is here through is what a face is pressed by.
         for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
             here.device.clone_from(&member.id.id().to_owned());

@@ -251,6 +251,7 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
             here: Rc::new(|tree: &mut DesktopTree| {
                 if let Some(workspace) = tree.workspaces.first_mut() {
                     workspace.member_here(Member::keyed("agent:run", "Claude Code"));
+                    workspace.present[0].device = "run".into();
                 }
             }),
             intents: Rc::default(),

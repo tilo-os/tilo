@@ -7382,9 +7382,10 @@ impl AppBrokerState {
                         let name = row.map_or_else(String::new, |row| row.name.clone());
                         // The colour their member row stores: the one they chose, else the one
                         // their identity derives.
-                        let colour = row
-                            .map(|row| row.colour)
-                            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&person));
+                        let colour = row.map_or_else(
+                            || ui::tokens::PresenceHue::of_identity(&person),
+                            |row| row.colour,
+                        );
                         let mut member = collab_types::Member::of_person(
                             &collab_types::Person::new(person.clone(), name).wearing(colour),
                             Some(role),

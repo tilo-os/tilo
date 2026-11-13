@@ -1446,10 +1446,7 @@ fn member_of_presence(person: &Person, id: &MemberId) -> Member {
 /// The member `person` is here as: the person behind their device, or the agent its key names.
 fn member_id_of(person: &Person) -> MemberId {
     if person.agent
-        && let Some(member) = person
-            .member
-            .as_deref()
-            .and_then(|key| MemberId::parse(key))
+        && let Some(member) = person.member.as_deref().and_then(MemberId::parse)
     {
         return member;
     }
@@ -1475,7 +1472,7 @@ fn present_of(person: &Person, following: Option<&str>) -> Present {
 
 /// `rgb` as the hue the model stores a member's colour in.
 fn hue_of((red, green, blue): (u8, u8, u8)) -> PresenceHue {
-    PresenceHue::nearest_to_srgb(red, green, blue).unwrap_or(PresenceHue::from_slot(0))
+    PresenceHue::nearest_to_srgb(red, green, blue).unwrap_or_else(|| PresenceHue::from_slot(0))
 }
 
 #[cfg(test)]

@@ -509,7 +509,7 @@ mod tests {
         workspace.strips = vec![Strip::new(StripId(10), "Main"), games, quiet];
         let ada = Member::keyed("ada", "Ada");
         let bo = Member::keyed("bo", "Bo");
-        workspace.members_here([ada.clone(), bo.clone()]);
+        workspace.members_here([ada, bo]);
         workspace.present[0].tab = Some(1001);
         workspace.present[1].tab = Some(1002);
         let mut tree = DesktopTree {

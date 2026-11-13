@@ -588,7 +588,7 @@ fn agent_classification_uses_stable_identity_not_display_label() {
     workspace.member_here(agent.clone());
     workspace.place_presence(Present {
         device: agent.id.key(),
-        ..Present::of(agent.id.clone())
+        ..Present::of(agent.id)
     });
     let desktop = DesktopTree {
         active: workspace.slot,
@@ -627,7 +627,7 @@ fn an_agents_face_wears_the_colour_its_admission_assigned() {
     workspace.member_here(agent.clone());
     workspace.place_presence(Present {
         device: "scribe".into(),
-        ..Present::of(agent.id.clone())
+        ..Present::of(agent.id)
     });
     let desktop = DesktopTree {
         active: workspace.slot,

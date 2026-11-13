@@ -46,7 +46,7 @@ fn tree(others: &[(&str, &str, bool)]) -> DesktopTree {
                 if *agent {
                     Member::keyed(&format!("agent:{id}"), *name)
                 } else {
-                    Member::keyed(*id, *name)
+                    Member::keyed(id, *name)
                 }
             },
         )),
