@@ -43,8 +43,14 @@ pub enum Failure {
     AlreadyHere,
     /// A folder cannot be copied or moved into itself.
     IntoItself,
-    Inspect { path: PathBuf, error: io::Error },
-    NamesExhausted { name: OsString, dir: PathBuf },
+    Inspect {
+        path: PathBuf,
+        error: io::Error,
+    },
+    NamesExhausted {
+        name: OsString,
+        dir: PathBuf,
+    },
     Refused(String),
 }
 
