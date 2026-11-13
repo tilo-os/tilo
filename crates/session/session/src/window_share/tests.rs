@@ -143,7 +143,7 @@ fn live_plane(device: EndpointId) -> BTreeMap<String, Arc<Plane>> {
             &Join {
                 scope: Scope::workspace(WORKSPACE.to_owned()),
                 device: *device.as_bytes(),
-                keys: live.keys.clone(),
+                keys: live.keys.clone().into(),
                 roster: LiveRoster::new(devices.iter().copied()),
                 publish: true,
             },

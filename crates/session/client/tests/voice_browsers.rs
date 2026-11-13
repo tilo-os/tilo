@@ -243,7 +243,7 @@ impl Native {
             Join {
                 scope,
                 device,
-                keys: keys.clone(),
+                keys: keys.clone().into(),
                 roster: Roster::new([device, page]),
                 publish: true,
             },

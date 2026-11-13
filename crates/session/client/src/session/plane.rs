@@ -366,7 +366,7 @@ async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
     let plane = Join {
         scope,
         device: join.cert.device_public_key,
-        keys: join.keys.clone(),
+        keys: join.keys.clone().into(),
         roster: Roster::new(join.members.clone()),
         publish: true,
     };
