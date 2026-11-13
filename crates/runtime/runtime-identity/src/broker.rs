@@ -5,8 +5,6 @@ use super::{IdentityMetadata, NotAvailable, SigningIdentity, SigningSource};
 pub use tilo_identity_client::legacy::{BROKER_CHILD_FD, BROKER_ENV_VAR};
 use tilo_identity_client::legacy::{OP_METADATA, OP_SIGN, PublicMetadata, read_frame, write_frame};
 
-/// What `sign` always answers. The broker holds no key, and the checked path
-/// for application signatures is the identity service.
 const SIGN_REFUSAL: &[u8] = b"the root signing key is never brokered to an application; \
                               request signatures through the identity service";
 
@@ -150,8 +148,6 @@ mod tests {
             connected.sign(b"anything").is_err(),
             "an app's broker connection never yields a signature"
         );
-        // A second reader shares the one connection the descriptor became;
-        // nothing makes a second owner of it.
         let again = connect_from_env().expect("the held connection is shared");
         match (&connected.source, &again.source) {
             (SigningSource::Broker(first), SigningSource::Broker(second)) => {

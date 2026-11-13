@@ -12,7 +12,6 @@
 //! `SecretProvider` is the hardware-backed seam. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
 //! not claim hardware protection merely because `/dev/tpm*` exists.
-
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -28,7 +27,6 @@ const MAX_IDENTITY_SECRET_BYTES: u64 = 32 * 1024;
 
 use crate::{KeyProtection, SecretReference};
 
-/// The secret-store namespace of identity signing keys.
 const SECRETS_APP: &str = "so.tilo.identity";
 const PURPOSE_ATTRIBUTE: &str = "tilo-identity-signing-v1";
 
@@ -69,9 +67,6 @@ pub trait SecretProvider {
     fn remove(&self, locator: &str) -> io::Result<()>;
 }
 
-/// The system secret store. Its backend id keeps the name earlier builds
-/// recorded in identity files, when this store was reached through
-/// `secret-tool`.
 #[derive(Clone)]
 pub(crate) struct SecretServiceProvider {
     store: SecretStore,
@@ -86,14 +81,12 @@ impl SecretServiceProvider {
         Self { store }
     }
 
-    /// Whether the store answers on this session.
     #[cfg(not(test))]
     fn available(&self) -> bool {
         self.store.probe_blocking().is_ok()
     }
 }
 
-/// The key under which the store holds `locator`'s secret.
 fn secret_key(locator: &str) -> String {
     format!("{PURPOSE_ATTRIBUTE}.{}", locator.to_ascii_lowercase())
 }
@@ -193,11 +186,6 @@ pub struct BrokerFileProvider {
 }
 
 impl BrokerFileProvider {
-    /// Construct the compatible host-file fallback below an identity store.
-    ///
-    /// Host components may use this explicitly in recovery and deterministic
-    /// tests. Normal migration should call `secure_identity`, which prefers
-    /// Secret Service and exposes the fallback choice in Settings.
     pub fn new(identity_dir: &Path) -> Self {
         Self {
             root: identity_dir.join("secrets"),
@@ -217,8 +205,6 @@ impl BrokerFileProvider {
         tilo_files::native::private::restrict_directory(&self.root)
     }
 
-    /// The secrets directory is a real directory this user owns. Reading a
-    /// key checks it without creating or changing it.
     fn check_root(&self) -> io::Result<()> {
         let meta = fs::symlink_metadata(&self.root)?;
         if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
@@ -338,10 +324,9 @@ pub(crate) fn provider_for<'a>(
 /// secrets in the broker file. The login Keychain is always there on macOS,
 /// so a failing one fails the operation instead.
 pub(crate) const FILE_FALLBACK: bool = !cfg!(target_os = "macos");
-
-/// Set (to anything), it keeps every identity secret of the session in
-/// private files, out of the user's login Keychain or Secret Service: for
-/// tests, and for a locally built release (see [`file_secrets_requested`]).
+/// Set to anything, it keeps every identity secret of the session in private
+/// files instead of the login Keychain or Secret Service: for tests, and for a
+/// locally built release.
 pub const FILE_SECRETS_ENV: &str = "TILO_IDENTITY_FILE_SECRETS";
 
 /// Whether this session keeps its identity secrets in files.
