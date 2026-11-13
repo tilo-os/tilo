@@ -9,11 +9,9 @@
 //! an H.264 encoder is installed and its absence is a failure, because the question
 //! only has an answer on a machine that can pose it.
 
-mod common;
-
 #[cfg(feature = "decode")]
 mod real {
-    use super::common::*;
+    use crate::common::*;
     use tilo_media::{DecoderKind, EngineConfig, FramePayload, MediaEngine};
 
     #[test]
@@ -126,6 +124,7 @@ mod real {
     #[test]
     fn no_hardware_claim_is_made_before_a_decoder_has_been_plugged() {
         shared_gst_registry();
+        let _registry = registry_policy_lock();
         let engine = MediaEngine::with_config(EngineConfig::gpu().frames_only());
         let report = engine.hw_report();
         assert!(

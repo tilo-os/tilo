@@ -16,8 +16,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use tilo_media::FramePayload;
@@ -58,7 +56,7 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
 
 #[test]
 fn the_announced_colour_replaces_the_decoders_size_based_guess() {
-    common::shared_gst_registry();
+    crate::common::shared_gst_registry();
     let caps = local_capabilities();
     let Some(codec) = [StreamCodec::H264, StreamCodec::Av1].into_iter().find(|c| {
         caps.hardware_encode.contains(c)

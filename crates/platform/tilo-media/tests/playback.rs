@@ -5,11 +5,9 @@
 //! paced to their timestamps; scrubbing stays in `PAUSED` and reads the preroll, so the
 //! audio sink is never started.
 
-mod common;
-
 #[cfg(feature = "decode")]
 mod real {
-    use super::common::*;
+    use crate::common::*;
     use std::time::{Duration, Instant};
     use tilo_media::{EngineConfig, MediaEngine};
 
@@ -61,6 +59,7 @@ mod real {
 
     #[test]
     fn playback_decodes_a_continuous_run_of_frames_rather_than_one_per_seek() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         let start = decode_frame_at(&mut e, 5_000, "pre-roll before playing");
         e.play();
@@ -95,6 +94,7 @@ mod real {
 
     #[test]
     fn the_playhead_follows_the_pipeline_clock_at_roughly_real_time() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         let _ = decode_frame_at(&mut e, 5_000, "settle");
         let before = e.position_ms();
@@ -121,6 +121,7 @@ mod real {
 
     #[test]
     fn pausing_stops_the_playhead_and_resuming_continues_from_there() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         let _ = decode_frame_at(&mut e, 5_000, "settle");
         e.play();
@@ -156,6 +157,7 @@ mod real {
     fn the_audio_chain_exists_and_its_gain_is_controllable() {
         use tilo_media::gst::prelude::*;
 
+        let _registry = registry_policy_lock();
         // The editor needs a place to attach per-source gain and monitoring.
         // Volume moves a dedicated `volume` element rather than playbin's own
         // property, so changing it does not re-negotiate the stream.
@@ -189,6 +191,7 @@ mod real {
 
     #[test]
     fn a_scrub_never_enters_playing_so_the_audio_sink_is_never_started() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         for t in [1_000u64, 9_500, 22_300, 9_500, 40_000, 3_200] {
             let f = decode_frame_at(&mut e, t, "scrub");

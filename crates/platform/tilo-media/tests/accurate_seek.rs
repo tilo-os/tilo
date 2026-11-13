@@ -9,11 +9,9 @@
 //! measures that base from the clip ([`common::stream_pts_base_ms`]) rather than
 //! assuming a timestamp origin.
 
-mod common;
-
 #[cfg(feature = "decode")]
 mod real {
-    use super::common::*;
+    use crate::common::*;
     use tilo_media::{EngineConfig, MediaEngine, SeekMode};
 
     /// A time deep inside a GOP: 12.500s sits 4.167s past the keyframe at
@@ -35,6 +33,7 @@ mod real {
 
     #[test]
     fn an_accurate_seek_lands_on_the_requested_frame_not_the_keyframe_before_it() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         let base = stream_pts_base_ms(&mut e);
         let frame = decode_frame_at(&mut e, MID_GOP_MS, "accurate seek");
@@ -68,6 +67,7 @@ mod real {
 
     #[test]
     fn a_keyframe_seek_lands_seconds_away_which_is_what_accurate_seeking_fixes() {
+        let _registry = registry_policy_lock();
         // The coarse mode, asked directly — `seek_and_wait` always seeks
         // accurately, so it cannot be used to measure the keyframe path.
         let mut coarse = engine();
@@ -124,6 +124,7 @@ mod real {
 
     #[test]
     fn stepping_forward_changes_the_picture_not_just_the_timestamp() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         let a = decode_frame_at(&mut e, MID_GOP_MS, "frame A");
         let b = decode_frame_at(&mut e, MID_GOP_MS + 500, "frame B");
@@ -171,6 +172,7 @@ mod real {
 
     #[test]
     fn seeking_backwards_across_a_keyframe_boundary_still_lands_exactly() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         let base = stream_pts_base_ms(&mut e);
         // Forward past the keyframe at 16.667s, then back across it.
@@ -186,6 +188,7 @@ mod real {
 
     #[test]
     fn a_single_frame_step_resolves_to_the_next_picture() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         let a = decode_frame_at(&mut e, MID_GOP_MS, "step from");
         let b = decode_frame_at(&mut e, MID_GOP_MS + FRAME_MS + 1, "step to");
@@ -200,6 +203,7 @@ mod real {
 
     #[test]
     fn scrubbing_never_starts_playback() {
+        let _registry = registry_policy_lock();
         let mut e = engine();
         for t in [4_000u64, 12_500, 30_000, 12_500, 4_000] {
             let _ = decode_frame_at(&mut e, t, "scrub step");

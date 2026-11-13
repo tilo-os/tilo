@@ -6,11 +6,9 @@
 //! configuration, but applying it re-ranks the process-wide registry, so every test
 //! here holds `common::registry_policy_lock` while its engine autoplugs.
 
-mod common;
-
 #[cfg(feature = "decode")]
 mod real {
-    use super::common::*;
+    use crate::common::*;
     use tilo_media::{DecoderKind, EngineConfig, FramePayload, MediaEngine};
 
     #[test]
