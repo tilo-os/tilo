@@ -16,9 +16,6 @@ pub(crate) const BLOCK_ON_BLOCKING_THREADS: usize = 4;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
-/// A fixed set of named threads draining one job queue.
-///
-/// Threads start with the pool and live as long as the process.
 pub(crate) struct JobPool {
     queue: Mutex<Sender<Job>>,
 }
@@ -46,7 +43,6 @@ impl JobPool {
         }
     }
 
-    /// Queue `job`. Returns `false` when every pool thread has exited.
     pub(crate) fn submit(&self, job: impl FnOnce() + Send + 'static) -> bool {
         self.queue.lock_recover().send(Box::new(job)).is_ok()
     }

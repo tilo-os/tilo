@@ -57,7 +57,6 @@ pub fn spawn_task(future: impl Future<Output = ()> + 'static) {
     drop(spawn_local(future));
 }
 
-/// The app runtime, started on first use.
 pub fn app() -> &'static AppRuntime {
     APP.get_or_init(|| AppRuntime {
         thread: std::thread::current().id(),
@@ -74,7 +73,6 @@ pub fn try_app() -> Result<&'static AppRuntime, Error> {
 }
 
 impl AppRuntime {
-    /// The page thread, which also runs every app task.
     pub const fn thread_id(&self) -> ThreadId {
         self.thread
     }
@@ -95,7 +93,6 @@ impl AppRuntime {
         spawn_local(future)
     }
 
-    /// Run `future` as an app task, then hand its output to `deliver`.
     pub fn spawn_then<F, D>(&self, future: F, deliver: D) -> JoinHandle<()>
     where
         F: Future + Send + 'static,
@@ -105,9 +102,6 @@ impl AppRuntime {
         spawn_local(async move { deliver(future.await) })
     }
 
-    /// Run the future `make` builds as an app task, where the future may
-    /// hold values that stay on one thread (a page's storage handles): here
-    /// it is built and polled on the page thread.
     pub fn spawn_pinned<M, F>(&self, make: M) -> JoinHandle<F::Output>
     where
         M: FnOnce() -> F + Send + 'static,
@@ -138,7 +132,6 @@ impl AppRuntime {
     }
 }
 
-/// Run `job` as an app task, for [`crate::cpu()`].
 pub(crate) fn spawn_job(job: impl FnOnce() + Send + 'static) {
     drop(spawn_local(async move { job() }));
 }

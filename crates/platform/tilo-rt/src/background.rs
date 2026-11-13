@@ -36,15 +36,12 @@ use tilo_clock::time::{Duration, Instant};
 use crate::wake::WakeHandle;
 use tilo_lock::MutexRecover as _;
 
-/// One unit of background work.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
-/// The host refused to run background work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("background work is not available on this host")]
 pub struct Unsupported;
 
-/// How a host runs background work and timers.
 pub trait Executor: Send + Sync + 'static {
     /// Run `job` off the calling thread. `name` identifies the work in logs.
     ///
@@ -56,12 +53,8 @@ pub trait Executor: Send + Sync + 'static {
     /// Returns [`Unsupported`] when this host cannot run background work.
     fn spawn(&self, name: &'static str, job: Job) -> Result<(), Unsupported>;
 
-    /// Call [`WakeHandle::wake`] on `wake` once [`now`](Self::now) reaches
-    /// `deadline`. A deadline already in the past wakes promptly.
     fn wake_at(&self, deadline: Instant, wake: WakeHandle);
 
-    /// This executor's clock. Deadlines passed to [`wake_at`](Self::wake_at)
-    /// are measured against it.
     fn now(&self) -> Instant {
         tilo_clock::now()
     }
@@ -76,7 +69,6 @@ thread_local! {
     static CURRENT: RefCell<Option<Background>> = const { RefCell::new(None) };
 }
 
-/// A cheap-to-clone handle to the executor a service was constructed under.
 #[derive(Clone)]
 pub struct Background(Arc<dyn Executor>);
 
@@ -97,8 +89,6 @@ impl Background {
         Self(Arc::new(executor))
     }
 
-    /// The executor entered on this thread, or the process-wide
-    /// [`ThreadPool`] when none is.
     pub fn current() -> Self {
         CURRENT
             .with(|current| current.borrow().clone())
@@ -137,13 +127,11 @@ impl Background {
         self.0.now()
     }
 
-    /// See [`Executor::park`].
     pub fn park(&self, deadline: Instant) {
         self.0.park(deadline);
     }
 }
 
-/// Restores the previously entered executor on drop. Thread-affine.
 pub struct BackgroundGuard {
     previous: Option<Background>,
     thread_affinity: PhantomData<Rc<()>>,
@@ -236,8 +224,6 @@ fn run_job(name: &'static str, job: Job) {
     }
 }
 
-/// A timer waiting in a [`BinaryHeap`], earliest deadline (then earliest
-/// registration) first.
 struct Timer {
     deadline: Instant,
     sequence: u64,
@@ -297,7 +283,6 @@ struct PoolState {
     idle: usize,
     timers: Timers,
     timer_thread: bool,
-    /// Bumped whenever a job finishes or a timer fires, for [`Executor::park`].
     progress: u64,
     /// The [`Self::progress`] each parking thread last returned with. A
     /// park waits for progress past it, not past the moment it is called:
@@ -314,18 +299,12 @@ struct PoolShared {
     max_threads: usize,
 }
 
-/// A bounded pool of named worker threads, grown on demand, plus a single
-/// timer thread for [`Executor::wake_at`].
-///
-/// Workers and the timer thread live as long as the process; the pool is
-/// meant to be created once per host, not per service.
 #[derive(Clone)]
 pub struct ThreadPool {
     shared: Arc<PoolShared>,
 }
 
 impl ThreadPool {
-    /// A pool that runs at most `max_threads` jobs at once (at least one).
     pub fn new(max_threads: usize) -> Self {
         Self {
             shared: Arc::new(PoolShared {
@@ -426,7 +405,6 @@ impl Executor for ThreadPool {
             return Ok(());
         }
         if state.threads > 0 {
-            // Existing workers will get to it.
             self.shared.work.notify_one();
             return Ok(());
         }
@@ -464,7 +442,6 @@ impl Executor for ThreadPool {
     fn park(&self, deadline: Instant) {
         let thread = std::thread::current().id();
         let mut state = self.shared.state.lock_recover();
-        // A thread's first park counts everything since the pool started.
         let seen = state.parked.get(&thread).copied().unwrap_or(0);
         let timeout = deadline.saturating_duration_since(tilo_clock::now());
         state = self
@@ -497,7 +474,6 @@ pub struct Pumped {
 }
 
 impl Pumped {
-    /// A pumped executor whose virtual clock starts at the real current time.
     pub fn new() -> Self {
         Self::starting_at(tilo_clock::now())
     }
@@ -529,8 +505,6 @@ impl Pumped {
         }
     }
 
-    /// Move the virtual clock forward by `by`, firing every timer that falls
-    /// due in deadline order and running the work each one releases.
     pub fn advance(&self, by: Duration) {
         let now = self
             .state
@@ -572,12 +546,10 @@ impl Pumped {
         self.state.lock_recover().queue.is_empty()
     }
 
-    /// The earliest armed timer, if any.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.state.lock_recover().timers.next_deadline()
     }
 
-    /// The virtual clock.
     pub fn now(&self) -> Instant {
         let mut state = self.state.lock_recover();
         *state.now.get_or_insert_with(tilo_clock::now)
@@ -598,8 +570,6 @@ impl Executor for Pumped {
         Self::now(self)
     }
 
-    /// Runs queued work; with none queued, advances the virtual clock to the
-    /// next timer or to `deadline`, whichever comes first.
     fn park(&self, deadline: Instant) {
         if self.run_pending() > 0 {
             return;
@@ -653,7 +623,6 @@ mod tests {
 
     #[test]
     fn thread_pool_runs_named_jobs_survives_panics_and_wakes_timers_in_order() {
-        // Case `thread_pool_runs_jobs_on_named_threads`.
         {
             let pool = ThreadPool::new(2);
             let (tx, rx) = mpsc::channel();
@@ -675,7 +644,6 @@ mod tests {
             assert!(pool.shared.state.lock_recover().threads <= 2);
         }
 
-        // Case `thread_pool_survives_a_panicking_job`.
         {
             let pool = ThreadPool::new(1);
             pool.spawn("panics", Box::new(|| panic!("job failure")))
@@ -686,7 +654,6 @@ mod tests {
             tilo_test_env::recv("the task spawned after", &rx);
         }
 
-        // Case `thread_pool_timers_wake_in_deadline_order`.
         {
             let pool = ThreadPool::new(1);
             let (tx, rx) = mpsc::channel();
@@ -709,7 +676,6 @@ mod tests {
             assert_eq!(tilo_test_env::recv("the late wake", &rx), "late");
         }
 
-        // Case `thread_pool_park_returns_when_a_job_finishes`.
         {
             let pool = ThreadPool::new(1);
             let (release, gate) = mpsc::channel::<()>();
@@ -724,8 +690,6 @@ mod tests {
             );
         }
 
-        // Case `thread_pool_park_sees_a_job_that_finished_before_it`: the
-        // caller checked, the job finished, then the caller parked.
         {
             let pool = ThreadPool::new(1);
             let (done, finished) = mpsc::channel();

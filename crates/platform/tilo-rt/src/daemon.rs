@@ -16,7 +16,6 @@ use tilo_lock::MutexRecover as _;
 /// for a child (the room bench's `--host-threads`) reaches [`daemon()`].
 pub const WORKER_THREADS_ENV: &str = "TOKIO_WORKER_THREADS";
 
-/// Builder for a service's runtime. Start with [`daemon()`].
 #[derive(Clone, Debug)]
 pub struct Daemon {
     name: &'static str,
@@ -46,9 +45,6 @@ pub fn daemon(name: &'static str) -> Daemon {
     }
 }
 
-/// The worker count [`daemon()`] uses: `asked` when the environment asks for a
-/// positive number of threads, else `available` clamped to
-/// [`Daemon::DEFAULT_MAX_WORKERS`].
 fn default_workers(asked: Option<&str>, available: usize) -> usize {
     asked
         .and_then(|asked| asked.trim().parse::<usize>().ok())
@@ -57,12 +53,9 @@ fn default_workers(asked: Option<&str>, available: usize) -> usize {
 }
 
 impl Daemon {
-    /// Upper bound on the default worker count.
     pub const DEFAULT_MAX_WORKERS: usize = 4;
-    /// Default bound on the blocking pool.
     pub const DEFAULT_MAX_BLOCKING: usize = pool::DAEMON_BLOCKING_THREADS;
 
-    /// Use exactly `workers` async worker threads (at least one).
     #[must_use]
     pub fn workers(mut self, workers: usize) -> Self {
         self.workers = workers.max(1);
@@ -76,7 +69,6 @@ impl Daemon {
         self
     }
 
-    /// Build the runtime.
     pub fn build(&self) -> std::io::Result<Runtime> {
         crate::panic_boundary::abort_outside_boundaries_in_release();
         let name = self.name;
@@ -125,7 +117,6 @@ thread_local! {
     static COUNTED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// How many distinct workers have parked since the runtime was built.
 #[derive(Default)]
 struct ParkedWorkers {
     count: Mutex<usize>,
@@ -161,7 +152,6 @@ mod tests {
 
     #[test]
     fn daemon_threads_are_bounded_and_named() {
-        // phase: workers_are_bounded_and_named
         {
             let runtime = daemon("probe").workers(2).build().unwrap();
             assert_eq!(runtime.metrics().num_workers(), 2);
@@ -181,12 +171,10 @@ mod tests {
                 "{names:?}"
             );
         }
-        // phase: the_default_worker_count_is_capped
         {
             let runtime = daemon("capped").build().unwrap();
             assert!(runtime.metrics().num_workers() <= Daemon::DEFAULT_MAX_WORKERS);
         }
-        // phase: the_environment_raises_the_cap
         {
             // The environment is read in `default_workers`, which takes its
             // value as an argument: a test that set the variable would race
@@ -194,7 +182,6 @@ mod tests {
             assert_eq!(default_workers(Some("40"), 16), 40);
             assert_eq!(default_workers(Some(" 3 "), 16), 3);
         }
-        // phase: a_missing_or_bad_environment_is_the_capped_default
         {
             for asked in [None, Some(""), Some("0"), Some("four"), Some("-2")] {
                 assert_eq!(
@@ -205,14 +192,12 @@ mod tests {
                 assert_eq!(default_workers(asked, 1), 1, "{asked:?}");
             }
         }
-        // phase: an_explicit_worker_count_wins_over_the_environment
         {
             // `Daemon::workers` sets the count outright; the environment only
             // reaches the default, so a caller's choice is never overridden.
             let runtime = daemon("explicit").workers(2).build().unwrap();
             assert_eq!(runtime.metrics().num_workers(), 2);
         }
-        // phase: blocking_threads_carry_the_name_but_do_not_drive_tasks
         {
             let runtime = daemon("svc").workers(1).max_blocking(2).build().unwrap();
             let (name, driving) = runtime
@@ -234,7 +219,6 @@ mod tests {
 
     #[test]
     fn daemon_workers_refuse_to_block_or_nest() {
-        // phase: every_thread_of_the_runtime_refuses_to_build_a_second_one
         {
             let runtime = daemon("guard").workers(1).build().unwrap();
             let (on_worker, on_blocking) = runtime.block_on(async {
@@ -252,7 +236,6 @@ mod tests {
                 "a blocking-pool thread is already inside the runtime; it cannot start a second one"
             );
         }
-        // phase: run_refuses_inside_another_runtimes_context
         {
             let foreign = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -261,7 +244,6 @@ mod tests {
             let nested = foreign.block_on(async { daemon("nested").workers(1).run(async {}) });
             assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
-        // phase: run_refuses_to_nest
         {
             let outer = daemon("outer")
                 .workers(1)
