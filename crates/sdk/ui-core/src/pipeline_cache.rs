@@ -309,59 +309,63 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_cache_round_trips_through_its_file_format() {
-        let key = identity(&adapter("Mesa 25.1.9"), 7);
-        let blob = b"a driver's pipeline cache".to_vec();
-        let bytes = encode(&key, &blob).expect("a small blob is kept");
-        assert_eq!(decode(&bytes, &key), Some(blob.as_slice()));
-    }
+    tilo_test_env::scenario! {
+        fn a_cache_file_round_trips_and_a_bad_or_foreign_one_is_ignored;
 
-    #[test]
-    fn a_corrupt_or_truncated_file_is_ignored() {
-        let key = identity(&adapter("Mesa 25.1.9"), 7);
-        let bytes = encode(&key, b"a driver's pipeline cache").unwrap();
-        for cut in [0, 7, HEADER_LEN - 1, HEADER_LEN, bytes.len() - 1] {
-            assert_eq!(decode(&bytes[..cut], &key), None, "cut at {cut}");
+        phase a_cache_round_trips_through_its_file_format;
+        {
+            let key = identity(&adapter("Mesa 25.1.9"), 7);
+            let blob = b"a driver's pipeline cache".to_vec();
+            let bytes = encode(&key, &blob).expect("a small blob is kept");
+            assert_eq!(decode(&bytes, &key), Some(blob.as_slice()));
         }
-        for flip in [
-            0,
-            MAGIC.len(),
-            MAGIC.len() + 32,
-            HEADER_LEN,
-            bytes.len() - 1,
-        ] {
-            let mut corrupt = bytes.clone();
-            corrupt[flip] ^= 0x40;
-            assert_eq!(decode(&corrupt, &key), None, "byte {flip} flipped");
-        }
-        let mut longer = bytes.clone();
-        longer.push(0);
-        assert_eq!(
-            decode(&longer, &key),
-            None,
-            "a trailing byte fails the checksum"
-        );
-        assert_eq!(encode(&key, &[]), None, "an empty blob is not worth a file");
-    }
 
-    #[test]
-    fn a_cache_for_another_adapter_driver_or_shader_set_is_ignored() {
-        let base = adapter("Mesa 25.1.9");
-        let key = identity(&base, 7);
-        let bytes = encode(&key, b"pipelines").unwrap();
-        let mut other_device = base.clone();
-        other_device.device = 1;
-        let mut other_backend = base.clone();
-        other_backend.backend = wgpu::Backend::Gl;
-        for (what, other) in [
-            ("driver update", identity(&adapter("Mesa 25.2.0"), 7)),
-            ("shader set", identity(&base, 8)),
-            ("device", identity(&other_device, 7)),
-            ("backend", identity(&other_backend, 7)),
-        ] {
-            assert_ne!(other, key, "{what} must change the identity");
-            assert_eq!(decode(&bytes, &other), None, "{what}");
+        phase a_corrupt_or_truncated_file_is_ignored;
+        {
+            let key = identity(&adapter("Mesa 25.1.9"), 7);
+            let bytes = encode(&key, b"a driver's pipeline cache").unwrap();
+            for cut in [0, 7, HEADER_LEN - 1, HEADER_LEN, bytes.len() - 1] {
+                assert_eq!(decode(&bytes[..cut], &key), None, "cut at {cut}");
+            }
+            for flip in [
+                0,
+                MAGIC.len(),
+                MAGIC.len() + 32,
+                HEADER_LEN,
+                bytes.len() - 1,
+            ] {
+                let mut corrupt = bytes.clone();
+                corrupt[flip] ^= 0x40;
+                assert_eq!(decode(&corrupt, &key), None, "byte {flip} flipped");
+            }
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert_eq!(
+                decode(&longer, &key),
+                None,
+                "a trailing byte fails the checksum"
+            );
+            assert_eq!(encode(&key, &[]), None, "an empty blob is not worth a file");
+        }
+
+        phase a_cache_for_another_adapter_driver_or_shader_set_is_ignored;
+        {
+            let base = adapter("Mesa 25.1.9");
+            let key = identity(&base, 7);
+            let bytes = encode(&key, b"pipelines").unwrap();
+            let mut other_device = base.clone();
+            other_device.device = 1;
+            let mut other_backend = base.clone();
+            other_backend.backend = wgpu::Backend::Gl;
+            for (what, other) in [
+                ("driver update", identity(&adapter("Mesa 25.2.0"), 7)),
+                ("shader set", identity(&base, 8)),
+                ("device", identity(&other_device, 7)),
+                ("backend", identity(&other_backend, 7)),
+            ] {
+                assert_ne!(other, key, "{what} must change the identity");
+                assert_eq!(decode(&bytes, &other), None, "{what}");
+            }
         }
     }
 

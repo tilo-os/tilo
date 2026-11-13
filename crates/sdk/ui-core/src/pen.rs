@@ -123,46 +123,50 @@ mod tests {
         pen
     }
 
-    #[test]
-    fn a_sample_reaches_exactly_the_pointer_event_after_it() {
-        let mut input = PenInput::default();
-        assert!(input.route(&sample(0.4, false)).is_none(), "never an event");
-        let pen = PenSample {
-            pressure: 0.4,
-            tilt: (20.0, -10.0),
-            eraser: false,
-        };
-        assert_eq!(seen(&mut input, &moved()), Some(pen));
-        assert_eq!(seen(&mut input, &mouse_press()), None, "a mouse's press");
-        assert_eq!(current(), None, "nothing outside a dispatch");
+    tilo_test_env::scenario! {
+        fn a_pen_sample_is_seen_only_inside_its_pointer_events_dispatch;
 
-        assert!(input.route(&sample(1.0, true)).is_none());
-        let unrelated = WindowEvent::Focused(true);
-        assert_eq!(
-            seen(&mut input, &unrelated),
-            None,
-            "other events neither see nor spend the sample"
-        );
-        assert_eq!(
-            seen(&mut input, &mouse_press()),
-            Some(PenSample {
-                pressure: 1.0,
+        phase a_sample_reaches_exactly_the_pointer_event_after_it;
+        {
+            let mut input = PenInput::default();
+            assert!(input.route(&sample(0.4, false)).is_none(), "never an event");
+            let pen = PenSample {
+                pressure: 0.4,
                 tilt: (20.0, -10.0),
-                eraser: true,
-            })
-        );
-    }
+                eraser: false,
+            };
+            assert_eq!(seen(&mut input, &moved()), Some(pen));
+            assert_eq!(seen(&mut input, &mouse_press()), None, "a mouse's press");
+            assert_eq!(current(), None, "nothing outside a dispatch");
 
-    #[test]
-    fn an_event_dispatched_inside_another_keeps_its_pen() {
-        let mut input = PenInput::default();
-        let _ = input.route(&sample(0.7, false));
-        let outer = input.route(&moved()).expect("dispatched");
-        let inner = input.route(&moved()).expect("dispatched");
-        assert_eq!(current().map(|pen| pen.pressure), Some(0.7));
-        drop(inner);
-        assert_eq!(current().map(|pen| pen.pressure), Some(0.7));
-        drop(outer);
-        assert_eq!(current(), None);
+            assert!(input.route(&sample(1.0, true)).is_none());
+            let unrelated = WindowEvent::Focused(true);
+            assert_eq!(
+                seen(&mut input, &unrelated),
+                None,
+                "other events neither see nor spend the sample"
+            );
+            assert_eq!(
+                seen(&mut input, &mouse_press()),
+                Some(PenSample {
+                    pressure: 1.0,
+                    tilt: (20.0, -10.0),
+                    eraser: true,
+                })
+            );
+        }
+
+        phase an_event_dispatched_inside_another_keeps_its_pen;
+        {
+            let mut input = PenInput::default();
+            let _ = input.route(&sample(0.7, false));
+            let outer = input.route(&moved()).expect("dispatched");
+            let inner = input.route(&moved()).expect("dispatched");
+            assert_eq!(current().map(|pen| pen.pressure), Some(0.7));
+            drop(inner);
+            assert_eq!(current().map(|pen| pen.pressure), Some(0.7));
+            drop(outer);
+            assert_eq!(current(), None);
+        }
     }
 }

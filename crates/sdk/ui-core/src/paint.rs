@@ -143,44 +143,48 @@ pub use tilo_ui_paint::scene::{
 mod tests {
     use super::*;
 
-    #[test]
-    fn nested_contexts_compose_transforms_and_leave_the_parent_alone() {
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark();
-        let base = Affine::scale(2.0);
-        let mut ctx = PaintCtx::new(&mut scene, base, &mut text, &theme);
+    tilo_test_env::scenario! {
+        fn a_paint_context_composes_transforms_and_measures_in_its_theme;
 
-        assert_eq!(ctx.reborrow().transform, base);
-        assert_eq!(
-            ctx.translated(Vec2::new(3.0, 4.0)).transform,
-            base * Affine::translate((3.0, 4.0))
-        );
-        let replaced = Affine::translate((7.0, 0.0));
-        assert_eq!(ctx.with_transform(replaced).transform, replaced);
-        assert_eq!(ctx.transform, base);
-    }
+        phase nested_contexts_compose_transforms_and_leave_the_parent_alone;
+        {
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let base = Affine::scale(2.0);
+            let mut ctx = PaintCtx::new(&mut scene, base, &mut text, &theme);
 
-    #[test]
-    fn role_text_is_measured_in_the_contexts_theme_once() {
-        let mut scene = Scene::new();
-        let mut text = crate::font_catalog::fixture_renderer();
-        // A renderer at 2× must not grow a resolved role a second time.
-        text.set_text_scale(2.0);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let line = ctx.line_box(TextRole::Body);
-        let body = theme.text(TextRole::Body);
-        assert!(
-            (line - f64::from(body.line_height_px())).abs() < 0.01,
-            "one Body line is {line}, its role says {}",
-            body.line_height_px()
-        );
-        assert!(ctx.line_box(TextRole::Title) > line);
-        let measured = ctx.measure_role("Delete message", TextRole::Label, None);
-        let (w, h) = ctx
-            .text
-            .measure_style("Delete message", None, &theme.text(TextRole::Label));
-        assert_eq!(measured, Size::new(f64::from(w), f64::from(h)));
+            assert_eq!(ctx.reborrow().transform, base);
+            assert_eq!(
+                ctx.translated(Vec2::new(3.0, 4.0)).transform,
+                base * Affine::translate((3.0, 4.0))
+            );
+            let replaced = Affine::translate((7.0, 0.0));
+            assert_eq!(ctx.with_transform(replaced).transform, replaced);
+            assert_eq!(ctx.transform, base);
+        }
+
+        phase role_text_is_measured_in_the_contexts_theme_once;
+        {
+            let mut scene = Scene::new();
+            let mut text = crate::font_catalog::fixture_renderer();
+            // A renderer at 2× must not grow a resolved role a second time.
+            text.set_text_scale(2.0);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            let line = ctx.line_box(TextRole::Body);
+            let body = theme.text(TextRole::Body);
+            assert!(
+                (line - f64::from(body.line_height_px())).abs() < 0.01,
+                "one Body line is {line}, its role says {}",
+                body.line_height_px()
+            );
+            assert!(ctx.line_box(TextRole::Title) > line);
+            let measured = ctx.measure_role("Delete message", TextRole::Label, None);
+            let (w, h) = ctx
+                .text
+                .measure_style("Delete message", None, &theme.text(TextRole::Label));
+            assert_eq!(measured, Size::new(f64::from(w), f64::from(h)));
+        }
     }
 }

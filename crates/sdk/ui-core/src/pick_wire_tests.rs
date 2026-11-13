@@ -58,124 +58,128 @@ fn roundtrip<T: Serialize + serde::de::DeserializeOwned>(value: &T) -> T {
     serde_json::from_slice(&serde_json::to_vec(value).unwrap()).unwrap()
 }
 
-#[test]
-fn a_query_and_its_answer_read_back_as_they_were_written() {
-    for query in [
-        PickQuery::At { point: [1.5, 2.0] },
-        PickQuery::Within {
-            area: [0.0, 0.0, 10.0, 20.0],
-            limit: 6,
-        },
-        PickQuery::Capture {
-            parts: vec![PartToCapture {
-                path: "Window[0]/Row[0]".into(),
-                rect: [0.0, 0.0, 400.0, 50.0],
-            }],
-        },
-    ] {
-        assert_eq!(roundtrip(&query), query);
-    }
-    let wire = serde_json::to_value(PickQuery::At { point: [1.0, 2.0] }).unwrap();
-    assert_eq!(wire, serde_json::json!({"kind": "at", "point": [1.0, 2.0]}));
-    let captured = PickAnswer::Captured {
-        parts: vec![CapturedPart {
-            path: "Window[0]/Row[0]".into(),
-            role: None,
-            kind: None,
-            label: None,
-            texts: vec![CapturedText {
-                text: "Reply".into(),
-                interface: true,
-                rect: None,
-            }],
-            masked: vec![[0.0, 0.0, 1.0, 1.0]],
-        }],
-        recent: vec![RecentAction {
-            at: 7,
-            resource: "chat".into(),
-            action: "send".into(),
-            label: None,
-            done: true,
-        }],
-    };
-    assert_eq!(roundtrip(&captured), captured);
-    let wire = serde_json::to_string(&captured).unwrap();
-    assert!(
-        !wire.contains("\"role\"") && !wire.contains("\"label\""),
-        "absent fields are left out: {wire}"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_pick_query_reads_back_and_a_window_answers_it;
 
-#[test]
-fn a_window_answers_what_is_at_a_point_inside_an_area_and_what_a_pick_holds() {
-    let root = window();
-    let PickAnswer::Targets { parts } = answer(
-        &root,
-        &PickQuery::At {
-            point: [350.0, 20.0],
-        },
-    ) else {
-        panic!("targets");
-    };
-    let roles: Vec<&str> = parts.iter().map(|part| part.role.as_str()).collect();
-    assert_eq!(roles, ["ListItem", "Button"], "outermost first: {parts:?}");
-    assert_eq!(parts[1].rect, [320.0, 10.0, 390.0, 40.0]);
-    let button = parts[1].path.clone();
-
-    let PickAnswer::Targets { parts } = answer(
-        &root,
-        &PickQuery::At {
-            point: [f64::NAN, 1.0],
-        },
-    ) else {
-        panic!("targets");
-    };
-    assert!(parts.is_empty(), "a point that is no point names nothing");
-
-    let PickAnswer::Targets { parts } = answer(
-        &root,
-        &PickQuery::Within {
-            area: [0.0, 0.0, 400.0, 60.0],
-            limit: 1,
-        },
-    ) else {
-        panic!("targets");
-    };
-    assert_eq!(parts.len(), 1);
-    assert_eq!(parts[0].role, "ListItem");
-    let row = parts[0].path.clone();
-
-    let PickAnswer::Captured { parts, .. } = answer(
-        &root,
-        &PickQuery::Capture {
-            parts: vec![
-                PartToCapture {
-                    path: row,
+    phase a_query_and_its_answer_read_back_as_they_were_written;
+    {
+        for query in [
+            PickQuery::At { point: [1.5, 2.0] },
+            PickQuery::Within {
+                area: [0.0, 0.0, 10.0, 20.0],
+                limit: 6,
+            },
+            PickQuery::Capture {
+                parts: vec![PartToCapture {
+                    path: "Window[0]/Row[0]".into(),
                     rect: [0.0, 0.0, 400.0, 50.0],
-                },
-                PartToCapture {
-                    path: "Window[0]/Gone[3]".into(),
-                    rect: [0.0, 0.0, 1.0, 1.0],
-                },
-                PartToCapture {
-                    path: button,
-                    rect: [f64::INFINITY, 0.0, 1.0, 1.0],
-                },
-            ],
-        },
-    ) else {
-        panic!("captured");
-    };
-    assert_eq!(parts.len(), 1, "a gone part or a broken rect is left out");
-    let texts: Vec<(&str, bool)> = parts[0]
-        .texts
-        .iter()
-        .map(|text| (text.text.as_str(), text.interface))
-        .collect();
-    assert_eq!(texts, [("Thanks Ada", false), ("Reply", true)]);
-    assert_eq!(
-        parts[0].masked,
-        [[10.0, 10.0, 300.0, 40.0]],
-        "the content is masked, the app's own copy is not"
-    );
+                }],
+            },
+        ] {
+            assert_eq!(roundtrip(&query), query);
+        }
+        let wire = serde_json::to_value(PickQuery::At { point: [1.0, 2.0] }).unwrap();
+        assert_eq!(wire, serde_json::json!({"kind": "at", "point": [1.0, 2.0]}));
+        let captured = PickAnswer::Captured {
+            parts: vec![CapturedPart {
+                path: "Window[0]/Row[0]".into(),
+                role: None,
+                kind: None,
+                label: None,
+                texts: vec![CapturedText {
+                    text: "Reply".into(),
+                    interface: true,
+                    rect: None,
+                }],
+                masked: vec![[0.0, 0.0, 1.0, 1.0]],
+            }],
+            recent: vec![RecentAction {
+                at: 7,
+                resource: "chat".into(),
+                action: "send".into(),
+                label: None,
+                done: true,
+            }],
+        };
+        assert_eq!(roundtrip(&captured), captured);
+        let wire = serde_json::to_string(&captured).unwrap();
+        assert!(
+            !wire.contains("\"role\"") && !wire.contains("\"label\""),
+            "absent fields are left out: {wire}"
+        );
+    }
+
+    phase a_window_answers_what_is_at_a_point_inside_an_area_and_what_a_pick_holds;
+    {
+        let root = window();
+        let PickAnswer::Targets { parts } = answer(
+            &root,
+            &PickQuery::At {
+                point: [350.0, 20.0],
+            },
+        ) else {
+            panic!("targets");
+        };
+        let roles: Vec<&str> = parts.iter().map(|part| part.role.as_str()).collect();
+        assert_eq!(roles, ["ListItem", "Button"], "outermost first: {parts:?}");
+        assert_eq!(parts[1].rect, [320.0, 10.0, 390.0, 40.0]);
+        let button = parts[1].path.clone();
+
+        let PickAnswer::Targets { parts } = answer(
+            &root,
+            &PickQuery::At {
+                point: [f64::NAN, 1.0],
+            },
+        ) else {
+            panic!("targets");
+        };
+        assert!(parts.is_empty(), "a point that is no point names nothing");
+
+        let PickAnswer::Targets { parts } = answer(
+            &root,
+            &PickQuery::Within {
+                area: [0.0, 0.0, 400.0, 60.0],
+                limit: 1,
+            },
+        ) else {
+            panic!("targets");
+        };
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].role, "ListItem");
+        let row = parts[0].path.clone();
+
+        let PickAnswer::Captured { parts, .. } = answer(
+            &root,
+            &PickQuery::Capture {
+                parts: vec![
+                    PartToCapture {
+                        path: row,
+                        rect: [0.0, 0.0, 400.0, 50.0],
+                    },
+                    PartToCapture {
+                        path: "Window[0]/Gone[3]".into(),
+                        rect: [0.0, 0.0, 1.0, 1.0],
+                    },
+                    PartToCapture {
+                        path: button,
+                        rect: [f64::INFINITY, 0.0, 1.0, 1.0],
+                    },
+                ],
+            },
+        ) else {
+            panic!("captured");
+        };
+        assert_eq!(parts.len(), 1, "a gone part or a broken rect is left out");
+        let texts: Vec<(&str, bool)> = parts[0]
+            .texts
+            .iter()
+            .map(|text| (text.text.as_str(), text.interface))
+            .collect();
+        assert_eq!(texts, [("Thanks Ada", false), ("Reply", true)]);
+        assert_eq!(
+            parts[0].masked,
+            [[10.0, 10.0, 300.0, 40.0]],
+            "the content is masked, the app's own copy is not"
+        );
+    }
 }

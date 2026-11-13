@@ -251,56 +251,60 @@ mod tests {
         crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
-    #[test]
-    fn a_press_replays_the_last_position_only_after_the_widgets_changed() {
-        let mut replay = PointerReplay::default();
-        assert!(replay.before(&moved(10.0, 20.0)).is_none());
-        assert!(
-            replay.before(&button(ElementState::Pressed)).is_none(),
-            "nothing changed under the pointer"
-        );
-        replay.mark_unsettled();
-        let Some(WindowEvent::CursorMoved { position, .. }) =
-            replay.before(&button(ElementState::Released))
-        else {
-            panic!("a release after a rebuild must replay the pointer first");
-        };
-        assert_eq!(position, PhysicalPosition::new(10.0, 20.0));
-        assert!(
-            replay.before(&button(ElementState::Pressed)).is_none(),
-            "one replay settles the pointer"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_pointer_is_replayed_once_after_a_rebuild_and_a_press_ends_with_its_release;
 
-    #[test]
-    fn a_pointer_that_left_is_not_replayed() {
-        let mut replay = PointerReplay::default();
-        replay.before(&moved(1.0, 1.0));
-        replay.before(&WindowEvent::CursorLeft {
-            device_id: DeviceId::dummy(),
-        });
-        replay.mark_unsettled();
-        assert!(replay.before(&button(ElementState::Pressed)).is_none());
-    }
+        phase a_press_replays_the_last_position_only_after_the_widgets_changed;
+        {
+            let mut replay = PointerReplay::default();
+            assert!(replay.before(&moved(10.0, 20.0)).is_none());
+            assert!(
+                replay.before(&button(ElementState::Pressed)).is_none(),
+                "nothing changed under the pointer"
+            );
+            replay.mark_unsettled();
+            let Some(WindowEvent::CursorMoved { position, .. }) =
+                replay.before(&button(ElementState::Released))
+            else {
+                panic!("a release after a rebuild must replay the pointer first");
+            };
+            assert_eq!(position, PhysicalPosition::new(10.0, 20.0));
+            assert!(
+                replay.before(&button(ElementState::Pressed)).is_none(),
+                "one replay settles the pointer"
+            );
+        }
 
-    #[test]
-    fn a_release_ends_the_press_wherever_it_went() {
-        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
-        record_press("copy", rect);
-        assert!(press_continues("copy", rect));
-        assert!(!press_continues(
-            "copy",
-            rect + vello::kurbo::Vec2::new(0.0, 40.0)
-        ));
-        assert!(!press_continues("delete", rect));
-        assert!(PointerReplay::ends_press(&button(ElementState::Released)));
-        PointerReplay::default().end_press();
-        assert!(!press_continues("copy", rect));
+        phase a_pointer_that_left_is_not_replayed;
+        {
+            let mut replay = PointerReplay::default();
+            replay.before(&moved(1.0, 1.0));
+            replay.before(&WindowEvent::CursorLeft {
+                device_id: DeviceId::dummy(),
+            });
+            replay.mark_unsettled();
+            assert!(replay.before(&button(ElementState::Pressed)).is_none());
+        }
 
-        // A press whose release never arrived does not outlive the next one.
-        record_press("copy", rect);
-        PointerReplay::default().before(&button(ElementState::Pressed));
-        assert!(!press_continues("copy", rect));
+        phase a_release_ends_the_press_wherever_it_went;
+        {
+            let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+            record_press("copy", rect);
+            assert!(press_continues("copy", rect));
+            assert!(!press_continues(
+                "copy",
+                rect + vello::kurbo::Vec2::new(0.0, 40.0)
+            ));
+            assert!(!press_continues("delete", rect));
+            assert!(PointerReplay::ends_press(&button(ElementState::Released)));
+            PointerReplay::default().end_press();
+            assert!(!press_continues("copy", rect));
+
+            // A press whose release never arrived does not outlive the next one.
+            record_press("copy", rect);
+            PointerReplay::default().before(&button(ElementState::Pressed));
+            assert!(!press_continues("copy", rect));
+        }
     }
 
     type Staged = Rc<RefCell<Option<(Box<dyn Widget>, f64)>>>;

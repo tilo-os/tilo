@@ -188,65 +188,69 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn velocity_is_the_derivative_of_position() {
-        for spring in springs() {
-            for (x0, v0) in [(1.0, 0.0), (-40.0, 300.0), (0.0, -12.0)] {
-                for t in [0.0, 0.013, 0.05, 0.2] {
-                    let h = 1e-6;
-                    let (a, _) = spring.state(x0, v0, t);
-                    let (b, _) = spring.state(x0, v0, t + h);
-                    let (_, v) = spring.state(x0, v0, t);
-                    let numeric = (b - a) / h;
-                    assert!(
-                        (numeric - v).abs() < 1e-2 * (1.0 + v.abs()),
-                        "{spring:?} at {t}: {numeric} vs {v}"
-                    );
+    tilo_test_env::scenario! {
+        fn a_spring_follows_its_equation_and_settles_within_its_token;
+
+        phase velocity_is_the_derivative_of_position;
+        {
+            for spring in springs() {
+                for (x0, v0) in [(1.0, 0.0), (-40.0, 300.0), (0.0, -12.0)] {
+                    for t in [0.0, 0.013, 0.05, 0.2] {
+                        let h = 1e-6;
+                        let (a, _) = spring.state(x0, v0, t);
+                        let (b, _) = spring.state(x0, v0, t + h);
+                        let (_, v) = spring.state(x0, v0, t);
+                        let numeric = (b - a) / h;
+                        assert!(
+                            (numeric - v).abs() < 1e-2 * (1.0 + v.abs()),
+                            "{spring:?} at {t}: {numeric} vs {v}"
+                        );
+                    }
                 }
             }
         }
-    }
 
-    #[test]
-    fn a_token_spring_arrives_within_its_token() {
-        let d = Duration::from_millis(210);
-        let spring = SpringSpec::settling_within(d);
-        let (x, _) = spring.state(1.0, 0.0, d.as_secs_f64());
-        assert!(x.abs() <= 0.00101, "{x}");
-        let (x, _) = spring.state(1.0, 0.0, d.as_secs_f64() * 0.5);
-        assert!(x.abs() > 0.05, "not there before its time: {x}");
-    }
+        phase a_token_spring_arrives_within_its_token;
+        {
+            let d = Duration::from_millis(210);
+            let spring = SpringSpec::settling_within(d);
+            let (x, _) = spring.state(1.0, 0.0, d.as_secs_f64());
+            assert!(x.abs() <= 0.00101, "{x}");
+            let (x, _) = spring.state(1.0, 0.0, d.as_secs_f64() * 0.5);
+            assert!(x.abs() > 0.05, "not there before its time: {x}");
+        }
 
-    #[test]
-    fn the_settle_time_is_the_last_time_it_is_out_of_tolerance() {
-        for spring in springs() {
-            for (x0, v0) in [(100.0, 0.0), (0.0, 800.0), (-3.0, 40.0)] {
-                let settle = spring.settle_secs(x0, v0, 0.1);
-                for ms in 0..2000_u32 {
-                    let t = settle + f64::from(ms) / 1000.0;
-                    let (x, _) = spring.state(x0, v0, t);
-                    assert!(x.abs() < 0.1, "{spring:?} {x0} {v0}: {x} at {t}");
+        phase the_settle_time_is_the_last_time_it_is_out_of_tolerance;
+        {
+            for spring in springs() {
+                for (x0, v0) in [(100.0, 0.0), (0.0, 800.0), (-3.0, 40.0)] {
+                    let settle = spring.settle_secs(x0, v0, 0.1);
+                    for ms in 0..2000_u32 {
+                        let t = settle + f64::from(ms) / 1000.0;
+                        let (x, _) = spring.state(x0, v0, t);
+                        assert!(x.abs() < 0.1, "{spring:?} {x0} {v0}: {x} at {t}");
+                    }
+                    assert!(settle < 2.0, "{spring:?} took {settle}");
                 }
-                assert!(settle < 2.0, "{spring:?} took {settle}");
             }
         }
-    }
 
-    #[test]
-    fn critical_damping_never_overshoots_from_rest() {
-        let spring = SpringSpec::settling_within(Duration::from_millis(400));
-        for step in 0..500_u32 {
-            let t = f64::from(step) * 0.002;
-            let (x, _) = spring.state(1.0, 0.0, t);
-            assert!(x >= 0.0, "crossed the target at {t}: {x}");
+        phase critical_damping_never_overshoots_from_rest;
+        {
+            let spring = SpringSpec::settling_within(Duration::from_millis(400));
+            for step in 0..500_u32 {
+                let t = f64::from(step) * 0.002;
+                let (x, _) = spring.state(1.0, 0.0, t);
+                assert!(x >= 0.0, "crossed the target at {t}: {x}");
+            }
         }
-    }
 
-    #[test]
-    fn preset_params_keep_their_damping() {
-        let presets = crate::tokens::SpringPresets::default();
-        assert!((SpringSpec::from_params(presets.heavy).damping - 1.0).abs() < 1e-3);
-        let snappy = SpringSpec::from_params(presets.snappy);
-        assert!(snappy.damping > 0.8 && snappy.damping < 1.0);
+        phase preset_params_keep_their_damping;
+        {
+            let presets = crate::tokens::SpringPresets::default();
+            assert!((SpringSpec::from_params(presets.heavy).damping - 1.0).abs() < 1e-3);
+            let snappy = SpringSpec::from_params(presets.snappy);
+            assert!(snappy.damping > 0.8 && snappy.damping < 1.0);
+        }
     }
 }

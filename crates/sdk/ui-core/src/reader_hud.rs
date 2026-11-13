@@ -444,182 +444,186 @@ mod tests {
         )
     }
 
-    #[test]
-    fn hud_layout_places_every_control_inside_bounds() {
+    tilo_test_env::scenario! {
+        fn the_selection_hud_lays_out_steps_aside_hits_and_widens;
+
+        phase hud_layout_places_every_control_inside_bounds;
         {
-            let hud = draw_hud(
-                true,
-                false,
-                Point::new(400.0, 300.0),
-                Rect::new(0.0, 0.0, 800.0, 600.0),
-            );
-            assert!(hud.is_shown());
-            let highlights: Vec<usize> = hud
-                .buttons()
-                .iter()
-                .filter_map(|(_, a)| {
-                    if let HudAction::Highlight(i) = a {
-                        Some(*i)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            assert_eq!(highlights, vec![0, 1, 2], "one hit per swatch, in order");
-            assert!(
-                hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy),
-                "Copy present"
-            );
-            assert!(
-                hud.buttons().iter().any(|(_, a)| *a == HudAction::Note),
-                "Note present"
-            );
-            assert!(
-                !hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete),
-                "no delete without a mark"
-            );
+            {
+                let hud = draw_hud(
+                    true,
+                    false,
+                    Point::new(400.0, 300.0),
+                    Rect::new(0.0, 0.0, 800.0, 600.0),
+                );
+                assert!(hud.is_shown());
+                let highlights: Vec<usize> = hud
+                    .buttons()
+                    .iter()
+                    .filter_map(|(_, a)| {
+                        if let HudAction::Highlight(i) = a {
+                            Some(*i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(highlights, vec![0, 1, 2], "one hit per swatch, in order");
+                assert!(
+                    hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy),
+                    "Copy present"
+                );
+                assert!(
+                    hud.buttons().iter().any(|(_, a)| *a == HudAction::Note),
+                    "Note present"
+                );
+                assert!(
+                    !hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete),
+                    "no delete without a mark"
+                );
+            }
+
+            {
+                let hud = draw_hud(
+                    true,
+                    true,
+                    Point::new(400.0, 300.0),
+                    Rect::new(0.0, 0.0, 800.0, 600.0),
+                );
+                assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
+            }
+
+            {
+                let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+                // Anchor jammed into the top-left corner: the bar must not spill out.
+                let hud = draw_hud(true, true, Point::new(2.0, 2.0), bounds);
+                let r = hud.rect();
+                assert!(r.x0 >= bounds.x0, "left edge kept in bounds: {r:?}");
+                assert!(r.x1 <= bounds.x1 + 0.01, "right edge kept in bounds: {r:?}");
+                assert!(r.y0 >= bounds.y0, "top edge kept in bounds: {r:?}");
+                assert!(
+                    r.y1 <= bounds.y1 + 0.01,
+                    "bottom edge kept in bounds: {r:?}"
+                );
+            }
+
+            {
+                let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+                // Anchor near the top → the bar drops below it rather than off-screen.
+                let hud = draw_hud(true, false, Point::new(400.0, 10.0), bounds);
+                assert!(
+                    hud.rect().y0 >= 10.0,
+                    "bar sits at/below the anchor near the top"
+                );
+            }
         }
 
+        phase hud_prefers_its_side_and_steps_aside;
         {
-            let hud = draw_hud(
-                true,
-                true,
-                Point::new(400.0, 300.0),
-                Rect::new(0.0, 0.0, 800.0, 600.0),
-            );
-            assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
-        }
-
-        {
+            let theme = crate::theme::Theme::dark();
             let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
-            // Anchor jammed into the top-left corner: the bar must not spill out.
-            let hud = draw_hud(true, true, Point::new(2.0, 2.0), bounds);
-            let r = hud.rect();
-            assert!(r.x0 >= bounds.x0, "left edge kept in bounds: {r:?}");
-            assert!(r.x1 <= bounds.x1 + 0.01, "right edge kept in bounds: {r:?}");
-            assert!(r.y0 >= bounds.y0, "top edge kept in bounds: {r:?}");
+            let draw = |placement: HudPlacement| {
+                SelectionHud::draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &theme,
+                    &HudControls {
+                        swatches: &swatches(),
+                        show_note: true,
+                        show_delete: true,
+                        show_select_all: false,
+                        shortcuts: false,
+                    },
+                    placement,
+                    Point::new(-1000.0, -1000.0),
+                )
+            };
+            let anchor = Point::new(400.0, 300.0);
+            let above = draw(HudPlacement::new(anchor, bounds));
+            assert!(above.rect().y1 <= anchor.y, "above by default");
+            let below = draw(HudPlacement::new(anchor, bounds).below(320.0));
+            assert!(below.rect().y0 >= 320.0, "below the last line when asked");
+            let note = Rect::new(0.0, 200.0, 800.0, 300.0);
+            let aside = draw(HudPlacement::new(anchor, bounds).avoiding(note));
             assert!(
-                r.y1 <= bounds.y1 + 0.01,
-                "bottom edge kept in bounds: {r:?}"
+                aside.rect().intersect(note).is_zero_area(),
+                "the bar steps off the rect it must not cover: {:?}",
+                aside.rect()
             );
+            let inset = crate::widget::floating_surface::control_inset(&theme);
+            for (rect, _) in above.buttons() {
+                assert!(rect.y0 >= above.rect().y0 + inset - 0.01);
+                assert!(rect.y1 <= above.rect().y1 - inset + 0.01);
+            }
         }
 
+        phase hud_hits_controls_and_latches_marker_drags;
         {
-            let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
-            // Anchor near the top → the bar drops below it rather than off-screen.
-            let hud = draw_hud(true, false, Point::new(400.0, 10.0), bounds);
-            assert!(
-                hud.rect().y0 >= 10.0,
-                "bar sits at/below the anchor near the top"
-            );
-        }
-    }
+            {
+                let hud = draw_hud(
+                    true,
+                    false,
+                    Point::new(400.0, 300.0),
+                    Rect::new(0.0, 0.0, 800.0, 600.0),
+                );
+                let copy = hud
+                    .buttons()
+                    .iter()
+                    .find(|(_, a)| *a == HudAction::Copy)
+                    .unwrap()
+                    .0;
+                assert_eq!(hud.hit(copy.center()), Some(HudAction::Copy));
+                assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
+            }
 
-    #[test]
-    fn hud_prefers_its_side_and_steps_aside() {
-        let theme = crate::theme::Theme::dark();
-        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let draw = |placement: HudPlacement| {
-            SelectionHud::draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &HudControls {
-                    swatches: &swatches(),
-                    show_note: true,
-                    show_delete: true,
-                    show_select_all: false,
-                    shortcuts: false,
-                },
-                placement,
-                Point::new(-1000.0, -1000.0),
-            )
-        };
-        let anchor = Point::new(400.0, 300.0);
-        let above = draw(HudPlacement::new(anchor, bounds));
-        assert!(above.rect().y1 <= anchor.y, "above by default");
-        let below = draw(HudPlacement::new(anchor, bounds).below(320.0));
-        assert!(below.rect().y0 >= 320.0, "below the last line when asked");
-        let note = Rect::new(0.0, 200.0, 800.0, 300.0);
-        let aside = draw(HudPlacement::new(anchor, bounds).avoiding(note));
-        assert!(
-            aside.rect().intersect(note).is_zero_area(),
-            "the bar steps off the rect it must not cover: {:?}",
-            aside.rect()
-        );
-        let inset = crate::widget::floating_surface::control_inset(&theme);
-        for (rect, _) in above.buttons() {
-            assert!(rect.y0 >= above.rect().y0 + inset - 0.01);
-            assert!(rect.y1 <= above.rect().y1 - inset + 0.01);
+            {
+                let mut d = MarkerDrag::begin("n1", (100.0, 100.0), (90.0, 95.0));
+                // A grab keeps the offset so the first tiny move doesn't jump.
+                let o = d.update((101.0, 101.0));
+                assert!(!d.moved(), "a sub-threshold nudge is still a click");
+                assert!(
+                    (o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6,
+                    "origin tracks pointer minus grab offset"
+                );
+                let o2 = d.update((130.0, 130.0));
+                assert!(d.moved(), "a real drag latches moved");
+                assert!(o2.0 > o.0 && o2.1 > o.1);
+                assert_eq!(d.id, "n1");
+            }
         }
-    }
 
-    #[test]
-    fn hud_hits_controls_and_latches_marker_drags() {
+        phase select_all_follows_copy_and_shortcuts_widen_the_bar_only_for_a_keyboard;
         {
-            let hud = draw_hud(
-                true,
-                false,
-                Point::new(400.0, 300.0),
-                Rect::new(0.0, 0.0, 800.0, 600.0),
-            );
-            let copy = hud
-                .buttons()
+            let draw = |shortcuts: bool| {
+                SelectionHud::draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &crate::theme::Theme::dark(),
+                    &HudControls {
+                        swatches: &swatches(),
+                        show_note: true,
+                        show_delete: false,
+                        show_select_all: true,
+                        shortcuts,
+                    },
+                    HudPlacement::new(Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 1200.0, 800.0)),
+                    Point::new(-1000.0, -1000.0),
+                )
+            };
+            let touch = draw(false);
+            let actions: Vec<HudAction> = touch.buttons().iter().map(|(_, a)| *a).collect();
+            let copy = actions.iter().position(|a| *a == HudAction::Copy).unwrap();
+            let all = actions
                 .iter()
-                .find(|(_, a)| *a == HudAction::Copy)
-                .unwrap()
-                .0;
-            assert_eq!(hud.hit(copy.center()), Some(HudAction::Copy));
-            assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
-        }
-
-        {
-            let mut d = MarkerDrag::begin("n1", (100.0, 100.0), (90.0, 95.0));
-            // A grab keeps the offset so the first tiny move doesn't jump.
-            let o = d.update((101.0, 101.0));
-            assert!(!d.moved(), "a sub-threshold nudge is still a click");
+                .position(|a| *a == HudAction::SelectAll)
+                .unwrap();
+            assert!(all > copy, "Select all follows Copy: {actions:?}");
             assert!(
-                (o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6,
-                "origin tracks pointer minus grab offset"
+                draw(true).rect().width() > touch.rect().width(),
+                "the shortcuts take room where they show"
             );
-            let o2 = d.update((130.0, 130.0));
-            assert!(d.moved(), "a real drag latches moved");
-            assert!(o2.0 > o.0 && o2.1 > o.1);
-            assert_eq!(d.id, "n1");
         }
-    }
-
-    #[test]
-    fn select_all_follows_copy_and_shortcuts_widen_the_bar_only_for_a_keyboard() {
-        let draw = |shortcuts: bool| {
-            SelectionHud::draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &crate::theme::Theme::dark(),
-                &HudControls {
-                    swatches: &swatches(),
-                    show_note: true,
-                    show_delete: false,
-                    show_select_all: true,
-                    shortcuts,
-                },
-                HudPlacement::new(Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 1200.0, 800.0)),
-                Point::new(-1000.0, -1000.0),
-            )
-        };
-        let touch = draw(false);
-        let actions: Vec<HudAction> = touch.buttons().iter().map(|(_, a)| *a).collect();
-        let copy = actions.iter().position(|a| *a == HudAction::Copy).unwrap();
-        let all = actions
-            .iter()
-            .position(|a| *a == HudAction::SelectAll)
-            .unwrap();
-        assert!(all > copy, "Select all follows Copy: {actions:?}");
-        assert!(
-            draw(true).rect().width() > touch.rect().width(),
-            "the shortcuts take room where they show"
-        );
     }
 }

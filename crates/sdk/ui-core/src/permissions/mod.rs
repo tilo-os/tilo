@@ -1322,193 +1322,197 @@ mod tests {
         )
     }
 
-    #[test]
-    fn grants_and_capabilities_reach_exactly_their_scope_while_live() {
-        // phase: permissive_is_a_capability_not_a_bypass
-        // The permissive context reaches the filesystem *because of a
-        // capability*, not a special case in the checker: drop it and the same
-        // owner is denied.
-        {
-            let ctx = PermissionContext::permissive();
-            assert!(ctx.check(&PermissionScope::path(
-                "/var/workspace/secret.png",
-                Access::Read
-            )));
-            assert_eq!(ctx.capabilities().len(), 4);
-            assert_eq!(ctx.capabilities()[0].access, Access::Write);
-            assert_eq!(ctx.capabilities()[0].scope, Scope::FsPath("/".into()));
-            assert!(ctx.check(&PermissionScope::app("notes", ActionKind::Outside)));
+    tilo_test_env::scenario! {
+        fn permissions_reach_their_scope_keep_identity_and_deny_by_default;
 
-            // The same owner, no capability: a workspace role confers no reach over
-            // paths.
-            let stripped = PermissionContext::member(LOCAL_USER, Role::Owner);
-            assert!(!stripped.check(&PermissionScope::path(
-                "/var/workspace/secret.png",
-                Access::Read
-            )));
-            assert!(stripped.check(&PermissionScope::app("notes", ActionKind::Outside)));
-        }
-        // phase: action_grant_is_narrow_while_app_grant_covers_every_action
+        phase grants_and_capabilities_reach_exactly_their_scope_while_live;
         {
-            let agent = |grants: Vec<policy::Grant>| {
-                let owner = PermissionContext::member("owner", Role::Owner);
+            // phase: permissive_is_a_capability_not_a_bypass
+            // The permissive context reaches the filesystem *because of a
+            // capability*, not a special case in the checker: drop it and the same
+            // owner is denied.
+            {
+                let ctx = PermissionContext::permissive();
+                assert!(ctx.check(&PermissionScope::path(
+                    "/var/workspace/secret.png",
+                    Access::Read
+                )));
+                assert_eq!(ctx.capabilities().len(), 4);
+                assert_eq!(ctx.capabilities()[0].access, Access::Write);
+                assert_eq!(ctx.capabilities()[0].scope, Scope::FsPath("/".into()));
+                assert!(ctx.check(&PermissionScope::app("notes", ActionKind::Outside)));
+
+                // The same owner, no capability: a workspace role confers no reach over
+                // paths.
+                let stripped = PermissionContext::member(LOCAL_USER, Role::Owner);
+                assert!(!stripped.check(&PermissionScope::path(
+                    "/var/workspace/secret.png",
+                    Access::Read
+                )));
+                assert!(stripped.check(&PermissionScope::app("notes", ActionKind::Outside)));
+            }
+            // phase: action_grant_is_narrow_while_app_grant_covers_every_action
+            {
+                let agent = |grants: Vec<policy::Grant>| {
+                    let owner = PermissionContext::member("owner", Role::Owner);
+                    owner
+                        .clone()
+                        .with_standing(owner.standing().clone().acting_as(
+                            policy::Actor::Member(policy::MemberId::agent("scribe")),
+                            grants,
+                        ))
+                };
+                let workspace = TreePath::workspace(LOCAL_WORKSPACE);
+                let open = |page: &str, action: &str| {
+                    PermissionScope::action("notes", "notes.page", page, action, ActionKind::Read)
+                };
+                let narrow = agent(vec![grant(
+                    policy::Grantee::agent("scribe"),
+                    workspace.join(&action_node(
+                        "notes",
+                        "notes.page",
+                        "notes.page:1",
+                        "note.open",
+                    )),
+                    policy::KindSet::READ,
+                )]);
+                assert!(narrow.check(&open("notes.page:1", "note.open")));
+                assert!(!narrow.check(&open("notes.page:1", "note.delete")));
+                assert!(
+                    !narrow.check(&open("notes.page:2", "note.open")),
+                    "the same action on another page is not granted"
+                );
+
+                let broad = agent(vec![grant(
+                    policy::Grantee::agent("scribe"),
+                    workspace.clone().app("notes"),
+                    policy::KindSet::READ,
+                )]);
+                assert!(broad.check(&open("notes.page:2", "note.delete")));
+                assert!(
+                    !broad.check(&PermissionScope::app("notes", ActionKind::Undoable)),
+                    "a read grant is not a change"
+                );
+            }
+            // phase: lapsed_capability_no_longer_grants
+            // NEGATIVE: a capability that has lapsed is not a capability.
+            {
+                let cap = CapOverride::grant(
+                    Grantee::person("u_guest"),
+                    Scope::FsPath("/var/workspace/shared".into()),
+                    Access::Write,
+                )
+                .with_expiry(1_000);
+                let scope = PermissionScope::path("/var/workspace/shared/notes.md", Access::Write);
+                let context =
+                    || PermissionContext::member("u_guest", Role::Viewer).granting(cap.clone());
+                assert!(
+                    context().at_unix_time(999).check(&scope),
+                    "before the deadline"
+                );
+                let lapsed = context().at_unix_time(1_001);
+                assert!(
+                    !lapsed.check(&scope),
+                    "after the deadline the grant is gone"
+                );
+                assert_eq!(
+                    lapsed.check_with_denied_feedback(&scope),
+                    Some(Denial::Sandbox(CapDecision::NotGranted)),
+                    "an expired capability is invisible"
+                );
+            }
+        }
+
+        phase action_checks_keep_resource_identity_and_the_contract_kind;
+        {
+            use tilo_actions::{ActionSpec, OperationKind};
+
+            let action =
+                ActionSpec::operation("edit", "Edit", OperationKind::Effect, "test.edit", &()).unwrap();
+            assert_eq!(action.contract.kind, ActionKind::Outside);
+            let owner = PermissionContext::member("owner", Role::Owner);
+            let node = TreePath::workspace(LOCAL_WORKSPACE).join(&action_node(
+                "notes",
+                "notes.page",
+                "notes.page:1",
+                "edit",
+            ));
+            let context = |kinds| {
                 owner
                     .clone()
                     .with_standing(owner.standing().clone().acting_as(
                         policy::Actor::Member(policy::MemberId::agent("scribe")),
-                        grants,
+                        vec![grant(policy::Grantee::agent("scribe"), node.clone(), kinds)],
                     ))
             };
-            let workspace = TreePath::workspace(LOCAL_WORKSPACE);
-            let open = |page: &str, action: &str| {
-                PermissionScope::action("notes", "notes.page", page, action, ActionKind::Read)
-            };
-            let narrow = agent(vec![grant(
-                policy::Grantee::agent("scribe"),
-                workspace.join(&action_node(
+            let outside = context(policy::KindSet::OUTSIDE);
+            assert!(outside.permits_action("notes", "notes.page", "notes.page:1", &action));
+            assert!(!outside.permits_action("notes", "notes.page", "notes.page:2", &action));
+            assert!(!outside.permits_action("other", "notes.page", "notes.page:1", &action));
+            assert!(
+                !context(policy::KindSet::READ_UNDOABLE).permits_action(
                     "notes",
                     "notes.page",
                     "notes.page:1",
-                    "note.open",
-                )),
-                policy::KindSet::READ,
-            )]);
-            assert!(narrow.check(&open("notes.page:1", "note.open")));
-            assert!(!narrow.check(&open("notes.page:1", "note.delete")));
-            assert!(
-                !narrow.check(&open("notes.page:2", "note.open")),
-                "the same action on another page is not granted"
-            );
-
-            let broad = agent(vec![grant(
-                policy::Grantee::agent("scribe"),
-                workspace.clone().app("notes"),
-                policy::KindSet::READ,
-            )]);
-            assert!(broad.check(&open("notes.page:2", "note.delete")));
-            assert!(
-                !broad.check(&PermissionScope::app("notes", ActionKind::Undoable)),
-                "a read grant is not a change"
+                    &action
+                ),
+                "an outside action is not covered by an undoable grant"
             );
         }
-        // phase: lapsed_capability_no_longer_grants
-        // NEGATIVE: a capability that has lapsed is not a capability.
-        {
-            let cap = CapOverride::grant(
-                Grantee::person("u_guest"),
-                Scope::FsPath("/var/workspace/shared".into()),
-                Access::Write,
-            )
-            .with_expiry(1_000);
-            let scope = PermissionScope::path("/var/workspace/shared/notes.md", Access::Write);
-            let context =
-                || PermissionContext::member("u_guest", Role::Viewer).granting(cap.clone());
-            assert!(
-                context().at_unix_time(999).check(&scope),
-                "before the deadline"
-            );
-            let lapsed = context().at_unix_time(1_001);
-            assert!(
-                !lapsed.check(&scope),
-                "after the deadline the grant is gone"
-            );
-            assert_eq!(
-                lapsed.check_with_denied_feedback(&scope),
-                Some(Denial::Sandbox(CapDecision::NotGranted)),
-                "an expired capability is invisible"
-            );
-        }
-    }
 
-    #[test]
-    fn action_checks_keep_resource_identity_and_the_contract_kind() {
-        use tilo_actions::{ActionSpec, OperationKind};
-
-        let action =
-            ActionSpec::operation("edit", "Edit", OperationKind::Effect, "test.edit", &()).unwrap();
-        assert_eq!(action.contract.kind, ActionKind::Outside);
-        let owner = PermissionContext::member("owner", Role::Owner);
-        let node = TreePath::workspace(LOCAL_WORKSPACE).join(&action_node(
-            "notes",
-            "notes.page",
-            "notes.page:1",
-            "edit",
-        ));
-        let context = |kinds| {
-            owner
-                .clone()
-                .with_standing(owner.standing().clone().acting_as(
-                    policy::Actor::Member(policy::MemberId::agent("scribe")),
-                    vec![grant(policy::Grantee::agent("scribe"), node.clone(), kinds)],
-                ))
-        };
-        let outside = context(policy::KindSet::OUTSIDE);
-        assert!(outside.permits_action("notes", "notes.page", "notes.page:1", &action));
-        assert!(!outside.permits_action("notes", "notes.page", "notes.page:2", &action));
-        assert!(!outside.permits_action("other", "notes.page", "notes.page:1", &action));
-        assert!(
-            !context(policy::KindSet::READ_UNDOABLE).permits_action(
-                "notes",
-                "notes.page",
-                "notes.page:1",
-                &action
-            ),
-            "an outside action is not covered by an undoable grant"
-        );
-    }
-
-    #[test]
-    fn denials_are_default_and_explained() {
-        // phase: viewer_is_denied_changes
+        phase denials_are_default_and_explained;
         {
-            let ctx = PermissionContext::member("u_guest", Role::Viewer);
-            let write = PermissionScope::app("notes", ActionKind::Undoable);
-            assert!(!ctx.check(&write), "a Viewer must not change the workspace");
-            assert!(matches!(
-                ctx.check_with_denied_feedback(&write),
-                Some(Denial::NotGranted(_))
-            ));
-            assert!(ctx.check(&PermissionScope::app("notes", ActionKind::Read)));
-        }
-        // phase: a_restriction_denies_inside_its_node
-        {
-            let mut ctx = PermissionContext::member("u_editor", Role::Editor);
-            let mut standing = ctx.standing().clone();
-            Arc::make_mut(&mut standing.policy)
-                .grants
-                .push(policy::Grant::new(
-                    "terminal-read-only",
-                    policy::Grantee::role(Role::Editor),
-                    TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
-                    policy::KindSet::UNDOABLE,
-                    Answer::Deny,
-                    policy::Grantee::person("owner"),
+            // phase: viewer_is_denied_changes
+            {
+                let ctx = PermissionContext::member("u_guest", Role::Viewer);
+                let write = PermissionScope::app("notes", ActionKind::Undoable);
+                assert!(!ctx.check(&write), "a Viewer must not change the workspace");
+                assert!(matches!(
+                    ctx.check_with_denied_feedback(&write),
+                    Some(Denial::NotGranted(_))
                 ));
-            ctx = ctx.with_standing(standing);
-            assert!(!ctx.check(&PermissionScope::app_kind(
-                AppKind::Terminal,
-                ActionKind::Undoable
-            )));
-            assert!(ctx.check(&PermissionScope::app_kind(
-                AppKind::FileExplorer,
-                ActionKind::Undoable
-            )));
-        }
-        // phase: a_delegation_without_grants_is_denied_everything
-        {
-            let owner = PermissionContext::member("owner", Role::Owner);
-            let app = owner
-                .clone()
-                .with_standing(owner.standing().clone().acting_as(
-                    policy::Actor::Member(policy::MemberId::agent("thing")),
-                    Vec::new(),
-                ));
-            assert!(!app.check(&PermissionScope::workspace(ActionKind::Read)));
-            assert!(!app.check(&PermissionScope::app_kind(
-                AppKind::FileExplorer,
-                ActionKind::Read
-            )));
-            assert!(!app.check(&PermissionScope::path("/etc/shadow", Access::Read)));
+                assert!(ctx.check(&PermissionScope::app("notes", ActionKind::Read)));
+            }
+            // phase: a_restriction_denies_inside_its_node
+            {
+                let mut ctx = PermissionContext::member("u_editor", Role::Editor);
+                let mut standing = ctx.standing().clone();
+                Arc::make_mut(&mut standing.policy)
+                    .grants
+                    .push(policy::Grant::new(
+                        "terminal-read-only",
+                        policy::Grantee::role(Role::Editor),
+                        TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
+                        policy::KindSet::UNDOABLE,
+                        Answer::Deny,
+                        policy::Grantee::person("owner"),
+                    ));
+                ctx = ctx.with_standing(standing);
+                assert!(!ctx.check(&PermissionScope::app_kind(
+                    AppKind::Terminal,
+                    ActionKind::Undoable
+                )));
+                assert!(ctx.check(&PermissionScope::app_kind(
+                    AppKind::FileExplorer,
+                    ActionKind::Undoable
+                )));
+            }
+            // phase: a_delegation_without_grants_is_denied_everything
+            {
+                let owner = PermissionContext::member("owner", Role::Owner);
+                let app = owner
+                    .clone()
+                    .with_standing(owner.standing().clone().acting_as(
+                        policy::Actor::Member(policy::MemberId::agent("thing")),
+                        Vec::new(),
+                    ));
+                assert!(!app.check(&PermissionScope::workspace(ActionKind::Read)));
+                assert!(!app.check(&PermissionScope::app_kind(
+                    AppKind::FileExplorer,
+                    ActionKind::Read
+                )));
+                assert!(!app.check(&PermissionScope::path("/etc/shadow", Access::Read)));
+            }
         }
     }
 }

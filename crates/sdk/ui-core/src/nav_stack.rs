@@ -190,124 +190,128 @@ impl Default for EdgeSwipeBack {
 mod tests {
     use super::*;
 
-    #[test]
-    fn nav_history_pushes_pops_replaces_and_moves_forward() {
+    tilo_test_env::scenario! {
+        fn navigation_goes_back_through_history_and_by_an_edge_swipe;
+
+        phase nav_history_pushes_pops_replaces_and_moves_forward;
         {
-            let mut s = NavStack::new("home");
-            assert_eq!(*s.current(), "home");
-            assert!(!s.can_go_back());
-            assert_eq!(s.back(), None, "root does not pop");
-            assert_eq!(*s.current(), "home");
-            assert_eq!(s.depth(), 1);
+            {
+                let mut s = NavStack::new("home");
+                assert_eq!(*s.current(), "home");
+                assert!(!s.can_go_back());
+                assert_eq!(s.back(), None, "root does not pop");
+                assert_eq!(*s.current(), "home");
+                assert_eq!(s.depth(), 1);
+            }
+
+            {
+                let mut s = NavStack::new("home");
+                s.push("results");
+                s.push("watch");
+                assert_eq!(*s.current(), "watch");
+                assert!(s.can_go_back());
+                assert_eq!(s.back(), Some(&"results"), "back pops watch → results");
+                assert_eq!(*s.current(), "results");
+                assert_eq!(s.back(), Some(&"home"), "back again → home");
+                assert!(!s.can_go_back());
+                assert_eq!(s.back(), None, "cannot pop past root");
+            }
+
+            {
+                let mut s = NavStack::new("home");
+                s.push("home");
+                assert_eq!(
+                    s.depth(),
+                    1,
+                    "pushing the current view does not grow history"
+                );
+                s.push("results");
+                s.push("results");
+                assert_eq!(
+                    s.depth(),
+                    2,
+                    "a repeated push of the same new view is ignored"
+                );
+            }
+
+            {
+                let mut s = NavStack::new("home");
+                s.push("search:a");
+                s.replace_current("search:ab");
+                assert_eq!(*s.current(), "search:ab");
+                assert_eq!(s.depth(), 2);
+                assert_eq!(s.back(), Some(&"home"), "back skips over the replaced view");
+            }
+
+            {
+                let mut s = NavStack::new(1);
+                s.push(2);
+                assert_eq!(s.apply(NavAction::Back), Some(&1));
+                assert_eq!(s.apply(NavAction::Back), None);
+            }
+
+            {
+                let mut s = NavStack::new("home");
+                s.push("settings");
+                assert_eq!(s.back(), Some(&"home"));
+                assert!(s.can_go_forward());
+                assert_eq!(s.apply(NavAction::Forward), Some(&"settings"));
+                assert!(!s.can_go_forward());
+            }
+
+            {
+                let mut s = NavStack::new("home");
+                s.push("settings");
+                s.push("about");
+                assert_eq!(s.back(), Some(&"settings"));
+                s.push("search");
+                assert_eq!(s.future(), &[] as &[&str]);
+                assert_eq!(s.forward(), None);
+            }
         }
 
+        phase edge_swipe_back_fires_once_only_for_a_horizontal_drag_from_the_edge;
         {
-            let mut s = NavStack::new("home");
-            s.push("results");
-            s.push("watch");
-            assert_eq!(*s.current(), "watch");
-            assert!(s.can_go_back());
-            assert_eq!(s.back(), Some(&"results"), "back pops watch → results");
-            assert_eq!(*s.current(), "results");
-            assert_eq!(s.back(), Some(&"home"), "back again → home");
-            assert!(!s.can_go_back());
-            assert_eq!(s.back(), None, "cannot pop past root");
-        }
+            {
+                let mut g = EdgeSwipeBack::new(24.0, 80.0);
+                g.pointer_down(Point::new(8.0, 400.0));
+                assert!(g.is_armed());
+                assert_eq!(
+                    g.pointer_move(Point::new(40.0, 402.0)),
+                    None,
+                    "short drag: not yet"
+                );
+                assert_eq!(
+                    g.pointer_move(Point::new(100.0, 404.0)),
+                    Some(NavAction::Back),
+                    "crossing the threshold fires Back",
+                );
+                assert_eq!(
+                    g.pointer_move(Point::new(160.0, 404.0)),
+                    None,
+                    "Back fires exactly once per gesture",
+                );
+                g.pointer_up();
+                assert!(!g.is_armed());
+            }
 
-        {
-            let mut s = NavStack::new("home");
-            s.push("home");
-            assert_eq!(
-                s.depth(),
-                1,
-                "pushing the current view does not grow history"
-            );
-            s.push("results");
-            s.push("results");
-            assert_eq!(
-                s.depth(),
-                2,
-                "a repeated push of the same new view is ignored"
-            );
-        }
+            {
+                let mut g = EdgeSwipeBack::new(24.0, 80.0);
+                g.pointer_down(Point::new(300.0, 400.0));
+                assert!(!g.is_armed());
+                assert_eq!(
+                    g.pointer_move(Point::new(500.0, 400.0)),
+                    None,
+                    "no arm → no fire"
+                );
+            }
 
-        {
-            let mut s = NavStack::new("home");
-            s.push("search:a");
-            s.replace_current("search:ab");
-            assert_eq!(*s.current(), "search:ab");
-            assert_eq!(s.depth(), 2);
-            assert_eq!(s.back(), Some(&"home"), "back skips over the replaced view");
-        }
-
-        {
-            let mut s = NavStack::new(1);
-            s.push(2);
-            assert_eq!(s.apply(NavAction::Back), Some(&1));
-            assert_eq!(s.apply(NavAction::Back), None);
-        }
-
-        {
-            let mut s = NavStack::new("home");
-            s.push("settings");
-            assert_eq!(s.back(), Some(&"home"));
-            assert!(s.can_go_forward());
-            assert_eq!(s.apply(NavAction::Forward), Some(&"settings"));
-            assert!(!s.can_go_forward());
-        }
-
-        {
-            let mut s = NavStack::new("home");
-            s.push("settings");
-            s.push("about");
-            assert_eq!(s.back(), Some(&"settings"));
-            s.push("search");
-            assert_eq!(s.future(), &[] as &[&str]);
-            assert_eq!(s.forward(), None);
-        }
-    }
-
-    #[test]
-    fn edge_swipe_back_fires_once_only_for_a_horizontal_drag_from_the_edge() {
-        {
-            let mut g = EdgeSwipeBack::new(24.0, 80.0);
-            g.pointer_down(Point::new(8.0, 400.0));
-            assert!(g.is_armed());
-            assert_eq!(
-                g.pointer_move(Point::new(40.0, 402.0)),
-                None,
-                "short drag: not yet"
-            );
-            assert_eq!(
-                g.pointer_move(Point::new(100.0, 404.0)),
-                Some(NavAction::Back),
-                "crossing the threshold fires Back",
-            );
-            assert_eq!(
-                g.pointer_move(Point::new(160.0, 404.0)),
-                None,
-                "Back fires exactly once per gesture",
-            );
-            g.pointer_up();
-            assert!(!g.is_armed());
-        }
-
-        {
-            let mut g = EdgeSwipeBack::new(24.0, 80.0);
-            g.pointer_down(Point::new(300.0, 400.0));
-            assert!(!g.is_armed());
-            assert_eq!(
-                g.pointer_move(Point::new(500.0, 400.0)),
-                None,
-                "no arm → no fire"
-            );
-        }
-
-        {
-            let mut g = EdgeSwipeBack::new(24.0, 80.0);
-            g.pointer_down(Point::new(6.0, 100.0));
-            assert_eq!(g.pointer_move(Point::new(50.0, 400.0)), None);
-            assert_eq!(g.pointer_move(Point::new(90.0, 500.0)), None);
+            {
+                let mut g = EdgeSwipeBack::new(24.0, 80.0);
+                g.pointer_down(Point::new(6.0, 100.0));
+                assert_eq!(g.pointer_move(Point::new(50.0, 400.0)), None);
+                assert_eq!(g.pointer_move(Point::new(90.0, 500.0)), None);
+            }
         }
     }
 }

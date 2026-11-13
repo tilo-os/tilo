@@ -240,259 +240,263 @@ pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
 mod color_tests {
     use super::*;
 
-    /// A colour two people here announced is worn by the reader themselves: the other takes a
-    /// free entry, so nobody here is ever drawn in the reader's own colour.
-    #[test]
-    fn a_colour_two_here_announced_is_the_readers_own() {
-        let teal = identity_rgb(crate::tokens::PresenceHue::Teal);
-        let chosen: HashMap<String, (u8, u8, u8)> =
-            HashMap::from([("me".to_owned(), teal), ("helper".to_owned(), teal)]);
-        let settled = settle_colors_around(&["helper", "me"], &chosen, Some("me"));
-        assert_eq!(settled["me"], teal, "the reader wears what they announced");
-        assert_ne!(settled["helper"], teal, "nobody else wears it");
-        // Another reader settles the same claims with themselves first: the colour is theirs.
-        let theirs = settle_colors_around(&["helper", "me"], &chosen, Some("helper"));
-        assert_eq!(theirs["helper"], teal);
-        assert_ne!(theirs["me"], teal);
-        // Without a reader, the ids in sorted order decide who keeps it, so hosts agree.
-        let nobody = settle_colors_around(&["helper", "me"], &chosen, None);
-        assert_eq!(nobody["helper"], teal, "the first in sorted order keeps it");
-        assert_ne!(nobody["me"], teal);
-    }
+    tilo_test_env::scenario! {
+        fn peer_colours_are_distinct_stable_and_agreed;
 
-    #[test]
-    fn user_colours_are_pinned_or_hashed_onto_a_distinct_ring() {
-        // phase: pinned_ids_take_their_slots
+        phase a_colour_two_here_announced_is_the_readers_own;
+        // A colour two people here announced is worn by the reader themselves: the other takes a
+        // free entry, so nobody here is ever drawn in the reader's own colour.
         {
-            assert_eq!(user_color("me"), PEER_PALETTE[8]);
-            assert_eq!(user_color("alice"), PEER_PALETTE[11]);
-            assert_eq!(user_color("bob"), PEER_PALETTE[1]);
-            assert_eq!(user_color("charlie"), PEER_PALETTE[4]);
+            let teal = identity_rgb(crate::tokens::PresenceHue::Teal);
+            let chosen: HashMap<String, (u8, u8, u8)> =
+                HashMap::from([("me".to_owned(), teal), ("helper".to_owned(), teal)]);
+            let settled = settle_colors_around(&["helper", "me"], &chosen, Some("me"));
+            assert_eq!(settled["me"], teal, "the reader wears what they announced");
+            assert_ne!(settled["helper"], teal, "nobody else wears it");
+            // Another reader settles the same claims with themselves first: the colour is theirs.
+            let theirs = settle_colors_around(&["helper", "me"], &chosen, Some("helper"));
+            assert_eq!(theirs["helper"], teal);
+            assert_ne!(theirs["me"], teal);
+            // Without a reader, the ids in sorted order decide who keeps it, so hosts agree.
+            let nobody = settle_colors_around(&["helper", "me"], &chosen, None);
+            assert_eq!(nobody["helper"], teal, "the first in sorted order keeps it");
+            assert_ne!(nobody["me"], teal);
         }
-        // phase: the_ring_is_the_dark_presence_palette
+
+        phase user_colours_are_pinned_or_hashed_onto_a_distinct_ring;
         {
-            let palette = crate::tokens::Colors::dark().presence;
-            for (slot, rgb) in PEER_PALETTE.iter().enumerate() {
-                let painted = palette.get(slot);
-                for (a, b) in [
-                    (rgb.0, painted.to_rgba8().r),
-                    (rgb.1, painted.to_rgba8().g),
-                    (rgb.2, painted.to_rgba8().b),
-                ] {
-                    assert!(a.abs_diff(b) <= 1, "slot {slot}: {rgb:?} vs {painted:?}");
+            // phase: pinned_ids_take_their_slots
+            {
+                assert_eq!(user_color("me"), PEER_PALETTE[8]);
+                assert_eq!(user_color("alice"), PEER_PALETTE[11]);
+                assert_eq!(user_color("bob"), PEER_PALETTE[1]);
+                assert_eq!(user_color("charlie"), PEER_PALETTE[4]);
+            }
+            // phase: the_ring_is_the_dark_presence_palette
+            {
+                let palette = crate::tokens::Colors::dark().presence;
+                for (slot, rgb) in PEER_PALETTE.iter().enumerate() {
+                    let painted = palette.get(slot);
+                    for (a, b) in [
+                        (rgb.0, painted.to_rgba8().r),
+                        (rgb.1, painted.to_rgba8().g),
+                        (rgb.2, painted.to_rgba8().b),
+                    ] {
+                        assert!(a.abs_diff(b) <= 1, "slot {slot}: {rgb:?} vs {painted:?}");
+                    }
                 }
             }
-        }
-        // phase: unknown_ids_fall_through_to_stable_hash
-        {
-            let a = user_color("dave");
-            let b = user_color("dave");
-            let c = user_color("eve");
-            assert_eq!(a, b, "same id must map to same color");
-            assert_ne!(a, c, "different ids should map to different colors");
-        }
-        // phase: no_two_peer_colours_are_confusable
-        // Enumerated over the whole closed set `user_color` can return, so the
-        // guarantee holds for every id. Bar is a redmean distance of 60; the old
-        // hash-to-hue scheme put `dave`/`sara` 4.8 apart and `host`/`peer3` 4.4
-        // apart — different people in the same colour.
-        {
-            for (i, a) in PEER_PALETTE.iter().enumerate() {
-                for b in &PEER_PALETTE[i + 1..] {
-                    let d = color_distance(*a, *b);
-                    assert!(
-                        d >= 60.0,
-                        "#{:02x}{:02x}{:02x} and #{:02x}{:02x}{:02x} are only {d:.1} apart — \
+            // phase: unknown_ids_fall_through_to_stable_hash
+            {
+                let a = user_color("dave");
+                let b = user_color("dave");
+                let c = user_color("eve");
+                assert_eq!(a, b, "same id must map to same color");
+                assert_ne!(a, c, "different ids should map to different colors");
+            }
+            // phase: no_two_peer_colours_are_confusable
+            // Enumerated over the whole closed set `user_color` can return, so the
+            // guarantee holds for every id. Bar is a redmean distance of 60; the old
+            // hash-to-hue scheme put `dave`/`sara` 4.8 apart and `host`/`peer3` 4.4
+            // apart — different people in the same colour.
+            {
+                for (i, a) in PEER_PALETTE.iter().enumerate() {
+                    for b in &PEER_PALETTE[i + 1..] {
+                        let d = color_distance(*a, *b);
+                        assert!(
+                            d >= 60.0,
+                            "#{:02x}{:02x}{:02x} and #{:02x}{:02x}{:02x} are only {d:.1} apart — \
                      two peers wearing those read as one",
-                        a.0,
-                        a.1,
-                        a.2,
-                        b.0,
-                        b.1,
-                        b.2,
-                    );
+                            a.0,
+                            a.1,
+                            a.2,
+                            b.0,
+                            b.1,
+                            b.2,
+                        );
+                    }
                 }
             }
-        }
-        // phase: pinned_colours_are_ring_members
-        // Pins are also ring members, so a pinned peer and a hashed one can
-        // only collide outright, never land near-but-not-quite together.
-        {
-            for id in ["me", "alice", "bob", "charlie"] {
-                let c = user_color(id);
-                assert!(
-                    PEER_PALETTE.contains(&c),
-                    "{id} is painted #{:02x}{:02x}{:02x}, which is not on the ring",
-                    c.0,
-                    c.1,
-                    c.2,
-                );
-            }
-        }
-        // phase: hashed_ids_land_on_the_ring
-        {
-            for id in [
-                "carol", "dave", "erin", "sara", "danah", "eve", "ada", "ade",
-            ] {
-                let c = user_color(id);
-                assert!(
-                    PEER_PALETTE.contains(&c),
-                    "{id} is painted #{:02x}{:02x}{:02x}, which is not on the ring",
-                    c.0,
-                    c.1,
-                    c.2,
-                );
-            }
-            for (a, b) in [("dave", "sara"), ("dave", "erin"), ("ada", "ade")] {
-                let (ca, cb) = (user_color(a), user_color(b));
-                assert!(
-                    ca == cb || color_distance(ca, cb) >= 60.0,
-                    "{a} and {b} are {:.1} apart",
-                    color_distance(ca, cb),
-                );
-            }
-        }
-        // phase: pinned_ids_differ_from_hash_fallback
-        {
-            let (r, g, b) = user_color("me");
-            assert!(!(r == 0 && g == 0 && b == 0));
-        }
-    }
-
-    #[test]
-    fn a_workspace_assigns_distinct_agreed_stable_colours() {
-        // phase: a_workspace_never_puts_two_people_in_one_colour
-        // The case the ring alone can't fix: `judy` hashes onto exactly the
-        // pink `alice` is pinned to, so one of them has to move.
-        {
-            assert_eq!(
-                user_color("judy"),
-                user_color("alice"),
-                "this test is guarding a real collision; if the hash moved, \
-             pick another colliding pair rather than deleting the test",
-            );
-
-            let workspace = ["alice", "bob", "judy", "danah", "erin", "dana"];
-            let assigned = assign_peer_colors(&workspace, &[]);
-            assert_eq!(assigned.len(), workspace.len());
-            for (i, a) in workspace.iter().enumerate() {
-                for b in &workspace[i + 1..] {
-                    assert_ne!(
-                        assigned[*a], assigned[*b],
-                        "{a} and {b} were given the same colour",
-                    );
+            // phase: pinned_colours_are_ring_members
+            // Pins are also ring members, so a pinned peer and a hashed one can
+            // only collide outright, never land near-but-not-quite together.
+            {
+                for id in ["me", "alice", "bob", "charlie"] {
+                    let c = user_color(id);
                     assert!(
-                        color_distance(assigned[*a], assigned[*b]) >= 60.0,
-                        "{a} and {b} are too close to tell apart",
+                        PEER_PALETTE.contains(&c),
+                        "{id} is painted #{:02x}{:02x}{:02x}, which is not on the ring",
+                        c.0,
+                        c.1,
+                        c.2,
                     );
                 }
             }
-            assert_eq!(assigned["alice"], user_color("alice"));
-            assert_eq!(assigned["bob"], user_color("bob"));
+            // phase: hashed_ids_land_on_the_ring
+            {
+                for id in [
+                    "carol", "dave", "erin", "sara", "danah", "eve", "ada", "ade",
+                ] {
+                    let c = user_color(id);
+                    assert!(
+                        PEER_PALETTE.contains(&c),
+                        "{id} is painted #{:02x}{:02x}{:02x}, which is not on the ring",
+                        c.0,
+                        c.1,
+                        c.2,
+                    );
+                }
+                for (a, b) in [("dave", "sara"), ("dave", "erin"), ("ada", "ade")] {
+                    let (ca, cb) = (user_color(a), user_color(b));
+                    assert!(
+                        ca == cb || color_distance(ca, cb) >= 60.0,
+                        "{a} and {b} are {:.1} apart",
+                        color_distance(ca, cb),
+                    );
+                }
+            }
+            // phase: pinned_ids_differ_from_hash_fallback
+            {
+                let (r, g, b) = user_color("me");
+                assert!(!(r == 0 && g == 0 && b == 0));
+            }
         }
-        // phase: every_machine_in_a_workspace_agrees_on_who_is_what_colour
+
+        phase a_workspace_assigns_distinct_agreed_stable_colours;
         {
-            let workspace = ["alice", "bob", "judy"];
-            for me in workspace {
-                let mut mine: Vec<&str> = workspace.iter().copied().filter(|u| *u != me).collect();
-                mine.push(me);
+            // phase: a_workspace_never_puts_two_people_in_one_colour
+            // The case the ring alone can't fix: `judy` hashes onto exactly the
+            // pink `alice` is pinned to, so one of them has to move.
+            {
                 assert_eq!(
-                    assign_peer_colors(&mine, &[]),
-                    assign_peer_colors(&workspace, &[]),
-                    "the host running as {me} disagrees with the others",
+                    user_color("judy"),
+                    user_color("alice"),
+                    "this test is guarding a real collision; if the hash moved, \
+             pick another colliding pair rather than deleting the test",
+                );
+
+                let workspace = ["alice", "bob", "judy", "danah", "erin", "dana"];
+                let assigned = assign_peer_colors(&workspace, &[]);
+                assert_eq!(assigned.len(), workspace.len());
+                for (i, a) in workspace.iter().enumerate() {
+                    for b in &workspace[i + 1..] {
+                        assert_ne!(
+                            assigned[*a], assigned[*b],
+                            "{a} and {b} were given the same colour",
+                        );
+                        assert!(
+                            color_distance(assigned[*a], assigned[*b]) >= 60.0,
+                            "{a} and {b} are too close to tell apart",
+                        );
+                    }
+                }
+                assert_eq!(assigned["alice"], user_color("alice"));
+                assert_eq!(assigned["bob"], user_color("bob"));
+            }
+            // phase: every_machine_in_a_workspace_agrees_on_who_is_what_colour
+            {
+                let workspace = ["alice", "bob", "judy"];
+                for me in workspace {
+                    let mut mine: Vec<&str> = workspace.iter().copied().filter(|u| *u != me).collect();
+                    mine.push(me);
+                    assert_eq!(
+                        assign_peer_colors(&mine, &[]),
+                        assign_peer_colors(&workspace, &[]),
+                        "the host running as {me} disagrees with the others",
+                    );
+                }
+            }
+            // phase: an_explicit_roster_colour_is_not_reassigned_to_someone_else
+            // A colour the roster handed out explicitly is not available to be
+            // computed onto, or an invited peer and a live one could collide.
+            {
+                let taken = user_color("judy"); // == alice's pink
+                let assigned = assign_peer_colors(&["judy"], &[taken]);
+                assert_ne!(
+                    assigned["judy"], taken,
+                    "judy took a colour the roster had already spoken for",
+                );
+            }
+            // phase: a_late_arrival_leaves_the_others_alone
+            // Someone arriving late must not repaint the people already there
+            // unless they actually collide with one.
+            {
+                let before = assign_peer_colors(&["alice", "bob"], &[]);
+                let after = assign_peer_colors(&["alice", "bob", "dana"], &[]);
+                assert_eq!(before["alice"], after["alice"]);
+                assert_eq!(before["bob"], after["bob"]);
+            }
+        }
+
+        phase an_agent_keeps_one_colour_across_its_runs;
+        // An agent keeps one colour however often it comes: the key is the agent it is, never the
+        // run it works in.
+        {
+            let person = Some("person-ada");
+            for (first, second) in [
+                // The same agent admitted again, with a run of its own each time.
+                ("agent:claude-code@box#1", "agent:claude-code@box#4"),
+                ("agent:helper@box#2", "agent:helper@box#12"),
+                // The name a desk shows it under, numbered per connection.
+                ("Claude Code #1", "Claude Code #3"),
+                // Its identity, as the workspace grants name it.
+                ("agent:helper@box", "helper@box"),
+            ] {
+                assert_eq!(
+                    participant_color(first, true, person),
+                    participant_color(second, true, person),
+                    "{first} and {second} are one agent, so one colour"
                 );
             }
         }
-        // phase: an_explicit_roster_colour_is_not_reassigned_to_someone_else
-        // A colour the roster handed out explicitly is not available to be
-        // computed onto, or an invited peer and a live one could collide.
-        {
-            let taken = user_color("judy"); // == alice's pink
-            let assigned = assign_peer_colors(&["judy"], &[taken]);
-            assert_ne!(
-                assigned["judy"], taken,
-                "judy took a colour the roster had already spoken for",
-            );
-        }
-        // phase: a_late_arrival_leaves_the_others_alone
-        // Someone arriving late must not repaint the people already there
-        // unless they actually collide with one.
-        {
-            let before = assign_peer_colors(&["alice", "bob"], &[]);
-            let after = assign_peer_colors(&["alice", "bob", "dana"], &[]);
-            assert_eq!(before["alice"], after["alice"]);
-            assert_eq!(before["bob"], after["bob"]);
-        }
-    }
 
-    /// An agent keeps one colour however often it comes: the key is the agent it is, never the
-    /// run it works in.
-    #[test]
-    fn an_agent_keeps_one_colour_across_its_runs() {
-        let person = Some("person-ada");
-        for (first, second) in [
-            // The same agent admitted again, with a run of its own each time.
-            ("agent:claude-code@box#1", "agent:claude-code@box#4"),
-            ("agent:helper@box#2", "agent:helper@box#12"),
-            // The name a desk shows it under, numbered per connection.
-            ("Claude Code #1", "Claude Code #3"),
-            // Its identity, as the workspace grants name it.
-            ("agent:helper@box", "helper@box"),
-        ] {
+        phase an_agent_never_wears_the_hue_of_the_person_it_acts_for;
+        // Software never wears the hue of the person it acts for, whichever hues the two land on:
+        // the agent steps round the ring, and the person keeps theirs.
+        {
+            use crate::tokens::PresenceHue;
+            let distance = |a: PresenceHue, b: PresenceHue| {
+                let len = PEER_PALETTE.len();
+                let ahead = a
+                    .slot()
+                    .wrapping_add(len)
+                    .wrapping_sub(b.slot())
+                    .checked_rem(len)
+                    .unwrap_or(0);
+                ahead.min(len.wrapping_sub(ahead))
+            };
+            let ids = |hue: PresenceHue, agent: bool| {
+                (0..1000)
+                    .map(|n| format!("{}-{n}", if agent { "agent" } else { "person" }))
+                    .find(|id| {
+                        let own = if agent {
+                            PresenceHue::of_agent(id)
+                        } else {
+                            PresenceHue::of_identity(id)
+                        };
+                        own == hue
+                    })
+                    .expect("some identity lands on every hue")
+            };
+            for person_hue in PresenceHue::ALL {
+                let person = ids(person_hue, false);
+                for agent_hue in PresenceHue::ALL {
+                    let agent = ids(agent_hue, true);
+                    let worn = participant_hue(&agent, true, Some(&person));
+                    assert!(
+                        distance(worn, person_hue) >= 2,
+                        "{agent} ({worn:?}) reads as {person}'s own ({person_hue:?})"
+                    );
+                    // The person's own colour never moves for it.
+                    assert_eq!(participant_hue(&person, false, None), person_hue);
+                }
+            }
+            // Software whose person the surface does not know still wears its own hue.
             assert_eq!(
-                participant_color(first, true, person),
-                participant_color(second, true, person),
-                "{first} and {second} are one agent, so one colour"
+                participant_hue("agent:claude-code@box", true, None),
+                crate::tokens::PresenceHue::Orange
             );
         }
-    }
-
-    /// Software never wears the hue of the person it acts for, whichever hues the two land on:
-    /// the agent steps round the ring, and the person keeps theirs.
-    #[test]
-    fn an_agent_never_wears_the_hue_of_the_person_it_acts_for() {
-        use crate::tokens::PresenceHue;
-        let distance = |a: PresenceHue, b: PresenceHue| {
-            let len = PEER_PALETTE.len();
-            let ahead = a
-                .slot()
-                .wrapping_add(len)
-                .wrapping_sub(b.slot())
-                .checked_rem(len)
-                .unwrap_or(0);
-            ahead.min(len.wrapping_sub(ahead))
-        };
-        let ids = |hue: PresenceHue, agent: bool| {
-            (0..1000)
-                .map(|n| format!("{}-{n}", if agent { "agent" } else { "person" }))
-                .find(|id| {
-                    let own = if agent {
-                        PresenceHue::of_agent(id)
-                    } else {
-                        PresenceHue::of_identity(id)
-                    };
-                    own == hue
-                })
-                .expect("some identity lands on every hue")
-        };
-        for person_hue in PresenceHue::ALL {
-            let person = ids(person_hue, false);
-            for agent_hue in PresenceHue::ALL {
-                let agent = ids(agent_hue, true);
-                let worn = participant_hue(&agent, true, Some(&person));
-                assert!(
-                    distance(worn, person_hue) >= 2,
-                    "{agent} ({worn:?}) reads as {person}'s own ({person_hue:?})"
-                );
-                // The person's own colour never moves for it.
-                assert_eq!(participant_hue(&person, false, None), person_hue);
-            }
-        }
-        // Software whose person the surface does not know still wears its own hue.
-        assert_eq!(
-            participant_hue("agent:claude-code@box", true, None),
-            crate::tokens::PresenceHue::Orange
-        );
     }
 }
 
@@ -2481,9 +2485,10 @@ pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
 mod tab_focus_tests {
     use super::*;
 
-    #[test]
-    fn set_tab_focus_moves_only_that_user_and_only_between_tabs() {
-        // phase: set_tab_focus_moves_user_between_tabs
+    tilo_test_env::scenario! {
+        fn set_tab_focus_moves_only_that_user_and_only_between_tabs;
+
+        phase set_tab_focus_moves_user_between_tabs;
         {
             let mut ctx = PresenceCtx::empty();
             let alice = UserId("alice".into());
@@ -2501,7 +2506,8 @@ mod tab_focus_tests {
             );
             assert_eq!(ctx.peers_on(&b), &[alice]);
         }
-        // phase: set_tab_focus_leaves_other_users_on_the_old_tab
+
+        phase set_tab_focus_leaves_other_users_on_the_old_tab;
         {
             let mut ctx = PresenceCtx::empty();
             let alice = UserId("alice".into());
@@ -2516,7 +2522,8 @@ mod tab_focus_tests {
             assert_eq!(ctx.peers_on(&a), &[bob]);
             assert_eq!(ctx.peers_on(&b), &[alice]);
         }
-        // phase: set_tab_focus_on_non_tab_key_falls_back_to_register_presence
+
+        phase set_tab_focus_on_non_tab_key_falls_back_to_register_presence;
         {
             let mut ctx = PresenceCtx::empty();
             let alice = UserId("alice".into());
@@ -2540,63 +2547,67 @@ mod tab_focus_tests {
 mod color_override_tests {
     use super::*;
 
-    #[test]
-    fn colour_overrides_parse_hex_and_otherwise_fall_back_to_the_palette() {
-        // parse_hex_color accepts the common forms and rejects malformed input.
-        for (input, want) in [
-            ("#ff0000", Some((0xff, 0x00, 0x00))),
-            ("00ff00", Some((0x00, 0xff, 0x00))),
-            ("#0000ffee", Some((0x00, 0x00, 0xff))),
-            ("#f0a", Some((0xff, 0x00, 0xaa))),
-            ("", None),
-            ("#12", None),
-            ("#zzzzzz", None),
-            ("not-a-color", None),
-        ] {
-            assert_eq!(parse_hex_color(input), want, "case {input:?}");
+    tilo_test_env::scenario! {
+        fn a_colour_override_is_parsed_and_worn_everywhere;
+
+        phase colour_overrides_parse_hex_and_otherwise_fall_back_to_the_palette;
+        {
+            // parse_hex_color accepts the common forms and rejects malformed input.
+            for (input, want) in [
+                ("#ff0000", Some((0xff, 0x00, 0x00))),
+                ("00ff00", Some((0x00, 0xff, 0x00))),
+                ("#0000ffee", Some((0x00, 0x00, 0xff))),
+                ("#f0a", Some((0xff, 0x00, 0xaa))),
+                ("", None),
+                ("#12", None),
+                ("#zzzzzz", None),
+                ("not-a-color", None),
+            ] {
+                assert_eq!(parse_hex_color(input), want, "case {input:?}");
+            }
+
+            // color_for falls through to the palette without an override.
+            let ctx = PresenceCtx::empty();
+            assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
+
+            // color_for honours an override when set.
+            let mut ctx = PresenceCtx::empty();
+            ctx.set_color_override(UserId("alice".into()), "#abcdef");
+            assert_eq!(ctx.color_for(&UserId("alice".into())), (0xab, 0xcd, 0xef));
+            assert_eq!(ctx.color_for(&UserId("bob".into())), user_color("bob"));
+
+            // A malformed override clears any prior entry.
+            let mut ctx = PresenceCtx::empty();
+            ctx.set_color_override(UserId("alice".into()), "#abcdef");
+            ctx.set_color_override(UserId("alice".into()), "nonsense");
+            assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
         }
 
-        // color_for falls through to the palette without an override.
-        let ctx = PresenceCtx::empty();
-        assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
-
-        // color_for honours an override when set.
-        let mut ctx = PresenceCtx::empty();
-        ctx.set_color_override(UserId("alice".into()), "#abcdef");
-        assert_eq!(ctx.color_for(&UserId("alice".into())), (0xab, 0xcd, 0xef));
-        assert_eq!(ctx.color_for(&UserId("bob".into())), user_color("bob"));
-
-        // A malformed override clears any prior entry.
-        let mut ctx = PresenceCtx::empty();
-        ctx.set_color_override(UserId("alice".into()), "#abcdef");
-        ctx.set_color_override(UserId("alice".into()), "nonsense");
-        assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
-    }
-
-    /// One person is one colour: the hue the workspace announced for them is
-    /// the one their face, their caret and their byline wear, and only someone
-    /// who announced none is painted in what their id derives.
-    #[test]
-    fn the_announced_hue_is_the_one_a_person_wears_everywhere() {
-        let mut ctx = PresenceCtx::empty();
-        let ada = UserId("ada".into());
-        assert_eq!(
-            ctx.hue_of("ada"),
-            crate::tokens::PresenceHue::of_identity("ada"),
-            "nobody announced a colour for her yet"
-        );
-        ctx.set_presence_hue(ada.clone(), crate::tokens::PresenceHue::Violet);
-        assert_eq!(ctx.hue_of("ada"), crate::tokens::PresenceHue::Violet);
-        assert_eq!(
-            ctx.color_for(&ada),
-            identity_rgb(crate::tokens::PresenceHue::Violet),
-            "the colour they are painted in is the hue they wear"
-        );
-        assert_eq!(
-            ctx.hue_of("bo"),
-            crate::tokens::PresenceHue::of_identity("bo"),
-            "someone else keeps their own"
-        );
+        phase the_announced_hue_is_the_one_a_person_wears_everywhere;
+        // One person is one colour: the hue the workspace announced for them is
+        // the one their face, their caret and their byline wear, and only someone
+        // who announced none is painted in what their id derives.
+        {
+            let mut ctx = PresenceCtx::empty();
+            let ada = UserId("ada".into());
+            assert_eq!(
+                ctx.hue_of("ada"),
+                crate::tokens::PresenceHue::of_identity("ada"),
+                "nobody announced a colour for her yet"
+            );
+            ctx.set_presence_hue(ada.clone(), crate::tokens::PresenceHue::Violet);
+            assert_eq!(ctx.hue_of("ada"), crate::tokens::PresenceHue::Violet);
+            assert_eq!(
+                ctx.color_for(&ada),
+                identity_rgb(crate::tokens::PresenceHue::Violet),
+                "the colour they are painted in is the hue they wear"
+            );
+            assert_eq!(
+                ctx.hue_of("bo"),
+                crate::tokens::PresenceHue::of_identity("bo"),
+                "someone else keeps their own"
+            );
+        }
     }
 }
 
@@ -2604,91 +2615,95 @@ mod color_override_tests {
 mod remote_cursor_tests {
     use super::*;
 
-    #[test]
-    fn a_peer_wears_the_colour_their_machine_says() {
-        let mut ctx = PresenceCtx::empty();
-        let peer = UserId("peer@42".into());
-        ctx.upsert_remote_cursor(peer.0.clone(), [1.0, 2.0], None);
-        assert_eq!(ctx.color_for(&peer), user_color("peer@42"));
-        ctx.set_presence_hue(peer.clone(), crate::tokens::PresenceHue::Violet);
-        let violet = identity_rgb(crate::tokens::PresenceHue::Violet);
-        assert_eq!(ctx.color_for(&peer), violet);
-        let painted = ctx.remote_cursors[0].color;
-        assert!((painted[0] - f32::from(violet.0) / 255.0).abs() < 1e-3);
-        assert!((painted[3] - 1.0).abs() < f32::EPSILON, "alpha is kept");
-        let packed = collab_types::Member::of_person(
-            &collab_types::Person::new(peer.0.as_str(), "Ada")
-                .wearing(crate::tokens::PresenceHue::Violet),
-            None,
-        )
-        .packed_colour();
-        assert_eq!(
-            crate::collaboration::colour_from_packed(packed),
-            Some(crate::tokens::PresenceHue::Violet),
-            "every presence colour survives the roster's wire"
-        );
-        for hue in crate::tokens::PresenceHue::ALL {
-            let (r, g, b) = identity_rgb(hue);
-            let packed = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
-            assert_eq!(crate::collaboration::colour_from_packed(packed), Some(hue));
-        }
-        assert_eq!(crate::collaboration::colour_from_packed(0), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_remote_cursor_wears_its_colour_and_upserts_in_place;
 
-    #[test]
-    fn remote_cursors_upsert_in_place_and_remove() {
-        // phase: upsert_remote_cursor_inserts_new_entry
+        phase a_peer_wears_the_colour_their_machine_says;
         {
             let mut ctx = PresenceCtx::empty();
-            ctx.upsert_remote_cursor("alice".into(), [42.0, 17.0], None);
-            assert_eq!(ctx.remote_cursors.len(), 1);
-            let c = &ctx.remote_cursors[0];
-            assert_eq!(c.user_id, "alice");
-            assert_eq!(c.position, [42.0, 17.0]);
-            assert_eq!(c.label, guest_label(), "an unnamed person is a guest");
-            let (r, g, b) = user_color("alice");
-            assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
-            assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
-            assert!((c.color[2] - f32::from(b) / 255.0).abs() < 1e-3);
-            assert_eq!(c.color[3], 1.0);
-        }
-        // phase: upsert_remote_cursor_updates_existing_in_place
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.upsert_remote_cursor("bob".into(), [10.0, 10.0], None);
-            ctx.upsert_remote_cursor("bob".into(), [200.0, 300.0], None);
+            let peer = UserId("peer@42".into());
+            ctx.upsert_remote_cursor(peer.0.clone(), [1.0, 2.0], None);
+            assert_eq!(ctx.color_for(&peer), user_color("peer@42"));
+            ctx.set_presence_hue(peer.clone(), crate::tokens::PresenceHue::Violet);
+            let violet = identity_rgb(crate::tokens::PresenceHue::Violet);
+            assert_eq!(ctx.color_for(&peer), violet);
+            let painted = ctx.remote_cursors[0].color;
+            assert!((painted[0] - f32::from(violet.0) / 255.0).abs() < 1e-3);
+            assert!((painted[3] - 1.0).abs() < f32::EPSILON, "alpha is kept");
+            let packed = collab_types::Member::of_person(
+                &collab_types::Person::new(peer.0.as_str(), "Ada")
+                    .wearing(crate::tokens::PresenceHue::Violet),
+                None,
+            )
+            .packed_colour();
             assert_eq!(
-                ctx.remote_cursors.len(),
-                1,
-                "second upsert for same user_id must not push a duplicate",
+                crate::collaboration::colour_from_packed(packed),
+                Some(crate::tokens::PresenceHue::Violet),
+                "every presence colour survives the roster's wire"
             );
-            assert_eq!(ctx.remote_cursors[0].position, [200.0, 300.0]);
+            for hue in crate::tokens::PresenceHue::ALL {
+                let (r, g, b) = identity_rgb(hue);
+                let packed = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+                assert_eq!(crate::collaboration::colour_from_packed(packed), Some(hue));
+            }
+            assert_eq!(crate::collaboration::colour_from_packed(0), None);
         }
-        // phase: upsert_remote_cursor_preserves_friendly_label_when_display_name_is_none
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.upsert_remote_cursor("alice".into(), [0.0, 0.0], Some("Alice Smith"));
-            assert_eq!(ctx.remote_cursors[0].label, "Alice Smith");
 
-            ctx.upsert_remote_cursor("alice".into(), [50.0, 50.0], None);
-            assert_eq!(ctx.remote_cursors.len(), 1);
-            assert_eq!(ctx.remote_cursors[0].position, [50.0, 50.0]);
-            assert_eq!(
-                ctx.remote_cursors[0].label, "Alice Smith",
-                "display_name=None must not overwrite a previously-set friendly label",
-            );
-        }
-        // phase: remove_remote_cursor_clears_entry
+        phase remote_cursors_upsert_in_place_and_remove;
         {
-            let mut ctx = PresenceCtx::empty();
-            ctx.upsert_remote_cursor("alice".into(), [1.0, 2.0], None);
-            ctx.upsert_remote_cursor("bob".into(), [3.0, 4.0], None);
-            assert_eq!(ctx.remote_cursors.len(), 2);
-            ctx.remove_remote_cursor("alice");
-            assert_eq!(ctx.remote_cursors.len(), 1);
-            assert_eq!(ctx.remote_cursors[0].user_id, "bob");
-            ctx.remove_remote_cursor("nobody");
-            assert_eq!(ctx.remote_cursors.len(), 1);
+            // phase: upsert_remote_cursor_inserts_new_entry
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.upsert_remote_cursor("alice".into(), [42.0, 17.0], None);
+                assert_eq!(ctx.remote_cursors.len(), 1);
+                let c = &ctx.remote_cursors[0];
+                assert_eq!(c.user_id, "alice");
+                assert_eq!(c.position, [42.0, 17.0]);
+                assert_eq!(c.label, guest_label(), "an unnamed person is a guest");
+                let (r, g, b) = user_color("alice");
+                assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
+                assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
+                assert!((c.color[2] - f32::from(b) / 255.0).abs() < 1e-3);
+                assert_eq!(c.color[3], 1.0);
+            }
+            // phase: upsert_remote_cursor_updates_existing_in_place
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.upsert_remote_cursor("bob".into(), [10.0, 10.0], None);
+                ctx.upsert_remote_cursor("bob".into(), [200.0, 300.0], None);
+                assert_eq!(
+                    ctx.remote_cursors.len(),
+                    1,
+                    "second upsert for same user_id must not push a duplicate",
+                );
+                assert_eq!(ctx.remote_cursors[0].position, [200.0, 300.0]);
+            }
+            // phase: upsert_remote_cursor_preserves_friendly_label_when_display_name_is_none
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.upsert_remote_cursor("alice".into(), [0.0, 0.0], Some("Alice Smith"));
+                assert_eq!(ctx.remote_cursors[0].label, "Alice Smith");
+
+                ctx.upsert_remote_cursor("alice".into(), [50.0, 50.0], None);
+                assert_eq!(ctx.remote_cursors.len(), 1);
+                assert_eq!(ctx.remote_cursors[0].position, [50.0, 50.0]);
+                assert_eq!(
+                    ctx.remote_cursors[0].label, "Alice Smith",
+                    "display_name=None must not overwrite a previously-set friendly label",
+                );
+            }
+            // phase: remove_remote_cursor_clears_entry
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.upsert_remote_cursor("alice".into(), [1.0, 2.0], None);
+                ctx.upsert_remote_cursor("bob".into(), [3.0, 4.0], None);
+                assert_eq!(ctx.remote_cursors.len(), 2);
+                ctx.remove_remote_cursor("alice");
+                assert_eq!(ctx.remote_cursors.len(), 1);
+                assert_eq!(ctx.remote_cursors[0].user_id, "bob");
+                ctx.remove_remote_cursor("nobody");
+                assert_eq!(ctx.remote_cursors.len(), 1);
+            }
         }
     }
 }
@@ -2698,358 +2713,14 @@ mod string_id_wrapper_tests {
     use super::*;
     use crate::collaboration::PresencePayload;
 
-    #[test]
-    fn peer_state_writes_land_in_their_maps_and_relationships() {
-        // phase: set_remote_caret_writes_to_carets_map
-        {
-            let mut ctx = PresenceCtx::empty();
-            let key = PresenceKey::Workspace { id: "home".into() };
-            ctx.set_remote_caret("alice".into(), key.clone(), 42);
-            assert_eq!(ctx.caret_for(&key, &UserId("alice".into())), Some(42));
-        }
-        // phase: set_remote_selection_writes_to_selections_map
-        {
-            let mut ctx = PresenceCtx::empty();
-            let key = PresenceKey::Workspace { id: "home".into() };
-            ctx.set_remote_selection("bob".into(), key.clone(), 3, 9);
-            let r = ctx
-                .selection_for(&key, &UserId("bob".into()))
-                .expect("selection");
-            assert_eq!((r.start, r.end), (3, 9));
-        }
-        // phase: register_peer_at_workspace_adds_to_here
-        {
-            let mut ctx = PresenceCtx::empty();
-            let key = PresenceKey::Workspace { id: "home".into() };
-            ctx.register_peer_at("alice".into(), key.clone());
-            assert_eq!(ctx.peers_on(&key), &[UserId("alice".into())]);
-        }
-        // phase: register_peer_at_tab_routes_through_set_tab_focus
-        {
-            // A peer switching between two tab keys must end up on exactly
-            // one — the previous tab should drop them. This guards the
-            // routing through set_tab_focus.
-            let mut ctx = PresenceCtx::empty();
-            let a = PresenceKey::Tab { id: "aaa".into() };
-            let b = PresenceKey::Tab { id: "bbb".into() };
-            ctx.register_peer_at("alice".into(), a.clone());
-            ctx.register_peer_at("alice".into(), b.clone());
-            assert!(
-                ctx.peers_on(&a).is_empty(),
-                "peer must have been evicted from previous tab"
-            );
-            assert_eq!(ctx.peers_on(&b), &[UserId("alice".into())]);
-        }
-        // phase: peer_pointer_reads_follow_target
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.upsert_remote_cursor("alice".into(), [120.0, 44.0], None);
-            assert_eq!(ctx.peer_pointer("alice"), Some([120.0, 44.0]));
-            assert_eq!(ctx.peer_pointer("nobody"), None);
-        }
-        // phase: follow_relationship_is_workspace_scoped_ephemeral_and_releasable
-        {
-            let mut ctx = PresenceCtx::empty();
-            let workspace = PresenceKey::Workspace {
-                id: "studio".into(),
-            };
-            let other_workspace = PresenceKey::Workspace {
-                id: "elsewhere".into(),
-            };
-            ctx.apply_remote_presence(
-                "alice".into(),
-                workspace.clone(),
-                PresencePayload::Following {
-                    target: Some("bob".into()),
-                },
-            );
-            let relationships: Vec<_> = ctx
-                .following_in(&workspace)
-                .into_iter()
-                .map(|(follower, target)| (follower.clone(), target.clone()))
-                .collect();
-            assert_eq!(
-                relationships,
-                vec![(UserId("alice".into()), UserId("bob".into()))],
-                "observers learn only the follower-target relation in this workspace"
-            );
-            assert!(ctx.following_in(&other_workspace).is_empty());
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn each_pointer_is_painted_by_exactly_the_layer_that_owns_its_space;
 
-            ctx.apply_remote_presence(
-                "alice".into(),
-                workspace.clone(),
-                PresencePayload::Following { target: None },
-            );
-            assert!(
-                ctx.following_in(&workspace).is_empty(),
-                "stop clears the visual cue"
-            );
-
-            ctx.apply_remote_presence(
-                "alice".into(),
-                workspace.clone(),
-                PresencePayload::Following {
-                    target: Some("bob".into()),
-                },
-            );
-            ctx.unregister_peer("bob");
-            assert!(
-                ctx.following_in(&workspace).is_empty(),
-                "disconnecting either endpoint removes the ephemeral relationship"
-            );
-        }
-    }
-
-    #[test]
-    fn unregistering_a_peer_drops_only_its_traces() {
-        // phase: unregister_peer_drops_every_trace
-        {
-            let mut ctx = PresenceCtx::empty();
-            let key_a = PresenceKey::Workspace { id: "home".into() };
-            let key_b = PresenceKey::Tab { id: "tab1".into() };
-
-            ctx.register_peer_at("alice".into(), key_a.clone());
-            ctx.register_peer_at("alice".into(), key_b.clone());
-            ctx.set_remote_caret("alice".into(), key_a.clone(), 5);
-            ctx.set_remote_selection("alice".into(), key_a.clone(), 1, 4);
-            ctx.set_pointer(&key_a, UserId("alice".into()), (10.0, 20.0));
-            ctx.upsert_remote_cursor("alice".into(), [10.0, 20.0], None);
-
-            // Sanity: alice is everywhere.
-            assert!(!ctx.peers_on(&key_a).is_empty());
-            assert!(!ctx.peers_on(&key_b).is_empty());
-            assert!(ctx.caret_for(&key_a, &UserId("alice".into())).is_some());
-            assert!(ctx.selection_for(&key_a, &UserId("alice".into())).is_some());
-            assert!(ctx.pointer_for(&key_a, &UserId("alice".into())).is_some());
-            assert_eq!(ctx.remote_cursors.len(), 1);
-
-            ctx.unregister_peer("alice");
-
-            // Alice is purged.
-            assert!(ctx.peers_on(&key_a).is_empty());
-            assert!(ctx.peers_on(&key_b).is_empty());
-            assert!(ctx.caret_for(&key_a, &UserId("alice".into())).is_none());
-            assert!(ctx.selection_for(&key_a, &UserId("alice".into())).is_none());
-            assert!(ctx.pointer_for(&key_a, &UserId("alice".into())).is_none());
-            assert!(ctx.remote_cursors.is_empty());
-        }
-        // phase: unregister_peer_clears_typing_and_name
-        {
-            let mut ctx = PresenceCtx::empty();
-            let alice = UserId("alice".into());
-            let key = PresenceKey::Tab { id: "t".into() };
-            ctx.set_display_name(alice.clone(), "Alice");
-            ctx.record_peer_typing(
-                alice.clone(),
-                key.clone(),
-                SelectionRange { start: 0, end: 2 },
-                crate::time::now(),
-            );
-            assert!(
-                !ctx.active_typing(&alice, &key, crate::time::now())
-                    .is_empty()
-            );
-            ctx.unregister_peer("alice");
-            assert!(
-                ctx.active_typing(&alice, &key, crate::time::now())
-                    .is_empty()
-            );
-            assert_eq!(
-                ctx.display_name(&alice),
-                guest_label(),
-                "a person whose name went is a guest again"
-            );
-        }
-        // phase: unregister_peer_leaves_other_users_alone
-        {
-            // Removing alice must not collateral-damage bob.
-            let mut ctx = PresenceCtx::empty();
-            let key = PresenceKey::Workspace { id: "home".into() };
-            ctx.register_peer_at("alice".into(), key.clone());
-            ctx.register_peer_at("bob".into(), key.clone());
-            ctx.set_remote_caret("bob".into(), key.clone(), 7);
-            ctx.upsert_remote_cursor("bob".into(), [99.0, 99.0], None);
-
-            ctx.unregister_peer("alice");
-
-            assert_eq!(ctx.peers_on(&key), &[UserId("bob".into())]);
-            assert_eq!(ctx.caret_for(&key, &UserId("bob".into())), Some(7));
-            assert_eq!(ctx.remote_cursors.len(), 1);
-            assert_eq!(ctx.remote_cursors[0].user_id, "bob");
-        }
-    }
-
-    #[test]
-    fn peers_keep_stable_colours_and_honest_labels_in_any_arrival_order() {
-        // phase: presence_user_color_is_stable_and_distinct
-        {
-            // Same id → same colour every time (deterministic, no shared state).
-            let mut ctx = PresenceCtx::empty();
-            ctx.set_display_name(UserId("alice".into()), "Alice Smith");
-            let a1 = ctx.user(&UserId("alice".into()));
-            assert_eq!(a1.colour, crate::tokens::PresenceHue::of_identity("alice"));
-            assert_eq!(identity_rgb(a1.colour), user_color("alice"));
-            // Distinct ids → distinct colours (the whole point of the palette).
-            let bob = ctx.user(&UserId("bob".into()));
-            assert_ne!(a1.colour, bob.colour);
-            assert_eq!(a1.name, "Alice Smith");
-        }
-        // phase: roster_name_resolves_with_id_fallback
-        {
-            let mut ctx = PresenceCtx::empty();
-            let alice = UserId("alice".into());
-            // No roster entry yet: a guest, never their id.
-            assert_eq!(ctx.display_name(&alice), guest_label());
-            ctx.set_display_name(alice.clone(), "Alice Smith");
-            assert_eq!(ctx.display_name(&alice), "Alice Smith");
-            // `user()` bundles id + name + colour.
-            let pu = ctx.user(&alice);
-            assert_eq!(pu.name, "Alice Smith");
-            assert_eq!(identity_rgb(pu.colour), user_color("alice"));
-        }
-        // phase: participant_kind_survives_name_resolution
-        {
-            let mut ctx = PresenceCtx::empty();
-            let scribe = UserId("agent:scribe".into());
-            ctx.set_display_name(scribe.clone(), "Scribe");
-            ctx.set_participant_kind(&scribe, true);
-            assert!(ctx.is_agent(&scribe));
-            assert!(!ctx.user(&scribe).id.is_person());
-            assert_eq!(ctx.display_name(&scribe), "Scribe · Agent");
-            ctx.set_display_name(scribe.clone(), "Editorial helper");
-            assert!(
-                !ctx.user(&scribe).id.is_person(),
-                "renaming cannot turn software into a person"
-            );
-            assert_eq!(ctx.display_name(&scribe), "Editorial helper · Agent");
-            ctx.set_participant_kind(&scribe, false);
-            assert!(!ctx.is_agent(&scribe));
-            assert_eq!(ctx.display_name(&scribe), "Editorial helper");
-        }
-        // phase: an_unnamed_peer_is_a_guest_and_never_its_id
-        // A person nobody named is a guest on every surface: never blank, and never their key,
-        // which reads as a fault on a caret chip.
-        {
-            let ctx = PresenceCtx::empty();
-            let peer = UserId("ab".repeat(32));
-            let label = ctx.display_name(&peer);
-            assert_eq!(label, guest_label());
-            assert_eq!(
-                ctx.user(&peer).name,
-                guest_label(),
-                "every renderer resolves the same way",
-            );
-        }
-        // phase: a_peer_that_gains_a_name_keeps_its_colour
-        // Colour is keyed on the id; gaining a name must not perturb it.
-        {
-            let mut ctx = PresenceCtx::empty();
-            let peer = UserId("peer@5537458103208628978".into());
-            let before = ctx.color_for(&peer);
-
-            ctx.set_display_name(peer.clone(), "Bob");
-
-            assert_eq!(ctx.display_name(&peer), "Bob");
-            assert_eq!(
-                ctx.color_for(&peer),
-                before,
-                "a peer must not change colour in front of the people watching it",
-            );
-        }
-        // phase: a_name_that_arrives_after_the_pointer_relabels_it
-        // A name can arrive after the pointer it belongs to. The pill has to
-        // pick it up, or a peer stays a guest on screen until they happen
-        // to move again.
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
-            assert_eq!(ctx.remote_cursors[0].label, guest_label());
-
-            ctx.set_display_name(UserId("peer@77".into()), "Bob");
-
-            assert_eq!(
-                ctx.remote_cursors.len(),
-                1,
-                "naming a peer adds no second pointer"
-            );
-            assert_eq!(ctx.remote_cursors[0].label, "Bob");
-            assert_eq!(
-                ctx.remote_cursors[0].position,
-                [10.0, 20.0],
-                "and moves none"
-            );
-        }
-        // phase: a_pointer_that_arrives_after_the_name_is_labelled_with_it
-        // And the other order: a name learned from the roster before the
-        // peer's first move labels that move when it lands.
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.set_display_name(UserId("peer@77".into()), "Bob");
-
-            ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
-
-            assert_eq!(ctx.remote_cursors[0].label, "Bob");
-        }
-    }
-
-    #[test]
-    fn people_sharing_a_name_are_numbered_alike_for_everyone_including_themselves() {
-        let ada = UserId("key-a".into());
-        let other_ada = UserId("key-b".into());
-        let agent = UserId("agent:claude".into());
-        // The workspace seen from Ada's machine: she is the self row.
-        let mut mine = PresenceCtx::empty();
-        mine.upsert_remote_cursor("key-b".into(), [1.0, 1.0], Some("ada"));
-        mine.set_self_participant(ada.clone(), "Ada");
-        mine.set_display_name(other_ada.clone(), "ada");
-        mine.set_participant_kind(&agent, ParticipantKind::Agent);
-        mine.set_display_name(agent.clone(), "Ada");
-        // And from the other Ada's, who heard of everyone in another order.
-        let mut theirs = PresenceCtx::empty();
-        theirs.set_participant_kind(&agent, ParticipantKind::Agent);
-        theirs.set_display_name(agent.clone(), "Ada");
-        theirs.set_display_name(ada.clone(), "Ada");
-        theirs.set_self_participant(other_ada.clone(), "ada");
-
-        for ctx in [&mine, &theirs] {
-            assert_eq!(ctx.display_name(&ada), "Ada (1)");
-            assert_eq!(ctx.display_name(&other_ada), "ada (2)");
-            assert_eq!(
-                ctx.display_name(&agent),
-                crate::history_source::agent_display_label("Ada"),
-                "an agent keeps its kind label and takes no number"
-            );
-        }
-        assert_eq!(mine.self_label().as_deref(), Some("Ada (1)"));
-        assert_eq!(theirs.self_label().as_deref(), Some("ada (2)"));
-        assert_eq!(
-            mine.remote_cursors[0].label, "ada (2)",
-            "a pill drawn before the collision was known is renumbered"
-        );
-        let listed: Vec<String> = mine.roster().into_iter().map(|u| u.name).collect();
-        assert_eq!(
-            listed,
-            [
-                crate::history_source::agent_display_label("Ada"),
-                "Ada (1)".to_owned(),
-                "ada (2)".to_owned()
-            ]
-        );
-
-        mine.set_display_name(other_ada.clone(), "Bea");
-        assert_eq!(mine.self_label().as_deref(), Some("Ada"));
-        assert_eq!(mine.remote_cursors[0].label, "Bea");
-        theirs.unregister_peer("key-a");
-        assert_eq!(theirs.self_label().as_deref(), Some("ada"));
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn each_pointer_is_painted_by_exactly_the_layer_that_owns_its_space() {
-        // phase: a_desktop_pointer_is_the_compositors_to_paint_and_not_this_layers
+        phase a_desktop_pointer_is_the_compositors_to_paint_and_not_this_layers;
         // One person is one pointer: a workspace-scoped arrival lands in *both*
         // stores — `pointers` (compositor paints) and `remote_cursors` ("follow"
         // reads) — but only one of them may paint it.
@@ -3081,7 +2752,8 @@ mod string_id_wrapper_tests {
                 "a desktop pointer painted here as well is the same person twice",
             );
         }
-        // phase: a_pointer_no_overlay_claims_is_still_this_layers_to_paint
+
+        phase a_pointer_no_overlay_claims_is_still_this_layers_to_paint;
         // The other half: a pointer with no desktop scope has no overlay
         // claiming it, so this layer stays the one that draws it.
         {
@@ -3112,7 +2784,8 @@ mod string_id_wrapper_tests {
                 "only a desktop scope hands a pointer to the compositor",
             );
         }
-        // phase: one_content_pointer_reaches_two_surfaces_and_one_places_it
+
+        phase one_content_pointer_reaches_two_surfaces_and_one_places_it;
         // The same frame, handed to two surfaces, is placeable by one of them —
         // each asks the same question of the same carried fact, without
         // consulting the other.
@@ -3155,7 +2828,8 @@ mod string_id_wrapper_tests {
                 "and it can say so from the frame alone",
             );
         }
-        // phase: a_session_that_has_not_named_its_surface_places_no_content_pointer
+
+        phase a_session_that_has_not_named_its_surface_places_no_content_pointer;
         // A session that has not said which surface it draws places no content
         // pointer at all.
         //
@@ -3177,7 +2851,8 @@ mod string_id_wrapper_tests {
                 "an unnamed surface must not claim somebody else's coordinates",
             );
         }
-        // phase: a_pointer_that_changes_transport_changes_hands
+
+        phase a_pointer_that_changes_transport_changes_hands;
         // A peer moving transport changes hands rather than keeping its first owner.
         {
             let mut ctx = PresenceCtx::empty();
@@ -3201,93 +2876,442 @@ mod string_id_wrapper_tests {
         }
     }
 
-    #[test]
-    fn typing_marks_fade_prune_and_coalesce() {
-        // phase: typing_mark_fades_linearly_and_prunes
+    tilo_test_env::scenario! {
+        fn peer_state_is_written_dropped_labelled_and_faded_by_id;
+
+        phase peer_state_writes_land_in_their_maps_and_relationships;
         {
-            use crate::time::Duration;
-            let mut ctx = PresenceCtx::empty();
-            let bob = UserId("bob".into());
-            let key = PresenceKey::Widget {
-                path: vec![PathSegment::Index(0)],
-            };
-            let t0 = crate::time::now();
-            ctx.record_peer_typing(
-                bob.clone(),
-                key.clone(),
-                SelectionRange { start: 3, end: 8 },
-                t0,
-            );
+            // phase: set_remote_caret_writes_to_carets_map
+            {
+                let mut ctx = PresenceCtx::empty();
+                let key = PresenceKey::Workspace { id: "home".into() };
+                ctx.set_remote_caret("alice".into(), key.clone(), 42);
+                assert_eq!(ctx.caret_for(&key, &UserId("alice".into())), Some(42));
+            }
+            // phase: set_remote_selection_writes_to_selections_map
+            {
+                let mut ctx = PresenceCtx::empty();
+                let key = PresenceKey::Workspace { id: "home".into() };
+                ctx.set_remote_selection("bob".into(), key.clone(), 3, 9);
+                let r = ctx
+                    .selection_for(&key, &UserId("bob".into()))
+                    .expect("selection");
+                assert_eq!((r.start, r.end), (3, 9));
+            }
+            // phase: register_peer_at_workspace_adds_to_here
+            {
+                let mut ctx = PresenceCtx::empty();
+                let key = PresenceKey::Workspace { id: "home".into() };
+                ctx.register_peer_at("alice".into(), key.clone());
+                assert_eq!(ctx.peers_on(&key), &[UserId("alice".into())]);
+            }
+            // phase: register_peer_at_tab_routes_through_set_tab_focus
+            {
+                // A peer switching between two tab keys must end up on exactly
+                // one — the previous tab should drop them. This guards the
+                // routing through set_tab_focus.
+                let mut ctx = PresenceCtx::empty();
+                let a = PresenceKey::Tab { id: "aaa".into() };
+                let b = PresenceKey::Tab { id: "bbb".into() };
+                ctx.register_peer_at("alice".into(), a.clone());
+                ctx.register_peer_at("alice".into(), b.clone());
+                assert!(
+                    ctx.peers_on(&a).is_empty(),
+                    "peer must have been evicted from previous tab"
+                );
+                assert_eq!(ctx.peers_on(&b), &[UserId("alice".into())]);
+            }
+            // phase: peer_pointer_reads_follow_target
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.upsert_remote_cursor("alice".into(), [120.0, 44.0], None);
+                assert_eq!(ctx.peer_pointer("alice"), Some([120.0, 44.0]));
+                assert_eq!(ctx.peer_pointer("nobody"), None);
+            }
+            // phase: follow_relationship_is_workspace_scoped_ephemeral_and_releasable
+            {
+                let mut ctx = PresenceCtx::empty();
+                let workspace = PresenceKey::Workspace {
+                    id: "studio".into(),
+                };
+                let other_workspace = PresenceKey::Workspace {
+                    id: "elsewhere".into(),
+                };
+                ctx.apply_remote_presence(
+                    "alice".into(),
+                    workspace.clone(),
+                    PresencePayload::Following {
+                        target: Some("bob".into()),
+                    },
+                );
+                let relationships: Vec<_> = ctx
+                    .following_in(&workspace)
+                    .into_iter()
+                    .map(|(follower, target)| (follower.clone(), target.clone()))
+                    .collect();
+                assert_eq!(
+                    relationships,
+                    vec![(UserId("alice".into()), UserId("bob".into()))],
+                    "observers learn only the follower-target relation in this workspace"
+                );
+                assert!(ctx.following_in(&other_workspace).is_empty());
 
-            // Fresh: alpha ~1.0, the full range present.
-            let fresh = ctx.active_typing(&bob, &key, t0);
-            assert_eq!(fresh.len(), 1);
-            assert_eq!((fresh[0].0.start, fresh[0].0.end), (3, 8));
-            assert!((fresh[0].1 - 1.0).abs() < 1e-3, "just-typed alpha is ~1.0");
+                ctx.apply_remote_presence(
+                    "alice".into(),
+                    workspace.clone(),
+                    PresencePayload::Following { target: None },
+                );
+                assert!(
+                    ctx.following_in(&workspace).is_empty(),
+                    "stop clears the visual cue"
+                );
 
-            // Half-way through the fade window: alpha ~0.5.
-            let mid = t0 + TYPING_FADE / 2;
-            let half = ctx.active_typing(&bob, &key, mid);
-            assert_eq!(half.len(), 1);
-            assert!(
-                (half[0].1 - 0.5).abs() < 0.05,
-                "alpha halves at mid-life, got {}",
-                half[0].1
-            );
-            assert!(ctx.has_active_typing(mid));
-            assert_eq!(
-                ctx.typing_next_step(mid),
-                Some(t0 + TYPING_FADE / 2 + TYPING_FADE / TYPING_FADE_STEPS),
-                "the fade wakes the host at its next step, not every frame"
-            );
-            assert_eq!(
-                ctx.active_typing(&bob, &key, mid + Duration::from_millis(10))[0].1,
-                half[0].1,
-                "within a step the highlight does not change"
-            );
-
-            // Past the window: gone from the read, and prune reclaims it.
-            let after = t0 + TYPING_FADE + Duration::from_millis(1);
-            assert!(ctx.active_typing(&bob, &key, after).is_empty());
-            assert!(!ctx.has_active_typing(after));
-            assert!(!ctx.typing.is_empty(), "not yet pruned");
-            ctx.prune_typing(after);
-            assert!(ctx.typing.is_empty(), "prune reclaims fully-faded marks");
+                ctx.apply_remote_presence(
+                    "alice".into(),
+                    workspace.clone(),
+                    PresencePayload::Following {
+                        target: Some("bob".into()),
+                    },
+                );
+                ctx.unregister_peer("bob");
+                assert!(
+                    ctx.following_in(&workspace).is_empty(),
+                    "disconnecting either endpoint removes the ephemeral relationship"
+                );
+            }
         }
-        // phase: typing_marks_coalesce_when_contiguous
-        {
-            let mut ctx = PresenceCtx::empty();
-            let bob = UserId("bob".into());
-            let key = PresenceKey::Widget {
-                path: vec![PathSegment::Index(1)],
-            };
-            let t0 = crate::time::now();
-            ctx.record_peer_typing(
-                bob.clone(),
-                key.clone(),
-                SelectionRange { start: 0, end: 3 },
-                t0,
-            );
-            // A contiguous continuation (abuts the previous end) extends the span.
-            ctx.record_peer_typing(
-                bob.clone(),
-                key.clone(),
-                SelectionRange { start: 3, end: 6 },
-                t0,
-            );
-            let marks = ctx.active_typing(&bob, &key, t0);
-            assert_eq!(marks.len(), 1, "contiguous typing coalesces into one span");
-            assert_eq!((marks[0].0.start, marks[0].0.end), (0, 6));
 
-            // A disjoint edit elsewhere in the same block stays separate.
-            ctx.record_peer_typing(
-                bob.clone(),
-                key.clone(),
-                SelectionRange { start: 40, end: 44 },
-                t0,
+        phase unregistering_a_peer_drops_only_its_traces;
+        {
+            // phase: unregister_peer_drops_every_trace
+            {
+                let mut ctx = PresenceCtx::empty();
+                let key_a = PresenceKey::Workspace { id: "home".into() };
+                let key_b = PresenceKey::Tab { id: "tab1".into() };
+
+                ctx.register_peer_at("alice".into(), key_a.clone());
+                ctx.register_peer_at("alice".into(), key_b.clone());
+                ctx.set_remote_caret("alice".into(), key_a.clone(), 5);
+                ctx.set_remote_selection("alice".into(), key_a.clone(), 1, 4);
+                ctx.set_pointer(&key_a, UserId("alice".into()), (10.0, 20.0));
+                ctx.upsert_remote_cursor("alice".into(), [10.0, 20.0], None);
+
+                // Sanity: alice is everywhere.
+                assert!(!ctx.peers_on(&key_a).is_empty());
+                assert!(!ctx.peers_on(&key_b).is_empty());
+                assert!(ctx.caret_for(&key_a, &UserId("alice".into())).is_some());
+                assert!(ctx.selection_for(&key_a, &UserId("alice".into())).is_some());
+                assert!(ctx.pointer_for(&key_a, &UserId("alice".into())).is_some());
+                assert_eq!(ctx.remote_cursors.len(), 1);
+
+                ctx.unregister_peer("alice");
+
+                // Alice is purged.
+                assert!(ctx.peers_on(&key_a).is_empty());
+                assert!(ctx.peers_on(&key_b).is_empty());
+                assert!(ctx.caret_for(&key_a, &UserId("alice".into())).is_none());
+                assert!(ctx.selection_for(&key_a, &UserId("alice".into())).is_none());
+                assert!(ctx.pointer_for(&key_a, &UserId("alice".into())).is_none());
+                assert!(ctx.remote_cursors.is_empty());
+            }
+            // phase: unregister_peer_clears_typing_and_name
+            {
+                let mut ctx = PresenceCtx::empty();
+                let alice = UserId("alice".into());
+                let key = PresenceKey::Tab { id: "t".into() };
+                ctx.set_display_name(alice.clone(), "Alice");
+                ctx.record_peer_typing(
+                    alice.clone(),
+                    key.clone(),
+                    SelectionRange { start: 0, end: 2 },
+                    crate::time::now(),
+                );
+                assert!(
+                    !ctx.active_typing(&alice, &key, crate::time::now())
+                        .is_empty()
+                );
+                ctx.unregister_peer("alice");
+                assert!(
+                    ctx.active_typing(&alice, &key, crate::time::now())
+                        .is_empty()
+                );
+                assert_eq!(
+                    ctx.display_name(&alice),
+                    guest_label(),
+                    "a person whose name went is a guest again"
+                );
+            }
+            // phase: unregister_peer_leaves_other_users_alone
+            {
+                // Removing alice must not collateral-damage bob.
+                let mut ctx = PresenceCtx::empty();
+                let key = PresenceKey::Workspace { id: "home".into() };
+                ctx.register_peer_at("alice".into(), key.clone());
+                ctx.register_peer_at("bob".into(), key.clone());
+                ctx.set_remote_caret("bob".into(), key.clone(), 7);
+                ctx.upsert_remote_cursor("bob".into(), [99.0, 99.0], None);
+
+                ctx.unregister_peer("alice");
+
+                assert_eq!(ctx.peers_on(&key), &[UserId("bob".into())]);
+                assert_eq!(ctx.caret_for(&key, &UserId("bob".into())), Some(7));
+                assert_eq!(ctx.remote_cursors.len(), 1);
+                assert_eq!(ctx.remote_cursors[0].user_id, "bob");
+            }
+        }
+
+        phase peers_keep_stable_colours_and_honest_labels_in_any_arrival_order;
+        {
+            // phase: presence_user_color_is_stable_and_distinct
+            {
+                // Same id → same colour every time (deterministic, no shared state).
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_display_name(UserId("alice".into()), "Alice Smith");
+                let a1 = ctx.user(&UserId("alice".into()));
+                assert_eq!(a1.colour, crate::tokens::PresenceHue::of_identity("alice"));
+                assert_eq!(identity_rgb(a1.colour), user_color("alice"));
+                // Distinct ids → distinct colours (the whole point of the palette).
+                let bob = ctx.user(&UserId("bob".into()));
+                assert_ne!(a1.colour, bob.colour);
+                assert_eq!(a1.name, "Alice Smith");
+            }
+            // phase: roster_name_resolves_with_id_fallback
+            {
+                let mut ctx = PresenceCtx::empty();
+                let alice = UserId("alice".into());
+                // No roster entry yet: a guest, never their id.
+                assert_eq!(ctx.display_name(&alice), guest_label());
+                ctx.set_display_name(alice.clone(), "Alice Smith");
+                assert_eq!(ctx.display_name(&alice), "Alice Smith");
+                // `user()` bundles id + name + colour.
+                let pu = ctx.user(&alice);
+                assert_eq!(pu.name, "Alice Smith");
+                assert_eq!(identity_rgb(pu.colour), user_color("alice"));
+            }
+            // phase: participant_kind_survives_name_resolution
+            {
+                let mut ctx = PresenceCtx::empty();
+                let scribe = UserId("agent:scribe".into());
+                ctx.set_display_name(scribe.clone(), "Scribe");
+                ctx.set_participant_kind(&scribe, true);
+                assert!(ctx.is_agent(&scribe));
+                assert!(!ctx.user(&scribe).id.is_person());
+                assert_eq!(ctx.display_name(&scribe), "Scribe · Agent");
+                ctx.set_display_name(scribe.clone(), "Editorial helper");
+                assert!(
+                    !ctx.user(&scribe).id.is_person(),
+                    "renaming cannot turn software into a person"
+                );
+                assert_eq!(ctx.display_name(&scribe), "Editorial helper · Agent");
+                ctx.set_participant_kind(&scribe, false);
+                assert!(!ctx.is_agent(&scribe));
+                assert_eq!(ctx.display_name(&scribe), "Editorial helper");
+            }
+            // phase: an_unnamed_peer_is_a_guest_and_never_its_id
+            // A person nobody named is a guest on every surface: never blank, and never their key,
+            // which reads as a fault on a caret chip.
+            {
+                let ctx = PresenceCtx::empty();
+                let peer = UserId("ab".repeat(32));
+                let label = ctx.display_name(&peer);
+                assert_eq!(label, guest_label());
+                assert_eq!(
+                    ctx.user(&peer).name,
+                    guest_label(),
+                    "every renderer resolves the same way",
+                );
+            }
+            // phase: a_peer_that_gains_a_name_keeps_its_colour
+            // Colour is keyed on the id; gaining a name must not perturb it.
+            {
+                let mut ctx = PresenceCtx::empty();
+                let peer = UserId("peer@5537458103208628978".into());
+                let before = ctx.color_for(&peer);
+
+                ctx.set_display_name(peer.clone(), "Bob");
+
+                assert_eq!(ctx.display_name(&peer), "Bob");
+                assert_eq!(
+                    ctx.color_for(&peer),
+                    before,
+                    "a peer must not change colour in front of the people watching it",
+                );
+            }
+            // phase: a_name_that_arrives_after_the_pointer_relabels_it
+            // A name can arrive after the pointer it belongs to. The pill has to
+            // pick it up, or a peer stays a guest on screen until they happen
+            // to move again.
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
+                assert_eq!(ctx.remote_cursors[0].label, guest_label());
+
+                ctx.set_display_name(UserId("peer@77".into()), "Bob");
+
+                assert_eq!(
+                    ctx.remote_cursors.len(),
+                    1,
+                    "naming a peer adds no second pointer"
+                );
+                assert_eq!(ctx.remote_cursors[0].label, "Bob");
+                assert_eq!(
+                    ctx.remote_cursors[0].position,
+                    [10.0, 20.0],
+                    "and moves none"
+                );
+            }
+            // phase: a_pointer_that_arrives_after_the_name_is_labelled_with_it
+            // And the other order: a name learned from the roster before the
+            // peer's first move labels that move when it lands.
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_display_name(UserId("peer@77".into()), "Bob");
+
+                ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
+
+                assert_eq!(ctx.remote_cursors[0].label, "Bob");
+            }
+        }
+
+        phase people_sharing_a_name_are_numbered_alike_for_everyone_including_themselves;
+        {
+            let ada = UserId("key-a".into());
+            let other_ada = UserId("key-b".into());
+            let agent = UserId("agent:claude".into());
+            // The workspace seen from Ada's machine: she is the self row.
+            let mut mine = PresenceCtx::empty();
+            mine.upsert_remote_cursor("key-b".into(), [1.0, 1.0], Some("ada"));
+            mine.set_self_participant(ada.clone(), "Ada");
+            mine.set_display_name(other_ada.clone(), "ada");
+            mine.set_participant_kind(&agent, ParticipantKind::Agent);
+            mine.set_display_name(agent.clone(), "Ada");
+            // And from the other Ada's, who heard of everyone in another order.
+            let mut theirs = PresenceCtx::empty();
+            theirs.set_participant_kind(&agent, ParticipantKind::Agent);
+            theirs.set_display_name(agent.clone(), "Ada");
+            theirs.set_display_name(ada.clone(), "Ada");
+            theirs.set_self_participant(other_ada.clone(), "ada");
+
+            for ctx in [&mine, &theirs] {
+                assert_eq!(ctx.display_name(&ada), "Ada (1)");
+                assert_eq!(ctx.display_name(&other_ada), "ada (2)");
+                assert_eq!(
+                    ctx.display_name(&agent),
+                    crate::history_source::agent_display_label("Ada"),
+                    "an agent keeps its kind label and takes no number"
+                );
+            }
+            assert_eq!(mine.self_label().as_deref(), Some("Ada (1)"));
+            assert_eq!(theirs.self_label().as_deref(), Some("ada (2)"));
+            assert_eq!(
+                mine.remote_cursors[0].label, "ada (2)",
+                "a pill drawn before the collision was known is renumbered"
             );
-            let marks = ctx.active_typing(&bob, &key, t0);
-            assert_eq!(marks.len(), 2, "a far-away edit is its own span");
+            let listed: Vec<String> = mine.roster().into_iter().map(|u| u.name).collect();
+            assert_eq!(
+                listed,
+                [
+                    crate::history_source::agent_display_label("Ada"),
+                    "Ada (1)".to_owned(),
+                    "ada (2)".to_owned()
+                ]
+            );
+
+            mine.set_display_name(other_ada.clone(), "Bea");
+            assert_eq!(mine.self_label().as_deref(), Some("Ada"));
+            assert_eq!(mine.remote_cursors[0].label, "Bea");
+            theirs.unregister_peer("key-a");
+            assert_eq!(theirs.self_label().as_deref(), Some("ada"));
+        }
+
+        phase typing_marks_fade_prune_and_coalesce;
+        {
+            // phase: typing_mark_fades_linearly_and_prunes
+            {
+                use crate::time::Duration;
+                let mut ctx = PresenceCtx::empty();
+                let bob = UserId("bob".into());
+                let key = PresenceKey::Widget {
+                    path: vec![PathSegment::Index(0)],
+                };
+                let t0 = crate::time::now();
+                ctx.record_peer_typing(
+                    bob.clone(),
+                    key.clone(),
+                    SelectionRange { start: 3, end: 8 },
+                    t0,
+                );
+
+                // Fresh: alpha ~1.0, the full range present.
+                let fresh = ctx.active_typing(&bob, &key, t0);
+                assert_eq!(fresh.len(), 1);
+                assert_eq!((fresh[0].0.start, fresh[0].0.end), (3, 8));
+                assert!((fresh[0].1 - 1.0).abs() < 1e-3, "just-typed alpha is ~1.0");
+
+                // Half-way through the fade window: alpha ~0.5.
+                let mid = t0 + TYPING_FADE / 2;
+                let half = ctx.active_typing(&bob, &key, mid);
+                assert_eq!(half.len(), 1);
+                assert!(
+                    (half[0].1 - 0.5).abs() < 0.05,
+                    "alpha halves at mid-life, got {}",
+                    half[0].1
+                );
+                assert!(ctx.has_active_typing(mid));
+                assert_eq!(
+                    ctx.typing_next_step(mid),
+                    Some(t0 + TYPING_FADE / 2 + TYPING_FADE / TYPING_FADE_STEPS),
+                    "the fade wakes the host at its next step, not every frame"
+                );
+                assert_eq!(
+                    ctx.active_typing(&bob, &key, mid + Duration::from_millis(10))[0].1,
+                    half[0].1,
+                    "within a step the highlight does not change"
+                );
+
+                // Past the window: gone from the read, and prune reclaims it.
+                let after = t0 + TYPING_FADE + Duration::from_millis(1);
+                assert!(ctx.active_typing(&bob, &key, after).is_empty());
+                assert!(!ctx.has_active_typing(after));
+                assert!(!ctx.typing.is_empty(), "not yet pruned");
+                ctx.prune_typing(after);
+                assert!(ctx.typing.is_empty(), "prune reclaims fully-faded marks");
+            }
+            // phase: typing_marks_coalesce_when_contiguous
+            {
+                let mut ctx = PresenceCtx::empty();
+                let bob = UserId("bob".into());
+                let key = PresenceKey::Widget {
+                    path: vec![PathSegment::Index(1)],
+                };
+                let t0 = crate::time::now();
+                ctx.record_peer_typing(
+                    bob.clone(),
+                    key.clone(),
+                    SelectionRange { start: 0, end: 3 },
+                    t0,
+                );
+                // A contiguous continuation (abuts the previous end) extends the span.
+                ctx.record_peer_typing(
+                    bob.clone(),
+                    key.clone(),
+                    SelectionRange { start: 3, end: 6 },
+                    t0,
+                );
+                let marks = ctx.active_typing(&bob, &key, t0);
+                assert_eq!(marks.len(), 1, "contiguous typing coalesces into one span");
+                assert_eq!((marks[0].0.start, marks[0].0.end), (0, 6));
+
+                // A disjoint edit elsewhere in the same block stays separate.
+                ctx.record_peer_typing(
+                    bob.clone(),
+                    key.clone(),
+                    SelectionRange { start: 40, end: 44 },
+                    t0,
+                );
+                let marks = ctx.active_typing(&bob, &key, t0);
+                assert_eq!(marks.len(), 2, "a far-away edit is its own span");
+            }
         }
     }
 }
@@ -3312,520 +3336,524 @@ mod own_identity_tests {
         ctx
     }
 
-    #[test]
-    fn a_session_suppresses_only_its_own_identity() {
-        // phase: a_session_does_not_paint_a_pill_for_itself
-        {
-            let mut ctx = mine();
-            ctx.apply_remote_presence(
-                "ada".into(),
-                workspace(),
-                PresencePayload::Pointer { x: 120.0, y: 90.0 },
-            );
-            ctx.apply_remote_presence("ada".into(), workspace(), PresencePayload::Caret { pos: 7 });
+    tilo_test_env::scenario! {
+        fn a_session_knows_itself_and_its_pointers_ease_and_retire;
 
-            assert!(
-                ctx.remote_cursors.is_empty(),
-                "painted a cursor pill for this session's own identity: {:?}",
-                ctx.remote_cursors,
-            );
-            assert_eq!(ctx.pointer_for(&workspace(), &UserId("ada".into())), None);
-            assert_eq!(ctx.caret_for(&workspace(), &UserId("ada".into())), None);
-            assert!(ctx.peers_on(&workspace()).is_empty());
-        }
-        // phase: another_person_is_still_painted
-        // The control. A second *person* is a second participant, and the
-        // self-rule may not touch them — hiding a real collaborator is the
-        // worse of the two failures by a distance.
+        phase a_session_suppresses_only_its_own_identity;
         {
-            let mut ctx = mine();
-            ctx.apply_remote_presence(
-                "peer@77".into(),
-                workspace(),
-                PresencePayload::Pointer { x: 12.0, y: 34.0 },
-            );
-            ctx.apply_remote_presence(
-                "peer@77".into(),
-                workspace(),
-                PresencePayload::Caret { pos: 3 },
-            );
-
-            assert_eq!(
-                ctx.pointer_for(&workspace(), &UserId("peer@77".into())),
-                Some((12.0, 34.0))
-            );
-            assert_eq!(
-                ctx.caret_for(&workspace(), &UserId("peer@77".into())),
-                Some(3)
-            );
-            assert_eq!(ctx.remote_cursors.len(), 1);
-            assert_eq!(ctx.remote_cursors[0].user_id, "peer@77");
-        }
-        // phase: an_agent_in_the_same_document_is_still_painted
-        // A document legitimately has more than one app participant: the
-        // agent joins as one and publishes a caret as it edits, with no
-        // window anywhere. It announces an identity of its own, so the
-        // rule leaves it alone — the test is the participant, not the
-        // process and not the presence of a window.
-        {
-            let mut ctx = mine();
-            ctx.apply_remote_presence(
-                "agent".into(),
-                workspace(),
-                PresencePayload::Caret { pos: 11 },
-            );
-            assert_eq!(
-                ctx.caret_for(&workspace(), &UserId("agent".into())),
-                Some(11)
-            );
-        }
-        // phase: a_sibling_arriving_still_gets_the_document
-        // `Arrived` is not only a thing to draw — it is how a joiner asks
-        // the workspace for the document, and a second window of the same app
-        // depends on the answer. Suppressing the pill must not suppress
-        // the handshake.
-        {
-            let mut ctx = mine();
-            assert_eq!(
-                ctx.apply_remote_presence("ada".into(), workspace(), PresencePayload::Arrived),
-                RemotePresenceEffect::PeerArrived,
-                "a sibling that arrived must still be answered with state",
-            );
-            assert!(
-                ctx.peers_on(&workspace()).is_empty(),
-                "answering a sibling must not also list it as somebody else",
-            );
-        }
-        // phase: an_unnamed_session_suppresses_nobody
-        // A session that does not know what it is called suppresses
-        // nobody. The rule fails open on purpose.
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.apply_remote_presence(
-                "ada".into(),
-                workspace(),
-                PresencePayload::Pointer { x: 1.0, y: 2.0 },
-            );
-            assert_eq!(ctx.remote_cursors.len(), 1);
-        }
-        // phase: a_blank_identity_is_not_an_identity
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.set_own_identity(["", "   "]);
-            assert!(!ctx.is_own_identity(""));
-            ctx.apply_remote_presence(
-                String::new(),
-                workspace(),
-                PresencePayload::Pointer { x: 1.0, y: 2.0 },
-            );
-            assert_eq!(ctx.remote_cursors.len(), 1);
-        }
-        // phase: the_cursor_stream_honours_the_same_rule
-        // The cursor stream reaches the same pill without passing through
-        // `apply_remote_presence`. A guard on one door and not the other
-        // leaves the bug reachable.
-        {
-            let mut ctx = mine();
-            ctx.upsert_remote_cursor("ada".into(), [5.0, 5.0], None);
-            assert!(ctx.remote_cursors.is_empty());
-            ctx.upsert_remote_cursor("peer@77".into(), [5.0, 5.0], None);
-            assert_eq!(ctx.remote_cursors.len(), 1);
-        }
-        // phase: a_frame_stamped_with_the_workspace_name_for_this_session_is_still_its_own
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.set_own_identity(["ada"]);
-            ctx.set_self_participant(UserId("peer@42".into()), "Bob");
-            assert!(ctx.is_own_identity("Bob"));
-            assert!(
-                !ctx.is_own_identity("Claude"),
-                "a peer the workspace happens to have named must stay a peer",
-            );
-        }
-    }
-
-    #[test]
-    fn the_own_participant_is_known_without_becoming_a_peer() {
-        // phase: a_session_does_not_follow_its_own_view
-        // Following yourself is not a thing. A `View` broadcast stamped
-        // with this session's own identity is neither stored nor reported
-        // as a reason to move the viewport.
-        {
-            let mut ctx = mine();
-            let subset = crate::view::ViewSubset {
-                scroll: vec![10.0],
-                open_resource: None,
-                viewport: crate::view::ViewRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 10.0,
-                    height: 10.0,
-                },
-                view_mode: None,
-            };
-            assert_eq!(
+            // phase: a_session_does_not_paint_a_pill_for_itself
+            {
+                let mut ctx = mine();
                 ctx.apply_remote_presence(
                     "ada".into(),
-                    PresenceKey::view(&subset),
-                    PresencePayload::Arrived,
-                ),
-                RemotePresenceEffect::None,
-            );
-            assert!(ctx.peer_view(&UserId("ada".into())).is_none());
-        }
-        // phase: knowing_which_participant_you_are_does_not_make_you_a_peer
-        // The workspace's answer to "which participant am I" arrives without making
-        // this session a participant of its own presence store — a `names` entry
-        // for it would paint a pill over its own document.
-        {
-            let mut ctx = PresenceCtx::empty();
-            let me = UserId("peer@9007495404254172154".into());
-            ctx.set_self_participant(me.clone(), "Bob");
+                    workspace(),
+                    PresencePayload::Pointer { x: 120.0, y: 90.0 },
+                );
+                ctx.apply_remote_presence("ada".into(), workspace(), PresencePayload::Caret { pos: 7 });
 
-            assert_eq!(ctx.self_id(), Some(&me));
-            assert_eq!(ctx.self_name(), Some("Bob"));
-            assert!(
-                !ctx.names.contains_key(&me),
-                "the row became a display name, which is what the roster, the \
+                assert!(
+                    ctx.remote_cursors.is_empty(),
+                    "painted a cursor pill for this session's own identity: {:?}",
+                    ctx.remote_cursors,
+                );
+                assert_eq!(ctx.pointer_for(&workspace(), &UserId("ada".into())), None);
+                assert_eq!(ctx.caret_for(&workspace(), &UserId("ada".into())), None);
+                assert!(ctx.peers_on(&workspace()).is_empty());
+            }
+            // phase: another_person_is_still_painted
+            // The control. A second *person* is a second participant, and the
+            // self-rule may not touch them — hiding a real collaborator is the
+            // worse of the two failures by a distance.
+            {
+                let mut ctx = mine();
+                ctx.apply_remote_presence(
+                    "peer@77".into(),
+                    workspace(),
+                    PresencePayload::Pointer { x: 12.0, y: 34.0 },
+                );
+                ctx.apply_remote_presence(
+                    "peer@77".into(),
+                    workspace(),
+                    PresencePayload::Caret { pos: 3 },
+                );
+
+                assert_eq!(
+                    ctx.pointer_for(&workspace(), &UserId("peer@77".into())),
+                    Some((12.0, 34.0))
+                );
+                assert_eq!(
+                    ctx.caret_for(&workspace(), &UserId("peer@77".into())),
+                    Some(3)
+                );
+                assert_eq!(ctx.remote_cursors.len(), 1);
+                assert_eq!(ctx.remote_cursors[0].user_id, "peer@77");
+            }
+            // phase: an_agent_in_the_same_document_is_still_painted
+            // A document legitimately has more than one app participant: the
+            // agent joins as one and publishes a caret as it edits, with no
+            // window anywhere. It announces an identity of its own, so the
+            // rule leaves it alone — the test is the participant, not the
+            // process and not the presence of a window.
+            {
+                let mut ctx = mine();
+                ctx.apply_remote_presence(
+                    "agent".into(),
+                    workspace(),
+                    PresencePayload::Caret { pos: 11 },
+                );
+                assert_eq!(
+                    ctx.caret_for(&workspace(), &UserId("agent".into())),
+                    Some(11)
+                );
+            }
+            // phase: a_sibling_arriving_still_gets_the_document
+            // `Arrived` is not only a thing to draw — it is how a joiner asks
+            // the workspace for the document, and a second window of the same app
+            // depends on the answer. Suppressing the pill must not suppress
+            // the handshake.
+            {
+                let mut ctx = mine();
+                assert_eq!(
+                    ctx.apply_remote_presence("ada".into(), workspace(), PresencePayload::Arrived),
+                    RemotePresenceEffect::PeerArrived,
+                    "a sibling that arrived must still be answered with state",
+                );
+                assert!(
+                    ctx.peers_on(&workspace()).is_empty(),
+                    "answering a sibling must not also list it as somebody else",
+                );
+            }
+            // phase: an_unnamed_session_suppresses_nobody
+            // A session that does not know what it is called suppresses
+            // nobody. The rule fails open on purpose.
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.apply_remote_presence(
+                    "ada".into(),
+                    workspace(),
+                    PresencePayload::Pointer { x: 1.0, y: 2.0 },
+                );
+                assert_eq!(ctx.remote_cursors.len(), 1);
+            }
+            // phase: a_blank_identity_is_not_an_identity
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_own_identity(["", "   "]);
+                assert!(!ctx.is_own_identity(""));
+                ctx.apply_remote_presence(
+                    String::new(),
+                    workspace(),
+                    PresencePayload::Pointer { x: 1.0, y: 2.0 },
+                );
+                assert_eq!(ctx.remote_cursors.len(), 1);
+            }
+            // phase: the_cursor_stream_honours_the_same_rule
+            // The cursor stream reaches the same pill without passing through
+            // `apply_remote_presence`. A guard on one door and not the other
+            // leaves the bug reachable.
+            {
+                let mut ctx = mine();
+                ctx.upsert_remote_cursor("ada".into(), [5.0, 5.0], None);
+                assert!(ctx.remote_cursors.is_empty());
+                ctx.upsert_remote_cursor("peer@77".into(), [5.0, 5.0], None);
+                assert_eq!(ctx.remote_cursors.len(), 1);
+            }
+            // phase: a_frame_stamped_with_the_workspace_name_for_this_session_is_still_its_own
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_own_identity(["ada"]);
+                ctx.set_self_participant(UserId("peer@42".into()), "Bob");
+                assert!(ctx.is_own_identity("Bob"));
+                assert!(
+                    !ctx.is_own_identity("Claude"),
+                    "a peer the workspace happens to have named must stay a peer",
+                );
+            }
+        }
+
+        phase the_own_participant_is_known_without_becoming_a_peer;
+        {
+            // phase: a_session_does_not_follow_its_own_view
+            // Following yourself is not a thing. A `View` broadcast stamped
+            // with this session's own identity is neither stored nor reported
+            // as a reason to move the viewport.
+            {
+                let mut ctx = mine();
+                let subset = crate::view::ViewSubset {
+                    scroll: vec![10.0],
+                    open_resource: None,
+                    viewport: crate::view::ViewRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 10.0,
+                    },
+                    view_mode: None,
+                };
+                assert_eq!(
+                    ctx.apply_remote_presence(
+                        "ada".into(),
+                        PresenceKey::view(&subset),
+                        PresencePayload::Arrived,
+                    ),
+                    RemotePresenceEffect::None,
+                );
+                assert!(ctx.peer_view(&UserId("ada".into())).is_none());
+            }
+            // phase: knowing_which_participant_you_are_does_not_make_you_a_peer
+            // The workspace's answer to "which participant am I" arrives without making
+            // this session a participant of its own presence store — a `names` entry
+            // for it would paint a pill over its own document.
+            {
+                let mut ctx = PresenceCtx::empty();
+                let me = UserId("peer@9007495404254172154".into());
+                ctx.set_self_participant(me.clone(), "Bob");
+
+                assert_eq!(ctx.self_id(), Some(&me));
+                assert_eq!(ctx.self_name(), Some("Bob"));
+                assert!(
+                    !ctx.names.contains_key(&me),
+                    "the row became a display name, which is what the roster, the \
              caret chips and the mention colours all read"
-            );
+                );
 
-            // And a frame stamped with that address is this session's own, so the
-            // pill and the cursor stay suppressed.
-            assert!(ctx.is_own_identity(&me.0));
-            assert_eq!(
-                ctx.apply_remote_presence(me.0, workspace(), PresencePayload::Caret { pos: 4 }),
-                RemotePresenceEffect::None,
-            );
-            assert!(
-                ctx.peers_on(&workspace()).is_empty(),
-                "this session was listed as somebody else in its own workspace"
-            );
+                // And a frame stamped with that address is this session's own, so the
+                // pill and the cursor stay suppressed.
+                assert!(ctx.is_own_identity(&me.0));
+                assert_eq!(
+                    ctx.apply_remote_presence(me.0, workspace(), PresencePayload::Caret { pos: 4 }),
+                    RemotePresenceEffect::None,
+                );
+                assert!(
+                    ctx.peers_on(&workspace()).is_empty(),
+                    "this session was listed as somebody else in its own workspace"
+                );
+            }
+            // phase: an_unnamed_own_participant_reports_no_name
+            // A participant the workspace has admitted but not named has an address and no
+            // name. Handing the address back as a name is how a routing hash ends up
+            // rendered where a name belongs.
+            {
+                let mut ctx = PresenceCtx::empty();
+                let me = UserId("peer@42".into());
+                ctx.set_self_participant(me.clone(), "   ");
+                assert_eq!(ctx.self_id(), Some(&me));
+                assert_eq!(ctx.self_name(), None);
+            }
+            // phase: a_blank_own_participant_is_refused
+            {
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_self_participant(UserId("  ".into()), "Bob");
+                assert_eq!(ctx.self_id(), None);
+                assert!(!ctx.is_own_identity(""));
+                assert!(!ctx.is_own_identity("  "));
+            }
+            // phase: restating_the_published_identities_keeps_the_workspace_address
+            {
+                let mut ctx = PresenceCtx::empty();
+                let me = UserId("peer@42".into());
+                ctx.set_self_participant(me.clone(), "Bob");
+                ctx.set_own_identity(["so.tilo.chat"]);
+                assert!(ctx.is_own_identity(&me.0));
+                assert!(ctx.is_own_identity("so.tilo.chat"));
+            }
         }
-        // phase: an_unnamed_own_participant_reports_no_name
-        // A participant the workspace has admitted but not named has an address and no
-        // name. Handing the address back as a name is how a routing hash ends up
-        // rendered where a name belongs.
-        {
-            let mut ctx = PresenceCtx::empty();
-            let me = UserId("peer@42".into());
-            ctx.set_self_participant(me.clone(), "   ");
-            assert_eq!(ctx.self_id(), Some(&me));
-            assert_eq!(ctx.self_name(), None);
-        }
-        // phase: a_blank_own_participant_is_refused
-        {
-            let mut ctx = PresenceCtx::empty();
-            ctx.set_self_participant(UserId("  ".into()), "Bob");
-            assert_eq!(ctx.self_id(), None);
-            assert!(!ctx.is_own_identity(""));
-            assert!(!ctx.is_own_identity("  "));
-        }
-        // phase: restating_the_published_identities_keeps_the_workspace_address
-        {
-            let mut ctx = PresenceCtx::empty();
-            let me = UserId("peer@42".into());
-            ctx.set_self_participant(me.clone(), "Bob");
-            ctx.set_own_identity(["so.tilo.chat"]);
-            assert!(ctx.is_own_identity(&me.0));
-            assert!(ctx.is_own_identity("so.tilo.chat"));
-        }
-    }
 
-    /// Peers publish at ~30 Hz; a pointer painted raw steps on a faster
-    /// display. Each new sample is glided to over the gap since the last.
-    #[test]
-    fn pointer_position_eases_between_samples() {
-        let t0 = crate::time::now();
-        let workspace = PresenceKey::Workspace { id: "r".into() };
-        let peer = UserId("peer@7".into());
-        let gap = Duration::from_millis(33);
-        let mut ctx = PresenceCtx::default();
-        ctx.set_pointer_at(&workspace, peer.clone(), (0.0, 0.0), t0);
-        assert_eq!(
-            ctx.pointer_position_at(&workspace, &peer, t0),
-            Some((0.0, 0.0)),
-            "a first sample is shown where it is: nowhere to glide from",
-        );
-        assert!(!ctx.pointers_easing(t0));
-
-        let t1 = t0 + gap;
-        ctx.set_pointer_at(&workspace, peer.clone(), (33.0, 0.0), t1);
-        assert_eq!(
-            ctx.pointer_for(&workspace, &peer),
-            Some((33.0, 0.0)),
-            "the store holds what was heard; only the paint glides",
-        );
-        assert_eq!(
-            ctx.pointer_position_at(&workspace, &peer, t1),
-            Some((0.0, 0.0))
-        );
-        let (x, y) = ctx
-            .pointer_position_at(&workspace, &peer, t1 + gap / 2)
-            .expect("a pointer");
-        assert!((x - 16.5).abs() < 0.01 && y.abs() < f32::EPSILON, "{x}");
-        let (x, _) = ctx
-            .pointer_position_at(&workspace, &peer, t1 + gap / 4)
-            .expect("a pointer");
-        assert!(
-            (x - 33.0 * (0.25 * 0.25 * (3.0 - 2.0 * 0.25))).abs() < 0.05,
-            "eased, not linear: {x}"
-        );
-        assert!(
-            ctx.pointers_easing(t1 + gap / 2),
-            "mid-glide asks for frames"
-        );
-        assert_eq!(
-            ctx.pointer_position_at(&workspace, &peer, t1 + gap),
-            Some((33.0, 0.0)),
-            "and lands as the next sample is due",
-        );
-        assert!(!ctx.pointers_easing(t1 + gap), "a landed pointer is quiet");
-
-        // A sample arriving mid-glide starts from where the pointer shows.
-        let t2 = t1 + gap / 2;
-        ctx.set_pointer_at(&workspace, peer.clone(), (66.0, 0.0), t2);
-        let (x, _) = ctx
-            .pointer_position_at(&workspace, &peer, t2)
-            .expect("a pointer");
-        assert!((x - 16.5).abs() < 0.01, "no jump back or ahead: {x}");
-
-        // A restatement does not restart anything.
-        let landed = t2 + POINTER_EASE_MAX;
-        ctx.set_pointer_at(&workspace, peer.clone(), (66.0, 0.0), landed);
-        assert_eq!(
-            ctx.pointer_position_at(&workspace, &peer, landed),
-            Some((66.0, 0.0))
-        );
-        assert!(!ctx.pointers_easing(landed));
-
-        // After sitting still, the glide is capped rather than spread over
-        // the whole pause.
-        let later = landed + Duration::from_secs(2);
-        ctx.set_pointer_at(&workspace, peer.clone(), (100.0, 0.0), later);
-        assert!(ctx.pointers_easing(later + POINTER_EASE_MAX / 2));
-        assert_eq!(
-            ctx.pointer_position_at(&workspace, &peer, later + POINTER_EASE_MAX),
-            Some((100.0, 0.0)),
-        );
-    }
-
-    /// A pointer anchored to a tile is re-placed, under the instant it was
-    /// heard, every time that tile moves: it rides the tile, glide and all.
-    #[test]
-    fn a_pointer_carried_with_its_tile_keeps_its_glide() {
-        let t0 = crate::time::now();
-        let workspace = PresenceKey::Workspace { id: "r".into() };
-        let peer = UserId("peer@7".into());
-        let gap = Duration::from_millis(40);
-        let mut ctx = PresenceCtx::default();
-        ctx.set_pointer_at(&workspace, peer.clone(), (100.0, 0.0), t0);
-        ctx.set_pointer_at(&workspace, peer.clone(), (140.0, 0.0), t0 + gap);
-        // The tile scrolls 30 px left; nothing new was heard.
-        ctx.set_pointer_at(&workspace, peer.clone(), (110.0, 0.0), t0 + gap);
-        let (x, _) = ctx
-            .pointer_position_at(&workspace, &peer, t0 + gap + gap / 2)
-            .expect("a pointer");
-        assert!(
-            (x - 90.0).abs() < 0.01,
-            "halfway from 70 to 110 in the scrolled frame: {x}"
-        );
-
-        // A pointer that never moved is carried with no glide at all.
-        let still = UserId("peer@8".into());
-        ctx.set_pointer_at(&workspace, still.clone(), (10.0, 10.0), t0);
-        ctx.set_pointer_at(&workspace, still.clone(), (40.0, 10.0), t0);
-        assert_eq!(
-            ctx.pointer_position_at(&workspace, &still, t0),
-            Some((40.0, 10.0))
-        );
-    }
-
-    /// A pointer retired for going quiet takes its glide with it, so when it
-    /// is heard again it appears where it is rather than gliding from where
-    /// it was last seen seconds ago.
-    #[test]
-    fn quiet_pointer_is_retired_after_idle_and_returns_without_a_glide() {
-        let t0 = crate::time::now();
-        let workspace = PresenceKey::Workspace { id: "r".into() };
-        let peer = UserId("peer@7".into());
-        let mut ctx = PresenceCtx::default();
-        ctx.set_pointer_at(&workspace, peer.clone(), (0.0, 0.0), t0);
-        ctx.set_pointer_at(
-            &workspace,
-            peer.clone(),
-            (50.0, 0.0),
-            t0 + Duration::from_millis(30),
-        );
-        let quiet = t0 + Duration::from_millis(30) + POINTER_IDLE;
-        assert!(ctx.prune_pointers(quiet, POINTER_IDLE));
-        assert_eq!(ctx.pointer_position_at(&workspace, &peer, quiet), None);
-        assert!(!ctx.pointers_easing(quiet));
-
-        ctx.set_pointer_at(&workspace, peer.clone(), (500.0, 0.0), quiet);
-        assert_eq!(
-            ctx.pointer_position_at(&workspace, &peer, quiet),
-            Some((500.0, 0.0))
-        );
-
-        // A pointer that arrived as a frame is also on record as a remote
-        // cursor; retiring the pointer retires that record, or a peer who
-        // vanished keeps a window repainting for the rest of the session.
-        let mut ctx = PresenceCtx::default();
-        ctx.apply_remote_presence_at(
-            peer.0.clone(),
-            workspace.clone(),
-            crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
-            t0,
-        );
-        assert_eq!(ctx.remote_cursors.len(), 1);
-        assert!(ctx.prune_pointers(t0 + POINTER_IDLE, POINTER_IDLE));
-        assert!(ctx.remote_cursors.is_empty(), "{:?}", ctx.remote_cursors);
-    }
-
-    #[test]
-    fn a_quiet_pointer_fades_out_just_before_it_is_retired() {
-        let t0 = crate::time::now();
-        let workspace = PresenceKey::Workspace { id: "r".into() };
-        let peer = UserId("peer@7".into());
-        let mut ctx = PresenceCtx::default();
-        ctx.set_pointer_at(&workspace, peer.clone(), (10.0, 20.0), t0);
-        let opacity = |ctx: &PresenceCtx, after: Duration, fade: Duration| {
-            ctx.pointer_opacity(&workspace, &peer, t0 + after, POINTER_IDLE, fade)
-        };
-
-        let fade_starts = POINTER_IDLE.saturating_sub(POINTER_FADE);
-        assert!((opacity(&ctx, fade_starts, POINTER_FADE) - 1.0).abs() < f32::EPSILON);
-        assert!(!ctx.pointers_fading(t0 + fade_starts, POINTER_IDLE, POINTER_FADE));
-        let midway = fade_starts + POINTER_FADE / 2;
-        let half = opacity(&ctx, midway, POINTER_FADE);
-        assert!((half - 0.5).abs() < 0.01, "half-faded midway: {half}");
-        assert!(ctx.pointers_fading(t0 + midway, POINTER_IDLE, POINTER_FADE));
-        assert!(
-            (opacity(&ctx, midway, Duration::ZERO) - 1.0).abs() < f32::EPSILON,
-            "reduced motion: opaque until retired",
-        );
-        assert!(ctx.prune_pointers(t0 + POINTER_IDLE, POINTER_IDLE));
-        assert_eq!(ctx.pointer_for(&workspace, &peer), None);
-        assert!(!ctx.pointers_fading(t0 + POINTER_IDLE, POINTER_IDLE, POINTER_FADE));
-
-        // Heard from again: opaque once more.
-        let t1 = t0 + POINTER_IDLE + Duration::from_secs(1);
-        ctx.set_pointer_at(&workspace, peer.clone(), (10.0, 20.0), t1);
-        assert!(
-            (ctx.pointer_opacity(&workspace, &peer, t1, POINTER_IDLE, POINTER_FADE) - 1.0).abs()
-                < f32::EPSILON
-        );
-    }
-
-    #[test]
-    fn pointer_registrations_retire_unrestated_pointers_and_keep_kinds() {
-        // phase: a_pointer_nobody_restates_is_retired_and_nothing_else_is
-        // A pointer nobody restates is retired; everything else about that peer
-        // stays — retiring a cursor is not evicting a peer, or a participant
-        // would vanish from the roster whenever it stops moving.
+        phase pointer_position_eases_between_samples;
+        // Peers publish at ~30 Hz; a pointer painted raw steps on a faster
+        // display. Each new sample is glided to over the gap since the last.
         {
             let t0 = crate::time::now();
-            let horizon = Duration::from_secs(4);
             let workspace = PresenceKey::Workspace { id: "r".into() };
-            let block = PresenceKey::Widget {
-                path: vec![PathSegment::Index(0)],
-            };
-            let claude = UserId("peer@7".into());
-            let bob = UserId("peer@8".into());
-
+            let peer = UserId("peer@7".into());
+            let gap = Duration::from_millis(33);
             let mut ctx = PresenceCtx::default();
-            ctx.set_display_name(claude.clone(), "Claude");
-            ctx.set_pointer_at(&workspace, claude.clone(), (1178.31, 582.0), t0);
-            ctx.set_caret(&block, claude.clone(), 12);
+            ctx.set_pointer_at(&workspace, peer.clone(), (0.0, 0.0), t0);
+            assert_eq!(
+                ctx.pointer_position_at(&workspace, &peer, t0),
+                Some((0.0, 0.0)),
+                "a first sample is shown where it is: nowhere to glide from",
+            );
+            assert!(!ctx.pointers_easing(t0));
 
-            assert_eq!(ctx.pointer_for(&workspace, &claude), Some((1178.31, 582.0)));
-            assert!(
-                !ctx.prune_pointers(t0 + Duration::from_secs(1), horizon),
-                "a peer heard from a moment ago is not stale",
+            let t1 = t0 + gap;
+            ctx.set_pointer_at(&workspace, peer.clone(), (33.0, 0.0), t1);
+            assert_eq!(
+                ctx.pointer_for(&workspace, &peer),
+                Some((33.0, 0.0)),
+                "the store holds what was heard; only the paint glides",
             );
             assert_eq!(
-                ctx.pointer_for(&workspace, &claude),
-                Some((1178.31, 582.0)),
-                "and is still painted",
+                ctx.pointer_position_at(&workspace, &peer, t1),
+                Some((0.0, 0.0))
+            );
+            let (x, y) = ctx
+                .pointer_position_at(&workspace, &peer, t1 + gap / 2)
+                .expect("a pointer");
+            assert!((x - 16.5).abs() < 0.01 && y.abs() < f32::EPSILON, "{x}");
+            let (x, _) = ctx
+                .pointer_position_at(&workspace, &peer, t1 + gap / 4)
+                .expect("a pointer");
+            assert!(
+                (x - 33.0 * (0.25 * 0.25 * (3.0 - 2.0 * 0.25))).abs() < 0.05,
+                "eased, not linear: {x}"
+            );
+            assert!(
+                ctx.pointers_easing(t1 + gap / 2),
+                "mid-glide asks for frames"
+            );
+            assert_eq!(
+                ctx.pointer_position_at(&workspace, &peer, t1 + gap),
+                Some((33.0, 0.0)),
+                "and lands as the next sample is due",
+            );
+            assert!(!ctx.pointers_easing(t1 + gap), "a landed pointer is quiet");
+
+            // A sample arriving mid-glide starts from where the pointer shows.
+            let t2 = t1 + gap / 2;
+            ctx.set_pointer_at(&workspace, peer.clone(), (66.0, 0.0), t2);
+            let (x, _) = ctx
+                .pointer_position_at(&workspace, &peer, t2)
+                .expect("a pointer");
+            assert!((x - 16.5).abs() < 0.01, "no jump back or ahead: {x}");
+
+            // A restatement does not restart anything.
+            let landed = t2 + POINTER_EASE_MAX;
+            ctx.set_pointer_at(&workspace, peer.clone(), (66.0, 0.0), landed);
+            assert_eq!(
+                ctx.pointer_position_at(&workspace, &peer, landed),
+                Some((66.0, 0.0))
+            );
+            assert!(!ctx.pointers_easing(landed));
+
+            // After sitting still, the glide is capped rather than spread over
+            // the whole pause.
+            let later = landed + Duration::from_secs(2);
+            ctx.set_pointer_at(&workspace, peer.clone(), (100.0, 0.0), later);
+            assert!(ctx.pointers_easing(later + POINTER_EASE_MAX / 2));
+            assert_eq!(
+                ctx.pointer_position_at(&workspace, &peer, later + POINTER_EASE_MAX),
+                Some((100.0, 0.0)),
+            );
+        }
+
+        phase a_pointer_carried_with_its_tile_keeps_its_glide;
+        // A pointer anchored to a tile is re-placed, under the instant it was
+        // heard, every time that tile moves: it rides the tile, glide and all.
+        {
+            let t0 = crate::time::now();
+            let workspace = PresenceKey::Workspace { id: "r".into() };
+            let peer = UserId("peer@7".into());
+            let gap = Duration::from_millis(40);
+            let mut ctx = PresenceCtx::default();
+            ctx.set_pointer_at(&workspace, peer.clone(), (100.0, 0.0), t0);
+            ctx.set_pointer_at(&workspace, peer.clone(), (140.0, 0.0), t0 + gap);
+            // The tile scrolls 30 px left; nothing new was heard.
+            ctx.set_pointer_at(&workspace, peer.clone(), (110.0, 0.0), t0 + gap);
+            let (x, _) = ctx
+                .pointer_position_at(&workspace, &peer, t0 + gap + gap / 2)
+                .expect("a pointer");
+            assert!(
+                (x - 90.0).abs() < 0.01,
+                "halfway from 70 to 110 in the scrolled frame: {x}"
             );
 
-            // Somebody else keeps talking; the first one stops.
-            let t1 = t0 + horizon + Duration::from_secs(1);
-            ctx.set_pointer_at(&workspace, bob.clone(), (300.0, 200.0), t1);
+            // A pointer that never moved is carried with no glide at all.
+            let still = UserId("peer@8".into());
+            ctx.set_pointer_at(&workspace, still.clone(), (10.0, 10.0), t0);
+            ctx.set_pointer_at(&workspace, still.clone(), (40.0, 10.0), t0);
+            assert_eq!(
+                ctx.pointer_position_at(&workspace, &still, t0),
+                Some((40.0, 10.0))
+            );
+        }
+
+        phase quiet_pointer_is_retired_after_idle_and_returns_without_a_glide;
+        // A pointer retired for going quiet takes its glide with it, so when it
+        // is heard again it appears where it is rather than gliding from where
+        // it was last seen seconds ago.
+        {
+            let t0 = crate::time::now();
+            let workspace = PresenceKey::Workspace { id: "r".into() };
+            let peer = UserId("peer@7".into());
+            let mut ctx = PresenceCtx::default();
+            ctx.set_pointer_at(&workspace, peer.clone(), (0.0, 0.0), t0);
+            ctx.set_pointer_at(
+                &workspace,
+                peer.clone(),
+                (50.0, 0.0),
+                t0 + Duration::from_millis(30),
+            );
+            let quiet = t0 + Duration::from_millis(30) + POINTER_IDLE;
+            assert!(ctx.prune_pointers(quiet, POINTER_IDLE));
+            assert_eq!(ctx.pointer_position_at(&workspace, &peer, quiet), None);
+            assert!(!ctx.pointers_easing(quiet));
+
+            ctx.set_pointer_at(&workspace, peer.clone(), (500.0, 0.0), quiet);
+            assert_eq!(
+                ctx.pointer_position_at(&workspace, &peer, quiet),
+                Some((500.0, 0.0))
+            );
+
+            // A pointer that arrived as a frame is also on record as a remote
+            // cursor; retiring the pointer retires that record, or a peer who
+            // vanished keeps a window repainting for the rest of the session.
+            let mut ctx = PresenceCtx::default();
+            ctx.apply_remote_presence_at(
+                peer.0.clone(),
+                workspace.clone(),
+                crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+                t0,
+            );
+            assert_eq!(ctx.remote_cursors.len(), 1);
+            assert!(ctx.prune_pointers(t0 + POINTER_IDLE, POINTER_IDLE));
+            assert!(ctx.remote_cursors.is_empty(), "{:?}", ctx.remote_cursors);
+        }
+
+        phase a_quiet_pointer_fades_out_just_before_it_is_retired;
+        {
+            let t0 = crate::time::now();
+            let workspace = PresenceKey::Workspace { id: "r".into() };
+            let peer = UserId("peer@7".into());
+            let mut ctx = PresenceCtx::default();
+            ctx.set_pointer_at(&workspace, peer.clone(), (10.0, 20.0), t0);
+            let opacity = |ctx: &PresenceCtx, after: Duration, fade: Duration| {
+                ctx.pointer_opacity(&workspace, &peer, t0 + after, POINTER_IDLE, fade)
+            };
+
+            let fade_starts = POINTER_IDLE.saturating_sub(POINTER_FADE);
+            assert!((opacity(&ctx, fade_starts, POINTER_FADE) - 1.0).abs() < f32::EPSILON);
+            assert!(!ctx.pointers_fading(t0 + fade_starts, POINTER_IDLE, POINTER_FADE));
+            let midway = fade_starts + POINTER_FADE / 2;
+            let half = opacity(&ctx, midway, POINTER_FADE);
+            assert!((half - 0.5).abs() < 0.01, "half-faded midway: {half}");
+            assert!(ctx.pointers_fading(t0 + midway, POINTER_IDLE, POINTER_FADE));
             assert!(
-                ctx.prune_pointers(t1, horizon),
-                "the one that went quiet is retired, which is a reason to repaint",
+                (opacity(&ctx, midway, Duration::ZERO) - 1.0).abs() < f32::EPSILON,
+                "reduced motion: opaque until retired",
             );
-            assert_eq!(
-                ctx.pointer_for(&workspace, &claude),
-                None,
-                "no cursor for a peer that has stopped saying where it is pointing",
+            assert!(ctx.prune_pointers(t0 + POINTER_IDLE, POINTER_IDLE));
+            assert_eq!(ctx.pointer_for(&workspace, &peer), None);
+            assert!(!ctx.pointers_fading(t0 + POINTER_IDLE, POINTER_IDLE, POINTER_FADE));
+
+            // Heard from again: opaque once more.
+            let t1 = t0 + POINTER_IDLE + Duration::from_secs(1);
+            ctx.set_pointer_at(&workspace, peer.clone(), (10.0, 20.0), t1);
+            assert!(
+                (ctx.pointer_opacity(&workspace, &peer, t1, POINTER_IDLE, POINTER_FADE) - 1.0).abs()
+                    < f32::EPSILON
             );
-            assert_eq!(
-                ctx.pointer_for(&workspace, &bob),
-                Some((300.0, 200.0)),
-                "and the peer still talking is untouched - this retires one \
+        }
+
+        phase pointer_registrations_retire_unrestated_pointers_and_keep_kinds;
+        {
+            // phase: a_pointer_nobody_restates_is_retired_and_nothing_else_is
+            // A pointer nobody restates is retired; everything else about that peer
+            // stays — retiring a cursor is not evicting a peer, or a participant
+            // would vanish from the roster whenever it stops moving.
+            {
+                let t0 = crate::time::now();
+                let horizon = Duration::from_secs(4);
+                let workspace = PresenceKey::Workspace { id: "r".into() };
+                let block = PresenceKey::Widget {
+                    path: vec![PathSegment::Index(0)],
+                };
+                let claude = UserId("peer@7".into());
+                let bob = UserId("peer@8".into());
+
+                let mut ctx = PresenceCtx::default();
+                ctx.set_display_name(claude.clone(), "Claude");
+                ctx.set_pointer_at(&workspace, claude.clone(), (1178.31, 582.0), t0);
+                ctx.set_caret(&block, claude.clone(), 12);
+
+                assert_eq!(ctx.pointer_for(&workspace, &claude), Some((1178.31, 582.0)));
+                assert!(
+                    !ctx.prune_pointers(t0 + Duration::from_secs(1), horizon),
+                    "a peer heard from a moment ago is not stale",
+                );
+                assert_eq!(
+                    ctx.pointer_for(&workspace, &claude),
+                    Some((1178.31, 582.0)),
+                    "and is still painted",
+                );
+
+                // Somebody else keeps talking; the first one stops.
+                let t1 = t0 + horizon + Duration::from_secs(1);
+                ctx.set_pointer_at(&workspace, bob.clone(), (300.0, 200.0), t1);
+                assert!(
+                    ctx.prune_pointers(t1, horizon),
+                    "the one that went quiet is retired, which is a reason to repaint",
+                );
+                assert_eq!(
+                    ctx.pointer_for(&workspace, &claude),
+                    None,
+                    "no cursor for a peer that has stopped saying where it is pointing",
+                );
+                assert_eq!(
+                    ctx.pointer_for(&workspace, &bob),
+                    Some((300.0, 200.0)),
+                    "and the peer still talking is untouched - this retires one \
              pointer, not the scope",
-            );
+                );
 
-            // The peer did not leave.
-            assert!(
-                ctx.peers_on(&workspace).contains(&claude),
-                "a peer that has gone quiet about pointing is still in the workspace",
-            );
-            assert_eq!(
-                ctx.caret_for(&block, &claude),
-                Some(12),
-                "and its caret in the document is untouched",
-            );
-            assert_eq!(
-                ctx.display_name(&claude),
-                "Claude",
-                "and the workspace still knows what to call it",
-            );
+                // The peer did not leave.
+                assert!(
+                    ctx.peers_on(&workspace).contains(&claude),
+                    "a peer that has gone quiet about pointing is still in the workspace",
+                );
+                assert_eq!(
+                    ctx.caret_for(&block, &claude),
+                    Some(12),
+                    "and its caret in the document is untouched",
+                );
+                assert_eq!(
+                    ctx.display_name(&claude),
+                    "Claude",
+                    "and the workspace still knows what to call it",
+                );
 
-            // And it comes back the instant it says something again.
-            ctx.set_pointer_at(&workspace, claude.clone(), (10.0, 20.0), t1);
-            assert_eq!(ctx.pointer_for(&workspace, &claude), Some((10.0, 20.0)));
-        }
-        // phase: authenticated_participant_kind_survives_presence_and_clears_on_disconnect
-        {
-            let mut ctx = PresenceCtx::empty();
-            let agent = UserId("peer@agent-7".into());
+                // And it comes back the instant it says something again.
+                ctx.set_pointer_at(&workspace, claude.clone(), (10.0, 20.0), t1);
+                assert_eq!(ctx.pointer_for(&workspace, &claude), Some((10.0, 20.0)));
+            }
+            // phase: authenticated_participant_kind_survives_presence_and_clears_on_disconnect
+            {
+                let mut ctx = PresenceCtx::empty();
+                let agent = UserId("peer@agent-7".into());
 
-            assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Person);
-            ctx.set_participant_kind(agent.clone(), ParticipantKind::Agent);
-            ctx.set_display_name(agent.clone(), "Release assistant");
-            ctx.set_caret(&PresenceKey::Widget { path: vec![] }, agent.clone(), 4);
+                assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Person);
+                ctx.set_participant_kind(agent.clone(), ParticipantKind::Agent);
+                ctx.set_display_name(agent.clone(), "Release assistant");
+                ctx.set_caret(&PresenceKey::Widget { path: vec![] }, agent.clone(), 4);
 
-            assert!(ctx.is_agent(&agent));
-            assert_eq!(ctx.display_name(&agent), "Release assistant · Agent");
+                assert!(ctx.is_agent(&agent));
+                assert_eq!(ctx.display_name(&agent), "Release assistant · Agent");
 
-            ctx.unregister_peer(&agent.0);
-            assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Person);
-        }
-        // phase: a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not
-        // A workspace-scoped pointer registers its peer as present; a
-        // widget-scoped one (a position in a document, not on the desktop) does not.
-        {
-            let t0 = crate::time::now();
-            let workspace = PresenceKey::Workspace { id: "r".into() };
-            let block = PresenceKey::Widget {
-                path: vec![PathSegment::Index(0)],
-            };
-            let alice = UserId("peer@1".into());
-            let bob = UserId("peer@2".into());
+                ctx.unregister_peer(&agent.0);
+                assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Person);
+            }
+            // phase: a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not
+            // A workspace-scoped pointer registers its peer as present; a
+            // widget-scoped one (a position in a document, not on the desktop) does not.
+            {
+                let t0 = crate::time::now();
+                let workspace = PresenceKey::Workspace { id: "r".into() };
+                let block = PresenceKey::Widget {
+                    path: vec![PathSegment::Index(0)],
+                };
+                let alice = UserId("peer@1".into());
+                let bob = UserId("peer@2".into());
 
-            let mut ctx = PresenceCtx::default();
-            ctx.set_pointer_at(&workspace, alice.clone(), (5.0, 6.0), t0);
-            ctx.set_pointer_at(&block, bob.clone(), (7.0, 8.0), t0);
+                let mut ctx = PresenceCtx::default();
+                ctx.set_pointer_at(&workspace, alice.clone(), (5.0, 6.0), t0);
+                ctx.set_pointer_at(&block, bob.clone(), (7.0, 8.0), t0);
 
-            assert!(ctx.peers_on(&workspace).contains(&alice));
-            assert!(
-                !ctx.peers_on(&block).contains(&bob),
-                "a pointer over a widget must not put a presence dot on it",
-            );
+                assert!(ctx.peers_on(&workspace).contains(&alice));
+                assert!(
+                    !ctx.peers_on(&block).contains(&bob),
+                    "a pointer over a widget must not put a presence dot on it",
+                );
+            }
         }
     }
 }
@@ -3839,9 +3867,10 @@ mod one_person_one_pointer_tests {
     use super::*;
     use crate::collaboration::PresencePayload;
 
-    #[test]
-    fn one_person_has_one_pointer_that_moves_between_scopes() {
-        // phase: a_pointer_published_without_a_scope_belongs_to_the_desktop
+    tilo_test_env::scenario! {
+        fn one_person_has_one_pointer_that_moves_between_scopes;
+
+        phase a_pointer_published_without_a_scope_belongs_to_the_desktop;
         // A pointer arriving with no scope of its own is on the *desktop*.
         // Reading it as a *widget* scope told every window the pointer was
         // theirs, so one person came out once per open window.
@@ -3859,7 +3888,8 @@ mod one_person_one_pointer_tests {
              painting it as well is the same person once per window",
             );
         }
-        // phase: a_workspace_scoped_pointer_still_belongs_to_the_desktop
+
+        phase a_workspace_scoped_pointer_still_belongs_to_the_desktop;
         // The workspace scope keeps the answer it always had, so the rule above cannot
         // be satisfied by making *nothing* the window's to paint.
         {
@@ -3873,7 +3903,8 @@ mod one_person_one_pointer_tests {
             );
             assert!(!ctx.remote_cursors[0].painted_by_window());
         }
-        // phase: a_pointer_inside_a_window_is_still_the_windows_to_paint
+
+        phase a_pointer_inside_a_window_is_still_the_windows_to_paint;
         // A pointer inside a window's content is still that window's
         // to paint — the relay dialect and hosted backend have no overlay above
         // them, so swallowing every scope would leave those peers invisible.
@@ -3891,7 +3922,8 @@ mod one_person_one_pointer_tests {
                 "nothing else paints this one",
             );
         }
-        // phase: a_persons_pointer_moves_between_scopes_rather_than_multiplying
+
+        phase a_persons_pointer_moves_between_scopes_rather_than_multiplying;
         // A person's pointer *moves*; it does not accumulate — a peer heard
         // from under two scopes must produce one row, not two, or anything
         // reading across scopes sees them twice.
@@ -3920,7 +3952,8 @@ mod one_person_one_pointer_tests {
                 "the scope they left must not keep a copy",
             );
         }
-        // phase: moving_one_persons_pointer_leaves_everybody_elses_alone
+
+        phase moving_one_persons_pointer_leaves_everybody_elses_alone;
         // Moving one person's pointer must not take anybody else's with it.
         {
             let mut ctx = PresenceCtx::default();

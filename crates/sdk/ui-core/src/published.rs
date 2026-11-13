@@ -333,56 +333,60 @@ mod tests {
         out
     }
 
-    #[test]
-    fn a_shared_subtree_is_skipped_and_an_edit_found_by_position() {
-        let items = (0..5).map(|i| leaf(&format!("i{i}"))).collect::<Vec<_>>();
-        let list = SharedChildren::new(items.clone());
-        let root = SharedResource::new(ResourceSpec::new("root", "k", "Root"), list.clone());
-        let relabelled = SharedResource::new(ResourceSpec::new("root", "k", "Root 2"), list);
-        assert_eq!(
-            changes(
-                std::slice::from_ref(&root),
-                std::slice::from_ref(&relabelled)
-            ),
-            vec!["~root"],
-            "a new head over the same children diffs no child"
-        );
-        let mut edited = items.clone();
-        edited[3] = leaf("i3");
-        let after = SharedResource::new(
-            ResourceSpec::new("root", "k", "Root"),
-            SharedChildren::new(edited),
-        );
-        assert_eq!(
-            changes(std::slice::from_ref(&root), std::slice::from_ref(&after)),
-            vec!["~i3", "~root"]
-        );
-        let mut grown = items;
-        grown.remove(1);
-        grown.push(leaf("i9"));
-        grown.push(leaf("i8"));
-        let after = SharedResource::new(
-            ResourceSpec::new("root", "k", "Root"),
-            SharedChildren::new(grown),
-        );
-        assert_eq!(
-            changes(std::slice::from_ref(&root), std::slice::from_ref(&after)),
-            vec!["+i9", "+i8", "-i1", "~root"]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_shared_tree_diffs_by_position_and_round_trips;
 
-    #[test]
-    fn the_ordinary_tree_round_trips() {
-        let mut resource = ResourceSpec::new("root", "k", "Root");
-        let mut child = ResourceSpec::new("child", "k", "Child");
-        child
-            .children
-            .push(ResourceSpec::new("grandchild", "k", "Grandchild"));
-        resource.children.push(child);
-        let shared = SharedResource::from_resource(resource);
-        let back = shared.to_resource();
-        assert_eq!(back.children.len(), 1);
-        assert_eq!(back.children[0].children[0].id.as_str(), "grandchild");
-        assert!(shared.head().children.is_empty());
+        phase a_shared_subtree_is_skipped_and_an_edit_found_by_position;
+        {
+            let items = (0..5).map(|i| leaf(&format!("i{i}"))).collect::<Vec<_>>();
+            let list = SharedChildren::new(items.clone());
+            let root = SharedResource::new(ResourceSpec::new("root", "k", "Root"), list.clone());
+            let relabelled = SharedResource::new(ResourceSpec::new("root", "k", "Root 2"), list);
+            assert_eq!(
+                changes(
+                    std::slice::from_ref(&root),
+                    std::slice::from_ref(&relabelled)
+                ),
+                vec!["~root"],
+                "a new head over the same children diffs no child"
+            );
+            let mut edited = items.clone();
+            edited[3] = leaf("i3");
+            let after = SharedResource::new(
+                ResourceSpec::new("root", "k", "Root"),
+                SharedChildren::new(edited),
+            );
+            assert_eq!(
+                changes(std::slice::from_ref(&root), std::slice::from_ref(&after)),
+                vec!["~i3", "~root"]
+            );
+            let mut grown = items;
+            grown.remove(1);
+            grown.push(leaf("i9"));
+            grown.push(leaf("i8"));
+            let after = SharedResource::new(
+                ResourceSpec::new("root", "k", "Root"),
+                SharedChildren::new(grown),
+            );
+            assert_eq!(
+                changes(std::slice::from_ref(&root), std::slice::from_ref(&after)),
+                vec!["+i9", "+i8", "-i1", "~root"]
+            );
+        }
+
+        phase the_ordinary_tree_round_trips;
+        {
+            let mut resource = ResourceSpec::new("root", "k", "Root");
+            let mut child = ResourceSpec::new("child", "k", "Child");
+            child
+                .children
+                .push(ResourceSpec::new("grandchild", "k", "Grandchild"));
+            resource.children.push(child);
+            let shared = SharedResource::from_resource(resource);
+            let back = shared.to_resource();
+            assert_eq!(back.children.len(), 1);
+            assert_eq!(back.children[0].children[0].id.as_str(), "grandchild");
+            assert!(shared.head().children.is_empty());
+        }
     }
 }

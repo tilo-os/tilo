@@ -312,131 +312,135 @@ mod tests {
             .expect("the key is on this layer")
     }
 
-    #[test]
-    fn keys_type_text_shifted_once_and_symbols_on_their_own_layer() {
-        let mut keyboard = PasscodeKeyboard::default();
-        let mut typed = Vec::new();
-        for key in [
-            PasscodeKey::Char('p'),
-            PasscodeKey::Shift,
-            PasscodeKey::Char('a'),
-            PasscodeKey::Char('s'),
-            PasscodeKey::Symbols,
-            PasscodeKey::Char('#'),
-            PasscodeKey::Char('7'),
-            PasscodeKey::Backspace,
-            PasscodeKey::Enter,
-        ] {
-            let at = center(keyboard, key);
-            assert_eq!(keyboard.key_at(RECT, 40.0, 8.0, at), Some(key));
-            typed.extend(keyboard.press(key));
-        }
-        assert_eq!(
-            typed,
-            [
-                PasscodeInput::Text("p".into()),
-                PasscodeInput::Text("A".into()),
-                PasscodeInput::Text("s".into()),
-                PasscodeInput::Text("#".into()),
-                PasscodeInput::Text("7".into()),
-                PasscodeInput::Backspace,
-                PasscodeInput::Enter,
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_passcode_keyboard_types_lays_out_and_offers_a_pin_pad;
 
-    #[test]
-    fn every_key_is_a_touch_target_inside_the_keyboard_and_none_overlap() {
-        assert!(
-            (PasscodeKeyboard::default().height(40.0, 8.0) - RECT.height()).abs() < f64::EPSILON
-        );
-        for keyboard in [
-            PasscodeKeyboard::default(),
-            PasscodeKeyboard {
-                symbols: true,
-                ..PasscodeKeyboard::default()
-            },
-            PasscodeKeyboard::for_pin(),
-        ] {
-            let keyboard_rect = Rect::new(
-                RECT.x0,
-                RECT.y0,
-                RECT.x1,
-                RECT.y0 + keyboard.height(40.0, 8.0),
+        phase keys_type_text_shifted_once_and_symbols_on_their_own_layer;
+        {
+            let mut keyboard = PasscodeKeyboard::default();
+            let mut typed = Vec::new();
+            for key in [
+                PasscodeKey::Char('p'),
+                PasscodeKey::Shift,
+                PasscodeKey::Char('a'),
+                PasscodeKey::Char('s'),
+                PasscodeKey::Symbols,
+                PasscodeKey::Char('#'),
+                PasscodeKey::Char('7'),
+                PasscodeKey::Backspace,
+                PasscodeKey::Enter,
+            ] {
+                let at = center(keyboard, key);
+                assert_eq!(keyboard.key_at(RECT, 40.0, 8.0, at), Some(key));
+                typed.extend(keyboard.press(key));
+            }
+            assert_eq!(
+                typed,
+                [
+                    PasscodeInput::Text("p".into()),
+                    PasscodeInput::Text("A".into()),
+                    PasscodeInput::Text("s".into()),
+                    PasscodeInput::Text("#".into()),
+                    PasscodeInput::Text("7".into()),
+                    PasscodeInput::Backspace,
+                    PasscodeInput::Enter,
+                ]
             );
-            let keys = keyboard.layout(keyboard_rect, 40.0, 8.0);
-            assert!(keys.len() >= 12);
-            for (i, (_, a)) in keys.iter().enumerate() {
-                assert!(keyboard_rect.contains(a.center()), "{a:?}");
-                assert!(a.width() >= 30.0 && a.height() >= 30.0, "{a:?}");
-                for (_, b) in keys.iter().skip(i + 1) {
-                    assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
+        }
+
+        phase every_key_is_a_touch_target_inside_the_keyboard_and_none_overlap;
+        {
+            assert!(
+                (PasscodeKeyboard::default().height(40.0, 8.0) - RECT.height()).abs() < f64::EPSILON
+            );
+            for keyboard in [
+                PasscodeKeyboard::default(),
+                PasscodeKeyboard {
+                    symbols: true,
+                    ..PasscodeKeyboard::default()
+                },
+                PasscodeKeyboard::for_pin(),
+            ] {
+                let keyboard_rect = Rect::new(
+                    RECT.x0,
+                    RECT.y0,
+                    RECT.x1,
+                    RECT.y0 + keyboard.height(40.0, 8.0),
+                );
+                let keys = keyboard.layout(keyboard_rect, 40.0, 8.0);
+                assert!(keys.len() >= 12);
+                for (i, (_, a)) in keys.iter().enumerate() {
+                    assert!(keyboard_rect.contains(a.center()), "{a:?}");
+                    assert!(a.width() >= 30.0 && a.height() >= 30.0, "{a:?}");
+                    for (_, b) in keys.iter().skip(i + 1) {
+                        assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
+                    }
                 }
             }
         }
-    }
 
-    #[test]
-    fn a_pin_is_a_phone_pad_of_digits_only_with_delete_left_and_enter_right() {
-        let mut keyboard = PasscodeKeyboard::for_secret(true);
-        assert!(keyboard.is_for_pin());
-        assert!(!PasscodeKeyboard::for_secret(false).is_for_pin());
-        assert!(
-            keyboard.height(40.0, 8.0) < PasscodeKeyboard::default().height(40.0, 8.0),
-            "the pad has four rows, the letters five"
-        );
+        phase a_pin_is_a_phone_pad_of_digits_only_with_delete_left_and_enter_right;
+        {
+            let mut keyboard = PasscodeKeyboard::for_secret(true);
+            assert!(keyboard.is_for_pin());
+            assert!(!PasscodeKeyboard::for_secret(false).is_for_pin());
+            assert!(
+                keyboard.height(40.0, 8.0) < PasscodeKeyboard::default().height(40.0, 8.0),
+                "the pad has four rows, the letters five"
+            );
 
-        let keys = keyboard.layout(RECT, 40.0, 8.0);
-        let order: Vec<PasscodeKey> = keys.iter().map(|(key, _)| *key).collect();
-        let mut expected: Vec<PasscodeKey> = "123456789".chars().map(PasscodeKey::Char).collect();
-        expected.extend([
-            PasscodeKey::Backspace,
-            PasscodeKey::Char('0'),
-            PasscodeKey::Enter,
-        ]);
-        assert_eq!(order, expected, "row by row, left to right");
-        // Three columns: each row lines up with the one above.
-        let at = |i: usize| keys[i].1;
-        for i in 3..12 {
-            assert!((at(i).x0 - at(i - 3).x0).abs() < 1e-9 && at(i).y0 > at(i - 3).y0);
+            let keys = keyboard.layout(RECT, 40.0, 8.0);
+            let order: Vec<PasscodeKey> = keys.iter().map(|(key, _)| *key).collect();
+            let mut expected: Vec<PasscodeKey> = "123456789".chars().map(PasscodeKey::Char).collect();
+            expected.extend([
+                PasscodeKey::Backspace,
+                PasscodeKey::Char('0'),
+                PasscodeKey::Enter,
+            ]);
+            assert_eq!(order, expected, "row by row, left to right");
+            // Three columns: each row lines up with the one above.
+            let at = |i: usize| keys[i].1;
+            for i in 3..12 {
+                assert!((at(i).x0 - at(i - 3).x0).abs() < 1e-9 && at(i).y0 > at(i - 3).y0);
+            }
+            assert!(
+                at(0).width() > 40.0 * LETTER_KEY_ASPECT,
+                "pad keys are wide targets"
+            );
+
+            let mut typed = Vec::new();
+            for key in [
+                PasscodeKey::Char('4'),
+                PasscodeKey::Char('2'),
+                PasscodeKey::Backspace,
+                PasscodeKey::Enter,
+            ] {
+                let at = center(keyboard, key);
+                assert_eq!(keyboard.key_at(RECT, 40.0, 8.0, at), Some(key));
+                typed.extend(keyboard.press(key));
+            }
+            assert_eq!(
+                typed,
+                [
+                    PasscodeInput::Text("4".into()),
+                    PasscodeInput::Text("2".into()),
+                    PasscodeInput::Backspace,
+                    PasscodeInput::Enter,
+                ]
+            );
+            assert_eq!(
+                keyboard,
+                PasscodeKeyboard::for_pin(),
+                "pressing moves nothing"
+            );
+
+            // A password's ?123 opens the symbols.
+            let mut password = PasscodeKeyboard::for_secret(false);
+            password.press(PasscodeKey::Symbols);
+            assert_eq!(
+                password.key_at(RECT, 40.0, 8.0, center(password, PasscodeKey::Char('#'))),
+                Some(PasscodeKey::Char('#'))
+            );
         }
-        assert!(
-            at(0).width() > 40.0 * LETTER_KEY_ASPECT,
-            "pad keys are wide targets"
-        );
-
-        let mut typed = Vec::new();
-        for key in [
-            PasscodeKey::Char('4'),
-            PasscodeKey::Char('2'),
-            PasscodeKey::Backspace,
-            PasscodeKey::Enter,
-        ] {
-            let at = center(keyboard, key);
-            assert_eq!(keyboard.key_at(RECT, 40.0, 8.0, at), Some(key));
-            typed.extend(keyboard.press(key));
-        }
-        assert_eq!(
-            typed,
-            [
-                PasscodeInput::Text("4".into()),
-                PasscodeInput::Text("2".into()),
-                PasscodeInput::Backspace,
-                PasscodeInput::Enter,
-            ]
-        );
-        assert_eq!(
-            keyboard,
-            PasscodeKeyboard::for_pin(),
-            "pressing moves nothing"
-        );
-
-        // A password's ?123 opens the symbols.
-        let mut password = PasscodeKeyboard::for_secret(false);
-        password.press(PasscodeKey::Symbols);
-        assert_eq!(
-            password.key_at(RECT, 40.0, 8.0, center(password, PasscodeKey::Char('#'))),
-            Some(PasscodeKey::Char('#'))
-        );
     }
 }

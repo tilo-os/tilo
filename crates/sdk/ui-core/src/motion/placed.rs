@@ -209,105 +209,109 @@ mod tests {
         Rect::new(x, 0.0, x + 200.0, 120.0)
     }
 
-    #[test]
-    fn a_surface_first_placed_rests_where_it_stands() {
-        let _guard = testing::frozen();
-        let mut placed = Placed::opened();
-        let now = crate::motion::frame_now();
-        placed.follow(
-            rect(40.0),
-            true,
-            EffectiveMotion::default(),
-            MotionSource::Pointer,
-            now,
-        );
-        assert_eq!(placed.rect(now), rect(40.0));
-        assert!(placed.pose(rect(40.0), now).is_rest());
-        assert!(!placed.is_moving(now), "a first paint asks for nothing");
-    }
+    tilo_test_env::scenario! {
+        fn a_placed_surface_rests_glides_comes_and_goes;
 
-    #[test]
-    fn a_moved_surface_glides_to_its_new_place_over_several_frames_then_rests() {
-        let _frame = crate::motion::pin_frame();
-        let mut placed = Placed::opened();
-        let now = crate::motion::frame_now();
-        placed.follow(
-            rect(40.0),
-            true,
-            EffectiveMotion::default(),
-            MotionSource::Pointer,
-            now,
-        );
-        // It is laid out at 400 but drawn from where it stood, and moves toward 400.
-        placed.follow(
-            rect(400.0),
-            true,
-            EffectiveMotion::default(),
-            MotionSource::Pointer,
-            now,
-        );
-        let start = placed.movement().sampled_after(Duration::ZERO).0;
-        assert!(
-            (start.x0 - 40.0).abs() < 1.0,
-            "it starts where it stood: {start:?}"
-        );
-        let mid = placed.movement().sampled_after(Duration::from_millis(80)).0;
-        assert!(
-            mid.x0 > start.x0 && mid.x0 < 400.0,
-            "it is on its way: {mid:?}"
-        );
-        let arrived = placed.movement().sampled_after(Duration::from_secs(3)).0;
-        assert!((arrived.x0 - 400.0).abs() < 0.5, "it arrives: {arrived:?}");
-        // At rest the value is its target and asks for nothing.
-        assert!(!placed.movement().is_moving(now + Duration::from_secs(3)));
-        assert!(!placed.is_moving(now + Duration::from_secs(3)));
-    }
+        phase a_surface_first_placed_rests_where_it_stands;
+        {
+            let _guard = testing::frozen();
+            let mut placed = Placed::opened();
+            let now = crate::motion::frame_now();
+            placed.follow(
+                rect(40.0),
+                true,
+                EffectiveMotion::default(),
+                MotionSource::Pointer,
+                now,
+            );
+            assert_eq!(placed.rect(now), rect(40.0));
+            assert!(placed.pose(rect(40.0), now).is_rest());
+            assert!(!placed.is_moving(now), "a first paint asks for nothing");
+        }
 
-    #[test]
-    fn a_surface_shown_and_hidden_comes_and_goes_and_a_still_theme_lands_at_once() {
-        let _frame = crate::motion::pin_frame();
-        let mut placed = Placed::closed();
-        let now = crate::motion::frame_now();
-        placed.follow(
-            rect(0.0),
-            false,
-            EffectiveMotion::default(),
-            MotionSource::Pointer,
-            now,
-        );
-        assert!(!placed.is_visible(now));
-        placed.follow(
-            rect(0.0),
-            true,
-            EffectiveMotion::default(),
-            MotionSource::Pointer,
-            now,
-        );
-        let mid = now + Duration::from_millis(40);
-        let _later = crate::motion::pin_frame_at(mid);
-        let coming = placed.openness().progress(mid);
-        assert!(coming > 0.0 && coming < 1.0, "it is coming in: {coming}");
-        assert!(placed.openness().is_moving(mid));
-        drop(_later);
+        phase a_moved_surface_glides_to_its_new_place_over_several_frames_then_rests;
+        {
+            let _frame = crate::motion::pin_frame();
+            let mut placed = Placed::opened();
+            let now = crate::motion::frame_now();
+            placed.follow(
+                rect(40.0),
+                true,
+                EffectiveMotion::default(),
+                MotionSource::Pointer,
+                now,
+            );
+            // It is laid out at 400 but drawn from where it stood, and moves toward 400.
+            placed.follow(
+                rect(400.0),
+                true,
+                EffectiveMotion::default(),
+                MotionSource::Pointer,
+                now,
+            );
+            let start = placed.movement().sampled_after(Duration::ZERO).0;
+            assert!(
+                (start.x0 - 40.0).abs() < 1.0,
+                "it starts where it stood: {start:?}"
+            );
+            let mid = placed.movement().sampled_after(Duration::from_millis(80)).0;
+            assert!(
+                mid.x0 > start.x0 && mid.x0 < 400.0,
+                "it is on its way: {mid:?}"
+            );
+            let arrived = placed.movement().sampled_after(Duration::from_secs(3)).0;
+            assert!((arrived.x0 - 400.0).abs() < 0.5, "it arrives: {arrived:?}");
+            // At rest the value is its target and asks for nothing.
+            assert!(!placed.movement().is_moving(now + Duration::from_secs(3)));
+            assert!(!placed.is_moving(now + Duration::from_secs(3)));
+        }
 
-        let mut still_surface = Placed::closed();
-        still_surface.follow(rect(0.0), false, still(), MotionSource::Pointer, now);
-        still_surface.follow(rect(0.0), true, still(), MotionSource::Pointer, now);
-        assert_eq!(
-            still_surface.progress(now),
-            1.0,
-            "shown on the frame it happens"
-        );
-        assert!(!still_surface.is_moving(now), "and it asks for nothing");
+        phase a_surface_shown_and_hidden_comes_and_goes_and_a_still_theme_lands_at_once;
+        {
+            let _frame = crate::motion::pin_frame();
+            let mut placed = Placed::closed();
+            let now = crate::motion::frame_now();
+            placed.follow(
+                rect(0.0),
+                false,
+                EffectiveMotion::default(),
+                MotionSource::Pointer,
+                now,
+            );
+            assert!(!placed.is_visible(now));
+            placed.follow(
+                rect(0.0),
+                true,
+                EffectiveMotion::default(),
+                MotionSource::Pointer,
+                now,
+            );
+            let mid = now + Duration::from_millis(40);
+            let _later = crate::motion::pin_frame_at(mid);
+            let coming = placed.openness().progress(mid);
+            assert!(coming > 0.0 && coming < 1.0, "it is coming in: {coming}");
+            assert!(placed.openness().is_moving(mid));
+            drop(_later);
 
-        let mut reduced_surface = Placed::opened();
-        reduced_surface.follow(rect(40.0), true, reduced(), MotionSource::Pointer, now);
-        reduced_surface.follow(rect(400.0), true, reduced(), MotionSource::Pointer, now);
-        assert_eq!(
-            reduced_surface.rect(now),
-            rect(400.0),
-            "a reduced motion lands at its place at once"
-        );
-        assert!(!reduced_surface.is_moving(now));
+            let mut still_surface = Placed::closed();
+            still_surface.follow(rect(0.0), false, still(), MotionSource::Pointer, now);
+            still_surface.follow(rect(0.0), true, still(), MotionSource::Pointer, now);
+            assert_eq!(
+                still_surface.progress(now),
+                1.0,
+                "shown on the frame it happens"
+            );
+            assert!(!still_surface.is_moving(now), "and it asks for nothing");
+
+            let mut reduced_surface = Placed::opened();
+            reduced_surface.follow(rect(40.0), true, reduced(), MotionSource::Pointer, now);
+            reduced_surface.follow(rect(400.0), true, reduced(), MotionSource::Pointer, now);
+            assert_eq!(
+                reduced_surface.rect(now),
+                rect(400.0),
+                "a reduced motion lands at its place at once"
+            );
+            assert!(!reduced_surface.is_moving(now));
+        }
     }
 }
