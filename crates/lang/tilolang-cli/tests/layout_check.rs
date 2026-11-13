@@ -575,6 +575,47 @@ fn a_run_presses_a_rows_box_by_its_own_words() {
     );
 }
 
+/// A run over every app asks for the frames a finding came from (`--dump-findings`), and a run
+/// narrowed to a view can still ask for every frame (`--dump`): a page holding the layout of
+/// every frame of every view is too big to keep.
+#[test]
+fn a_dump_of_findings_holds_the_frames_a_finding_came_from() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+    use tilolang_cli::layout_check::Dump;
+
+    assert!(Dump::Findings((390, 844)).prints((390, 844), true));
+    assert!(!Dump::Findings((390, 844)).prints((390, 844), false));
+    assert!(Dump::Every((390, 844)).prints((390, 844), false));
+    assert!(!Dump::Every((390, 844)).prints((320, 568), true));
+
+    let frames = |scope: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+            .arg("layout-check")
+            .arg(manifest().join("tests/layout_check/broken"))
+            .arg(manifest().join("tests/layout_check/layered"))
+            .args([scope, "390x844"])
+            .output_locked()
+            .expect("the check runs");
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .filter(|line| line.starts_with("== ") && line.ends_with("— the frame"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let every = frames("--dump");
+    let found = frames("--dump-findings");
+    assert!(!every.is_empty(), "the run reads frames of both apps");
+    assert!(
+        found.len() < every.len(),
+        "the frames a finding came from are kept, not every frame:\n{found:#?}\nof {}",
+        every.len()
+    );
+    assert!(
+        found.iter().all(|header| every.contains(header)),
+        "the frames a finding came from are frames the run read"
+    );
+}
+
 #[test]
 fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
     let dir = manifest().join("../../../apps/tl/gallery");

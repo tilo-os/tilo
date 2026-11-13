@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Lay every view of the tilolang apps out headlessly at one standard window size, on the build
 # server: what `tilolang layout-check --strict` finds is the check's verdict, and the size's
-# layout dump (dump.txt) and PNG captures (one per window, in its light and dark theme) are its
-# outputs.
+# report, the layout of each frame a finding came from (dump.txt) and PNG captures (one per window,
+# in its light and dark theme) are its outputs.
 #
 #   tools/ci/layout-check.sh 390x844
 #
 # The `layout-check/<size>` checks run it in the test environment (fonts, lavapipe); `t test
 # layout-check` runs all three sizes and `t outputs layout-check/<size> --to DIR` fetches a run's
-# dump and shots. Never run it on a workstation: it lays out every app, which takes the machine.
+# report, dump and shots. Never run it on a workstation: it lays out every app, which takes the
+# machine.
 set -euo pipefail
 
 size=${1:?usage: $0 WIDTHxHEIGHT, such as 390x844}
@@ -33,7 +34,7 @@ fi
 status=0
 "$target/debug/tilolang" layout-check "${apps[@]}" \
     --allow crates/lang/tilolang-cli/tests/layout_check/allowed \
-    --strict --dump "$size" --shots "$out" >"$out/report.txt" 2>"$out/dump.txt" || status=$?
+    --strict --dump-findings "$size" --shots "$out" >"$out/report.txt" 2>"$out/dump.txt" || status=$?
 cat -- "$out/report.txt"
 if [[ ! -s $out/report.txt ]]; then
     echo "layout-check: laying the apps out at $size wrote no report; it said:" >&2

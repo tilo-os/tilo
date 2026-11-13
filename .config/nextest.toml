@@ -269,14 +269,6 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
-# Every app's every view laid out at every window size, display scale and text
-# size: each window is laid out on a core of its own, so the sweep takes the
-# runner's CPUs rather than sharing them with the tests beside it.
-[[profile.default.overrides]]
-filter = 'package(tilolang-cli) and test(=the_apps_show_no_layout_problem_their_allow_list_does_not_name)'
-threads-required = "num-cpus"
-priority = 100
-
 # Each app gate seeds a workspace of a thousand items and one of ten thousand and
 # runs the open, the filter and the changes over both: 42 s of CPU a gate on a quiet
 # machine, and a loaded one reached the eight-minute suite-wide bound without a
