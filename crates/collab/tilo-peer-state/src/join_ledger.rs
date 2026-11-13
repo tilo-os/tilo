@@ -34,6 +34,7 @@ use crate::join::{
     issue_invitation, issue_invitation_from, verify_connection_redemption, verify_join_proof,
     verify_membership_proof,
 };
+use crate::join::WorkspaceId;
 
 /// Whether a device joining under this certificate names its person as it
 /// comes in, or goes by a name of its own.
@@ -162,9 +163,8 @@ pub struct Governed<'a> {
     pub peer: PeerRef<'a>,
     /// The device answering the join: a device of the workspace's owner.
     pub host: &'a DeviceCert,
-    /// The workspace's relay shard on the wire
-    /// ([`crate::join::room_workspace_id`]).
-    pub workspace_id: u64,
+    /// The workspace the ledger answers for.
+    pub workspace_id: WorkspaceId,
     /// The workspace's committed generation.
     pub generation: u64,
     /// Where a governor keeps the signed governance a joining member admits,
@@ -221,7 +221,6 @@ impl Governed<'_> {
             invite_id,
             device_cert,
             role,
-            room: self.peer.workspace_id().to_owned(),
             workspace_id: self.workspace_id,
             host: self.host.clone(),
             certified_roster: Vec::new(),
@@ -387,10 +386,13 @@ pub fn request_digest(value: &impl Serialize) -> Result<[u8; 32], JoinError> {
 
 /// The workspace an invitation names, read without trusting it: the workspace it
 /// names is then verified against what that workspace issued.
-pub fn invitation_workspace(signed_invitation: &[u8], now_ns: u64) -> Result<String, JoinError> {
+pub fn invitation_workspace(
+    signed_invitation: &[u8],
+    now_ns: u64,
+) -> Result<WorkspaceId, JoinError> {
     let join =
         decode_and_verify_invitation(signed_invitation, None, &RevocationList::new(), now_ns)?;
-    Ok(join.grant().room.clone())
+    Ok(join.grant().workspace_id)
 }
 
 /// What happened to an administration request asked before.
@@ -500,7 +502,6 @@ impl JoinLedger {
         validate_issue_request(&request, now)?;
         let grant = InviteGrant {
             workspace_id: workspace.workspace_id,
-            room: workspace.peer.workspace_id().to_owned(),
             issuer: workspace.host.clone(),
             role: request.role,
             nonce,
@@ -828,9 +829,7 @@ impl JoinLedger {
             &workspace.revocations()?,
             now,
         )?;
-        if redemption.join().grant().room != workspace.peer.workspace_id()
-            || redemption.join().grant().workspace_id != workspace.workspace_id
-        {
+        if redemption.join().grant().workspace_id != workspace.workspace_id {
             return Err(JoinError::new("invitation is not for this workspace"));
         }
         self.redeemable(redemption.join().invite_id())?;

@@ -1624,6 +1624,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
     reason = "each test spells out one end-to-end scenario"
 )]
 mod tests {
+    use tilo_relay_protocol::WorkspaceId;
     use super::*;
 
     fn test_persistence(
@@ -1650,7 +1651,7 @@ mod tests {
 
     fn state(root: &std::path::Path) -> Arc<Mutex<State>> {
         Arc::new(Mutex::new(State {
-            store: WorkspaceStore::open(root, 7, false).unwrap(),
+            store: WorkspaceStore::open(root, WorkspaceId::from_u128(7), false).unwrap(),
             doc: None,
             sequence: None,
             reserved: 0,
@@ -1713,7 +1714,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(workspace, 7, "the sleeping owner still runs the next job");
+        assert_eq!(workspace, WorkspaceId::from_u128(7), "the sleeping owner still runs the next job");
     }
 
     async fn captured_replay(owner: &Persistence) -> ReplayTicket {
@@ -1973,7 +1974,7 @@ mod tests {
         let state = state(tmp.path());
         let store = state.lock().unwrap().store.clone();
         let frame = crate::transport::encode(&crate::transport::Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [1; 32],
             authored_at_ns: 1,
             signature: [0; 64],

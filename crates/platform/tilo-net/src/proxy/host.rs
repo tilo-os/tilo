@@ -205,7 +205,7 @@ impl Default for Budgets {
 /// The name is published API, so it stays: hosts outside this crate import
 /// the type under it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Room(pub u64);
+pub struct Room(pub u128);
 
 /// The device a request is made for: the key the host authenticated its
 /// session with. A development host, which authenticates nobody, uses

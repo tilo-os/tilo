@@ -12,6 +12,7 @@ use super::{
     FailureSubject, RelayClient, Task,
 };
 use tilo_peer_state::owner::WriteRefusal;
+use tilo_relay_protocol::WorkspaceId;
 
 /// A record's history is full and this device could not compact it: its writes wait.
 const RECORD_FULL: &str = "record-history-full";
@@ -226,7 +227,7 @@ impl Task {
     /// Send `workspace_id`'s writes in this device's custody its host was not sent on this
     /// connection, as far as the transport takes them; the rest go as the host's answers make
     /// room. Returns `false` when the transport took no more.
-    pub(super) fn send_custody(&mut self, workspace_id: u64, client: &RelayClient) -> bool {
+    pub(super) fn send_custody(&mut self, workspace_id: WorkspaceId, client: &RelayClient) -> bool {
         let Some(workspace) = self.replicas.workspace(workspace_id) else {
             return true;
         };

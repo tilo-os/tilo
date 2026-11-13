@@ -9,6 +9,7 @@ use super::{
     session_peer_authorized, unix_now_ns,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// How a subscriber's replay capture finished.
 enum SubscribeReplayCompletion {
@@ -32,7 +33,7 @@ pub(super) enum Subscription {
 async fn open_resume(
     session: &SessionCtx<'_>,
     peer: &AuthenticatedPeer,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     store: crate::store::WorkspaceStore,
     resume: Subscription,
 ) -> Result<Option<crate::store::replay::ResumeSkip>, PeerError> {
@@ -113,7 +114,7 @@ enum SubscribeAdmission {
 
 /// A subscription's replay, ready for the writer: the workspace, its ticket,
 /// its captured replay and what commits while it is written.
-pub(super) type ReplaySlot = (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>);
+pub(super) type ReplaySlot = (WorkspaceId, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>);
 
 /// How [`subscribe`] answered a `Subscribe`.
 pub(super) enum Subscribed {
@@ -129,9 +130,9 @@ pub(super) enum Subscribed {
 pub(super) async fn handle_subscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &mut Vec<u64>,
+    subscribed: &mut Vec<WorkspaceId>,
     replay: &mut Option<ReplaySlot>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     resume: Subscription,
 ) -> Result<Option<Envelope>, PeerError> {
     let subscribed_now = subscribe(peer, session, subscribed, workspace_id, resume).await?;
@@ -158,8 +159,8 @@ pub(super) async fn handle_subscribe(
 pub(super) async fn subscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
-    workspace_id: u64,
+    subscribed: &[WorkspaceId],
+    workspace_id: WorkspaceId,
     resume: Subscription,
 ) -> Result<Subscribed, PeerError> {
     let AdmittedSubscription {
@@ -271,8 +272,8 @@ pub(super) async fn subscribe(
 async fn admit_subscription(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
-    workspace_id: u64,
+    subscribed: &[WorkspaceId],
+    workspace_id: WorkspaceId,
 ) -> Result<SubscribeAdmission, PeerError> {
     // A workspace its owner deleted here is gone for good: whoever asks is
     // told so, and forgets it rather than tries again.
@@ -488,8 +489,8 @@ async fn register_subscriber(
 pub(super) async fn handle_unsubscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &mut Vec<u64>,
-    workspace_id: u64,
+    subscribed: &mut Vec<WorkspaceId>,
+    workspace_id: WorkspaceId,
 ) -> Result<Option<Envelope>, PeerError> {
     let ws = {
         let map = session.workspaces.lock().await;
@@ -507,7 +508,7 @@ pub(super) async fn handle_unsubscribe(
 pub async fn get_or_autobind_workspace(
     workspaces: &WorkspaceRegistry,
     autobind: Option<&WorkspaceAutobind>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> Result<Option<SharedWorkspace>, StoreError> {
     let existing = workspaces.lock().await.get(&workspace_id).cloned();
     if let Some(workspace) = existing {
@@ -562,8 +563,8 @@ mod autobind_tests {
             })
         });
         let (first, second) = tokio::join!(
-            get_or_autobind_workspace(&registry, Some(&autobind), 7),
-            get_or_autobind_workspace(&registry, Some(&autobind), 7)
+            get_or_autobind_workspace(&registry, Some(&autobind), WorkspaceId::from_u128(7)),
+            get_or_autobind_workspace(&registry, Some(&autobind), WorkspaceId::from_u128(7))
         );
         assert!(
             observer.join().unwrap(),

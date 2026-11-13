@@ -84,7 +84,7 @@ impl Page {
         host: &Device,
         cluster_id: &str,
     ) -> Self {
-        let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
+        let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let peer = start_peer(
             Host::at(hosted.relay.node_addr()),
             device.cert.clone(),
@@ -127,7 +127,7 @@ impl Page {
         host: &Device,
         cluster_id: &str,
     ) -> Self {
-        let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
+        let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let mut board = tilo_live::presence::Board::new(cluster_id, device.cert.device_public_key);
         board.set_host(Some(host.cert.device_public_key));
         Self {

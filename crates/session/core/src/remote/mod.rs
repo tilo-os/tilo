@@ -22,6 +22,7 @@ use tilo_actions::remote::{
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use web_time::Instant;
+use collab_types::WorkspaceId;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gets;
@@ -43,13 +44,13 @@ const HELD: Duration = Duration::from_secs(5);
 pub enum Heard {
     /// A device answered, or another of the person's devices sent a request of its own.
     Action {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         frame: Vec<u8>,
     },
     /// The session could not carry a request to the device, and why.
     Undeliverable {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         to: [u8; 32],
         reason: String,
     },
@@ -64,7 +65,7 @@ pub trait RemoteSession: Send + Sync {
     /// The session cannot carry it.
     fn send_remote_action(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
         frame: Vec<u8>,
     ) -> Result<(), String>;
@@ -81,7 +82,7 @@ pub struct SessionActions(Arc<Inner>);
 
 struct Inner {
     session: Arc<dyn RemoteSession>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     device: [u8; 32],
     waiting: Mutex<Waiting>,
     next_correlation: AtomicU64,
@@ -409,7 +410,7 @@ impl SessionActions {
     #[must_use]
     pub fn new(
         session: impl Into<Arc<dyn RemoteSession>>,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
     ) -> Self {
         let session: Arc<dyn RemoteSession> = session.into();
@@ -933,7 +934,7 @@ mod tests {
         fn say(&self, message: RemoteActionMessage) {
             let frame = RemoteActionFrame::new(message).encode().expect("encodes");
             self.heard.lock_recover().push(Heard::Action {
-                workspace_id: 1,
+                workspace_id: WorkspaceId::from_u128(1),
                 from: DEVICE,
                 frame,
             });

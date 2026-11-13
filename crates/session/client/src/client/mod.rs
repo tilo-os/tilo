@@ -338,7 +338,7 @@ impl Client {
         if let Some(reason) = self.refusal(&event) {
             if let Event::Msg { ws, peer, msg } = &event {
                 tracing::warn!(
-                    ws,
+                    ws = %ws,
                     peer = %peer,
                     kind = msg.kind(),
                     %reason,

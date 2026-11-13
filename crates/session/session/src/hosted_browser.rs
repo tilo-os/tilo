@@ -1069,7 +1069,7 @@ mod tests {
         tilo_user_identity::sign_device_cert(&mut device, &stand_in_key).unwrap();
         Material {
             workspace: "11111111-1111-4111-8111-111111111111".into(),
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             record: "browser-1".into(),
             device,
             secret,
@@ -1129,7 +1129,7 @@ mod tests {
         HostedBrowser {
             material: Material {
                 workspace: "11111111-1111-4111-8111-111111111111".into(),
-                workspace_id: 1,
+                workspace_id: WorkspaceId::from_u128(1),
                 record: "uuid:5c07c075-0000-4000-8000-0000000000aa".into(),
                 device: tilo_user_identity::DeviceCert {
                     user_public_key: [1; 32],

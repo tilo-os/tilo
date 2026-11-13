@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use ed25519_dalek::{Signer as _, Verifier as _};
+use crate::directory::WorkspaceId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -94,7 +95,7 @@ pub struct ApprovalRequest {
     pub approver_device: [u8; 32],
     /// Optional workspace authority context. `None` means personal/device
     /// authority rather than silently matching every workspace.
-    pub workspace_id: Option<u64>,
+    pub workspace_id: Option<WorkspaceId>,
     /// Typed operation whose trusted local description is shown.
     pub purpose: ApprovalPurpose,
     /// Random challenge preventing precomputed responses.
@@ -114,7 +115,7 @@ struct ApprovalRequestView<'a> {
     request_id: &'a [u8; 16],
     requester_device: &'a [u8; 32],
     approver_device: &'a [u8; 32],
-    workspace_id: Option<u64>,
+    workspace_id: Option<WorkspaceId>,
     purpose: &'a ApprovalPurpose,
     challenge: &'a [u8; 32],
     issued_at_ns: u64,
@@ -395,7 +396,7 @@ mod tests {
             request_id: [1; 16],
             requester_device: requester.verifying_key().to_bytes(),
             approver_device: approver.verifying_key().to_bytes(),
-            workspace_id: Some(7),
+            workspace_id: Some(WorkspaceId::from_u128(7)),
             purpose: ApprovalPurpose::PrivilegedAction {
                 action_id: "settings.identity.rotate".into(),
                 arguments_hash: [2; 32],

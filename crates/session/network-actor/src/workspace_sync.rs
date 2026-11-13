@@ -7,7 +7,7 @@
 //! has meanwhile).
 //!
 //! The network actor records what happens to each workspace's host session
-//! (keyed by the workspace's topic, [`crate::workspace_topic_id`]); the session
+//! (keyed by the workspace's id); the session
 //! reads it when it tells each app window its appearance. A workspace the
 //! actor never dials, one with no host or one this device hosts itself, has
 //! no entry: its apps' empty states are their own.
@@ -17,20 +17,22 @@ use std::sync::{LazyLock, Mutex};
 
 use tilo_lock::MutexRecover as _;
 use ui::workspace_sync::WorkspaceSyncState;
+use crate::WorkspaceId;
 
-static STATES: LazyLock<Mutex<HashMap<u64, WorkspaceSyncState>>> = LazyLock::new(Mutex::default);
+static STATES: LazyLock<Mutex<HashMap<super::WorkspaceId, WorkspaceSyncState>>> = LazyLock::new(Mutex::default);
 /// This device's writes to each workspace that are not yet synced, by topic.
-static UNSYNCED: LazyLock<Mutex<HashMap<u64, u32>>> = LazyLock::new(Mutex::default);
+static UNSYNCED: LazyLock<Mutex<HashMap<super::WorkspaceId, u32>>> = LazyLock::new(Mutex::default);
 /// The workspaces whose writes this device cannot keep on disk now, by topic.
-static CANNOT_KEEP: LazyLock<Mutex<std::collections::HashSet<u64>>> = LazyLock::new(Mutex::default);
+static CANNOT_KEEP: LazyLock<Mutex<std::collections::HashSet<crate::WorkspaceId>>> =
+    LazyLock::new(Mutex::default);
 /// Since when each workspace has waited for its first sync, for the log
 /// line that says how long it took.
-static WAITING_SINCE: LazyLock<Mutex<HashMap<u64, std::time::Instant>>> =
+static WAITING_SINCE: LazyLock<Mutex<HashMap<super::WorkspaceId, std::time::Instant>>> =
     LazyLock::new(Mutex::default);
 
 /// The actor is dialling the host of the workspace on topic `ws`. One that
 /// synced once stays synced: what it held then is here.
-pub fn connecting(ws: u64) {
+pub fn connecting(ws: WorkspaceId) {
     let mut states = STATES.lock_recover();
     let state = states.entry(ws).or_insert(WorkspaceSyncState::Connecting);
     if !matches!(state, WorkspaceSyncState::Synced) {
@@ -44,13 +46,13 @@ pub fn connecting(ws: u64) {
 }
 
 /// A sync with the host of the workspace on topic `ws` completed.
-pub fn synced(ws: u64) {
+pub fn synced(ws: WorkspaceId) {
     let before = STATES.lock_recover().insert(ws, WorkspaceSyncState::Synced);
     let waited = WAITING_SINCE.lock_recover().remove(&ws);
     if let Some(since) = waited {
         tracing::info!(
             target: "tilo::workspace_sync",
-            ws,
+            ws = %ws,
             after = ?before,
             connect_to_sync_ms = since.elapsed().as_secs_f64() * 1_000.0,
             "workspace synced with its host"
@@ -61,7 +63,7 @@ pub fn synced(ws: u64) {
 /// A try to reach the host of the workspace on topic `ws` failed. One that
 /// synced before keeps what it holds; one whose host speaks another peer
 /// protocol keeps saying which side has to update.
-pub fn unreachable(ws: u64) {
+pub fn unreachable(ws: WorkspaceId) {
     let mut states = STATES.lock_recover();
     if let Some(state) = states.get_mut(&ws)
         && matches!(state, WorkspaceSyncState::Connecting)
@@ -74,7 +76,7 @@ pub fn unreachable(ws: u64) {
 /// The host of the workspace on topic `ws` speaks peer protocol `theirs`,
 /// not this device's: nothing syncs until the one behind updates. One that
 /// synced before keeps what it holds, and says so.
-pub fn other_version(ws: u64, theirs: u32) {
+pub fn other_version(ws: WorkspaceId, theirs: u32) {
     let state = if theirs > neighbour_wire::PEER_PROTOCOL_VERSION {
         WorkspaceSyncState::DeviceNeedsUpdate
     } else {
@@ -92,7 +94,7 @@ pub fn other_version(ws: u64, theirs: u32) {
 /// not yet synced: no host of the workspace carries them now, or the host
 /// did not keep them. Whether that changed what the workspace's apps are
 /// told.
-pub(crate) fn unsynced(ws: u64, count: usize) -> bool {
+pub(crate) fn unsynced(ws: WorkspaceId, count: usize) -> bool {
     let count = u32::try_from(count).unwrap_or(u32::MAX);
     let mut unsynced = UNSYNCED.lock_recover();
     let before = if count == 0 {
@@ -106,12 +108,12 @@ pub(crate) fn unsynced(ws: u64, count: usize) -> bool {
 
 /// Whether this device cannot keep its writes to the workspace on topic
 /// `ws` on disk now.
-pub fn cannot_keep_writes(ws: u64) -> bool {
+pub fn cannot_keep_writes(ws: WorkspaceId) -> bool {
     CANNOT_KEEP.lock_recover().contains(&ws)
 }
 
 /// The workspace on topic `ws` is no longer held: forget it.
-pub fn forget(ws: u64) {
+pub fn forget(ws: WorkspaceId) {
     STATES.lock_recover().remove(&ws);
     UNSYNCED.lock_recover().remove(&ws);
     WAITING_SINCE.lock_recover().remove(&ws);
@@ -119,12 +121,12 @@ pub fn forget(ws: u64) {
 
 /// How many of this device's writes to the workspace on topic `ws` are not
 /// yet synced.
-pub fn unsynced_writes(ws: u64) -> u32 {
+pub fn unsynced_writes(ws: WorkspaceId) -> u32 {
     UNSYNCED.lock_recover().get(&ws).copied().unwrap_or(0)
 }
 
 /// Where the workspace on topic `ws` stands; `None` for one with no host.
-pub fn state(ws: u64) -> Option<WorkspaceSyncState> {
+pub fn state(ws: WorkspaceId) -> Option<WorkspaceSyncState> {
     STATES.lock_recover().get(&ws).copied()
 }
 
@@ -133,7 +135,7 @@ pub fn state(ws: u64) -> Option<WorkspaceSyncState> {
 /// workspace with no host still tells an app that answer, as one synced as
 /// far as it goes.
 pub fn told(
-    ws: u64,
+    ws: WorkspaceId,
     name: &str,
     writable: Option<bool>,
 ) -> Option<ui::workspace_sync::WorkspaceSync> {

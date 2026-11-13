@@ -21,6 +21,7 @@ use tilo_actions::remote::{
     provider_workspace,
 };
 use tilo_session_client::{Cmd, Outbox};
+use tilo_relay_protocol::WorkspaceId;
 
 /// The chain `record` is a part of, when it is a part of one.
 pub(super) fn chain_of(record: &str) -> Option<ui::record::RecordId> {
@@ -74,7 +75,7 @@ impl Workspace {
     /// workspace may still hold: it is asked for rather than taken as absent,
     /// and is absent only once the host answered it holds none of it
     /// ([`tilo_session_client::Event::RecordOpened`] with no frames).
-    pub(super) fn ask(&mut self, workspace_id: u64, needs: Needs<'_>) -> bool {
+    pub(super) fn ask(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
         if !self.when_opened {
             return false;
         }
@@ -170,7 +171,7 @@ impl Worker {
     )]
     pub(super) fn held_or_owed(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: &DocumentRoute,
     ) -> Result<bool, Outcome> {
         let workspace = self.workspaces.get_mut(&workspace_id).ok_or_else(|| {
@@ -257,7 +258,7 @@ mod tests {
 
     #[test]
     fn reading_a_chain_waits_for_every_part_of_it() {
-        let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
+        let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
         let head = route("so.tilo.chat", chain().part(3).as_str());
         let asked = route("so.tilo.chat", chain().part(1).as_str());
         let records = route("so.tilo.chat", "");

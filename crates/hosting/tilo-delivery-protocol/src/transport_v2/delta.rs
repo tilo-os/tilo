@@ -24,6 +24,7 @@ use tilo_relay_client::frame::FrameError;
 use tilo_relay_protocol::transport::Envelope;
 
 use super::{CODED_DELTA_KIND, UNSIGNED_DELTA_KIND};
+use collab_types::WorkspaceId;
 
 /// Slots one session's delta coding remembers: the relay reuses the least
 /// recently used one beyond this, and a reader refuses a higher index.
@@ -64,7 +65,7 @@ pub const DELTA_ROUTE_BYTES: usize = 33;
 /// workspace. Only the encoder sees it; the wire carries the session's slot index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeltaSlotKey {
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     pub author: [u8; 32],
     /// The delta's first [`DELTA_ROUTE_BYTES`], zero-padded.
     pub route: [u8; DELTA_ROUTE_BYTES],
@@ -375,7 +376,7 @@ mod tests {
         delta.extend_from_slice(&[n.wrapping_mul(7); 64]);
         delta.extend_from_slice(&[0x22; 40]);
         Envelope::Delta {
-            workspace_id: 755,
+            workspace_id: WorkspaceId::from_u128(755),
             author_device_public_key: [author; 32],
             authored_at_ns: 1_800_000_000_000_000_000 + u64::from(n),
             delta,
@@ -510,7 +511,7 @@ mod tests {
         };
         assert_eq!(encoder.encode(&signed).unwrap(), None);
         let large = Envelope::Delta {
-            workspace_id: 1,
+            workspace_id: WorkspaceId::from_u128(1),
             author_device_public_key: [1; 32],
             authored_at_ns: 1,
             delta: vec![3; MAX_CODED_DELTA_BYTES],

@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
+use crate::WorkspaceId;
 
 /// Last daemon counter snapshot, consumed by offline admin/status commands.
 pub const METRICS_FILE: &str = "metrics.json";
@@ -70,7 +71,7 @@ pub struct MetricsSnapshot {
     /// workspaces that were sent something since the daemon started. It keeps
     /// the key `rooms`, which status readers and dashboards read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", rename = "rooms")]
-    pub workspaces: BTreeMap<u64, WorkspaceEgress>,
+    pub workspaces: BTreeMap<WorkspaceId, WorkspaceEgress>,
 }
 
 #[allow(
@@ -142,7 +143,7 @@ mod tests {
             bytes_sent: 1_200,
             bytes_sent_live: 900,
             workspaces: BTreeMap::from([(
-                7,
+                WorkspaceId::from_u128(7),
                 WorkspaceEgress {
                     bytes_sent: 1_000,
                     bytes_sent_live: 900,

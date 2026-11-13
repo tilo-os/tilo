@@ -72,7 +72,7 @@ async fn start_at(
     .unwrap()
 }
 
-async fn session(relay: &Relay, device: &TestDevice, workspace_id: u64) -> RelayCoeditSession {
+async fn session(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) -> RelayCoeditSession {
     let client = RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
@@ -269,13 +269,13 @@ fn governed_room(granted: MemberRole) -> std::pin::Pin<Box<dyn Future<Output = G
             .await
             .unwrap();
         let bootstrap = admission.bootstrap;
-        assert_eq!(bootstrap.room, room.workspace);
+        assert_eq!(bootstrap.workspace_id.to_string(), room.workspace);
         assert_eq!(bootstrap.workspace_id, room.workspace_id);
         assert_eq!(bootstrap.role, granted);
 
         // Bob's own replica, from the bootstrap alone, makes him an editor.
         let mut bob_peer = StatePeer::new(
-            &bootstrap.room,
+            &bootstrap.workspace_id.to_string(),
             bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             RevocationList::new(),

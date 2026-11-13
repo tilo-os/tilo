@@ -6,6 +6,7 @@
 use super::SessionCtx;
 use crate::auth::AuthenticatedPeer;
 use crate::transport::Envelope;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Make this session a run of the agent `label` names, asked as `request_id`.
 /// The run is present from now on in the workspace the session entered last
@@ -15,7 +16,7 @@ use crate::transport::Envelope;
 pub(super) fn handle_agent_run(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     request_id: u64,
     label: &str,
 ) -> Envelope {

@@ -305,17 +305,17 @@ pub enum VoiceEvent {
 }
 
 /// How the plane numbers one workspace's topic.
-pub type Topic = u64;
+pub type Topic = tilo_desktop_model::WorkspaceId;
 
 /// A device on a workspace's roster, and when its certificate expires (Unix nanoseconds; `None` when
 /// it never does).
 pub type RosterDevice = (EndpointId, Option<u64>);
 
-/// The topic a workspace's plane numbers itself by, from the workspace's id: number 0 for a desk
-/// that shows no workspace.
+/// The topic a workspace's plane numbers itself by: the workspace's id, and
+/// nothing for a desk that shows no workspace.
 #[must_use]
 pub fn topic_of(workspace: tilo_desktop_model::WorkspaceId) -> Topic {
-    tilo_relay_protocol::workspace_topic(&workspace.to_string())
+    workspace
 }
 
 /// A command a client sends to the plane.

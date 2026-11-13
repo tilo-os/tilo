@@ -51,23 +51,15 @@ use crate::revocation::{RevocationError, RevocationList};
 /// other v1 tags: `tilo-dir-delta-v1\0`.
 pub const DIR_DELTA_PREIMAGE_TAG: &[u8] = b"tilo-dir-delta-v1\0";
 
-/// A workspace's stable id — 64-bit blob-addr-style handle.
-pub type WorkspaceId = u64;
+pub use collab_types::WorkspaceId;
 
 /// Public shape of one workspace as it appears in the directory.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceMeta {
-    /// Stable workspace id (mirrors the collaboration topic id).
+    /// The workspace's id: the UUID its document is named by.
     pub id: WorkspaceId,
     /// Human-readable name — "Personal", "Company Wiki", etc.
     pub name: String,
-    /// The workspace's collaboration topic (a UUID string) whose document
-    /// carries this workspace's strips, window groups and tabs. `None` for an
-    /// entry no device has bound to a topic yet.
-    ///
-    /// The field keeps the spelling `room` because the old shell's copy of
-    /// this directory reads it by that name; it goes when the shell does.
-    pub room: Option<String>,
     /// Who governs the workspace when someone other than this directory's
     /// person owns it: the governing peer as the device that accepted the
     /// invitation pinned it. `None` for the person's own workspaces, which
@@ -135,11 +127,6 @@ impl CommunityState {
         }
     }
 }
-
-/// Document key holding a workspace's collaboration topic. Entries written
-/// under the older name are stored as "room", so the key keeps that
-/// spelling: changing it would orphan every existing entry.
-const TOPIC_KEY: &str = "room";
 
 /// A signed, incremental directory delta. Produced by
 /// [`WorkspaceDirectory::sync_incremental`] and consumed by
@@ -324,26 +311,6 @@ impl WorkspaceDirectory {
             }
         }
         Ok(())
-    }
-
-    /// Add or rename workspace `id` together with the collaboration topic
-    /// that carries its content; `id` is the workspace's stable id, as for
-    /// [`Self::add_workspace`]. Idempotent, and an unchanged value writes
-    /// nothing, so republishing the same list adds no history.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DirectoryError::Automerge`] if the underlying
-    /// Automerge document operation fails.
-    pub fn add_workspace_with_topic(
-        &mut self,
-        id: WorkspaceId,
-        topic: &str,
-        name: &str,
-    ) -> Result<(), DirectoryError> {
-        self.add_workspace(id, name)?;
-        let obj = self.ensure_workspace_obj(id)?;
-        Ok(self.doc.put_str_if_changed(&obj, TOPIC_KEY, topic)?)
     }
 
     /// Place workspace `id` at `order` in the person's list (see
@@ -588,14 +555,13 @@ impl WorkspaceDirectory {
             let Some(id_str) = key.strip_prefix("w:") else {
                 continue;
             };
-            let Ok(id) = id_str.parse::<u64>() else {
+            let Ok(id) = id_str.parse::<WorkspaceId>() else {
                 continue;
             };
             let Ok(Some((Value::Object(ObjType::Map), obj))) = self.doc.get(ROOT, &key) else {
                 continue;
             };
             let name = self.doc.str_at(&obj, "name").unwrap_or_default();
-            let topic = self.doc.str_at(&obj, TOPIC_KEY);
             let governor = self.doc.str_at(&obj, "governor");
             let order = match self.doc.get(&obj, "order") {
                 Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -607,7 +573,6 @@ impl WorkspaceDirectory {
             out.push(WorkspaceMeta {
                 id,
                 name,
-                room: topic,
                 governor,
                 order,
                 member_devices: self.read_pubkey_list(&obj, "members"),
@@ -868,8 +833,8 @@ mod tests {
                 DeviceCapabilities::primary(),
             );
             let mut dir = WorkspaceDirectory::new(f.user_pk, dev_pk);
-            dir.add_workspace(1, "Personal").unwrap();
-            dir.add_workspace(2, "Work").unwrap();
+            dir.add_workspace(WorkspaceId::from_u128(1), "Personal").unwrap();
+            dir.add_workspace(WorkspaceId::from_u128(2), "Work").unwrap();
             let ws = dir.list_workspaces();
             assert_eq!(ws.len(), 2);
             assert_eq!(ws[0].name, "Personal");
@@ -889,17 +854,17 @@ mod tests {
                 enrol_device(&f.user_sk, f.user_pk, "server", DeviceCapabilities::host());
 
             let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-            dir.add_workspace(9, "Notes").unwrap();
-            dir.assign_host(9, h_pk).unwrap();
-            dir.pin(9, a_pk).unwrap();
-            dir.pin(9, a_pk).unwrap(); // idempotent
+            dir.add_workspace(WorkspaceId::from_u128(9), "Notes").unwrap();
+            dir.assign_host(WorkspaceId::from_u128(9), h_pk).unwrap();
+            dir.pin(WorkspaceId::from_u128(9), a_pk).unwrap();
+            dir.pin(WorkspaceId::from_u128(9), a_pk).unwrap(); // idempotent
 
             let ws = dir.list_workspaces();
             assert_eq!(ws.len(), 1);
             assert_eq!(ws[0].host_devices, vec![h_pk]);
             assert_eq!(ws[0].pinned_devices, vec![a_pk]);
 
-            dir.unpin(9, a_pk).unwrap();
+            dir.unpin(WorkspaceId::from_u128(9), a_pk).unwrap();
             assert!(dir.list_workspaces()[0].pinned_devices.is_empty());
         }
 
@@ -918,8 +883,8 @@ mod tests {
             let mut dev_a = WorkspaceDirectory::new(f.user_pk, a_pk);
             let mut dev_b = WorkspaceDirectory::new(f.user_pk, b_pk);
 
-            dev_a.add_workspace(1, "Personal").unwrap();
-            dev_b.add_workspace(2, "Work").unwrap();
+            dev_a.add_workspace(WorkspaceId::from_u128(1), "Personal").unwrap();
+            dev_b.add_workspace(WorkspaceId::from_u128(2), "Work").unwrap();
 
             // Both push a delta; both apply the other's.
             let delta_a = dev_a.sync_incremental(&a_sk, 1_000).unwrap();
@@ -933,10 +898,13 @@ mod tests {
                 .apply_incremental(&delta_a, &a_cert, &revs, 1_100)
                 .unwrap();
 
-            let ids_a: Vec<u64> = dev_a.list_workspaces().into_iter().map(|w| w.id).collect();
-            let ids_b: Vec<u64> = dev_b.list_workspaces().into_iter().map(|w| w.id).collect();
-            assert_eq!(ids_a, vec![1, 2]);
-            assert_eq!(ids_b, vec![1, 2]);
+            let id = WorkspaceId::from_u128;
+            let ids_a: Vec<WorkspaceId> =
+                dev_a.list_workspaces().into_iter().map(|w| w.id).collect();
+            let ids_b: Vec<WorkspaceId> =
+                dev_b.list_workspaces().into_iter().map(|w| w.id).collect();
+            assert_eq!(ids_a, vec![id(1), id(2)]);
+            assert_eq!(ids_b, vec![id(1), id(2)]);
         }
 
         // Phase: save_and_load_round_trip.
@@ -950,13 +918,13 @@ mod tests {
             );
 
             let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-            dir.add_workspace(42, "Answer").unwrap();
-            dir.pin(42, a_pk).unwrap();
+            dir.add_workspace(WorkspaceId::from_u128(42), "Answer").unwrap();
+            dir.pin(WorkspaceId::from_u128(42), a_pk).unwrap();
             let snapshot = dir.save();
             let reloaded = WorkspaceDirectory::load(f.user_pk, a_pk, &snapshot).unwrap();
             let ws = reloaded.list_workspaces();
             assert_eq!(ws.len(), 1);
-            assert_eq!(ws[0].id, 42);
+            assert_eq!(ws[0].id, WorkspaceId::from_u128(42));
             assert_eq!(ws[0].name, "Answer");
             assert_eq!(ws[0].pinned_devices, vec![a_pk]);
             let _ = a_sk;
@@ -982,7 +950,7 @@ mod tests {
             );
 
             let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-            dir.add_workspace(1, "Personal").unwrap();
+            dir.add_workspace(WorkspaceId::from_u128(1), "Personal").unwrap();
             let mut delta = dir.sync_incremental(&a_sk, 500).unwrap();
 
             // Baseline: apply cleanly on a fresh replica.
@@ -1029,7 +997,7 @@ mod tests {
 
             // Laptop's directory.
             let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-            dir.add_workspace(1, "Personal").unwrap();
+            dir.add_workspace(WorkspaceId::from_u128(1), "Personal").unwrap();
             let a_delta = dir.sync_incremental(&a_sk, 400).unwrap();
 
             // Phone tries to publish an addition at t=600 (after
@@ -1040,7 +1008,7 @@ mod tests {
             phone_dir
                 .apply_incremental(&a_delta, &a_cert, &revs, 700)
                 .unwrap();
-            phone_dir.add_workspace(2, "Work").unwrap();
+            phone_dir.add_workspace(WorkspaceId::from_u128(2), "Work").unwrap();
             let b_delta = phone_dir.sync_incremental(&b_sk, 600).unwrap();
 
             assert!(matches!(
@@ -1053,11 +1021,15 @@ mod tests {
             // still accepted (grace: the change was legitimately made
             // by a trusted device at the time).
             let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
-            phone_dir.add_workspace(3, "PreRevoke").unwrap();
+            phone_dir.add_workspace(WorkspaceId::from_u128(3), "PreRevoke").unwrap();
             let pre_delta = phone_dir.sync_incremental(&b_sk, 400).unwrap();
             dir.apply_incremental(&pre_delta, &b_cert, &revs, 700)
                 .unwrap();
-            assert!(dir.list_workspaces().iter().any(|w| w.id == 3));
+            assert!(
+                dir.list_workspaces()
+                    .iter()
+                    .any(|w| w.id == WorkspaceId::from_u128(3))
+            );
         }
 
         // Phase: delta_signed_by_wrong_device_rejected.
@@ -1073,7 +1045,7 @@ mod tests {
                 enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
 
             let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
-            dir.add_workspace(1, "Personal").unwrap();
+            dir.add_workspace(WorkspaceId::from_u128(1), "Personal").unwrap();
             // Sign with B's key but pass A's cert — the apply-side
             // catches the identity mismatch.
             let mut delta = dir.sync_incremental(&b_sk, 400).unwrap();
@@ -1107,7 +1079,7 @@ mod tests {
                 DeviceCapabilities::primary(),
             );
             let mut alice_dir = WorkspaceDirectory::new(f_alice.user_pk, a_pk);
-            alice_dir.add_workspace(1, "AlicePersonal").unwrap();
+            alice_dir.add_workspace(WorkspaceId::from_u128(1), "AlicePersonal").unwrap();
             let delta = alice_dir.sync_incremental(&b_sk, 100).unwrap();
             // Pass Alice's own cert but the delta's author is Bob's
             // device key — the cert-vs-author guard rejects.
@@ -1127,7 +1099,7 @@ mod tests {
                 DeviceCapabilities::primary(),
             );
             let mut bob_dir = WorkspaceDirectory::new(f_bob.user_pk, b_pk2);
-            bob_dir.add_workspace(1, "BobPersonal").unwrap();
+            bob_dir.add_workspace(WorkspaceId::from_u128(1), "BobPersonal").unwrap();
             let bob_delta = bob_dir.sync_incremental(&b_sk2, 100).unwrap();
             assert!(matches!(
                 alice_dir
@@ -1139,11 +1111,10 @@ mod tests {
         }
     }
 
-    /// A workspace names the topic carrying its content; republishing the
-    /// same name and topic adds no history, and a signed snapshot brings
-    /// both to another device of the same person.
+    /// Republishing the same entry adds no history, and a signed snapshot
+    /// brings it to another device of the same person.
     #[test]
-    fn a_workspace_topic_reaches_another_device_without_churn() {
+    fn an_unchanged_entry_writes_nothing_and_reaches_another_device() {
         let f = fresh_user();
         let (a_sk, a_pk, a_cert) = enrol_device(
             &f.user_sk,
@@ -1153,16 +1124,12 @@ mod tests {
         );
         let (b_sk, b_pk, _) =
             enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
-        let topic = "6b3f9a10-0000-4000-8000-000000000063";
+        let workspace = WorkspaceId::from_u128(7);
 
         let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        laptop
-            .add_workspace_with_topic(7, topic, "Research")
-            .unwrap();
+        laptop.add_workspace(workspace, "Research").unwrap();
         let heads = laptop.doc.get_heads();
-        laptop
-            .add_workspace_with_topic(7, topic, "Research")
-            .unwrap();
+        laptop.add_workspace(workspace, "Research").unwrap();
         laptop.doc.commit();
         assert_eq!(
             laptop.doc.get_heads(),
@@ -1178,7 +1145,7 @@ mod tests {
         let listed = board.list_workspaces();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "Research");
-        assert_eq!(listed[0].room.as_deref(), Some(topic));
+        assert_eq!(listed[0].id, workspace);
 
         assert!(
             board.covered_by(&snapshot.delta),
@@ -1186,7 +1153,7 @@ mod tests {
         );
         assert!(laptop.covered_by(&board.signed_snapshot(&b_sk, 1_200).unwrap().delta));
 
-        laptop.add_workspace_with_topic(7, topic, "Thesis").unwrap();
+        laptop.add_workspace(workspace, "Thesis").unwrap();
         assert!(
             !laptop.covered_by(&snapshot.delta),
             "the rename is news to the board"
@@ -1200,9 +1167,9 @@ mod tests {
         // Snapshots taken between uncommitted edits stay one history: the
         // second edit must not reuse the first snapshot's change.
         let mut fresh = WorkspaceDirectory::new(f.user_pk, a_pk);
-        fresh.add_workspace_with_topic(8, topic, "One").unwrap();
+        fresh.add_workspace(WorkspaceId::from_u128(8), "One").unwrap();
         let first = fresh.signed_snapshot(&a_sk, 3_000).unwrap();
-        fresh.add_workspace_with_topic(8, topic, "Two").unwrap();
+        fresh.add_workspace(WorkspaceId::from_u128(8), "Two").unwrap();
         let second = fresh.signed_snapshot(&a_sk, 3_100).unwrap();
         let mut other = WorkspaceDirectory::new(f.user_pk, b_pk);
         for update in [&first, &second] {
@@ -1226,11 +1193,11 @@ mod tests {
         let (_b_sk, b_pk, _) =
             enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
         let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        laptop.add_workspace_with_topic(1, "r1", "One").unwrap();
-        laptop.set_order(1, 2.5).unwrap();
+        laptop.add_workspace(WorkspaceId::from_u128(1), "One").unwrap();
+        laptop.set_order(WorkspaceId::from_u128(1), 2.5).unwrap();
         laptop.register_device(a_pk, "Laptop").unwrap();
         let heads = laptop.doc.get_heads();
-        laptop.set_order(1, 2.5).unwrap();
+        laptop.set_order(WorkspaceId::from_u128(1), 2.5).unwrap();
         laptop.register_device(a_pk, "Laptop").unwrap();
         assert_eq!(
             laptop.doc.get_heads(),
@@ -1307,7 +1274,7 @@ mod tests {
         );
         // Leaving is a leave of the workspace, not an undo of the decision:
         // the record outlives the workspace being taken off the desk.
-        laptop.remove_workspace(7).unwrap();
+        laptop.remove_workspace(WorkspaceId::from_u128(7)).unwrap();
         assert_eq!(laptop.community(site), Some(CommunityState::Decided));
     }
 
@@ -1328,7 +1295,7 @@ mod tests {
         let (_, later_pk, _) =
             enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
         let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        laptop.add_workspace(4, "Work").unwrap();
+        laptop.add_workspace(WorkspaceId::from_u128(4), "Work").unwrap();
         let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
         board
             .apply_incremental(
@@ -1338,8 +1305,8 @@ mod tests {
                 1_100,
             )
             .unwrap();
-        laptop.set_kept_off(4, a_pk, true).unwrap();
-        board.set_kept_off(4, b_pk, true).unwrap();
+        laptop.set_kept_off(WorkspaceId::from_u128(4), a_pk, true).unwrap();
+        board.set_kept_off(WorkspaceId::from_u128(4), b_pk, true).unwrap();
         let revs = RevocationList::new();
         laptop
             .apply_incremental(
@@ -1354,7 +1321,7 @@ mod tests {
         let entry = &laptop.list_workspaces()[0];
         assert_eq!(entry.kept_off_devices, both);
         assert!(!entry.kept_off_devices.contains(&later_pk));
-        laptop.set_kept_off(4, a_pk, false).unwrap();
+        laptop.set_kept_off(WorkspaceId::from_u128(4), a_pk, false).unwrap();
         assert_eq!(laptop.list_workspaces()[0].kept_off_devices, vec![b_pk]);
     }
 }

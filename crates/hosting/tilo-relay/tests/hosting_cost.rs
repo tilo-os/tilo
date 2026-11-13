@@ -198,7 +198,7 @@ async fn subscribe(
 
 #[derive(Debug, PartialEq, Eq)]
 struct DeltaFields {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     authored_at_ns: u64,
     delta: Vec<u8>,

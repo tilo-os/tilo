@@ -9,6 +9,7 @@ use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
 use web_time::SystemTime;
+use crate::join::WorkspaceId;
 
 /// A device row as the earlier layout wrote it.
 #[derive(Serialize)]
@@ -129,8 +130,7 @@ pub(crate) fn door_redemption(
     .unwrap();
     let signed = crate::join::issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::from_u128(7),
             issuer,
             role: MemberRole::Editor,
             nonce: [nonce; 16],

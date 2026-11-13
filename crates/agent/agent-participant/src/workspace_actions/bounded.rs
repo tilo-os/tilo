@@ -36,6 +36,7 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
+use tilo_relay_protocol::WorkspaceId;
 
 /// How long the person's answer to one invocation stays good for running it.
 const WITNESS_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
@@ -79,7 +80,7 @@ pub(super) struct BoundedReplica {
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct WitnessBinding {
     caller: Caller,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     invocation: InvocationId,
     provider: String,
     resource: String,
@@ -88,7 +89,7 @@ pub(super) struct WitnessBinding {
 }
 
 impl WitnessBinding {
-    pub(super) fn of(workspace_id: u64, caller: &Caller, request: &InvokeRequest) -> Self {
+    pub(super) fn of(workspace_id: WorkspaceId, caller: &Caller, request: &InvokeRequest) -> Self {
         Self {
             caller: caller.clone(),
             workspace_id,
@@ -396,7 +397,7 @@ impl Worker {
     /// here answers for, is its owner, as the host's own mount holds it.
     pub(super) fn policy_for(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         cluster: &str,
         record: Option<(&str, &str)>,
@@ -431,7 +432,7 @@ impl Worker {
     /// [`Self::policy_for`] the record at `route`.
     fn policy_at(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
     ) -> Result<super::ViewReadPolicy, ActionHostError> {
@@ -443,7 +444,7 @@ impl Worker {
     /// (its content, a new record of it): the host's own person and their
     /// agents may; anyone else as the workspace's policy gives them now, an
     /// agent held to what an agent of its person may do.
-    pub(super) fn may_across(&self, workspace_id: u64, caller: &Caller, kind: ActionKind) -> bool {
+    pub(super) fn may_across(&self, workspace_id: WorkspaceId, caller: &Caller, kind: ActionKind) -> bool {
         if super::acts_for(caller, &self.participant) {
             return true;
         }
@@ -459,7 +460,7 @@ impl Worker {
     }
 
     /// Whether a governance on this host answers for who is in `workspace_id`.
-    fn governed(&self, workspace_id: u64) -> bool {
+    fn governed(&self, workspace_id: WorkspaceId) -> bool {
         self.shared.link.get().is_some_and(|link| {
             link.admits(
                 workspace_id,
@@ -472,7 +473,7 @@ impl Worker {
     }
 
     /// Whether `who` may see the workspace's records at all.
-    pub(super) fn admits_bounded(&self, workspace_id: u64, who: &Bounded) -> bool {
+    pub(super) fn admits_bounded(&self, workspace_id: WorkspaceId, who: &Bounded) -> bool {
         (who.person == self.participant && !self.governed(workspace_id))
             || self
                 .shared
@@ -486,7 +487,7 @@ impl Worker {
     /// for them while that standing is unchanged.
     pub(super) fn bounded_replica(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
         state: &WorkspaceState,
@@ -572,7 +573,7 @@ impl Worker {
     /// surveys.
     pub(super) fn bounded_actions(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         route: &DocumentRoute,
         state: &WorkspaceState,
@@ -590,7 +591,7 @@ impl Worker {
     /// each row where it stands.
     pub(super) fn bounded_page(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         (route, state): (&DocumentRoute, &WorkspaceState),
         query: &tilo_actions::remote::CatalogueQuery,
@@ -609,7 +610,7 @@ impl Worker {
     /// costs, not a survey of everything the record publishes.
     pub(super) fn bounded_descriptor(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         who: &Bounded,
         (route, state): (&DocumentRoute, &WorkspaceState),
         address: &ActionAddress,
@@ -629,7 +630,7 @@ impl Worker {
     /// asked already, or this host has nobody to ask.
     pub(super) fn ask_person(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
         about: &About,
@@ -685,7 +686,7 @@ impl Worker {
     /// on the record at `route` ([`About`]).
     pub(super) fn about(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: &DocumentRoute,
         descriptor: &tilo_actions::ActionDescriptor,
         arguments: serde_json::Map<String, serde_json::Value>,
@@ -711,7 +712,7 @@ impl Worker {
     )]
     pub(super) fn perform_bounded(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         who: &Bounded,
         (request, route, state): (&InvokeRequest, &DocumentRoute, &WorkspaceState),
@@ -806,7 +807,7 @@ impl Worker {
     )]
     fn save_bounded(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         (who, route, state): (&Bounded, &DocumentRoute, &WorkspaceState),
         (holder, taken): (&DocumentRoute, Vec<(DocumentRoute, DocumentMutation)>),
         (declared, confirmed): (Option<&str>, bool),
@@ -882,7 +883,7 @@ pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
 
 /// What a bounded caller's invocation waiting on the person needs to go on.
 pub(super) struct Asking {
-    pub(super) workspace_id: u64,
+    pub(super) workspace_id: WorkspaceId,
     pub(super) invocation: InvocationId,
     pub(super) binding: WitnessBinding,
 }

@@ -8,6 +8,7 @@
 //! host's own device, exactly as a desktop does. The workspace decides who may.
 
 use serde_json::{Map, Value};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
@@ -27,7 +28,7 @@ pub struct WorkspaceLink {
     /// this machine or network); otherwise found through discovery.
     pub direct: Option<std::net::SocketAddr>,
     /// The relay shard that carries the workspace: its transport topic.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The workspace's id.
     pub workspace: String,
 }
@@ -144,7 +145,7 @@ pub async fn connect(
 /// them).
 pub async fn invoke(
     client: &RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     action: &str,
     argument: Map<String, Value>,
@@ -167,7 +168,7 @@ const UPLOAD_PIECE: usize = 256 * 1024;
 /// As [`invoke`], for any piece.
 pub async fn upload(
     client: &RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     file: &[u8],
 ) -> Result<String, String> {
@@ -188,7 +189,7 @@ pub async fn upload(
 }
 
 /// Subscribe `client` to the workspace carried by `workspace_id`.
-async fn subscribe(client: &RelayClient, workspace_id: u64) -> Result<(), String> {
+async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Result<(), String> {
     client
         .send(Envelope::Subscribe { workspace_id })
         .map_err(|_| "the session closed".to_owned())?;
@@ -207,7 +208,7 @@ async fn subscribe(client: &RelayClient, workspace_id: u64) -> Result<(), String
 /// Invoke `action` on a session [`subscribe`] opened.
 async fn call(
     client: &RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     action: &str,
     argument: Map<String, Value>,
@@ -264,6 +265,7 @@ async fn call(
 #[cfg(test)]
 mod tests {
     use super::WorkspaceLink;
+    use tilo_relay_protocol::WorkspaceId;
 
     #[test]
     fn a_room_link_names_its_relay_workspace_and_room() {
@@ -271,7 +273,7 @@ mod tests {
         let link = WorkspaceLink {
             relay,
             direct: Some("127.0.0.1:4433".parse().unwrap()),
-            workspace_id: 42,
+            workspace_id: WorkspaceId::from_u128(42),
             workspace: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
         };
         let text = link.to_string();

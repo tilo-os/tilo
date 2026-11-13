@@ -58,7 +58,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let workspace = Governed {
         peer: (&peer).into(),
         host: &host_cert,
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         generation: 1,
         governance_messages: Some(&messages),
     };
@@ -152,7 +152,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let committed = Governed {
         peer: (&candidate).into(),
         host: &host_cert,
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         generation: 2,
         governance_messages: Some(&messages),
     };
@@ -191,7 +191,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let moved = Governed {
         peer: (&candidate).into(),
         host: &host_cert,
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         generation: 3,
         governance_messages: Some(&later),
     };
@@ -292,7 +292,7 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
     let workspace = Governed {
         peer: (&peer).into(),
         host: &host_cert,
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         generation: 1,
         governance_messages: Some(&messages),
     };
@@ -348,7 +348,7 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
     let again = Governed {
         peer: (&joined_ada).into(),
         host: &host_cert,
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         generation: 2,
         governance_messages: Some(&messages),
     };
@@ -381,7 +381,7 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
     let workspace = Governed {
         peer: (&peer).into(),
         host: &host_cert,
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         generation: 1,
         governance_messages: Some(&messages),
     };
@@ -448,7 +448,7 @@ fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unc
     let workspace = Governed {
         peer: (&peer).into(),
         host: &host_cert,
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         generation: 1,
         governance_messages: Some(&messages),
     };

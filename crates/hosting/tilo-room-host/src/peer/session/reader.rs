@@ -13,6 +13,7 @@ use crate::peer::{
 use std::collections::VecDeque;
 
 use super::{SessionLoop, inbound_bytes};
+use tilo_relay_protocol::WorkspaceId;
 
 /// How often a lagging connection checks whether its queues drained.
 const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
@@ -32,7 +33,7 @@ const COMMIT_RUN: usize = READ_AHEAD;
 const SUBSCRIBE_RUN: usize = 16;
 
 /// The workspace a `Subscribe` or `SubscribeFrom` asks for.
-const fn subscription_target(env: &Envelope) -> Option<u64> {
+const fn subscription_target(env: &Envelope) -> Option<WorkspaceId> {
     match env {
         Envelope::Subscribe { workspace_id } | Envelope::SubscribeFrom { workspace_id, .. } => {
             Some(*workspace_id)
@@ -47,7 +48,7 @@ type Budget = Arc<tokio::sync::OwnedSemaphorePermit>;
 /// The next lagging workspace this connection can resume: a `SubscribeFrom` at
 /// its current position, handled as if the device had sent it. A current
 /// plain subscription catches up through the same authorized full replay.
-fn lag_resume(session: &SessionCtx<'_>, subscribed: &[u64]) -> Option<Envelope> {
+fn lag_resume(session: &SessionCtx<'_>, subscribed: &[WorkspaceId]) -> Option<Envelope> {
     while let Some(workspace_id) = session.lag.next() {
         if !subscribed.contains(&workspace_id) {
             continue;
@@ -67,7 +68,7 @@ fn lag_resume(session: &SessionCtx<'_>, subscribed: &[u64]) -> Option<Envelope> 
 
 /// Keep the authenticated lease live until every owner job admitted before
 /// the FIN has passed a durable barrier.
-async fn durable_barrier(session: &SessionCtx<'_>, subscribed: &[u64]) -> Result<(), PeerError> {
+async fn durable_barrier(session: &SessionCtx<'_>, subscribed: &[WorkspaceId]) -> Result<(), PeerError> {
     for id in subscribed {
         let workspace = session.workspaces.lock().await.get(id).cloned();
         if let Some(workspace) = workspace {
@@ -220,7 +221,7 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
 /// (the read-ahead backlog) ends with it.
 pub(super) struct SessionReaderLoop<'s, R> {
     inbound: Inbound<'s, R>,
-    subscribed: &'s mut Vec<u64>,
+    subscribed: &'s mut Vec<WorkspaceId>,
     catching_up: bool,
     access_audit: &'s mut AccessAudit,
     authority: &'s mut tokio::sync::watch::Receiver<u64>,
@@ -255,7 +256,7 @@ impl<'s> ReaderQueues<'s> {
 impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
     pub(super) fn new(
         reader: &'s mut SessionReader<R>,
-        subscribed: &'s mut Vec<u64>,
+        subscribed: &'s mut Vec<WorkspaceId>,
         access_audit: &'s mut AccessAudit,
         authority: &'s mut tokio::sync::watch::Receiver<u64>,
         ReaderQueues {

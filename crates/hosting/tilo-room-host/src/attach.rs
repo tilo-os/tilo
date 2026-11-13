@@ -40,6 +40,7 @@ use crate::handshake::LiveIdentity;
 use crate::metrics::Metrics;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Which host an attach session dials, and how its identity is pinned.
 #[derive(Clone, Debug)]
@@ -127,7 +128,7 @@ pub struct HostDialer {
     pub identity: LiveIdentity,
     pub workspaces: WorkspaceRegistry,
     pub metrics: Arc<Metrics>,
-    pub scope: Option<Vec<u64>>,
+    pub scope: Option<Vec<WorkspaceId>>,
 }
 
 impl HostDialer {
@@ -314,7 +315,7 @@ impl HostDialer {
 
     /// The workspaces this session carries: those in scope, or every
     /// workspace hosted here.
-    async fn carried(&self) -> Vec<u64> {
+    async fn carried(&self) -> Vec<WorkspaceId> {
         let map = self.workspaces.lock().await;
         match &self.scope {
             Some(scope) => scope
@@ -342,12 +343,12 @@ impl Drop for AttachLease {
 /// else of the session; anything else first is logged and skipped.
 async fn negotiate_intersection(
     client: &RelayClient,
-    hosted_local: &[u64],
-) -> Result<Vec<u64>, String> {
+    hosted_local: &[WorkspaceId],
+) -> Result<Vec<WorkspaceId>, String> {
     loop {
         match client.recv().await {
             Some(Envelope::PeerRelayHello { hosted_workspaces }) => {
-                let local: std::collections::HashSet<u64> = hosted_local.iter().copied().collect();
+                let local: std::collections::HashSet<WorkspaceId> = hosted_local.iter().copied().collect();
                 return Ok(hosted_workspaces
                     .into_iter()
                     .filter(|id| local.contains(id))
@@ -373,14 +374,14 @@ impl Session<'_> {
     /// Follow the upstream for the life of the connection: ask once for what
     /// each shared workspace lacks, then admit what arrives, asking again
     /// only on an event (see the module documentation).
-    async fn follow(&self, intersection: &[u64]) -> Result<(), String> {
+    async fn follow(&self, intersection: &[WorkspaceId]) -> Result<(), String> {
         for id in intersection {
             self.ask(*id).await?;
         }
         // The last non-empty answer of each workspace: one repeated unchanged
         // brought nothing this host could take in, and asking again would
         // only repeat it.
-        let mut answered: HashMap<u64, blake3::Hash> = HashMap::new();
+        let mut answered: HashMap<WorkspaceId, blake3::Hash> = HashMap::new();
         while let Some(envelope) = self.client.recv().await {
             match envelope {
                 Envelope::SyncResponse {
@@ -413,7 +414,7 @@ impl Session<'_> {
         Ok(())
     }
 
-    async fn workspace(&self, id: u64) -> Option<crate::workspace::SharedWorkspace> {
+    async fn workspace(&self, id: WorkspaceId) -> Option<crate::workspace::SharedWorkspace> {
         self.workspaces.lock().await.get(&id).cloned()
     }
 
@@ -464,7 +465,7 @@ impl Session<'_> {
                 workspace_id,
                 reason,
             } => {
-                tracing::warn!(workspace_id, %reason, "attach session refused subscribe");
+                tracing::warn!(workspace_id = %workspace_id, %reason, "attach session refused subscribe");
             }
             Envelope::Ping => {
                 let _ = self.client.send(Envelope::Pong);
@@ -476,7 +477,7 @@ impl Session<'_> {
 
     /// Take in the changes the upstream backfilled, and fan them out to this
     /// host's own devices.
-    async fn backfill(&self, workspace_id: u64, delta_since: Vec<u8>) -> Result<(), String> {
+    async fn backfill(&self, workspace_id: WorkspaceId, delta_since: Vec<u8>) -> Result<(), String> {
         let Some(workspace) = self.workspace(workspace_id).await else {
             return Ok(());
         };
@@ -501,7 +502,7 @@ impl Session<'_> {
     /// Ask the upstream for what `workspace_id` lacks: send its materialized
     /// heads, read in the owner's order, so the request follows every change
     /// admitted before it.
-    async fn ask(&self, workspace_id: u64) -> Result<(), String> {
+    async fn ask(&self, workspace_id: WorkspaceId) -> Result<(), String> {
         let Some(workspace) = self.workspace(workspace_id).await else {
             return Ok(());
         };

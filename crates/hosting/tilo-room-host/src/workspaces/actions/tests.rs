@@ -24,6 +24,7 @@ use super::{CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS,
 use crate::app_serving::AppServingPlane as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
+use tilo_relay_protocol::WorkspaceId;
 
 /// What a pending answer comes to, on this runtime.
 pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
@@ -132,7 +133,9 @@ pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeReq
 
 /// A new workspace of `workspaces`, the workspace carrying it, and its governance
 /// as actions.
-pub(super) async fn governed(workspaces: &Workspaces) -> (String, u64, HostWorkspaceActions) {
+pub(super) async fn governed(
+    workspaces: &Workspaces,
+) -> (String, WorkspaceId, HostWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -140,7 +143,7 @@ pub(super) async fn governed(workspaces: &Workspaces) -> (String, u64, HostWorks
 }
 
 /// The verbs `caller` is offered on the workspace `workspace_id` carries.
-async fn offered(host: &HostWorkspaceActions, workspace_id: u64, caller: &Caller) -> Vec<String> {
+async fn offered(host: &HostWorkspaceActions, workspace_id: WorkspaceId, caller: &Caller) -> Vec<String> {
     let query = CatalogueQuery {
         provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
         max_results: 100,
@@ -158,7 +161,7 @@ async fn offered(host: &HostWorkspaceActions, workspace_id: u64, caller: &Caller
 /// `request` by `caller`: what it produced, or why not.
 async fn invoke(
     host: &HostWorkspaceActions,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     caller: &Caller,
     request: InvokeRequest,
 ) -> Result<Value, ActionHostError> {
@@ -228,7 +231,7 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     let agent = Caller::delegated_agent("writer", owner.user_public_key, owner.device_public_key);
     assert!(offered(&host, workspace_id, &agent).await.is_empty());
     assert!(
-        offered(&host, workspace_id ^ 1, &caller(&owner))
+        offered(&host, WorkspaceId::from_u128(41), &caller(&owner))
             .await
             .is_empty()
     );
@@ -542,7 +545,7 @@ async fn a_host_without_apps_answers_only_its_rooms_governance() {
     assert!(plane.answers(&someone, &governance));
     assert!(!plane.answers(&someone, &RemoteActionMessage::Invoke(app)));
     // Nothing is attached: the workspace's actions are unknown, never run.
-    let Some(answer) = plane.serve(7, &someone, governance) else {
+    let Some(answer) = plane.serve(WorkspaceId::from_u128(7), &someone, governance) else {
         panic!("an invocation is answered");
     };
     drop(plane);
@@ -715,7 +718,7 @@ fn dev_release(publisher: &str, version: &str, surface: u8) -> Value {
 async fn an_editor_installs_nothing(
     workspaces: &Workspaces,
     host: &HostWorkspaceActions,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     editor: &DeviceCert,
     publisher: &str,
@@ -750,7 +753,7 @@ async fn an_editor_installs_nothing(
 async fn a_developer_installs_its_own_build(
     workspaces: &Workspaces,
     host: &HostWorkspaceActions,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     owner: &DeviceCert,
     developer: &DeviceCert,

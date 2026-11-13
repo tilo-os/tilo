@@ -48,7 +48,7 @@ struct Inner {
 struct Host {
     device: Device,
     /// Each entered workspace's actions on the host, by its id there.
-    entered: Mutex<HashMap<u64, SessionActions>>,
+    entered: Mutex<HashMap<WorkspaceId, SessionActions>>,
     /// Held while a workspace is entered, so two invocations enter it once.
     entering: tokio::sync::Mutex<()>,
 }
@@ -56,7 +56,7 @@ struct Host {
 /// Where a workspace is placed: its host, as its signed hint names it.
 struct Placed {
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     host: IrohWorkspaceHostHintV1,
 }
 
@@ -348,7 +348,7 @@ impl tilo_action_broker::services::HostedWorkspaces for HostedWorkspaces {
 struct OnHost {
     host: Arc<Host>,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     runtime: tokio::runtime::Handle,
 }
 
@@ -393,7 +393,7 @@ impl OnHost {
 async fn enter(
     host: &Host,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> Result<SessionActions, ActionHostError> {
     let _entering = host.entering.lock().await;
     if let Some(actions) = host.entered.lock_recover().get(&workspace_id) {
@@ -493,7 +493,7 @@ mod tests {
         let hint = IrohWorkspaceHostHintV1 {
             version: 1,
             mode,
-            workspace_id: tilo_peer_state::join::room_workspace_id(&workspace).unwrap(),
+            workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).unwrap(),
             room: workspace,
             endpoint_addr: iroh::EndpointAddr::new(
                 iroh::EndpointId::from_bytes(&cert.device_public_key).unwrap(),

@@ -3,6 +3,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, transaction::Tr
 use ed25519_dalek::SigningKey;
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationReason};
+use crate::join::WorkspaceId;
 fn fixture() -> (AutoCommit, SigningKey, String) {
     let root = SigningKey::from_bytes(&[91; 32]);
     let device = SigningKey::from_bytes(&[92; 32]);
@@ -314,7 +315,7 @@ fn media_basis_hashes_the_delegation_an_older_row_carries() {
     row.workspace_delegations = vec![WorkspaceDelegation {
         version: 1,
         room: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         authority_device_public_key: row.device_cert.device_public_key,
         delegate: row.device_cert.clone(),
         permissions: crate::state::WorkspaceDelegationPermissions {

@@ -34,8 +34,6 @@ tilo_automerge_isolate::test_worker!();
 // The session modules address the protocol crate under the daemon's historic
 // paths (`crate::auth`, `crate::transport`, …); keep those crate-private.
 use tilo_relay_protocol::auth;
-#[cfg(test)]
-use tilo_relay_protocol::room_workspace_id;
 
 /// The relay wire messages, under the path the session modules use.
 mod transport {
@@ -84,7 +82,7 @@ pub fn trace_native_publication(
         crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
     };
     tracing::debug!(target: "tilo_relay::native_publication",
-        phase, id = %blake3::hash(&body), kind, workspace_id,
+        phase, id = %blake3::hash(&body), kind, workspace_id = %workspace_id,
         author = %hex::encode(&author_device_public_key[..4]),
         recipient = ?recipient.map(|key| hex::encode(&key[..4])),
         "native relay publication hop");

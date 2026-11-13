@@ -51,6 +51,7 @@ pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata, retention
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
+use collab_types::WorkspaceId;
 
 /// A co-edit session bound to one workspace on one host connection.
 ///
@@ -59,7 +60,7 @@ use crate::transport::Envelope;
 /// and drain inbound events with [`RelayCoeditSession::recv`].
 pub struct RelayCoeditSession {
     client: RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     /// When the host was last heard from, as [`tilo_clock::unix_now_ns`].
     last_heard_ns: std::sync::atomic::AtomicU64,
@@ -85,7 +86,7 @@ impl RelayCoeditSession {
     /// channel is already closed.
     pub fn join(
         client: RelayClient,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author: [u8; 32],
     ) -> Result<Self, CoeditError> {
         client
@@ -233,7 +234,7 @@ impl RelayCoeditSession {
     }
 
     /// The workspace this session is bound to.
-    pub fn workspace_id(&self) -> u64 {
+    pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
 
@@ -570,7 +571,7 @@ impl RelayCoeditSession {
                     reason,
                 } if workspace_id == self.workspace_id => {
                     tracing::warn!(
-                        workspace_id,
+                        workspace_id = %workspace_id,
                         to = %hex::encode(to_device_public_key),
                         %reason,
                         "the host could not deliver a remote action sent on this session"
@@ -780,7 +781,7 @@ mod tests {
         .unwrap();
         let bad = [
             Envelope::Delta {
-                workspace_id: 42,
+                workspace_id: WorkspaceId::from_u128(42),
                 author_device_public_key: [3; 32],
                 authored_at_ns: 1,
                 signature: [0; 64],
@@ -792,7 +793,7 @@ mod tests {
                 .unwrap(),
             },
             Envelope::RetiredPresence {
-                workspace_id: 42,
+                workspace_id: WorkspaceId::from_u128(42),
                 payload: AttributedPresence {
                     author: [3; 32],
                     body: vec![5],
@@ -801,7 +802,7 @@ mod tests {
                 .unwrap(),
             },
             Envelope::Ready {
-                workspace_id: 42,
+                workspace_id: WorkspaceId::from_u128(42),
                 pending_deltas: 0,
                 records_when_opened: false,
             },
@@ -814,7 +815,7 @@ mod tests {
                 SessionChannels { outbound, inbound },
                 Box::new(Carrier),
             );
-            let session = RelayCoeditSession::join(client, 41, [9; 32]).unwrap();
+            let session = RelayCoeditSession::join(client, tilo_relay_protocol::WorkspaceId::from_u128(41), [9; 32]).unwrap();
             incoming.send(frame).await.unwrap();
             drop(incoming);
             assert!(

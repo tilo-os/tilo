@@ -79,6 +79,7 @@ pub mod task_budget;
 pub mod task_presentation;
 pub mod units;
 pub mod validator;
+pub mod workspace_id;
 pub mod workspace_record;
 
 /// The URI scheme that asks an app to open one of its own records
@@ -96,6 +97,7 @@ pub use caps::{
     ResourceRef, Scope, Subject, WorkspaceMember, decide_capability, host_covers, path_covers,
 };
 pub use channel::{ArtifactId, ChannelId};
+pub use workspace_id::WorkspaceId;
 pub use claim::{
     ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,
     claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,

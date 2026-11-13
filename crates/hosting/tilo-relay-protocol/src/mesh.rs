@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
+use crate::WorkspaceId;
 
 /// Stable certified-device routing key.
 pub type DeviceKey = [u8; 32];
@@ -357,7 +358,7 @@ pub struct ServerAdvertisement {
     /// immutable capabilities from its verified device certificate.
     pub services: ServiceCapabilities,
     /// Workspaces this server currently hosts.
-    pub workspaces: BTreeSet<u64>,
+    pub workspaces: BTreeSet<WorkspaceId>,
     /// Apps whose backend can run here. Empty means none, not "all".
     pub apps: BTreeSet<String>,
     /// Optional execution hardware available to sandboxed compute jobs.

@@ -183,7 +183,7 @@ async fn ada_page_probe(relay: &Relay, device: &TestDevice, room: &str) -> Neigh
 }
 
 /// `device`'s page session in the room's workspace: connected, subscribed.
-async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: u64) -> RelayClient {
+async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) -> RelayClient {
     let client = RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
@@ -206,7 +206,7 @@ async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: u64) -> R
 pub(super) async fn commit(
     client: &RelayClient,
     device: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     message: &NeighbourMsg,
 ) -> Result<u64, String> {
     let (channel, _) = neighbour_wire::retention(message, false).unwrap();

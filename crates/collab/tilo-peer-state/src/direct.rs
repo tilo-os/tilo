@@ -45,6 +45,7 @@ use std::sync::{Arc, RwLock};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
+use crate::join::WorkspaceId;
 
 /// ALPN of a direct replica link between two devices of one workspace.
 pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/2";
@@ -58,7 +59,7 @@ pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/2";
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 enum LinkFrame {
     /// The workspace the dialling device wants, named before anything else.
-    Workspace(u64),
+    Workspace(WorkspaceId),
     /// The retained history the dialling device asks for, from its cursors.
     Cursors(Vec<Cursor>),
     /// Retained history after the asker's cursors, and whether more is left.
@@ -614,7 +615,7 @@ impl DirectSync {
     /// sent them all here.
     async fn missed(&self, cursors: &[Cursor]) -> Result<Vec<NeighbourMsg>, String> {
         if let Some(store) = &self.0.store {
-            let workspace = self.workspace_number()?;
+            let workspace = self.workspace()?;
             let mut cursors = cursors.to_vec();
             let mut missed = Vec::new();
             loop {
@@ -801,7 +802,7 @@ impl DirectSync {
             .open_bi()
             .await
             .map_err(|error| error.to_string())?;
-        let workspace = self.workspace_number()?;
+        let workspace = self.workspace()?;
         write_link(&mut send, &LinkFrame::Workspace(workspace)).await?;
         // Who the dialled device is, this one learns from what it sends: its
         // certificate is in the frames it opens with, and a device that has
@@ -897,7 +898,7 @@ impl DirectSync {
             return Ok((Vec::new(), false));
         };
         let replay = store
-            .replay(self.workspace_number()?, cursors, Budget::default())
+            .replay(self.workspace()?, cursors, Budget::default())
             .map_err(|error| error.to_string())?;
         Ok((replay.frames, replay.more))
     }
@@ -916,7 +917,7 @@ impl DirectSync {
     /// The device named no workspace, or one this replica is not.
     pub async fn serve(&self, connection: Connection) -> Result<(), String> {
         let (named, send, recv) = dialed_workspace(&connection).await?;
-        if named != self.workspace_number()? {
+        if named != self.workspace()? {
             return Err(refuse(&connection, "this device holds no such workspace"));
         }
         let live = self.0.outgoing.subscribe();
@@ -1497,7 +1498,7 @@ impl DirectSync {
         let Some(store) = &self.0.store else {
             return true;
         };
-        let Ok(workspace) = self.0.replica.number() else {
+        let Ok(workspace) = self.0.replica.id() else {
             return true;
         };
         let Ok(frame) = Frame::of(message) else {
@@ -1517,8 +1518,8 @@ impl DirectSync {
         }
     }
 
-    fn workspace_number(&self) -> Result<u64, String> {
-        self.0.replica.number()
+    fn workspace(&self) -> Result<WorkspaceId, String> {
+        self.0.replica.id()
     }
 
     /// This device's certificate in the replica's roster: the one its key signs
@@ -1545,7 +1546,7 @@ struct Control {
 /// Read the workspace a dialling device names first, off its control stream.
 async fn dialed_workspace(
     connection: &Connection,
-) -> Result<(u64, SendStream, RecvStream), String> {
+) -> Result<(WorkspaceId, SendStream, RecvStream), String> {
     let (send, mut recv) = connection
         .accept_bi()
         .await
@@ -1583,10 +1584,10 @@ impl ProtocolHandler for DirectSync {
 /// refused as deleted.
 #[derive(Clone, Default)]
 pub struct Serving {
-    links: Arc<RwLock<BTreeMap<u64, DirectSync>>>,
+    links: Arc<RwLock<BTreeMap<WorkspaceId, DirectSync>>>,
     /// The workspaces deleted here, refused as deleted to whoever names one
     /// ([`Self::delete`]).
-    deleted: Arc<RwLock<std::collections::BTreeSet<u64>>>,
+    deleted: Arc<RwLock<std::collections::BTreeSet<WorkspaceId>>>,
 }
 
 impl std::fmt::Debug for Serving {
@@ -1610,7 +1611,7 @@ impl Serving {
     ///
     /// The link's replica names no workspace id.
     pub fn serve(&self, link: DirectSync) -> Result<(), String> {
-        let workspace = link.workspace_number()?;
+        let workspace = link.workspace()?;
         link.0
             .fan_out
             .store(true, std::sync::atomic::Ordering::Release);
@@ -1619,7 +1620,7 @@ impl Serving {
     }
 
     /// Stop serving `workspace`: a workspace this host released.
-    pub fn release(&self, workspace: u64) {
+    pub fn release(&self, workspace: WorkspaceId) {
         self.links.write_recover().remove(&workspace);
     }
 
@@ -1628,7 +1629,7 @@ impl Serving {
     /// [`WORKSPACE_DELETED`](tilo_relay_protocol::refusal::WORKSPACE_DELETED).
     /// A device that knows the workspace's random id learns nothing more than
     /// that it is gone.
-    pub fn delete(&self, workspace: u64) {
+    pub fn delete(&self, workspace: WorkspaceId) {
         self.deleted.write_recover().insert(workspace);
         let link = self.links.write_recover().remove(&workspace);
         if let Some(link) = link {
@@ -1638,13 +1639,13 @@ impl Serving {
 
     /// Whether `workspace` was deleted here ([`Self::delete`]).
     #[must_use]
-    pub fn deleted(&self, workspace: u64) -> bool {
+    pub fn deleted(&self, workspace: WorkspaceId) -> bool {
         self.deleted.read_recover().contains(&workspace)
     }
 
     /// The link serving `workspace`, when this host serves it.
     #[must_use]
-    pub fn link(&self, workspace: u64) -> Option<DirectSync> {
+    pub fn link(&self, workspace: WorkspaceId) -> Option<DirectSync> {
         self.links.read_recover().get(&workspace).cloned()
     }
 }
@@ -1783,14 +1784,12 @@ impl Owning {
 
     /// The link serving `workspace`: this device's replica of it, kept at its
     /// store, made now when this device holds it and nothing serves it yet.
-    fn link(&self, workspace: u64) -> Result<DirectSync, String> {
-        // The link names the workspace by the transport number its first frame
-        // carries: this device answers for the workspace whose own number that
-        // is.
-        let held = self.owner.workspaces().into_iter().find(|held| {
-            crate::join::room_workspace_id(&held.to_string())
-                .is_ok_and(|number| number == workspace)
-        });
+    fn link(&self, workspace: WorkspaceId) -> Result<DirectSync, String> {
+        let held = self
+            .owner
+            .workspaces()
+            .into_iter()
+            .find(|held| *held == workspace);
         let Some(held) = held else {
             self.serving.release(workspace);
             return Err("this device holds no such workspace".into());
@@ -1895,11 +1894,8 @@ fn carry_to(
     from: [u8; 32],
     message: NeighbourMsg,
 ) {
-    let Ok(number) = crate::join::room_workspace_id(&workspace.to_string()) else {
-        return;
-    };
     if let Ok(frame) = Frame::of(&message)
-        && let Err(error) = store.retain(number, &frame)
+        && let Err(error) = store.retain(workspace, &frame)
     {
         tracing::warn!(%error, "a frame was not kept for the workspace's members");
     }
@@ -1914,10 +1910,7 @@ fn send_to_members(
     from: [u8; 32],
     message: NeighbourMsg,
 ) {
-    let Ok(number) = crate::join::room_workspace_id(&workspace.to_string()) else {
-        return;
-    };
-    let Some(link) = serving.link(number) else {
+    let Some(link) = serving.link(workspace) else {
         return;
     };
     link.outgoing(Authored {

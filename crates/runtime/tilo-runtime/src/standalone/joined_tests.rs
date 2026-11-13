@@ -219,7 +219,7 @@ impl HostedWorkspace {
             .await
             .unwrap();
         let workspace = WorkspaceId::parse(governing.workspace()).unwrap();
-        let topic = workspace_topic(workspace).unwrap();
+        let topic = workspace;
         let hint = governing.hint(server.addr());
         let relay_root = dir.join("relay");
         let baseline = governing
@@ -346,7 +346,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
                 std::sync::Arc::clone(&custody.signer),
             )
             .in_workspace(
-                workspace_topic(workspace).unwrap(),
+                workspace,
                 workspace_cert,
                 Vec::new(),
             ),
@@ -395,7 +395,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
         probe.custody.device_cert.clone(),
         std::sync::Arc::clone(&probe.custody.signer),
     )
-    .in_workspace(workspace_topic(workspace).unwrap(), renewed, Vec::new());
+    .in_workspace(workspace, renewed, Vec::new());
     probe.custody = HostIdentity::held(
         probe.custody.device_cert.clone(),
         std::sync::Arc::clone(&probe.custody.signer),

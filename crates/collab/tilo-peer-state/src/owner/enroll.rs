@@ -13,8 +13,13 @@ use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationList};
+use crate::join::WorkspaceId;
 
-fn current(identity: &HostIdentity, topic: u64, expected: &DeviceCert) -> Result<(), String> {
+fn current(
+    identity: &HostIdentity,
+    topic: WorkspaceId,
+    expected: &DeviceCert,
+) -> Result<(), String> {
     let (certificate, _) = identity.current_material(topic)?;
     if &certificate != expected {
         return Err("native enrollment custody changed during exchange".into());
@@ -51,7 +56,7 @@ fn active(
 pub async fn prepare_and_complete(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
-    identity_topic: u64,
+    identity_topic: WorkspaceId,
     local: Option<WorkspaceSlot>,
     invitation: String,
     owner: NativeWorkspaceOwner,
@@ -210,7 +215,7 @@ pub async fn prepare_and_complete(
             let bootstrap = prove_membership(
                 &client,
                 &host.endpoint_addr,
-                (grant.room.clone(), grant.workspace_id),
+                grant.workspace_id,
                 &device,
                 &identity,
             )
@@ -238,7 +243,7 @@ pub async fn prepare_and_complete(
             let bootstrap = prove_membership(
                 &client,
                 &host.endpoint_addr,
-                (grant.room.clone(), grant.workspace_id),
+                grant.workspace_id,
                 &device,
                 &identity,
             )
@@ -319,11 +324,10 @@ fn expired(code: u16, message: &str) -> bool {
 async fn prove_membership(
     client: &WorkspaceJoinClient,
     host: &iroh::EndpointAddr,
-    workspace: (String, u64),
+    workspace_id: WorkspaceId,
     device: &DeviceCert,
     identity: &HostIdentity,
 ) -> Result<join::JoinBootstrap, String> {
-    let (workspace, workspace_id) = workspace;
     let mut request_id = [0; 32];
     rand_core::Rng::fill_bytes(
         &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
@@ -333,7 +337,6 @@ async fn prove_membership(
         .request(
             host.clone(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
-                room: workspace,
                 workspace_id,
                 device_cert: device.clone(),
                 request_id,
@@ -369,8 +372,7 @@ pub async fn admit_as_member(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     owner: NativeWorkspaceOwner,
-    workspace: crate::owner::WorkspaceId,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     hint: join::TransportHint,
     now: SystemTime,
 ) -> Result<(), String> {
@@ -380,7 +382,7 @@ pub async fn admit_as_member(
     let bootstrap = prove_membership(
         &client,
         &host.endpoint_addr,
-        (workspace.to_string(), workspace_id),
+        workspace_id,
         &device,
         &identity,
     )
@@ -398,7 +400,7 @@ pub async fn renew_membership(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     owner: NativeWorkspaceOwner,
-    workspace: crate::owner::WorkspaceId,
+    workspace: WorkspaceId,
 ) -> Result<bool, String> {
     let (topic, hint, held) = owner.with_current(workspace, |view| {
         Ok((
@@ -416,7 +418,7 @@ pub async fn renew_membership(
     let bootstrap = prove_membership(
         &client,
         &host.endpoint_addr,
-        (workspace.to_string(), topic),
+        topic,
         &renewed,
         &identity,
     )

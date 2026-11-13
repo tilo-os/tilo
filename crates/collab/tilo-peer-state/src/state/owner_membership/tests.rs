@@ -1,4 +1,5 @@
 use super::*;
+use crate::join::WorkspaceId;
 use crate::join::{sign_membership_proof, verify_membership_proof};
 use crate::state::now_ns;
 use ed25519_dalek::SigningKey;
@@ -13,7 +14,7 @@ fn proof(
     let challenge = peer
         .governance()
         .membership_challenge(
-            7,
+            WorkspaceId::from_u128(7),
             &peer.owner_certificates()[0],
             cert,
             [10; 32],
@@ -62,8 +63,7 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
     let ticket = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::from_u128(7),
             issuer: peer.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [43; 16],

@@ -44,6 +44,7 @@ use web_time::SystemTime;
 use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::workspaces::WorkspaceServices;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Governance changes the follower of one workspace has yet to take in.
 const NOTICES: usize = 256;
@@ -54,7 +55,7 @@ pub struct HostWorkspaceRequest {
     /// The workspace's UUID.
     pub workspace: String,
     /// The workspace's transport shard.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The governor's own signed address for the workspace.
     pub governor_hint: TransportHint,
     /// The workspace as the governor admits a joining member to it, this host's
@@ -69,7 +70,7 @@ struct HostedRecord {
     /// written under.
     #[serde(rename = "room")]
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     /// The governor's signed address, postcard in hex.
     governor_hint: String,
     /// The workspace as the governor handed it over, postcard in hex.
@@ -188,7 +189,7 @@ impl Hosting {
         let record = HostedRecord::of(request)?;
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
         write_durably(&self.dir, &self.record_path(&request.workspace), &bytes)?;
-        tracing::info!(workspace = %request.workspace, workspace_id = request.workspace_id, "serving a workspace for its governor");
+        tracing::info!(workspace = %request.workspace, workspace_id = %request.workspace_id, "serving a workspace for its governor");
         Ok(hint)
     }
 
@@ -263,10 +264,8 @@ impl Hosting {
         let authority = governor.host_device_certificate.clone();
         // The hint names the workspace this host is asked to serve, by the same
         // uuid and shard, from a device of this host's own person.
-        let asked = request.workspace.as_str();
         let asked_shard = request.workspace_id;
-        if governor.room.as_str() != asked
-            || governor.workspace_id != asked_shard
+        if governor.workspace_id != asked_shard
             || authority.user_public_key != own.user_public_key
         {
             return Err("the workspace is not served by a device of this host's person".into());
@@ -363,7 +362,6 @@ fn own_hint(
     IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::CertifiedHost,
-        room: governor.room.clone(),
         workspace_id: governor.workspace_id,
         endpoint_addr,
         host_user_public_key: services.cert.user_public_key,
@@ -379,7 +377,7 @@ fn own_hint(
 /// are not this replica's to follow.
 fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, String> {
     let mut peer = StatePeer::from_join(
-        &bootstrap.room,
+        &bootstrap.workspace_id.to_string(),
         bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         &bootstrap.revocations,
@@ -434,7 +432,7 @@ fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime
 /// be written.
 async fn admit(
     services: &WorkspaceServices,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     peer: &StatePeer,
     now: SystemTime,
 ) -> Result<(), String> {
@@ -454,7 +452,7 @@ async fn admit(
 }
 
 /// Stop handing `workspace_id`'s changes to a follower.
-async fn stop_following(services: &WorkspaceServices, workspace_id: u64) {
+async fn stop_following(services: &WorkspaceServices, workspace_id: WorkspaceId) {
     let workspace = services.workspaces.lock().await.get(&workspace_id).cloned();
     if let Some(workspace) = workspace {
         let mut runtime = workspace.lock().await;
@@ -477,7 +475,7 @@ impl HostedReplica {
     /// ([`crate::workspaces::member_bootstrap`]).
     pub(crate) fn bootstrap(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: &DeviceCert,
     ) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
         let peer = self.peer.lock_recover();
@@ -494,7 +492,7 @@ impl HostedReplica {
 /// Admit nobody to `workspace_id` any more, stop handing its changes to a
 /// follower, and take it out of this host's registry. Its files stay: a
 /// later request to serve it starts from them.
-async fn stop_serving(services: &WorkspaceServices, workspace_id: u64) -> Result<(), String> {
+async fn stop_serving(services: &WorkspaceServices, workspace_id: WorkspaceId) -> Result<(), String> {
     stop_following(services, workspace_id).await;
     services
         .access
@@ -516,7 +514,7 @@ async fn stop_serving(services: &WorkspaceServices, workspace_id: u64) -> Result
 struct Follower {
     services: WorkspaceServices,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     governor: [u8; 32],
     record: PathBuf,
     peer: StatePeer,

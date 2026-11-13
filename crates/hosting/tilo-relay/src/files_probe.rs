@@ -5,11 +5,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use tilo_user_identity::{IdentityPaths, persist};
+use crate::WorkspaceId;
 
 #[derive(Debug, Serialize)]
 struct FilesStatus {
     schema_version: u8,
-    relay_workspace_id: u64,
+    relay_workspace_id: WorkspaceId,
     files_workspace_id: uuid::Uuid,
     files_endpoint_id: String,
     relay_service_id: String,
@@ -17,7 +18,7 @@ struct FilesStatus {
 
 fn public_status(
     registration: &tilo_relay::transport::ContentPeerRegistration,
-    relay_workspace_id: u64,
+    relay_workspace_id: WorkspaceId,
     service: [u8; 32],
 ) -> Result<FilesStatus> {
     anyhow::ensure!(
@@ -39,7 +40,7 @@ pub(super) fn discover(
     root: &Path,
     device: &str,
     service: &str,
-    workspace: u64,
+    workspace: WorkspaceId,
     registry: Option<&Path>,
 ) -> Result<tilo_relay::transport::ContentPeerRegistration> {
     let paths = IdentityPaths::under(root);
@@ -131,7 +132,7 @@ pub(super) fn run(
     root: &Path,
     device: &str,
     service: &str,
-    workspace: u64,
+    workspace: WorkspaceId,
     registry: Option<&Path>,
 ) -> Result<()> {
     let registration = discover(root, device, service, workspace, registry)?;

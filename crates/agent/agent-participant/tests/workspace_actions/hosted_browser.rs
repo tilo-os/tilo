@@ -159,7 +159,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     assert_eq!(started[0].workspace, WORKSPACE);
     assert_eq!(
         browsers
-            .window(tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap())
+            .window(tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap())
             .map(|window| window.provider),
         Some(WINDOW.into()),
         "the workspace has the window"

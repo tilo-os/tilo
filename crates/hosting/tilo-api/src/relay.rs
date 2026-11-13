@@ -22,6 +22,7 @@ use tilo_relay_client::CertifyError;
 use tilo_relay_client::https::{self, Origin};
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, HostRefusal};
+use collab_types::WorkspaceId;
 
 /// How long entering a workspace may take.
 const ENTERING: Duration = Duration::from_secs(30);
@@ -241,7 +242,7 @@ impl Relay {
     /// Not one of the person's own workspaces ([`RelayError::NotFound`]),
     /// or the relay refused or was not reached.
     pub async fn delete(&self, connection: &Connection, workspace: &str) -> Result<(), RelayError> {
-        if tilo_relay_protocol::room_workspace_id(workspace).is_err() {
+        if tilo_relay_protocol::WorkspaceId::parse(workspace).is_none() {
             return Err(RelayError::NotFound);
         }
         let mut arguments = Map::new();
@@ -272,9 +273,9 @@ impl Relay {
     /// # Errors
     /// Not a workspace the grant reaches, or the relay refused or was not
     /// reached.
-    pub async fn enter(&self, connection: &Connection, workspace: &str) -> Result<u64, RelayError> {
+    pub async fn enter(&self, connection: &Connection, workspace: &str) -> Result<WorkspaceId, RelayError> {
         if !connection.key.scope().reaches(workspace)
-            || tilo_relay_protocol::room_workspace_id(workspace).is_err()
+            || tilo_relay_protocol::WorkspaceId::parse(workspace).is_none()
         {
             return Err(RelayError::NotFound);
         }
@@ -311,7 +312,7 @@ pub struct Connection {
     host: String,
     /// The workspaces it entered or is entering, by id: each joined once,
     /// and left with the session.
-    entered: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<u64>>>>,
+    entered: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<WorkspaceId>>>>,
     /// The grant's own iroh endpoint, keyed by it: what dials the person's
     /// devices that host a workspace of theirs.
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
@@ -382,7 +383,7 @@ impl Connection {
 
     /// Enter `workspace`, as every device enters one, in at most [`ENTERING`]:
     /// one the person does not have is not found, as one never made.
-    async fn enter(&self, workspace: &str) -> Result<u64, RelayError> {
+    async fn enter(&self, workspace: &str) -> Result<WorkspaceId, RelayError> {
         let label = self.key.cert().device_label.clone();
         let Ok(entered) =
             tokio::time::timeout(ENTERING, self.device.enter_workspace(workspace, &label)).await

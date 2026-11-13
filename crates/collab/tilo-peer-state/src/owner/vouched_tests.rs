@@ -104,7 +104,7 @@ fn a_membership_answer_for_another_device_or_workspace_is_refused() {
     );
     assert!(
         owner
-            .install_vouched(workspace ^ 1, &answer, &bootstrap.device_cert, now)
+            .install_vouched(WorkspaceId::from_u128(41), &answer, &bootstrap.device_cert, now)
             .is_err()
     );
     let error = JoinTransportResponse::Error {

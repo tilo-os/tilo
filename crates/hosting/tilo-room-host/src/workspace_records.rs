@@ -21,6 +21,7 @@ use crate::coedit::CoeditPayload;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// One retained document body of a workspace, as its author signed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +59,7 @@ pub struct WorkspaceRecords {
 /// whoever reads the workspace's retention meanwhile must still see it.
 #[derive(Default)]
 struct Inflight {
-    open: std::sync::Mutex<std::collections::HashMap<u64, Open>>,
+    open: std::sync::Mutex<std::collections::HashMap<WorkspaceId, Open>>,
     settled: tokio::sync::Notify,
 }
 
@@ -69,11 +70,11 @@ struct Open {
 }
 
 impl Inflight {
-    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Open>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<WorkspaceId, Open>> {
         self.open.lock_recover()
     }
 
-    fn queue(self: &std::sync::Arc<Self>, workspace_id: u64) -> Ticket {
+    fn queue(self: &std::sync::Arc<Self>, workspace_id: WorkspaceId) -> Ticket {
         let mut open = self.lock();
         let entry = open.entry(workspace_id).or_default();
         let number = entry.next;
@@ -89,14 +90,14 @@ impl Inflight {
 
     /// Whether every commit queued for `workspace_id` before `next` is
     /// durable (or abandoned).
-    fn settled_before(&self, workspace_id: u64, next: u64) -> bool {
+    fn settled_before(&self, workspace_id: WorkspaceId, next: u64) -> bool {
         self.lock()
             .get(&workspace_id)
             .is_none_or(|open| open.queued.first().is_none_or(|first| *first >= next))
     }
 
     /// Wait until every commit queued for `workspace_id` so far is durable.
-    async fn settle(&self, workspace_id: u64) {
+    async fn settle(&self, workspace_id: WorkspaceId) {
         let Some(next) = self.lock().get(&workspace_id).map(|open| open.next) else {
             return;
         };
@@ -115,7 +116,7 @@ impl Inflight {
 /// One queued host commit, until it is durable or given up.
 struct Ticket {
     inflight: std::sync::Arc<Inflight>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     number: u64,
 }
 
@@ -207,7 +208,7 @@ impl WorkspaceRecords {
     /// As [`Self::retained`], or the owner did not settle.
     pub(crate) async fn retained_settled(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     ) -> Result<Vec<RetainedBody>, String> {
         let hosted = self.workspaces.lock().await;
         let workspace = hosted.get(&workspace_id).cloned();
@@ -241,7 +242,7 @@ impl WorkspaceRecords {
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"
     )]
-    pub async fn retained(&self, workspace_id: u64) -> Result<Vec<RetainedBody>, String> {
+    pub async fn retained(&self, workspace_id: WorkspaceId) -> Result<Vec<RetainedBody>, String> {
         self.inflight.settle(workspace_id).await;
         let ws = self
             .workspaces
@@ -298,7 +299,7 @@ impl WorkspaceRecords {
             .collect();
         if unreadable > 0 {
             tracing::warn!(
-                workspace_id,
+                workspace_id = %workspace_id,
                 unreadable,
                 "retained frames of the room do not decode; they are left out"
             );
@@ -311,7 +312,7 @@ impl WorkspaceRecords {
     /// replays it.
     pub(crate) async fn channel_governance(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     ) -> Vec<([u8; 32], neighbour_wire::NeighbourMsg)> {
         let Ok(retained) = self.retained(workspace_id).await else {
             return Vec::new();
@@ -333,7 +334,7 @@ impl WorkspaceRecords {
     /// subscribes, which the door just let it in to do
     /// ([`crate::peer::Arriving`]). False for a workspace this host does not
     /// hold.
-    pub(crate) async fn expect_arrival(&self, workspace_id: u64, device: [u8; 32]) -> bool {
+    pub(crate) async fn expect_arrival(&self, workspace_id: WorkspaceId, device: [u8; 32]) -> bool {
         let workspace = {
             let workspaces = self.workspaces.lock().await;
             let Some(workspace) = workspaces.get(&workspace_id).cloned() else {
@@ -347,7 +348,7 @@ impl WorkspaceRecords {
 
     /// Wait until every host commit queued for `workspace_id` so far is
     /// durable.
-    pub(crate) async fn settled(&self, workspace_id: u64) {
+    pub(crate) async fn settled(&self, workspace_id: WorkspaceId) {
         self.inflight.settle(workspace_id).await;
     }
 
@@ -356,7 +357,7 @@ impl WorkspaceRecords {
     /// for content, as any member asks. The number of devices it reached.
     pub(crate) async fn host_presence(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         body: Vec<u8>,
     ) -> Result<usize, String> {
         let payload = crate::AttributedPresence {
@@ -382,7 +383,7 @@ impl WorkspaceRecords {
     #[cfg(feature = "agents")]
     pub async fn view_channel(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         channel: [u8; 32],
         max_bytes: usize,
     ) -> Result<Vec<RetainedBody>, String> {
@@ -418,7 +419,7 @@ impl WorkspaceRecords {
     /// Admit `commit` to `workspace_id` as this host's own change: ordered,
     /// retained, fanned out to every subscriber and queued for offline
     /// members. Returns its host order.
-    pub async fn commit(&self, workspace_id: u64, commit: HostCommit) -> Result<u64, String> {
+    pub async fn commit(&self, workspace_id: WorkspaceId, commit: HostCommit) -> Result<u64, String> {
         self.enqueue(workspace_id, commit).await?.durable().await
     }
 
@@ -426,7 +427,7 @@ impl WorkspaceRecords {
     /// place in the workspace's order once this returns.
     pub(crate) async fn enqueue(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         commit: HostCommit,
     ) -> Result<WorkspaceAdmission, String> {
         let reservation = self.reserve(workspace_id);
@@ -438,14 +439,14 @@ impl WorkspaceRecords {
     /// later, with [`Self::enqueue_reserved`]: from now on
     /// [`Self::retained`] waits for it as for a commit already queued,
     /// until it is durable or the reservation is dropped.
-    pub(crate) fn reserve(&self, workspace_id: u64) -> Reservation {
+    pub(crate) fn reserve(&self, workspace_id: WorkspaceId) -> Reservation {
         Reservation(self.inflight.queue(workspace_id))
     }
 
     /// [`Self::enqueue`] for a commit whose place `reservation` holds.
     pub(crate) async fn enqueue_reserved(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         commit: HostCommit,
         reservation: Reservation,
     ) -> Result<WorkspaceAdmission, String> {
@@ -460,7 +461,7 @@ impl WorkspaceRecords {
     /// live and on catch-up.
     pub(crate) async fn carry(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author: [u8; 32],
         commit: HostCommit,
     ) -> Result<WorkspaceAdmission, String> {
@@ -475,7 +476,7 @@ impl WorkspaceRecords {
     )]
     async fn enqueue_as(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author: [u8; 32],
         commit: HostCommit,
         reservation: Reservation,

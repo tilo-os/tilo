@@ -62,7 +62,7 @@ struct Admitted {
     _state: tempfile::TempDir,
     _directory: tempfile::TempDir,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     invitation: String,
     owner: tilo_peer_state::owner::NativeWorkspaceOwner,
     client: WorkspaceJoinClient,

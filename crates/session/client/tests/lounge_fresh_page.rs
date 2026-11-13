@@ -513,7 +513,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     println!("the host minted an invitation for the visitor");
 
     let page = fresh_page(&lounge, &visitor, &invitation).await;
-    let room_id = tilo_relay_protocol::room_workspace_id(&lounge.workspace).unwrap();
+    let room_id = tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap();
     println!("the fresh page joined the Lounge");
 
     let desktop = DocumentRoute {
@@ -789,7 +789,7 @@ async fn wait_for_plane(page: &Link) {
 
 /// The workspace's id as a page numbers it.
 fn room_id(lounge: &Lounge) -> u64 {
-    tilo_relay_protocol::room_workspace_id(&lounge.workspace).unwrap()
+    tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).unwrap()
 }
 
 /// Every presence frame `page` heard over `secs`, and the devices that said

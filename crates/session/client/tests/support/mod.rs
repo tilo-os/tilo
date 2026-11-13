@@ -34,6 +34,7 @@ use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,
 };
+use collab_types::WorkspaceId;
 
 pub const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -118,7 +119,7 @@ pub fn is_host(device: &[u8; 32]) -> bool {
 
 /// Whether `event` is a document a member wrote, not one of a host's.
 pub fn workspace() -> u64 {
-    tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
+    tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 /// Have `relay` govern [`WORKSPACE`], the person's workspace, unless it does,
@@ -838,7 +839,7 @@ pub async fn enter(
     cert: &DeviceCert,
     key: &SigningKey,
     host_cert: &DeviceCert,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> Link {
     redeem(host, door, cert, key).await;
     let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
@@ -847,7 +848,7 @@ pub async fn enter(
     peer
 }
 
-pub async fn in_workspace(peer: &Link, workspace_id: u64) {
+pub async fn in_workspace(peer: &Link, workspace_id: WorkspaceId) {
     ready(&[peer]).await;
     wait_for("the governed workspace to let the page in", || async {
         (peer.status().workspaces.get(&workspace_id) == Some(&true)).then_some(())

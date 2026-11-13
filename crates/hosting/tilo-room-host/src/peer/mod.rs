@@ -111,6 +111,7 @@ use crate::workspace::{SharedWorkspace, Subscriber};
 use crate::workspace_access::{self, Decision, RelayTrust, WorkspaceOperation};
 use tilo_delivery_protocol::refusal::UnavailableReason;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
 /// queueing; saturation disconnects the recipient for replay on reconnect.
@@ -141,7 +142,7 @@ pub enum PeerError {
 }
 
 /// Handle to the set of workspaces the daemon owns.
-pub type WorkspaceRegistry = Arc<AsyncMutex<HashMap<u64, SharedWorkspace>>>;
+pub type WorkspaceRegistry = Arc<AsyncMutex<HashMap<WorkspaceId, SharedWorkspace>>>;
 pub(crate) const MAX_AUTOBOUND_WORKSPACES: usize = 4096;
 
 #[cfg(test)]
@@ -260,7 +261,7 @@ struct SessionCtx<'a> {
     compactor: Option<&'a crate::compaction::Compactor>,
     member_limits: Option<&'a crate::member_limits::MemberLimits>,
     /// This connection's resume log per resumed workspace.
-    resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
+    resumes: &'a std::sync::Mutex<HashMap<WorkspaceId, ResumeLog>>,
     /// The agent this connection is a run of, once its device said so
     /// ([`Envelope::AgentRun`]): every request the
     /// connection makes from then on is that agent's, acting for the device's

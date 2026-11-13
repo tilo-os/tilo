@@ -114,7 +114,7 @@ pub(crate) fn follow(id: u32, workspace: &str, desk: &DesktopHandle) -> bool {
 
 /// Take one object of `from`'s page for window `tab`, in `workspace_id`'s plane: it rebuilds the
 /// frame the tile draws, and the mounts drawing that workspace lay out again.
-pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
+pub(crate) fn heard(id: u32, workspace_id: WorkspaceId, tab: u64, body: &[u8]) {
     let changed = PAGES.with_borrow_mut(|pages| {
         pages
             .tiles

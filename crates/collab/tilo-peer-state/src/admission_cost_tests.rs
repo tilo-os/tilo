@@ -8,6 +8,7 @@ use crate::join::{
 use ed25519_dalek::SigningKey;
 use std::time::{Instant, SystemTime};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use crate::join::WorkspaceId;
 
 fn key(n: u32, salt: u8) -> SigningKey {
     let mut seed = [salt; 32];
@@ -45,8 +46,7 @@ pub(crate) fn redemption(
     nonce[..4].copy_from_slice(&n.to_le_bytes());
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::from_u128(7),
             issuer: peer.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce,

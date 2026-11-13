@@ -11,6 +11,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_session::RelayClient;
 
 use super::Task;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The channels' workspace transport over the host session: what they say
 /// waits here for the session to send it, newest per channel, until the host
@@ -18,15 +19,15 @@ use super::Task;
 #[derive(Default)]
 pub(super) struct HostGovernance {
     pub(super) inbound: Mutex<Vec<tilo_channels::InboundChannelGovernance>>,
-    outbound: Mutex<BTreeMap<(u64, [u8; 16]), neighbour_wire::NeighbourMsg>>,
+    outbound: Mutex<BTreeMap<(WorkspaceId, [u8; 16]), neighbour_wire::NeighbourMsg>>,
 }
 
 impl HostGovernance {
     /// What waits for the workspaces `admitted` names.
     pub(super) fn take_for(
         &self,
-        admitted: impl Fn(u64) -> bool,
-    ) -> Vec<(u64, neighbour_wire::NeighbourMsg)> {
+        admitted: impl Fn(WorkspaceId) -> bool,
+    ) -> Vec<(WorkspaceId, neighbour_wire::NeighbourMsg)> {
         let outbound = std::mem::take(&mut *self.outbound.lock_recover());
         let (due, waiting): (BTreeMap<_, _>, BTreeMap<_, _>) = outbound
             .into_iter()
@@ -49,7 +50,7 @@ impl tilo_channels::GovernanceTransport for HostGovernance {
             // A reader commits nothing.
             _ => return false,
         };
-        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return false;
         };
         self.outbound
@@ -66,7 +67,7 @@ impl tilo_channels::GovernanceTransport for HostGovernance {
 /// `message`, signed governance of `workspace_id`, wrapped for the host.
 fn governance_envelope(
     device: [u8; 32],
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     message: &neighbour_wire::NeighbourMsg,
 ) -> Option<Envelope> {
     let (channel, _) = neighbour_wire::retention(message, false)?;
@@ -94,7 +95,7 @@ impl Task {
         // governance: its access requests go out as soon as the replay's
         // governance names the page, so its keys arrive while the rest of the
         // workspace is still on its way, rather than a whole replay late.
-        let admitted = |workspace_id: u64| {
+        let admitted = |workspace_id: WorkspaceId| {
             self.begun.contains(&workspace_id)
                 || self
                     .reports

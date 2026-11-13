@@ -4,6 +4,7 @@ use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_agent_participant::workspace_actions::{ViewDocument, ViewReadPolicy};
 use tilo_peer_state::MemberAuthority;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_protocol::WorkspaceId;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -80,7 +81,7 @@ impl Workspaces {
     /// `None` for a workspace not governed here.
     async fn governing<T>(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         answer: impl FnOnce(&GovernedWorkspace) -> T,
     ) -> Option<T> {
         let workspaces = self
@@ -102,7 +103,7 @@ impl Workspaces {
 
     /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
     /// false for a workspace not governed here.
-    pub async fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+    pub async fn bot_personas(&self, workspace: WorkspaceId, installation: &str) -> bool {
         self.governing(workspace, |runtime| {
             bot_shows_personas(&runtime.peer(), installation, tilo_clock::wall())
         })
@@ -113,7 +114,7 @@ impl Workspaces {
     /// Whether the workspace `workspace` governs here admits `caller`: false
     /// for a workspace it does not govern, and for anyone its governance does
     /// not certify a device for.
-    pub async fn admits(&self, workspace: u64, caller: &Caller) -> bool {
+    pub async fn admits(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
         self.governing(workspace, |runtime| runtime.admits(caller))
             .await
             .unwrap_or(false)
@@ -121,7 +122,7 @@ impl Workspaces {
 
     pub async fn resource_view_policy(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         app: &str,
         record: &str,
@@ -138,7 +139,7 @@ impl Workspaces {
     /// records are decided by.
     pub async fn workspace_policy(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
     ) -> Option<ViewReadPolicy> {
         self.governing(workspace, |runtime| runtime.workspace_policy(caller))
@@ -148,7 +149,7 @@ impl Workspaces {
 
     pub async fn resource_view_document(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         source: &DocumentRoute,
     ) -> Result<ViewDocument, String> {

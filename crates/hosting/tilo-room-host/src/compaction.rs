@@ -50,6 +50,7 @@ use crate::store::compaction::{ChannelEntry, SnapshotWrite, file_digest};
 use crate::transport::Envelope;
 use crate::workspace::SharedWorkspace;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Tail size past which a channel is compacted: this many entries, or
 /// [`COMPACT_TAIL_BYTES`] that are at least half its snapshot's size, so a
@@ -167,14 +168,14 @@ struct Growth {
 }
 
 struct Outstanding {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     channel: [u8; 32],
     device: [u8; 32],
     sent: Instant,
 }
 
 /// A workspace and one of its retained channels.
-type ChannelKey = (u64, [u8; 32]);
+type ChannelKey = (WorkspaceId, [u8; 32]);
 
 struct Inner {
     key: ed25519_dalek::SigningKey,
@@ -183,7 +184,7 @@ struct Inner {
     payloads: Arc<dyn ShellPayloads>,
     jobs: tokio::sync::Semaphore,
     growth: Mutex<HashMap<ChannelKey, Growth>>,
-    volunteers: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
+    volunteers: Mutex<HashMap<WorkspaceId, Vec<[u8; 32]>>>,
     requests: Mutex<HashMap<[u8; 16], Outstanding>>,
     /// Entry ids of the member snapshot last accepted per channel: its
     /// segments are the snapshot, not a tail to compact again.
@@ -356,7 +357,7 @@ impl Compactor {
 
     /// An observed delta of `workspace_id` is being admitted, until the
     /// returned guard drops.
-    pub(crate) fn admitting(&self, workspace_id: u64, observed: Observed) -> Admitting {
+    pub(crate) fn admitting(&self, workspace_id: WorkspaceId, observed: Observed) -> Admitting {
         let key = (workspace_id, observed.channel);
         let mut growth = lock(&self.0.growth);
         let entry = growth.entry(key).or_default();
@@ -370,7 +371,7 @@ impl Compactor {
 
     /// An observed delta was retained in `workspace_id`: schedule its
     /// channel's upkeep when it grew enough.
-    pub(crate) fn note(&self, workspace: &SharedWorkspace, workspace_id: u64, observed: Observed) {
+    pub(crate) fn note(&self, workspace: &SharedWorkspace, workspace_id: WorkspaceId, observed: Observed) {
         let Observed { channel, len } = observed;
         let schedule = {
             let mut growth = lock(&self.0.growth);
@@ -391,7 +392,7 @@ impl Compactor {
         }
     }
 
-    async fn upkeep(self, workspace: SharedWorkspace, workspace_id: u64, channel: [u8; 32]) {
+    async fn upkeep(self, workspace: SharedWorkspace, workspace_id: WorkspaceId, channel: [u8; 32]) {
         let key = (workspace_id, channel);
         let quiet = loop {
             tokio::time::sleep(POLL).await;
@@ -430,14 +431,14 @@ impl Compactor {
             COMPACT_TAIL_ENTRIES
         };
         if let Err(error) = self.run(&workspace, workspace_id, channel, min_tail).await {
-            tracing::warn!(workspace_id, %error, "document compaction failed");
+            tracing::warn!(workspace_id = %workspace_id, %error, "document compaction failed");
         }
     }
 
     async fn run(
         &self,
         workspace: &SharedWorkspace,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         channel: [u8; 32],
         min_tail: usize,
     ) -> Result<(), String> {
@@ -537,7 +538,7 @@ impl Compactor {
     async fn fold_with_keys(
         &self,
         workspace: &SharedWorkspace,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         channel: [u8; 32],
         route: &Route,
         (min_tail, repair): (usize, bool),
@@ -711,7 +712,7 @@ impl Compactor {
     pub async fn reseal(
         &self,
         workspace: &SharedWorkspace,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         channel: [u8; 32],
         route: &Route,
     ) -> Result<(), String> {
@@ -738,7 +739,7 @@ impl Compactor {
     pub(crate) async fn repair(
         &self,
         workspace: &SharedWorkspace,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         channel: [u8; 32],
         route: &Route,
     ) -> Result<(), String> {
@@ -751,7 +752,7 @@ impl Compactor {
     }
 
     /// `device` answers requests for `workspace_id` while subscribed.
-    pub(crate) fn volunteer(&self, workspace_id: u64, device: [u8; 32]) {
+    pub(crate) fn volunteer(&self, workspace_id: WorkspaceId, device: [u8; 32]) {
         let mut volunteers = lock(&self.0.volunteers);
         let list = volunteers.entry(workspace_id).or_default();
         if !list.contains(&device) {
@@ -766,7 +767,7 @@ impl Compactor {
     async fn ask(
         &self,
         workspace: &SharedWorkspace,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         channel: [u8; 32],
         route: &Route,
     ) {
@@ -787,7 +788,7 @@ impl Compactor {
     async fn request(
         &self,
         workspace: &SharedWorkspace,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         channel: [u8; 32],
         route: &Route,
     ) -> Option<[u8; 16]> {
@@ -885,7 +886,7 @@ impl Compactor {
     pub(crate) async fn compacted(
         &self,
         workspace: &SharedWorkspace,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
         statement: &[u8],
         signature: &[u8; 64],
@@ -947,7 +948,7 @@ impl Compactor {
             .rounds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(
-            workspace_id,
+            workspace_id = %workspace_id,
             removed = outcome.removed,
             kept = outcome.kept,
             "member compacted a sealed document channel"
@@ -989,7 +990,7 @@ pub(crate) async fn owner_run<T: Send + 'static>(
 fn identity_frame(
     payloads: &dyn ShellPayloads,
     cert: &tilo_user_identity::DeviceCert,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> Result<([u8; 32], Vec<u8>), String> {
     let (channel, body) = payloads.host_identity(cert)?;
     let bytes = crate::transport::encode(&Envelope::Delta {
@@ -1504,7 +1505,7 @@ fn fold_leaving_out(
 pub(crate) fn document_frames(
     payloads: &dyn ShellPayloads,
     key: &ed25519_dalek::SigningKey,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     route: &Route,
     snapshot: &[u8],
 ) -> Result<Vec<Vec<u8>>, String> {
@@ -1521,7 +1522,7 @@ fn sealed_document_frames(
         &ed25519_dalek::SigningKey,
         &channel_crypto::ChannelContentKeys,
     ),
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     route: &Route,
     snapshot: &[u8],
 ) -> Result<Vec<Vec<u8>>, String> {
@@ -1544,7 +1545,7 @@ fn sealed_compaction_frames(
         &ed25519_dalek::SigningKey,
         &channel_crypto::ChannelContentKeys,
     ),
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     entries: &[ChannelEntry],
     folded: &Folded,
 ) -> Option<Vec<Vec<u8>>> {
@@ -1634,7 +1635,7 @@ fn frames_of(
         &ed25519_dalek::SigningKey,
         Option<&channel_crypto::ChannelContentKeys>,
     ),
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     route: &Route,
     snapshot: &[u8],
 ) -> Result<Vec<Vec<u8>>, String> {

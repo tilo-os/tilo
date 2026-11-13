@@ -74,6 +74,7 @@ use std::time::Duration;
 
 mod environment_device;
 
+use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
@@ -418,10 +419,10 @@ pub struct HostedBrowsers {
     /// Who pays for the workspaces' VMs, as this host knows it.
     account: String,
     /// The windows up now, by workspace.
-    open: Mutex<BTreeMap<u64, Open>>,
+    open: Mutex<BTreeMap<WorkspaceId, Open>>,
     /// The Linux apps sessions up now, by workspace: each holds the windows
     /// of the apps it started, which it shares with the workspace itself.
-    apps: Mutex<BTreeMap<u64, Open>>,
+    apps: Mutex<BTreeMap<WorkspaceId, Open>>,
     authority: Mutex<Option<Authority>>,
     /// The page actions handed to a window and not yet answered, by
     /// invocation: what a count is owed for once it ran, and what asks first.
@@ -429,7 +430,7 @@ pub struct HostedBrowsers {
     /// The held requests the person is being asked about, by workspace and
     /// the id the window published them with: a session that reports one
     /// again is told it is asked already rather than asked twice.
-    asking: Arc<Mutex<std::collections::HashSet<(u64, u32)>>>,
+    asking: Arc<Mutex<std::collections::HashSet<(WorkspaceId, u32)>>>,
     /// The number naming the next caller waiting for an invocation to move.
     next_waiter: AtomicU64,
     /// How long an environment device that disconnected has to come back
@@ -543,7 +544,7 @@ impl HostedBrowsers {
 
     /// The window `workspace_id`'s Browser is in, when one is up.
     #[must_use]
-    pub fn window(&self, workspace_id: u64) -> Option<Window> {
+    pub fn window(&self, workspace_id: WorkspaceId) -> Option<Window> {
         self.open
             .lock_recover()
             .get(&workspace_id)
@@ -562,7 +563,7 @@ impl HostedBrowsers {
     #[must_use]
     pub fn route(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
@@ -579,7 +580,7 @@ impl HostedBrowsers {
     #[must_use]
     pub fn route_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &DeviceCert,
         message: &RemoteActionMessage,
@@ -589,7 +590,7 @@ impl HostedBrowsers {
 
     fn route_as(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         message: &RemoteActionMessage,
@@ -700,7 +701,7 @@ impl HostedBrowsers {
     /// host's: it is served, or refused, as it was.
     fn held_reported(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         correlation: u64,
         request: &InvokeRequest,
@@ -779,7 +780,7 @@ impl HostedBrowsers {
     /// Anything else ran nothing and is counted not at all.
     pub fn relayed(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         message: &RemoteActionMessage,
     ) -> Option<RemoteActionMessage> {
@@ -844,7 +845,7 @@ impl HostedBrowsers {
     /// said so: the question names what leaves a page rather than a label.
     fn ask(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
         departure: Option<PageDeparture>,
@@ -1017,7 +1018,7 @@ impl HostedBrowsers {
 
     /// The window `workspace_id`'s page action `request` is about: `None` for
     /// anything that is not a page action of a window up here.
-    fn window_of(&self, workspace_id: u64, request: &InvokeRequest) -> Option<[u8; 32]> {
+    fn window_of(&self, workspace_id: WorkspaceId, request: &InvokeRequest) -> Option<[u8; 32]> {
         let open = self.open.lock_recover();
         let up = open.get(&workspace_id)?;
         page_action(&request.target, &up.window.provider).then_some(up.window.device)
@@ -1045,7 +1046,7 @@ impl HostedBrowsers {
     fn witnessed(
         &self,
         token: &str,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: [u8; 32],
         request: &InvokeRequest,
     ) -> bool {
@@ -1068,7 +1069,7 @@ impl HostedBrowsers {
     /// Whether `workspace_id` has a page action with a window, whose answer
     /// this host counts.
     #[must_use]
-    pub fn tracks(&self, workspace_id: u64) -> bool {
+    pub fn tracks(&self, workspace_id: WorkspaceId) -> bool {
         self.open.lock_recover().contains_key(&workspace_id)
             && !self.handed.lock_recover().is_empty()
     }
@@ -1077,7 +1078,7 @@ impl HostedBrowsers {
     /// answer is counted by, and what its caller is told about.
     fn hand_over(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: Caller,
         window: [u8; 32],
         request: &InvokeRequest,
@@ -1114,7 +1115,7 @@ impl HostedBrowsers {
     /// The UUID of the workspace this host carries as `workspace_id`, when it
     /// serves one: what a page action and an session's device name it by.
     #[must_use]
-    pub fn workspace_name(&self, workspace_id: u64) -> Option<String> {
+    pub fn workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
         let authority = self.authority.lock_recover();
         let authority = authority.as_ref()?;
         let workspaces = authority.workspaces.as_ref()?;
@@ -1135,7 +1136,7 @@ impl HostedBrowsers {
     pub fn place(
         &self,
         workspace: &str,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         record: &str,
     ) -> Result<Window, String> {
         let mut open = self.open.lock_recover();
@@ -1208,7 +1209,7 @@ impl HostedBrowsers {
     pub fn place_app(
         &self,
         workspace: &str,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         record: &str,
         launch: &AppLaunch,
     ) -> Result<Window, AppRefusal> {
@@ -1286,7 +1287,7 @@ impl HostedBrowsers {
     /// The refusal comes first and is written down, so a stop leaves the
     /// device refused even when what follows fails, and keeps it refused until
     /// the certificate it was given expires.
-    pub fn stopped(&self, workspace_id: u64) {
+    pub fn stopped(&self, workspace_id: WorkspaceId) {
         let stopped = self.open.lock_recover().remove(&workspace_id);
         let stopped_apps = self.apps.lock_recover().remove(&workspace_id);
         let devices = {
@@ -1320,7 +1321,7 @@ impl HostedBrowsers {
     ///
     /// The refusal comes first and is written down, so what follows may fail:
     /// the device stays refused until its certificate expires.
-    fn stopped_device(&self, workspace_id: u64, device: [u8; 32], until_ns: u64) {
+    fn stopped_device(&self, workspace_id: WorkspaceId, device: [u8; 32], until_ns: u64) {
         let stopped = {
             let mut open = self.open.lock_recover();
             match open.get(&workspace_id) {
@@ -1373,7 +1374,7 @@ impl HostedBrowsers {
     /// A session whose connection dropped is back in a moment and its window
     /// lives on, so the device is given [`RECONNECT`] first, and what decides
     /// is whether a session of it is here then.
-    fn session_ended(self: &Arc<Self>, workspace_id: u64, device: [u8; 32]) {
+    fn session_ended(self: &Arc<Self>, workspace_id: WorkspaceId, device: [u8; 32]) {
         let (runtime, environments) = {
             let authority = self.authority.lock_recover();
             let Some(authority) = authority.as_ref() else {
@@ -1389,7 +1390,7 @@ impl HostedBrowsers {
             {
                 return;
             }
-            let held = |open: &Mutex<BTreeMap<u64, Open>>| {
+            let held = |open: &Mutex<BTreeMap<WorkspaceId, Open>>| {
                 open.lock_recover()
                     .get(&workspace_id)
                     .filter(|up| up.window.device == device)
@@ -1436,7 +1437,7 @@ impl HostedBrowsers {
 
     /// List (or forget) the session's device in the workspace it serves,
     /// as a member device of the person the workspace belongs to.
-    fn list(&self, workspace_id: u64, device: &DeviceCert, listed: bool) {
+    fn list(&self, workspace_id: WorkspaceId, device: &DeviceCert, listed: bool) {
         let authority = self.authority.lock_recover();
         let Some(authority) = authority.as_ref() else {
             return;
@@ -1830,7 +1831,7 @@ pub fn unplaced_linux_apps() -> String {
 #[must_use]
 pub fn placed(
     browsers: &HostedBrowsers,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     invocation: tilo_actions::InvocationId,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
@@ -1898,7 +1899,7 @@ pub fn opens_linux_app(request: &InvokeRequest) -> Option<Result<AppLaunch, Stri
 #[must_use]
 pub fn placed_linux_app(
     browsers: &HostedBrowsers,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     invocation: tilo_actions::InvocationId,
     launch: &AppLaunch,
     message: RemoteActionMessage,

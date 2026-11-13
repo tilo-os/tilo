@@ -5,6 +5,7 @@
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{DocumentMutation, Outcome, Worker};
+use tilo_relay_protocol::WorkspaceId;
 
 impl Worker {
     /// The route an app another device holds the windows of opens, and the
@@ -17,7 +18,7 @@ impl Worker {
     )]
     pub(super) fn placed_route(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         workspace: &str,
         app: &str,
     ) -> Result<(DocumentRoute, Option<DocumentMutation>), Outcome> {

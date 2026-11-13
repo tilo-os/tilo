@@ -28,7 +28,7 @@ use tilo_broker_core::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreSer
 use tilo_content::{ContentStore, hash_bytes};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
+use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
 use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
 
 use crate::sync::{Cmd, HostOutbox};
@@ -650,7 +650,7 @@ impl ContentPeers for Peers {
 /// The topic a record's content travels on: its workspace's, and none for a record of no workspace.
 fn topic(route: &CrdtRoute) -> Option<WorkspaceId> {
     let workspace = ModelWorkspaceId::parse(&route.cluster_id)?;
-    (!workspace.is_nil()).then(|| workspace_topic_id(workspace))
+    (!workspace.is_nil()).then_some(workspace)
 }
 
 /// The devices a workspace's topic carries to this session, from what the plane heard: those that

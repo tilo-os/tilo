@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::mesh::{DeviceKey, ServerAdvertisement};
+use tilo_relay_protocol::WorkspaceId;
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
@@ -60,7 +61,7 @@ pub struct ComputeJobSpec {
     pub job_id: [u8; 16],
     pub requester: DeviceKey,
     pub worker: DeviceKey,
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     pub app_id: String,
     pub package_digest: [u8; 32],
     pub entrypoint: String,
@@ -324,7 +325,7 @@ pub trait ComputeOutputSource: Send + Sync {
     fn retained_output(
         &self,
         asker: DeviceKey,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         job_id: [u8; 16],
         digest: [u8; 32],
     ) -> Result<Option<Vec<u8>>, String>;
@@ -579,7 +580,7 @@ where
     pub fn execute(
         &self,
         authenticated_requester: DeviceKey,
-        authenticated_workspace: u64,
+        authenticated_workspace: WorkspaceId,
         spec: &ComputeJobSpec,
         now_ms: u64,
         cancellation: CaptureCancellation,
@@ -611,7 +612,7 @@ where
     pub fn execute_with_inputs(
         &self,
         inputs: &dyn ComputeContentStore,
-        route: (DeviceKey, u64),
+        route: (DeviceKey, WorkspaceId),
         spec: &ComputeJobSpec,
         now_ms: u64,
         cancellation: CaptureCancellation,
@@ -1029,7 +1030,7 @@ where
     fn retained_output(
         &self,
         asker: DeviceKey,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         job_id: [u8; 16],
         digest: [u8; 32],
     ) -> Result<Option<Vec<u8>>, String> {
@@ -1270,7 +1271,7 @@ fn prepare_private_dir(path: &Path) -> std::io::Result<()> {
 struct StagedComputeRequest<'a> {
     version: u16,
     job_id: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     inputs: Vec<String>,
     output_directory: &'a str,
 }
@@ -1325,7 +1326,7 @@ mod tests {
             job_id: [1; 16],
             requester: [2; 32],
             worker: [3; 32],
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             app_id: "so.tilo.video-editor".into(),
             package_digest: [4; 32],
             entrypoint: "render-export-v1".into(),

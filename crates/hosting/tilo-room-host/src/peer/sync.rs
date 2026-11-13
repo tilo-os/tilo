@@ -1,6 +1,7 @@
 //! Anti-entropy: a peer asks for the changes its materialized heads lack.
 
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, StateSource, WorkspaceOperation};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Handle `SyncRequest`: reply with exactly the changes the requester is
 /// missing, computed against this host's materialized pinned doc.
@@ -14,7 +15,7 @@ use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, StateSource, Wor
 pub(super) async fn handle_sync_request(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     have_heads: Vec<[u8; 32]>,
 ) -> Result<Option<Envelope>, PeerError> {
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {

@@ -202,8 +202,8 @@ pub(crate) fn open(
     workspace: &str,
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
-    let workspace_id = tilo_relay_protocol::room_workspace_id(workspace)
-        .map_err(|_| "a workspace must be a uuid")?;
+    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(workspace)
+        .ok_or("a workspace must be a uuid")?;
     peer.send(Cmd::KeepContent(
         workspace_id,
         Arc::new(kept_content(id, workspace.to_owned())),

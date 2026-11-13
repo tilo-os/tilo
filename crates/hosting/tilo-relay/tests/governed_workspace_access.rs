@@ -35,7 +35,7 @@ async fn connect(
     .await
 }
 
-async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> {
+async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("relay answered subscription", client.recv()).await
 }
@@ -158,7 +158,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     // stream, so a write racing the removal can find the session already
     // ended (the client fails closed when the relay closes); it never lands.
     let _ = alice_client.send(Envelope::Delta {
-        workspace_id: 701,
+        workspace_id: WorkspaceId::from_u128(701),
         author_device_public_key: alice_a_key,
         authored_at_ns: 2,
         delta: retained_delta(b"removed-live-writer"),
@@ -168,7 +168,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     assert!(
         matches!(
             &told,
-            Some(Envelope::NotAuthorised { workspace_id: 701, reason })
+            Some(Envelope::NotAuthorised { workspace_id: WorkspaceId::from_u128(701), reason })
                 if reason == "workspace membership changed"
         ),
         "{told:?}"
@@ -217,7 +217,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     ));
     alice_reconnect
         .send(Envelope::Delta {
-            workspace_id: 701,
+            workspace_id: WorkspaceId::from_u128(701),
             author_device_public_key: alice_a_key,
             authored_at_ns: 2,
             delta: b"removed-writer".to_vec(),
@@ -248,7 +248,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
 
     bob_client
         .send(Envelope::Delta {
-            workspace_id: 701,
+            workspace_id: WorkspaceId::from_u128(701),
             author_device_public_key: bob_key,
             authored_at_ns: 1,
             delta: b"after-removal".to_vec(),

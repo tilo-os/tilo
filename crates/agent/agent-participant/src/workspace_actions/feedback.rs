@@ -14,6 +14,7 @@ use ui::feedback::Destination;
 use ui::feedback::{Error, Receipt, Submission};
 
 use super::{AppCatalogue, DocumentRoute, WorkspaceMember, WorkspaceRecordsLink, reads, record_of};
+use tilo_relay_protocol::WorkspaceId;
 
 fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
     ActionHostError::Unavailable {
@@ -28,7 +29,7 @@ fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
 pub(super) fn answer_and_review(
     link: &Arc<dyn WorkspaceRecordsLink>,
     catalogue: AppCatalogue,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: Caller,
     mut query: FeedbackQuery,
     done: Completer<Result<FeedbackAnswer, ActionHostError>>,
@@ -66,7 +67,7 @@ pub(super) fn answer_and_review(
 pub(super) fn answer(
     link: &Arc<dyn WorkspaceRecordsLink>,
     catalogue: AppCatalogue,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: Caller,
     mut query: FeedbackQuery,
 ) -> Result<FeedbackAnswer, ActionHostError> {
@@ -211,7 +212,7 @@ fn admission(
 struct RetainedSource {
     link: Arc<dyn WorkspaceRecordsLink>,
     catalogue: AppCatalogue,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: Caller,
     route: DocumentRoute,
 }

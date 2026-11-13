@@ -1621,8 +1621,8 @@ impl Engine {
         workspace: &str,
         endpoint: &iroh_base::EndpointAddr,
     ) -> Result<tilo_peer_state::join::TransportHint, String> {
-        let workspace_id = tilo_peer_state::join::room_workspace_id(workspace)
-            .map_err(|error| error.to_string())?;
+        let workspace_id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| "the workspace is not a workspace id".to_string())?;
         let identity = self.identity();
         let packet_relay_url = endpoint
             .relay_urls()
@@ -1631,7 +1631,6 @@ impl Engine {
         tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
             version: 1,
             mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-            room: workspace.to_owned(),
             workspace_id,
             endpoint_addr: endpoint.clone(),
             host_user_public_key: identity.device_cert.user_public_key,

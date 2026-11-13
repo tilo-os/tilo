@@ -9,12 +9,13 @@
 //! record once the replica holds a change of it ([`Task::landed`]).
 
 use super::*;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Governance a workspace's host sent as consecutive frames, not admitted yet:
 /// admitted together when something else arrives or the frames already here
 /// are read ([`Task::admit_governance`]).
 pub(super) struct GovernanceBatch {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     room: String,
     /// Each frame's changes, in the order they came.
@@ -65,7 +66,7 @@ impl Task {
 
     /// The records of `workspace_id` that landed before its governance admitted
     /// this device, landed now that it does.
-    fn land_admitted(&mut self, workspace_id: u64) {
+    fn land_admitted(&mut self, workspace_id: WorkspaceId) {
         if self.admitted_here.contains(&workspace_id)
             || !self.replicas.admits_this_device(workspace_id)
         {
@@ -85,7 +86,7 @@ impl Task {
 
     /// The host no longer lets this device into `workspace_id`, for
     /// `reason`: its owner deleted it, or this device may not.
-    fn not_authorised(&mut self, workspace_id: u64, reason: String) {
+    fn not_authorised(&mut self, workspace_id: WorkspaceId, reason: String) {
         if reason == tilo_relay_protocol::refusal::WORKSPACE_DELETED {
             self.workspace_deleted(workspace_id);
         } else {
@@ -97,7 +98,7 @@ impl Task {
     /// The session stops following it, and says so (`workspace-deleted`) for
     /// the page or desk to forget it; a session holding nothing else ends
     /// there, as a refusal ends one.
-    fn workspace_deleted(&mut self, workspace_id: u64) {
+    fn workspace_deleted(&mut self, workspace_id: WorkspaceId) {
         self.workspaces.remove(&workspace_id);
         self.planes_due.remove(&workspace_id);
         self.placing.remove(&workspace_id);
@@ -114,7 +115,7 @@ impl Task {
 
     /// The host admitted this session to `workspace_id` and sent its replay;
     /// it sends records `when_opened` in a public workspace.
-    fn ready(&mut self, workspace_id: u64, when_opened: bool) {
+    fn ready(&mut self, workspace_id: WorkspaceId, when_opened: bool) {
         self.emptied = false;
         self.reports.change(|status| {
             status.workspaces.insert(workspace_id, true);
@@ -217,7 +218,7 @@ impl Task {
     /// chat written an hour ago and opened now reads. Whether a write in the
     /// clear is a record's base or a downgrade is where it stands in the
     /// record, before its seal or after, which the replica decides.
-    fn delta(&mut self, workspace_id: u64, delta: &[u8], author: [u8; 32]) {
+    fn delta(&mut self, workspace_id: WorkspaceId, delta: &[u8], author: [u8; 32]) {
         match CoeditPayload::decode(delta) {
             Some(
                 CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. },
@@ -226,7 +227,7 @@ impl Task {
         }
     }
 
-    fn bootstrap(&mut self, workspace_id: u64, bootstrap: &[u8]) {
+    fn bootstrap(&mut self, workspace_id: WorkspaceId, bootstrap: &[u8]) {
         self.keep_arrived();
         match self
             .replicas
@@ -254,7 +255,7 @@ impl Task {
 
     /// Follow what `workspace_id`'s governance says now: who its members are,
     /// and the channel commits that waited for a participant it now admits.
-    pub(super) fn follow_governance(&mut self, workspace_id: u64) {
+    pub(super) fn follow_governance(&mut self, workspace_id: WorkspaceId) {
         self.planes_due.insert(workspace_id);
         self.land_admitted(workspace_id);
         if let Some((workspace, members)) = self.replicas.members(workspace_id) {
@@ -287,7 +288,7 @@ impl Task {
     /// the workspace's governance (a member's certificate, the workspace document)
     /// is admitted through the workspace's replica; channel governance and
     /// documents go on.
-    pub(super) fn inbound_body(&mut self, workspace_id: u64, body: &[u8], author: [u8; 32]) {
+    pub(super) fn inbound_body(&mut self, workspace_id: WorkspaceId, body: &[u8], author: [u8; 32]) {
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) {
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
                 self.gather_governance(workspace_id, author, room, changes);
@@ -314,7 +315,7 @@ impl Task {
     /// workspace of hundreds cost a newcomer seconds before its desktop.
     fn gather_governance(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author: [u8; 32],
         room: String,
         changes: Vec<Vec<u8>>,
@@ -381,7 +382,7 @@ impl Task {
     /// workspace's replica: whether the replica took it.
     fn admit_governance_message(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> bool {
@@ -463,7 +464,7 @@ impl Task {
 
     /// The host answered `Ready` for `workspace_id`: the action frames that waited for the
     /// admission go out in the order they were made.
-    pub(super) fn admitted(&mut self, workspace_id: u64, client: &RelayClient) {
+    pub(super) fn admitted(&mut self, workspace_id: WorkspaceId, client: &RelayClient) {
         self.check_admission();
         self.flush_held_actions(workspace_id, client);
     }

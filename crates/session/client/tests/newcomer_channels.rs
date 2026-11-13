@@ -28,6 +28,7 @@ use tilo_user_identity::{DeviceCert, UserIdentity};
 use crate::support::{
     enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_keyed,
 };
+use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -49,7 +50,7 @@ async fn visitor(
     host: &crate::support::TestHost,
     host_cert: &DeviceCert,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     desktop: &DocumentRoute,
     name: &str,
 ) -> Link {

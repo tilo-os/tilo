@@ -19,8 +19,9 @@ use tilo_relay_protocol::sealed_invitations as SealedInvitations;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
     PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent, ReplicationResource,
-    ServiceCapabilities, TrustPolicy, personal_continuity_workspace_id, room_workspace_id,
+    ServiceCapabilities, TrustPolicy,
 };
+use collab_types::WorkspaceId;
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
     hex::encode(postcard::to_stdvec(value).unwrap())
@@ -112,7 +113,7 @@ fn json_encodings_are_pinned() {
             label: "Attic server".to_string(),
             user_public_key: "33".repeat(32),
             device_cert: None,
-            relay_workspace_ids: vec![7, u64::MAX],
+            relay_workspace_ids: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
         },
         concat!(
             r#"{"schema_version":3,"#,
@@ -120,7 +121,7 @@ fn json_encodings_are_pinned() {
             r#""relay_service_node_id":"2222222222222222222222222222222222222222222222222222222222222222","#,
             r#""relay_endpoint":null,"label":"Attic server","#,
             r#""user_public_key":"3333333333333333333333333333333333333333333333333333333333333333","#,
-            r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615]}"#,
+            r#""device_cert":null,"relay_workspace_ids":["00000000-0000-0000-0000-000000000007","00000000-0000-0000-0000-000000000008"]}"#,
         ),
     );
     // Metrics snapshot, written pretty-printed.
@@ -140,7 +141,7 @@ fn json_encodings_are_pinned() {
         bytes_sent_live: 13,
         sessions_open: 0,
         workspaces: BTreeMap::from([(
-            14,
+            WorkspaceId::from_u128(14),
             WorkspaceEgress {
                 bytes_sent: 15,
                 bytes_sent_live: 16,
@@ -161,8 +162,8 @@ fn json_encodings_are_pinned() {
   "subscriber_dropped_backpressure": 11,
   "bytes_sent": 12,
   "bytes_sent_live": 13,
-  "rooms": {
-    "14": {
+  "workspaces": {
+    "00000000-0000-0000-0000-00000000000e": {
       "bytes_sent": 15,
       "bytes_sent_live": 16
     }
@@ -331,22 +332,6 @@ fn postcard_wire_encodings_and_shard_ids_are_pinned() {
             resource
         );
     }
-
-    // Relay shard ids are stable.
-    assert_eq!(
-        room_workspace_id("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap(),
-        3_029_697_355_180_468_570
-    );
-    // Parsing normalises the textual form before hashing.
-    assert_eq!(
-        room_workspace_id("0B7E7DFA-3AD5-4B43-9D6C-5F0D7C1F6A11").unwrap(),
-        3_029_697_355_180_468_570
-    );
-    assert!(room_workspace_id("not a room").is_err());
-    assert_eq!(
-        personal_continuity_workspace_id(&[5; 32]),
-        431_687_783_281_078_992
-    );
 }
 
 #[test]

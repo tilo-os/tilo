@@ -29,11 +29,12 @@ use tokio::sync::watch;
 use crate::auth::AuthenticatedPeer;
 use crate::host::RelayProtocol;
 use crate::workspace_access::{self, WorkspaceOperation};
+use collab_types::WorkspaceId;
 
 /// One participant's live session: whose it is, the scope it publishes in, and
 /// whether the workspace still admits it.
 struct Grant {
-    workspace: u64,
+    workspace: WorkspaceId,
     peer: AuthenticatedPeer,
     /// The namespace the participant publishes its own tracks under: one
     /// participant of the workspace scope, as every device's is.
@@ -52,7 +53,7 @@ struct Grant {
 
 impl Grant {
     fn new(
-        workspace: u64,
+        workspace: WorkspaceId,
         workspace_name: &str,
         peer: AuthenticatedPeer,
         environment: bool,
@@ -126,7 +127,7 @@ impl SessionAuthorization for Grant {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct DeviceKey {
     device: [u8; 32],
-    workspace: u64,
+    workspace: WorkspaceId,
 }
 
 /// Every device the plane admits over iroh, by the device and workspace it
@@ -194,7 +195,7 @@ impl Authority {
     async fn admits_as(
         &self,
         peer: &AuthenticatedPeer,
-        workspace: u64,
+        workspace: WorkspaceId,
         op: WorkspaceOperation,
     ) -> bool {
         let workspaces = self.relay.workspaces.lock().await;
@@ -215,7 +216,7 @@ impl Authority {
     ) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let grant = tilo_live::grant::Native::parse(proof).ok_or(Denied)?;
         let workspace = tilo_live::live::workspace_id(grant.workspace);
-        let id = tilo_relay_protocol::room_workspace_id(&workspace).map_err(|_| Denied)?;
+        let id = WorkspaceId::parse(&workspace).ok_or(Denied)?;
         if grant.scope != Scope::workspace(&workspace).id() {
             return Err(Denied);
         }

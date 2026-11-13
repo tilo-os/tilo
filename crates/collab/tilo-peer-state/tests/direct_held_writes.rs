@@ -262,7 +262,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     let kept = sealed(&host_key);
     store
         .retain(
-            tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap(),
+            tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
             &Frame::of(&kept).unwrap(),
         )
         .unwrap();

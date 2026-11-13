@@ -77,7 +77,7 @@ impl Device {
 }
 
 struct Room {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     uuid: String,
     members: Vec<Device>,
     /// The room as its authority seeded it; each member starts from a copy.

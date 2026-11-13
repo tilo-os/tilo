@@ -5,6 +5,7 @@
 //! is asked for that way ([`Task::records_when_opened`]).
 
 use super::{DocumentRoute, Envelope, RelayClient, Task};
+use tilo_relay_protocol::WorkspaceId;
 
 impl Task {
     /// Open the on-demand record `route` of `workspace_id`, and ask for its
@@ -12,7 +13,7 @@ impl Task {
     /// take the request.
     pub(super) fn open_record(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: DocumentRoute,
         client: Option<&RelayClient>,
     ) -> bool {
@@ -41,7 +42,7 @@ impl Task {
     /// and is never asked for.
     pub(super) fn open_record_once(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: &DocumentRoute,
         client: Option<&RelayClient>,
     ) -> bool {
@@ -57,7 +58,7 @@ impl Task {
 
     /// `workspace_id`'s host said it sends records only when they are opened
     /// (its `Ready`): every route opened in it so far is opened as a record.
-    pub(super) fn records_when_opened(&mut self, workspace_id: u64, client: Option<&RelayClient>) {
+    pub(super) fn records_when_opened(&mut self, workspace_id: WorkspaceId, client: Option<&RelayClient>) {
         if !self.when_opened.insert(workspace_id) {
             return;
         }
@@ -88,7 +89,7 @@ impl Task {
     }
 
     /// The host sent everything it holds of a record this page opened.
-    pub(super) fn record_opened(&mut self, workspace_id: u64, channel: [u8; 32], frames: u32) {
+    pub(super) fn record_opened(&mut self, workspace_id: WorkspaceId, channel: [u8; 32], frames: u32) {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
         if let Some((_, route)) = self.opened_records.get(&channel) {

@@ -41,7 +41,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
 
     let lounge = relay.workspaces().unwrap().create("Lounge").await.unwrap();
     crate::call::enter(relay, &alice_laptop.cert, &lounge.workspace).await;
-    let lounge_id = tilo_relay::room_workspace_id(&lounge.workspace).unwrap();
+    let lounge_id = tilo_relay::WorkspaceId::parse(&lounge.workspace).unwrap();
     let welcome = DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: lounge.workspace.clone(),

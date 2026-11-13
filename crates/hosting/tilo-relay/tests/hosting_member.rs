@@ -15,7 +15,7 @@ use crate::common::{TestUser, host_on, next_delta, session_to};
 const IDLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Whether `client`'s host admits it to `workspace_id`.
-async fn admitted(client: &RelayClient, workspace_id: u64) -> bool {
+async fn admitted(client: &RelayClient, workspace_id: WorkspaceId) -> bool {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     loop {
         match client.recv().await.expect("the session stays open") {

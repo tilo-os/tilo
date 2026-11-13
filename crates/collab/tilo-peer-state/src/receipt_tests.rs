@@ -18,6 +18,7 @@ use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign
 use crate::owner::testing::member_certificate as certificate;
 use crate::owner::testing::{now, receive};
 use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
+use crate::join::WorkspaceId;
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
@@ -142,8 +143,7 @@ fn workspace_keeping(role: MemberRole, units: &[&str]) -> (StatePeer, SigningKey
     let guest = certificate(&guest_root, &guest_key, "guest");
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: WORKSPACE.into(),
+            workspace_id: WorkspaceId::from_u128(7),
             issuer: owner,
             role,
             nonce: [43; 16],

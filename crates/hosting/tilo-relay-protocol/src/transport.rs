@@ -15,6 +15,7 @@
 //! - Postcard keeps the encoding compact + deterministic (no field-
 //!   reorder) so integration tests can byte-compare fixtures.
 
+use collab_types::WorkspaceId;
 use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +45,7 @@ pub struct ContentEndpointAdvertisement {
     /// Explicit schema version for persisted/client registration envelopes.
     pub schema_version: u16,
     /// Relay workspace whose signed filesystem authority authorised this lookup.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// Direct authenticated filesystem/blob endpoints currently ready for it.
     pub filesystem_endpoints: Vec<EndpointAddr>,
     /// Authenticated Files workspace binding used to join the record plane.
@@ -104,7 +105,7 @@ pub struct HomePeerManagementResponse {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentEndpointRequest {
     /// Relay workspace whose filesystem endpoint the caller wants to resolve.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
 }
 
 /// Hard cap for a single framed envelope on the wire. Guards
@@ -127,7 +128,7 @@ pub enum Envelope {
     /// any pending deltas queued for it (store-and-forward).
     Subscribe {
         /// Workspace id.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     },
 
     /// Peer stops receiving updates for `workspace_id`. The
@@ -135,7 +136,7 @@ pub enum Envelope {
     /// unsubscribed are queued for the next Subscribe.
     Unsubscribe {
         /// Workspace id.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     },
 
     /// A workspace-directory CRDT delta. The relay:
@@ -143,7 +144,7 @@ pub enum Envelope {
     /// 2. Fans it out to every other peer currently subscribed.
     /// 3. Queues it for every other member device that is offline.
     Delta {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Author device pubkey (redundant with the peer's cert on
         /// this connection but included so a fan-out recipient can
         /// dedup / attribute without maintaining connection state).
@@ -165,7 +166,7 @@ pub enum Envelope {
     /// track — and it stays only so every later variant keeps its postcard
     /// position.
     RetiredPresence {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Peer-defined presence payload. The relay never inspects
         /// the bytes.
         #[serde(with = "serde_bytes")]
@@ -176,7 +177,7 @@ pub enum Envelope {
     /// deltas the relay is about to flush from the peer's
     /// store-and-forward queue.
     Ready {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Number of pending deltas queued for this peer that the
         /// relay is about to flush.
         pending_deltas: u32,
@@ -191,7 +192,7 @@ pub enum Envelope {
     /// The relay's response to a subscribe that failed — e.g.
     /// workspace not bound here, peer not a member.
     NotAuthorised {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Human-readable reason (for tracing / logging).
         reason: String,
     },
@@ -214,7 +215,7 @@ pub enum Envelope {
     /// ignores it.
     PeerRelayHello {
         /// Workspace ids this host currently hosts.
-        hosted_workspaces: Vec<u64>,
+        hosted_workspaces: Vec<WorkspaceId>,
     },
 
     /// Anti-entropy request. The sender advertises the Automerge heads
@@ -230,7 +231,7 @@ pub enum Envelope {
     /// authoritative doc converges the peer regardless of what the
     /// queue delivered — run on subscribe, periodically, or on demand.
     SyncRequest {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Automerge change hashes the requester already has (its
         /// `get_heads()`), each a 32-byte hash. An empty vec means "I
         /// hold nothing — send me the whole document."
@@ -243,7 +244,7 @@ pub enum Envelope {
     /// requester is already up to date, or the workspace is not
     /// materialized on this host (unpinned).
     SyncResponse {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Concatenated Automerge changes the requester was missing.
         #[serde(with = "serde_bytes")]
         delta_since: Vec<u8>,
@@ -260,7 +261,7 @@ pub enum Envelope {
     /// [`Envelope::RemoteActionUndeliverable`].
     RemoteAction {
         /// Workspace id both devices are subscribed to.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Version of this envelope kind, see [`REMOTE_ACTION_ENVELOPE_VERSION`].
         version: u16,
         /// The addressed device.
@@ -279,7 +280,7 @@ pub enum Envelope {
     /// addressed device is not connected to this workspace, the envelope
     /// version is unknown, or nothing here serves apps.
     RemoteActionUndeliverable {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The device it was addressed to.
         to_device_public_key: [u8; 32],
         /// Human-readable reason (for tracing / logging).
@@ -293,7 +294,7 @@ pub enum Envelope {
     /// [`Envelope::CommitRefused`]. Only the author sees either answer, so
     /// peers that predate these variants never receive them.
     Commit {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Author-chosen id echoed in the answer. Resending the same commit
         /// after a reconnect reuses it.
         op: [u8; 16],
@@ -309,7 +310,7 @@ pub enum Envelope {
     /// The host persisted commit `op` of this connection. `seq` is the
     /// host's order for the workspace: later commits get larger values.
     Committed {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The commit's id.
         op: [u8; 16],
         /// Host order of the commit within the workspace.
@@ -319,7 +320,7 @@ pub enum Envelope {
     /// The host did not admit commit `op`. Nothing was persisted or fanned
     /// out.
     CommitRefused {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The commit's id.
         op: [u8; 16],
         /// Human-readable reason (for tracing / logging).
@@ -331,7 +332,7 @@ pub enum Envelope {
     /// variant's place in the wire enum.
     RetiredLiveJoin {
         /// Workspace id.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     },
 
     /// Leave the workspace's live plane. Nothing sends it — a device that
@@ -339,14 +340,14 @@ pub enum Envelope {
     /// later variant keeps its postcard position.
     LiveLeave {
         /// Workspace id.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     },
 
     /// Retired: one ephemeral live frame ([`crate::live::LiveFrame`] bytes)
     /// relayed by the host. Nothing sends it — frames travel on the plane —
     /// and it stays only so every later variant keeps its postcard position.
     RetiredLive {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Publishing device, stamped by the host. Whatever a sender puts
         /// here is overwritten.
         from_device_public_key: [u8; 32],
@@ -359,7 +360,7 @@ pub enum Envelope {
     /// by the host to the plane's other members. The name keeps the
     /// variant's place in the wire enum.
     RetiredLiveMember {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device_public_key: [u8; 32],
         /// Whether it is now a live member.
         active: bool,
@@ -371,7 +372,7 @@ pub enum Envelope {
     /// position, and then follows the subscriber's durable deliveries with
     /// `Position`s. Sent only to a host that advertised resumable sessions.
     SubscribeFrom {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The last position received for this workspace, if any.
         position: Option<Vec<u8>>,
     },
@@ -380,7 +381,7 @@ pub enum Envelope {
     /// host-authenticated; present it to [`Envelope::SubscribeFrom`] after
     /// a reconnect. Only subscribers that used `SubscribeFrom` receive it.
     Position {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         position: Vec<u8>,
     },
 
@@ -389,14 +390,14 @@ pub enum Envelope {
     /// that advertised compaction.
     CompactVolunteer {
         /// Workspace id.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     },
 
     /// The host holds a long sealed tail for one route and asks this member
     /// for a snapshot of it and a
     /// [`crate::compaction::CoverageStatement`]. Sent only to volunteers.
     CompactRequest {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Echoed in the statement.
         request: [u8; 16],
         /// The route's application.
@@ -410,7 +411,7 @@ pub enum Envelope {
     /// A member's answer to [`Envelope::CompactRequest`], sent after the
     /// snapshot's commits.
     Compacted {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Encoded [`crate::compaction::CoverageStatement`].
         #[serde(with = "serde_bytes")]
         statement: Vec<u8>,
@@ -426,7 +427,7 @@ pub enum Envelope {
     /// administrator. Answered with [`Envelope::VoiceCallResult`].
     /// Sent only to a host that advertised voice.
     VoiceCall {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Caller-chosen id echoed in the answer.
         request: [u8; 16],
         /// The change.
@@ -435,7 +436,7 @@ pub enum Envelope {
 
     /// The outcome of [`Envelope::VoiceCall`] `request`.
     VoiceCallResult {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The request's id.
         request: [u8; 16],
         /// The call as governance now records it, or why the change was
@@ -447,7 +448,7 @@ pub enum Envelope {
     /// as its heartbeat. Requires an accepted `Subscribe`. Answered with
     /// [`Envelope::VoiceGranted`] or [`Envelope::VoiceRefused`].
     VoiceJoin {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         call: [u8; 32],
         /// The participation to continue; `None` joins afresh.
         participation: Option<[u8; 32]>,
@@ -457,13 +458,13 @@ pub enum Envelope {
     /// unasked when the call's roster or this participation's directions
     /// change.
     VoiceGranted {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         grant: Box<crate::voice::VoiceGrant>,
     },
 
     /// The device may not be in the call (any more).
     VoiceRefused {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         call: [u8; 32],
         /// Human-readable reason.
         reason: String,
@@ -471,7 +472,7 @@ pub enum Envelope {
 
     /// Leave a call.
     VoiceLeave {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         call: [u8; 32],
         /// The participation that ends.
         participation: [u8; 32],
@@ -481,12 +482,12 @@ pub enum Envelope {
     /// `Subscribe`. Answered with [`Envelope::VoiceCallList`].
     VoiceCalls {
         /// Workspace id.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     },
 
     /// A workspace's calls as its governance records them, with who is in each.
     VoiceCallList {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The calls, or why the workspace has none to list.
         result: Result<Vec<crate::voice::CallSummary>, String>,
     },
@@ -501,7 +502,7 @@ pub enum Envelope {
     /// hosted environment's.
     RecordContent {
         /// Workspace id both devices are subscribed to.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The addressed device.
         to_device_public_key: [u8; 32],
         /// The sending device, stamped by the relay from the authenticated
@@ -519,7 +520,7 @@ pub enum Envelope {
     /// from then on the record's live changes reach the device too.
     OpenRecord {
         /// Workspace id, subscribed.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The record's retained channel
         /// (`neighbour_wire::app_document_channel`).
         channel: [u8; 32],
@@ -527,7 +528,7 @@ pub enum Envelope {
 
     /// The relay sent everything it retains of an opened record.
     RecordOpened {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The record's retained channel.
         channel: [u8; 32],
         /// How many frames it sent.
@@ -539,7 +540,7 @@ pub enum Envelope {
     /// and tells the call's participants and the workspace's call list when it
     /// changed. Not answered.
     VoiceShow {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         call: [u8; 32],
         participation: [u8; 32],
         /// What it shows.
@@ -565,7 +566,7 @@ pub enum Envelope {
     /// messages and records stay out: the replay that follows carries the
     /// workspace's retained governance and records.
     WorkspaceBootstrap {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         #[serde(with = "serde_bytes")]
         bootstrap: Vec<u8>,
     },
@@ -577,7 +578,7 @@ pub enum Envelope {
     /// `NeighbourMsg::RecordContentWant` that says what is wanted, and
     /// `from_device_public_key` is the host's stamp of who asked.
     RecordContentWant {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from_device_public_key: [u8; 32],
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
@@ -667,7 +668,7 @@ pub enum Envelope {
     /// when `signature` is its host's over `said`. It never rides the live
     /// plane, whose keys a host that is no member of it does not hold.
     HostSaid {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// The canonical [`crate::host_voice::HostSaid`] encoding.
         #[serde(with = "serde_bytes")]
         said: Vec<u8>,
@@ -753,7 +754,7 @@ impl Envelope {
     /// The match is exhaustive on purpose: a new variant has to say which
     /// workspace it is charged to.
     #[must_use]
-    pub const fn workspace_id(&self) -> Option<u64> {
+    pub const fn workspace_id(&self) -> Option<WorkspaceId> {
         match self {
             Self::Subscribe { workspace_id }
             | Self::Unsubscribe { workspace_id }
@@ -830,18 +831,18 @@ mod tests {
         // Literal ABI fixtures: changing an existing discriminant or field
         // ordering would strand deployed readers and retained state.
         let cases = [
-            (Envelope::Subscribe { workspace_id: 7 }, vec![0, 7]),
-            (Envelope::Unsubscribe { workspace_id: 7 }, vec![1, 7]),
+            (Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(7) }, vec![0, 7]),
+            (Envelope::Unsubscribe { workspace_id: WorkspaceId::from_u128(7) }, vec![1, 7]),
             (
                 Envelope::RetiredPresence {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     payload: vec![9, 8],
                 },
                 vec![3, 7, 2, 9, 8],
             ),
             (
                 Envelope::Ready {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     pending_deltas: 2,
                     records_when_opened: true,
                 },
@@ -849,7 +850,7 @@ mod tests {
             ),
             (
                 Envelope::NotAuthorised {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     reason: "no".into(),
                 },
                 vec![5, 7, 2, 110, 111],
@@ -858,27 +859,27 @@ mod tests {
             (Envelope::Pong, vec![7]),
             (
                 Envelope::PeerRelayHello {
-                    hosted_workspaces: vec![7, 8],
+                    hosted_workspaces: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
                 },
                 vec![8, 2, 7, 8],
             ),
             (
                 Envelope::SyncRequest {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     have_heads: vec![[9; 32]],
                 },
                 [vec![9, 7, 1], vec![9; 32]].concat(),
             ),
             (
                 Envelope::SyncResponse {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     delta_since: vec![9, 8],
                 },
                 vec![10, 7, 2, 9, 8],
             ),
             (
                 Envelope::Delta {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     author_device_public_key: [1; 32],
                     authored_at_ns: 8,
                     delta: vec![9],
@@ -903,7 +904,7 @@ mod tests {
         let cases = [
             (
                 Envelope::VoiceJoin {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     call: [1; 32],
                     participation: None,
                 },
@@ -911,7 +912,7 @@ mod tests {
             ),
             (
                 Envelope::VoiceJoin {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     call: [1; 32],
                     participation: Some([2; 32]),
                 },
@@ -919,7 +920,7 @@ mod tests {
             ),
             (
                 Envelope::VoiceLeave {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     call: [1; 32],
                     participation: [2; 32],
                 },
@@ -936,27 +937,27 @@ mod tests {
     }
 
     #[test]
-    fn room_frames_name_their_workspace_and_connection_frames_none() {
+    fn frames_name_their_workspace_and_connection_frames_none() {
         let delta = Envelope::Delta {
-            workspace_id: 9,
+            workspace_id: WorkspaceId::from_u128(9),
             author_device_public_key: [1; 32],
             authored_at_ns: 2,
             delta: vec![3],
             signature: [0; 64],
         };
-        assert_eq!(delta.workspace_id(), Some(9));
+        assert_eq!(delta.workspace_id(), Some(WorkspaceId::from_u128(9)));
         assert_eq!(
             Envelope::RetiredPresence {
-                workspace_id: 4,
+                workspace_id: WorkspaceId::from_u128(4),
                 payload: Vec::new(),
             }
             .workspace_id(),
-            Some(4)
+            Some(WorkspaceId::from_u128(4))
         );
         assert_eq!(Envelope::Ping.workspace_id(), None);
         assert_eq!(
             Envelope::PeerRelayHello {
-                hosted_workspaces: vec![1]
+                hosted_workspaces: vec![WorkspaceId::from_u128(1)]
             }
             .workspace_id(),
             None

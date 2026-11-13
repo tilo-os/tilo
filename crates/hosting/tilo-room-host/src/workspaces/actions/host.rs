@@ -36,6 +36,7 @@ use super::{
 use crate::host_authority::HostOperation;
 use crate::workspaces::authority::WorkspaceOp;
 use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
+use tilo_relay_protocol::WorkspaceId;
 
 /// The host's own operations.
 pub(super) const HOST: Publisher = Publisher {
@@ -841,9 +842,8 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 let request = crate::hosted::HostWorkspaceRequest {
                     workspace: args.required_text("room")?.to_owned(),
-                    workspace_id: args
-                        .integer("workspace_id")?
-                        .ok_or_else(|| invalid("`workspace_id` is required"))?,
+                    workspace_id: WorkspaceId::parse(args.required_text("workspace_id")?)
+                        .ok_or_else(|| invalid("`workspace_id` is a workspace id"))?,
                     governor_hint: crate::hosted::decode_hex(args.required_text("governor_hint")?)
                         .map_err(|error| invalid(format!("`governor_hint`: {error}")))?,
                     bootstrap: crate::hosted::decode_hex(args.required_text("bootstrap")?)

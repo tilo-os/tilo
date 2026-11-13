@@ -70,6 +70,7 @@ use running::{
     FollowUp, NEW_DOCUMENT_NOTE, Running, imports, named_without_documents, produced,
     unknown_action,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 /// The longest a pump runs local steps back to back before it takes in the
 /// session again.
@@ -234,7 +235,7 @@ pub struct AgentParticipant {
     peer: Link,
     events: Events,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     /// What the workspace is called ([`ParticipantConfig::workspace_name`]).
     workspace_name: Option<String>,
     catalogue: AppCatalogue,
@@ -394,8 +395,8 @@ impl AgentParticipant {
         planner: Box<dyn Planner>,
         store: Arc<dyn tilo_session_client::PeerStore>,
     ) -> Result<Self, String> {
-        let workspace_id = tilo_relay_protocol::room_workspace_id(&config.workspace)
-            .map_err(|_| "the workspace is not a uuid".to_string())?;
+        let workspace_id = WorkspaceId::parse(&config.workspace)
+            .ok_or_else(|| "the workspace is not a uuid".to_string())?;
         if !identity.delegation.permits_workspace(workspace_id) {
             return Err("the agent is not delegated this workspace".into());
         }
@@ -2333,7 +2334,7 @@ mod tests;
 fn join(
     config: &ParticipantConfig,
     identity: &AgentIdentity,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     store: Arc<dyn tilo_session_client::PeerStore>,
     control: &Arc<AgentControl>,
 ) -> Result<(Link, Events), String> {

@@ -37,7 +37,7 @@ async fn a_founded_workspace_is_held_here_and_restores_from_its_record() {
     );
     assert_eq!(
         Some(workspace_id),
-        crate::join::room_workspace_id(&workspace.to_string()).ok()
+        crate::join::WorkspaceId::parse(&workspace.to_string())
     );
     assert_eq!(name.as_deref(), Some("Founders"));
     let stored = owner.storage();

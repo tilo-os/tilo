@@ -30,6 +30,7 @@ use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::host_authority::HostOperation;
 use tilo_lock::RwLockRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// This host's answer to the session a host serving one of its workspaces opened
 /// here ([`Workspaces::answer_host`]).
@@ -237,7 +238,10 @@ impl Workspaces {
         };
         let mut arguments = Map::new();
         arguments.insert("room".into(), Value::String(workspace.to_owned()));
-        arguments.insert("workspace_id".into(), Value::from(workspace_id));
+        arguments.insert(
+            "workspace_id".into(),
+            Value::String(workspace_id.to_string()),
+        );
         arguments.insert(
             "governor_hint".into(),
             Value::String(hex_postcard(&governor_hint)?),
@@ -251,7 +255,6 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         if hint.host != member
             || address.mode != WorkspaceHostMode::CertifiedHost
-            || address.room != workspace
             || address.workspace_id != workspace_id
         {
             return Err("the host answered an address that is not its own for the room".into());
@@ -412,7 +415,7 @@ impl Workspaces {
     /// here, while it lasts.
     async fn attach_session(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
     ) -> Option<tokio::sync::mpsc::Sender<()>> {
         let workspace = self
@@ -532,7 +535,6 @@ impl Workspaces {
         tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
             version: 1,
             mode: host.mode,
-            room: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
             endpoint_addr,
             host_user_public_key: host.cert.user_public_key,

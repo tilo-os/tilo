@@ -6,6 +6,7 @@ use super::{
     StateDelivery, WorkspaceOperation, authorize_state_recipient, resume_record,
     trace_native_publication, unix_now_ns,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 /// `envelope` as the relay stream carries it (a zero-signature delta goes
 /// without its signature), for a frame about to be written, charged to its
@@ -121,7 +122,7 @@ async fn encode_presence(
 pub(super) const STATE_RUN: usize = 32;
 
 /// The workspace a live delivery is for; `None` for what is not a delta.
-pub(super) fn delivery_room(delivery: &StateDelivery) -> Option<u64> {
+pub(super) fn delivery_room(delivery: &StateDelivery) -> Option<WorkspaceId> {
     match &*delivery.envelope {
         Envelope::Delta { workspace_id, .. } => Some(*workspace_id),
         _ => None,
@@ -159,7 +160,7 @@ pub(super) async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
     if crate::persistence::correlated_diagnostics() {
         for delivery in &run {
             if let Envelope::Delta { authored_at_ns, .. } = &*delivery.envelope {
-                tracing::info!(phase="server_delta_writer", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
+                tracing::info!(phase="server_delta_writer", workspace_id = %workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
             }
         }
     }
@@ -181,7 +182,7 @@ pub(super) async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
     if crate::persistence::correlated_diagnostics() {
         for delivery in &accepted {
             if let Envelope::Delta { authored_at_ns, .. } = &*delivery.envelope {
-                tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
+                tracing::info!(phase="server_delta_wire", workspace_id = %workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
             }
         }
     }
@@ -229,7 +230,7 @@ pub(super) async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
 /// one membership read of its workspace, with the workspace.
 async fn authorize_state_deliveries(
     run: Vec<StateDelivery>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<(Vec<StateDelivery>, SharedWorkspace), PeerError> {

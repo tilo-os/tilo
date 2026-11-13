@@ -155,7 +155,7 @@ fn recovery_refusals_leave_no_cache() {
         acl: temp.path().join("absent-acl"),
         device: String::new(),
         service: String::new(),
-        workspace_id: 1,
+        workspace_id: WorkspaceId::from_u128(1),
         files_workspace_id: workspace,
         registry: None,
         confirm_existing_files_access: false,

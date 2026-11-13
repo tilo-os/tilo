@@ -17,19 +17,17 @@ use web_time::SystemTime;
 /// workspace, the host that answered, roster and revocations.
 struct Membership {
     device: DeviceCert,
-    workspace: String,
-    workspace_id: u64,
+    workspace: WorkspaceId,
     host: DeviceCert,
     roster: Vec<DeviceCert>,
     revocations: Vec<RevocationEntry>,
 }
 
 fn membership(bytes: &[u8]) -> Result<Membership, String> {
-    let (device, workspace, workspace_id, host, roster, revocations) =
+    let (device, workspace, host, roster, revocations) =
         match postcard::from_bytes(bytes).map_err(|error| error.to_string())? {
             JoinTransportResponse::MembershipComplete(answer) => (
                 answer.device_cert,
-                answer.room,
                 answer.workspace_id,
                 answer.host,
                 answer.certified_roster,
@@ -37,7 +35,6 @@ fn membership(bytes: &[u8]) -> Result<Membership, String> {
             ),
             JoinTransportResponse::OwnerMembershipComplete(answer) => (
                 answer.device_cert,
-                answer.room,
                 answer.workspace_id,
                 answer.host,
                 answer.certified_roster,
@@ -48,7 +45,6 @@ fn membership(bytes: &[u8]) -> Result<Membership, String> {
     Ok(Membership {
         device,
         workspace,
-        workspace_id,
         host,
         roster,
         revocations,
@@ -63,8 +59,7 @@ pub(crate) fn validate(
     bytes: &[u8],
 ) -> Result<(), String> {
     let answer = membership(bytes)?;
-    if WorkspaceId::parse(&answer.workspace) != Some(workspace)
-        || answer.workspace_id != record.workspace_id
+    if answer.workspace != workspace
         || answer.host != record.workspace_host
         || answer.device.device_public_key != record.device.device_public_key
     {
@@ -90,20 +85,19 @@ impl NativeWorkspaceOwner {
     /// cannot be published.
     pub fn install_vouched(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         bootstrap: &[u8],
         device: &DeviceCert,
         now: SystemTime,
     ) -> Result<bool, String> {
         let answer = membership(bootstrap)?;
-        if answer.workspace_id != workspace_id {
+        if answer.workspace != workspace_id {
             return Err("the workspace's bootstrap names another workspace".into());
         }
         if answer.device.device_public_key != device.device_public_key {
             return Err("the workspace's bootstrap names another device".into());
         }
-        let workspace =
-            WorkspaceId::parse(&answer.workspace).ok_or("noncanonical vouched workspace")?;
+        let workspace = answer.workspace;
         let _turn = self.0.mutation.lock();
         if let Some(held) = self.0.authority.read().workspaces.get(&workspace) {
             // An enrollment of another device is the one this machine was
@@ -117,13 +111,13 @@ impl NativeWorkspaceOwner {
             // another device held is replaced whatever its host.
             if this_device
                 && held.workspace_host == answer.host
-                && held.workspace_id == workspace_id
+                && held.workspace == answer.workspace
             {
                 return Ok(false);
             }
         }
         let peer = StatePeer::from_join(
-            &answer.workspace,
+            &answer.workspace.to_string(),
             answer.host.clone(),
             answer.roster,
             &answer.revocations,
@@ -132,7 +126,6 @@ impl NativeWorkspaceOwner {
         let record = StoredWorkspace {
             version: 2,
             workspace,
-            workspace_id,
             workspace_host: answer.host,
             device: device.clone(),
             enrollment: None,
@@ -173,7 +166,7 @@ impl NativeWorkspaceOwner {
     /// cannot be published.
     pub fn install_member(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         bootstrap: &crate::join::JoinBootstrap,
         hint: crate::join::TransportHint,
         device: &DeviceCert,
@@ -187,8 +180,7 @@ impl NativeWorkspaceOwner {
         }
         IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint)
             .map_err(|error| error.to_string())?;
-        let workspace =
-            WorkspaceId::parse(&bootstrap.room).ok_or("noncanonical member workspace")?;
+        let workspace = bootstrap.workspace_id;
         let _turn = self.0.mutation.lock();
         if let Some(held) = self.0.authority.read().workspaces.get(&workspace) {
             // An enrollment of another device is the one this machine was
@@ -202,13 +194,13 @@ impl NativeWorkspaceOwner {
             // another device held is replaced whatever its host.
             if this_device
                 && held.workspace_host == bootstrap.host
-                && held.workspace_id == workspace_id
+                && held.workspace == workspace
             {
                 return Ok(false);
             }
         }
         let mut peer = StatePeer::from_join(
-            &bootstrap.room,
+            &bootstrap.workspace_id.to_string(),
             bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             &bootstrap.revocations,
@@ -230,7 +222,6 @@ impl NativeWorkspaceOwner {
         let record = StoredWorkspace {
             version: 2,
             workspace,
-            workspace_id,
             workspace_host: bootstrap.host.clone(),
             device: device.clone(),
             enrollment: None,

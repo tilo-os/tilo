@@ -19,6 +19,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::installed::InstalledBot;
 use crate::workspaces::Workspaces;
+use crate::WorkspaceId;
 
 /// How long a bot's delegation lasts.
 pub const DELEGATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
@@ -108,7 +109,8 @@ impl HostRootCertifier {
             bot.name.clone(),
             color,
             DelegateScope {
-                rooms: vec![workspace.to_owned()],
+                workspaces: vec![WorkspaceId::parse(workspace)
+                    .ok_or_else(|| "the bot's workspace is not a workspace id".to_string())?],
                 apps: Vec::new(),
             },
             now_ns,

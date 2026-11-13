@@ -111,7 +111,7 @@ pub fn test_material(relay: &str) -> String {
     };
     let material = Material {
         workspace: "ws1".into(),
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         record: "browser-1".into(),
         device: cert,
         secret: [2; 32],

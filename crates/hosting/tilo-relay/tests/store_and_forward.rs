@@ -60,7 +60,7 @@ async fn a_publishes_two_offline_deltas(
     .await
     .unwrap();
     a_client
-        .send(Envelope::Subscribe { workspace_id: 5 })
+        .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(5) })
         .unwrap();
     let _ = a_client.recv().await.expect("A Ready channel closed");
 
@@ -68,7 +68,7 @@ async fn a_publishes_two_offline_deltas(
     for (seq, payload) in [(1u64, "first-delta"), (2u64, "second-delta")] {
         a_client
             .send(Envelope::Delta {
-                workspace_id: 5,
+                workspace_id: WorkspaceId::from_u128(5),
                 author_device_public_key: a.device_pubkey(),
                 authored_at_ns: seq,
                 delta: payload.as_bytes().to_vec(),
@@ -105,7 +105,7 @@ async fn b_connects_and_drains_queue(
     .await
     .unwrap();
     b_client
-        .send(Envelope::Subscribe { workspace_id: 5 })
+        .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(5) })
         .unwrap();
 
     // The next N messages B receives are the two queued deltas

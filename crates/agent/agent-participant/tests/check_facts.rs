@@ -85,7 +85,7 @@ fn delegate_to_ed(
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WORKSPACE.into()],
             apps: vec![VIDEO.into()],
         },
         now,
@@ -311,7 +311,7 @@ async fn ed_planning_with(
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WORKSPACE.into()],
             apps: vec![VIDEO.into()],
         },
         now,

@@ -1,7 +1,8 @@
 use super::*;
+use tilo_relay_protocol::WorkspaceId;
 
 fn retained(
-    workspace: u64,
+    workspace: WorkspaceId,
     author: u8,
     channel: u8,
     checkpoint: bool,
@@ -30,7 +31,7 @@ fn retained(
 #[test]
 fn buffered_prefix_reports_bounded_payload_free_shape() {
     let frames = (0..25)
-        .map(|channel| retained(7, 1, channel, true, 3))
+        .map(|channel| retained(WorkspaceId::from_u128(7), 1, channel, true, 3))
         .collect::<Vec<_>>();
     let shape = buffered_retention_prefix(frames.iter()).unwrap();
     assert_eq!(shape.frames, 25);
@@ -46,12 +47,12 @@ fn buffered_prefix_reports_bounded_payload_free_shape() {
 #[test]
 fn buffered_prefix_stops_at_identity_kind_and_resource_bounds() {
     for (barrier, expected) in [
-        (retained(8, 1, 2, true, 3), "workspace_change"),
-        (retained(7, 2, 2, true, 3), "author_change"),
+        (retained(WorkspaceId::from_u128(8), 1, 2, true, 3), "workspace_change"),
+        (retained(WorkspaceId::from_u128(7), 2, 2, true, 3), "author_change"),
         (EnvelopeV2::State(Envelope::Ping), "non_delta"),
         (
             EnvelopeV2::State(Envelope::Delta {
-                workspace_id: 7,
+                workspace_id: WorkspaceId::from_u128(7),
                 author_device_public_key: [1; 32],
                 authored_at_ns: 1,
                 delta: vec![9],
@@ -60,7 +61,7 @@ fn buffered_prefix_stops_at_identity_kind_and_resource_bounds() {
             "non_retained",
         ),
     ] {
-        let frames = [retained(7, 1, 1, false, 3), barrier];
+        let frames = [retained(WorkspaceId::from_u128(7), 1, 1, false, 3), barrier];
         let shape = buffered_retention_prefix(frames.iter()).unwrap();
         assert_eq!(shape.frames, 1);
         assert_eq!(shape.checkpoints, 0);
@@ -72,7 +73,7 @@ fn buffered_prefix_stops_at_identity_kind_and_resource_bounds() {
         (EnvelopeV2::State(Envelope::Ping), "non_delta"),
         (
             EnvelopeV2::State(Envelope::Delta {
-                workspace_id: 7,
+                workspace_id: WorkspaceId::from_u128(7),
                 author_device_public_key: [1; 32],
                 authored_at_ns: 1,
                 delta: vec![9],
@@ -88,9 +89,9 @@ fn buffered_prefix_stops_at_identity_kind_and_resource_bounds() {
     }
 
     let frames = [
-        retained(7, 1, 1, true, 3),
-        retained(7, 1, 2, true, 3),
-        retained(7, 1, 3, true, 3),
+        retained(WorkspaceId::from_u128(7), 1, 1, true, 3),
+        retained(WorkspaceId::from_u128(7), 1, 2, true, 3),
+        retained(WorkspaceId::from_u128(7), 1, 3, true, 3),
     ];
     let frame_limited =
         buffered_retention_prefix_with_limits(frames.iter(), 2, usize::MAX).unwrap();
@@ -99,7 +100,7 @@ fn buffered_prefix_stops_at_identity_kind_and_resource_bounds() {
     assert_eq!(frame_limited.stop_reason, "frame_cap");
 
     let full_backlog = (0..RETENTION_PREFIX_FRAME_CAP)
-        .map(|channel| retained(7, 1, u8::try_from(channel).unwrap(), true, 3))
+        .map(|channel| retained(WorkspaceId::from_u128(7), 1, u8::try_from(channel).unwrap(), true, 3))
         .collect::<Vec<_>>();
     let exact_cap = buffered_retention_prefix(full_backlog.iter()).unwrap();
     assert_eq!(exact_cap.frames, RETENTION_PREFIX_FRAME_CAP);
@@ -123,14 +124,14 @@ fn buffered_prefix_stops_at_identity_kind_and_resource_bounds() {
 #[test]
 fn eligible_checkpoint_prefix_requires_a_coherent_distinct_checkpoint_run() {
     assert_eq!(eligible_checkpoint_prefix(&Envelope::Ping, [].iter()), 1);
-    let EnvelopeV2::State(current) = retained(7, 1, 1, true, 3) else {
+    let EnvelopeV2::State(current) = retained(WorkspaceId::from_u128(7), 1, 1, true, 3) else {
         unreachable!()
     };
     let suffix = [
-        retained(7, 1, 2, true, 3),
-        retained(7, 1, 2, true, 3),
-        retained(7, 1, 3, false, 3),
-        retained(7, 1, 4, true, 3),
+        retained(WorkspaceId::from_u128(7), 1, 2, true, 3),
+        retained(WorkspaceId::from_u128(7), 1, 2, true, 3),
+        retained(WorkspaceId::from_u128(7), 1, 3, false, 3),
+        retained(WorkspaceId::from_u128(7), 1, 4, true, 3),
     ];
     let suffix_before = suffix
         .iter()
@@ -146,16 +147,16 @@ fn eligible_checkpoint_prefix_requires_a_coherent_distinct_checkpoint_run() {
 
 #[test]
 fn eligible_checkpoint_prefix_stops_at_every_identity_kind_and_malformed_barrier() {
-    let EnvelopeV2::State(current) = retained(7, 1, 1, true, 3) else {
+    let EnvelopeV2::State(current) = retained(WorkspaceId::from_u128(7), 1, 1, true, 3) else {
         unreachable!()
     };
     for barrier in [
-        retained(7, 1, 9, false, 3),
-        retained(8, 1, 2, true, 3),
-        retained(7, 2, 2, true, 3),
+        retained(WorkspaceId::from_u128(7), 1, 9, false, 3),
+        retained(WorkspaceId::from_u128(8), 1, 2, true, 3),
+        retained(WorkspaceId::from_u128(7), 2, 2, true, 3),
         EnvelopeV2::State(Envelope::Ping),
         EnvelopeV2::State(Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [1; 32],
             authored_at_ns: 1,
             delta: vec![9],
@@ -163,7 +164,7 @@ fn eligible_checkpoint_prefix_stops_at_every_identity_kind_and_malformed_barrier
         }),
     ] {
         assert_eq!(
-            eligible_checkpoint_prefix(&current, [retained(7, 1, 2, true, 3), barrier].iter()),
+            eligible_checkpoint_prefix(&current, [retained(WorkspaceId::from_u128(7), 1, 2, true, 3), barrier].iter()),
             2
         );
     }
@@ -171,20 +172,20 @@ fn eligible_checkpoint_prefix_stops_at_every_identity_kind_and_malformed_barrier
 
 #[test]
 fn eligible_checkpoint_prefix_includes_current_and_enforces_frame_and_byte_caps() {
-    let EnvelopeV2::State(current) = retained(7, 1, 1, true, 3) else {
+    let EnvelopeV2::State(current) = retained(WorkspaceId::from_u128(7), 1, 1, true, 3) else {
         unreachable!()
     };
     let full = (2..=34)
-        .map(|channel| retained(7, 1, channel, true, 3))
+        .map(|channel| retained(WorkspaceId::from_u128(7), 1, channel, true, 3))
         .collect::<Vec<_>>();
     assert_eq!(eligible_checkpoint_prefix(&current, full.iter()), 32);
 
-    let EnvelopeV2::State(retained_delta) = retained(7, 1, 2, false, 3) else {
+    let EnvelopeV2::State(retained_delta) = retained(WorkspaceId::from_u128(7), 1, 2, false, 3) else {
         unreachable!()
     };
     assert_eq!(eligible_checkpoint_prefix(&retained_delta, [].iter()), 1);
     let malformed = Envelope::Delta {
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         author_device_public_key: [1; 32],
         authored_at_ns: 1,
         delta: vec![9],
@@ -192,7 +193,7 @@ fn eligible_checkpoint_prefix_includes_current_and_enforces_frame_and_byte_caps(
     };
     assert_eq!(eligible_checkpoint_prefix(&malformed, [].iter()), 1);
 
-    let EnvelopeV2::State(large) = retained(7, 1, 2, true, RETENTION_PREFIX_BYTE_CAP) else {
+    let EnvelopeV2::State(large) = retained(WorkspaceId::from_u128(7), 1, 2, true, RETENTION_PREFIX_BYTE_CAP) else {
         unreachable!()
     };
     assert_eq!(eligible_checkpoint_prefix(&large, [].iter()), 1);

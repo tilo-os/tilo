@@ -171,9 +171,7 @@ pub use transport::{ALPN, Envelope};
 /// crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub use tilo_relay_protocol::{
-    personal_continuity_workspace_id, room_workspace_id, room_workspace_id_matches,
-};
+pub use tilo_relay_protocol::WorkspaceId;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod root_signer;

@@ -102,7 +102,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .unwrap();
         b_client
-            .send(Envelope::Subscribe { workspace_id: 19 })
+            .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(19) })
             .unwrap();
         let received = tilo_test_env::within("a message on b_client", b_client.recv())
             .await
@@ -117,7 +117,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         assert!(matches!(
             tilo_test_env::within("a message on b_client", b_client.recv()).await,
             Some(Envelope::Ready {
-                workspace_id: 19,
+                workspace_id: WorkspaceId::from_u128(19),
                 pending_deltas: 1,
                 records_when_opened: false,
             })
@@ -168,7 +168,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .unwrap();
         for client in [&a_client, &b_client] {
             client
-                .send(Envelope::Subscribe { workspace_id: 9 })
+                .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(9) })
                 .unwrap();
             let _ = tilo_test_env::within("a message on client", client.recv()).await;
         }
@@ -196,7 +196,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .unwrap();
         b_again
-            .send(Envelope::Subscribe { workspace_id: 9 })
+            .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(9) })
             .unwrap();
         assert!(matches!(
         tilo_test_env::within("a message on b_again", b_again.recv()).await,
@@ -257,10 +257,10 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .expect("B connect");
 
         a_client
-            .send(Envelope::Subscribe { workspace_id: 42 })
+            .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(42) })
             .unwrap();
         b_client
-            .send(Envelope::Subscribe { workspace_id: 42 })
+            .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(42) })
             .unwrap();
 
         // Drain the Ready acks so we don't confuse them for the delta
@@ -271,7 +271,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                 .expect("Ready channel closed");
             match env {
                 Envelope::Ready {
-                    workspace_id: 42,
+                    workspace_id: WorkspaceId::from_u128(42),
                     pending_deltas: 0,
                     records_when_opened: false,
                 } => {}
@@ -281,7 +281,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
 
         let payload = b"the-crdt-delta".to_vec();
         let delta_env = Envelope::Delta {
-            workspace_id: 42,
+            workspace_id: WorkspaceId::from_u128(42),
             author_device_public_key: a.device_pubkey(),
             authored_at_ns: 1000,
             delta: payload.clone(),
@@ -326,7 +326,7 @@ async fn publish_until_queued(
         for authored_at_ns in 1.. {
             a_client
                 .send(Envelope::Delta {
-                    workspace_id: 9,
+                    workspace_id: WorkspaceId::from_u128(9),
                     author_device_public_key: a_key,
                     authored_at_ns,
                     delta: b"offline-change".to_vec(),
@@ -354,7 +354,7 @@ async fn wait_for_ready_with_pending(
     loop {
         match tokio::time::timeout(tilo_test_env::hang_bound(), b_again.recv()).await {
             Ok(Some(Envelope::Ready {
-                workspace_id: 9,
+                workspace_id: WorkspaceId::from_u128(9),
                 pending_deltas,
                 records_when_opened: false,
             })) => {

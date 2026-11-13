@@ -41,8 +41,7 @@ fn hint(cert: &DeviceCert, key: &SigningKey) -> TransportHint {
     IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: WORKSPACE.into(),
-        workspace_id: join::room_workspace_id(WORKSPACE).unwrap(),
+        workspace_id: join::WorkspaceId::parse(WORKSPACE).unwrap(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&cert.device_public_key).unwrap(),
         ),

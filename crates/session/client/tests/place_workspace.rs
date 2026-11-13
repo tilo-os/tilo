@@ -25,7 +25,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspace = "0b7c6f0e-2d55-4f3a-9c1e-5a8d2b4e6f10";
-    let workspace_id = tilo_relay_protocol::room_workspace_id(workspace).unwrap();
+    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
     let page = start_peer(
         host.iroh(),
         laptop.cert.clone(),

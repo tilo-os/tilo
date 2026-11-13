@@ -4,8 +4,7 @@
 //! governance: a relay, a cloud host or the device that made the workspace.
 //!
 //! These are postcard wire formats between separately updated hosts and
-//! desktops: field order is the wire, so append only. `tilo-relay-session`
-//! re-exports them under `rooms`, their historic path.
+//! desktops: field order is the wire, so append only.
 
 use serde::{Deserialize, Serialize};
 

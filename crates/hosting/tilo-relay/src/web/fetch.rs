@@ -217,7 +217,7 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
     for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
         if workspace.admits_person(&user, &own_user) {
-            admitted.push(Room(id));
+            admitted.push(Room(id.as_uuid().as_u128()));
         }
     }
     admitted

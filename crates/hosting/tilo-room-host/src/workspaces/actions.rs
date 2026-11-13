@@ -80,6 +80,7 @@ use super::{
 };
 use crate::app_serving::AppServingPlane;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Listing the invitations still redeemable: part of inviting.
 pub(crate) const INVITATIONS: &str = "invitation.list";
@@ -869,7 +870,7 @@ impl Workspaces {
     /// and a server key only invites (`authority::server_key_invites`).
     async fn governed_by(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
     ) -> Option<(Governed, DeviceCert)> {
         let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
@@ -908,7 +909,7 @@ impl Workspaces {
     /// person's.
     async fn catalogue(
         &self,
-        workspace_id: Option<u64>,
+        workspace_id: Option<WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         query: &CatalogueQuery,
@@ -960,7 +961,7 @@ impl Workspaces {
     /// the host itself (`None`).
     async fn invoke(
         &self,
-        workspace_id: Option<u64>,
+        workspace_id: Option<WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
@@ -1053,7 +1054,7 @@ impl Workspaces {
     /// through the workspace method its wire door calls.
     async fn governance_invoke(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
@@ -1468,7 +1469,7 @@ impl HostWorkspaceActions {
     #[must_use]
     pub(crate) fn in_workspace(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     ) -> impl ActionHost + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
@@ -1483,7 +1484,7 @@ impl HostWorkspaceActions {
     #[must_use]
     pub(crate) fn in_workspace_as(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         certificate: &DeviceCert,
     ) -> impl ActionHost + Clone + Send + 'static {
         InWorkspace {
@@ -1611,7 +1612,7 @@ impl HostWorkspaceActions {
 #[derive(Clone)]
 struct InWorkspace {
     host: HostWorkspaceActions,
-    workspace_id: Option<u64>,
+    workspace_id: Option<WorkspaceId>,
     /// The caller's device certificate, as the transport verified it.
     certificate: Option<DeviceCert>,
 }
@@ -1822,7 +1823,7 @@ impl GovernedPlane {
     /// one was verified.
     fn route_certified_by(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         message: &RemoteActionMessage,
@@ -1854,7 +1855,7 @@ impl AppServingPlane for GovernedPlane {
 
     fn serve(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
@@ -1870,7 +1871,7 @@ impl AppServingPlane for GovernedPlane {
 
     fn serve_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &DeviceCert,
         message: RemoteActionMessage,
@@ -1901,7 +1902,7 @@ impl AppServingPlane for GovernedPlane {
 
     fn route(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
@@ -1910,7 +1911,7 @@ impl AppServingPlane for GovernedPlane {
 
     fn route_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &DeviceCert,
         message: &RemoteActionMessage,
@@ -1920,20 +1921,20 @@ impl AppServingPlane for GovernedPlane {
 
     fn relayed(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         message: &RemoteActionMessage,
     ) -> Option<RemoteActionMessage> {
         self.apps.as_ref()?.relayed(workspace_id, from, message)
     }
 
-    fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
         if let Some(apps) = self.apps.as_ref() {
             apps.run_arrived(workspace_id, caller);
         }
     }
 
-    fn tracks(&self, workspace_id: u64) -> bool {
+    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
         self.apps
             .as_ref()
             .is_some_and(|apps| apps.tracks(workspace_id))

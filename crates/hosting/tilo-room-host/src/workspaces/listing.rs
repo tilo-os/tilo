@@ -815,6 +815,7 @@ mod door_tests {
         clippy::significant_drop_tightening,
         reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
     )]
+    use tilo_relay_protocol::WorkspaceId;
     use tilo_actions::remote::{
         ActionHost as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,
@@ -866,7 +867,7 @@ mod door_tests {
     /// The owner invokes the workspace's governance `verb` with `argument`.
     async fn govern(
         workspaces: &Workspaces,
-        workspace: u64,
+        workspace: WorkspaceId,
         owner: &DeviceCert,
         request: InvokeRequest,
     ) -> serde_json::Value {

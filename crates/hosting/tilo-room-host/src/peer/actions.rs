@@ -7,10 +7,11 @@ use super::{
     current_session, mpsc, unavailable_target,
 };
 use tilo_lock::RwLockRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Where an inbound [`Envelope::RemoteAction`] asked to go.
 pub(super) struct RemoteActionRoute {
-    pub(super) workspace_id: u64,
+    pub(super) workspace_id: WorkspaceId,
     pub(super) version: u16,
     pub(super) to: [u8; 32],
 }
@@ -29,7 +30,7 @@ pub(super) struct RemoteActionRoute {
 pub(super) async fn handle_remote_action(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     route: RemoteActionRoute,
     frame: Vec<u8>,
 ) -> Option<Envelope> {
@@ -139,7 +140,7 @@ pub(super) async fn handle_remote_action(
 fn answered_by_plane(
     session: &SessionCtx<'_>,
     peer: &AuthenticatedPeer,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     version: u16,
     request: &tilo_actions::remote::RemoteActionFrame,
     answer: tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>,
@@ -184,7 +185,7 @@ fn hand_routed(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
-    (workspace_id, version): (u64, u16),
+    (workspace_id, version): (WorkspaceId, u16),
     (decoded, frame): (&tilo_actions::remote::RemoteActionFrame, Vec<u8>),
     route: crate::app_serving::Routing,
 ) -> Option<Envelope> {
@@ -211,7 +212,7 @@ fn hand_over_replaced(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
-    (workspace_id, version): (u64, u16),
+    (workspace_id, version): (WorkspaceId, u16),
     to: [u8; 32],
     message: tilo_actions::remote::RemoteActionMessage,
 ) -> Option<Envelope> {
@@ -232,7 +233,7 @@ fn hand_over(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     version: u16,
     to: [u8; 32],
     frame: Vec<u8>,
@@ -438,7 +439,7 @@ fn answer_later(
 /// workspace, for a caller of the standing the change budget sees there.
 struct Local<'a> {
     plane: &'a dyn crate::app_serving::AppServingPlane,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     standing: crate::member_limits::Standing,
 }
 
@@ -519,7 +520,7 @@ fn serve_locally(
             Ok(frame) => frame,
             Err(error) => {
                 tracing::error!(
-                    workspace_id,
+                    workspace_id = %workspace_id,
                     %error,
                     "a remote action answer does not encode; the asker is not answered"
                 );

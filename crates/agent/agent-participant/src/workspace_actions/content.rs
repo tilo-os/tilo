@@ -30,6 +30,7 @@ use tilo_lock::MutexRecover as _;
 use super::{Job, Worker, WorkspaceActions};
 use crate::worker::ConfinedReplica;
 use ui::permissions::policy::ActionKind;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The most bytes one upload into a workspace's store takes: as much as the
 /// host answers a member's request for content with.
@@ -163,7 +164,7 @@ impl WorkspaceActions {
     /// when the upload begins. Its later steps go to the upload they began.
     pub(super) fn content_put(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         correlation: u64,
         step: ContentPutStep,
@@ -204,7 +205,7 @@ impl WorkspaceActions {
     /// which the service's thread reads.
     pub(super) fn content_get(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         correlation: u64,
         (content, offset, length): (String, u64, u64),
@@ -240,7 +241,7 @@ impl WorkspaceActions {
     }
 
     /// `workspace_id`'s store, once the service's thread found it.
-    fn known_store(&self, workspace_id: u64) -> Option<ContentStore> {
+    fn known_store(&self, workspace_id: WorkspaceId) -> Option<ContentStore> {
         self.shared
             .stores
             .lock_recover()
@@ -251,7 +252,7 @@ impl WorkspaceActions {
 
 impl Worker {
     /// `workspace_id`'s content store on this host, found once.
-    pub(super) fn workspace_content(&self, workspace_id: u64) -> Option<ContentStore> {
+    pub(super) fn workspace_content(&self, workspace_id: WorkspaceId) -> Option<ContentStore> {
         if let Some(store) = self.shared.stores.lock_recover().get(&workspace_id) {
             return Some(store.clone());
         }
@@ -267,7 +268,7 @@ impl Worker {
     /// begins only where they may change the workspace's records.
     pub(super) fn content_put(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         step: ContentPutStep,
     ) -> Result<tilo_actions::remote::ContentPutAnswer, ActionHostError> {
@@ -288,7 +289,7 @@ impl Worker {
     /// where they may read the workspace.
     pub(super) fn content_get(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         content: &str,
         (offset, length): (u64, u64),
@@ -307,9 +308,7 @@ impl Worker {
     /// `replica`, a record of the workspace `workspace` names, lent the
     /// workspace's content store when this host keeps one.
     pub(super) fn lend(&self, replica: ConfinedReplica, workspace: &str) -> ConfinedReplica {
-        match tilo_relay_protocol::room_workspace_id(workspace)
-            .ok()
-            .and_then(|id| self.workspace_content(id))
+        match WorkspaceId::parse(workspace).and_then(|id| self.workspace_content(id))
         {
             Some(store) => replica.lending(store),
             None => replica,
@@ -318,4 +317,4 @@ impl Worker {
 }
 
 /// Shared between the service's handle and its thread.
-pub(super) type Stores = std::sync::Mutex<std::collections::HashMap<u64, ContentStore>>;
+pub(super) type Stores = std::sync::Mutex<std::collections::HashMap<WorkspaceId, ContentStore>>;

@@ -10,6 +10,7 @@ use super::{
     workspace_access,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Handle an inbound `Delta`: validate the author, fan out to every
 /// other subscriber via the same path a change from an attached host
@@ -49,7 +50,7 @@ impl StateSession {
         &self,
         sub: &crate::workspace::Subscriber,
         replay_phase: Option<u8>,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     ) {
         if let Some(lag) = &self.lag {
             lag.mark(workspace_id);
@@ -76,11 +77,11 @@ impl StateSession {
 /// its ordinary full retained replay, with current authorization checked again.
 #[derive(Default)]
 pub struct Lag {
-    workspaces: std::sync::Mutex<std::collections::BTreeSet<u64>>,
+    workspaces: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
     pub(super) wake: tokio::sync::Notify,
 }
 impl Lag {
-    pub(super) fn mark(&self, workspace_id: u64) {
+    pub(super) fn mark(&self, workspace_id: WorkspaceId) {
         // Counted, not timed: how often a live delivery fell back to replay.
         crate::timing::window("state.lag_mark", crate::timing::start());
         let first = self.workspaces.lock_recover().insert(workspace_id);
@@ -89,7 +90,7 @@ impl Lag {
         }
     }
 
-    pub(super) fn next(&self) -> Option<u64> {
+    pub(super) fn next(&self) -> Option<WorkspaceId> {
         self.workspaces.lock_recover().pop_first()
     }
 
@@ -345,7 +346,7 @@ impl StateDelivery {
         &self,
         peer: &AuthenticatedPeer,
         session: &SessionCtx<'_>,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         now: u64,
     ) -> bool {
         let Some(fanned) = &self.fanned else {
@@ -401,7 +402,7 @@ pub(super) struct PreparedRecipients {
 pub(super) async fn handle_delta(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
     let Envelope::Delta {
@@ -684,7 +685,7 @@ pub(super) fn governor_notice(env: &Envelope) -> Option<Vec<u8>> {
 pub(super) async fn handle_delta_prefix(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     envelopes: Vec<Envelope>,
     inbound_budget: Vec<Option<Arc<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> Result<Option<Envelope>, PeerError> {

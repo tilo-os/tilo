@@ -245,7 +245,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![workspace.clone()],
+            workspaces: vec![workspace.clone()],
             apps: vec![WRITER.into(), CHAT.into()],
         },
         now,

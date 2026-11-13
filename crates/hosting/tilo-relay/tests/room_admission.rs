@@ -89,13 +89,13 @@ async fn connect(relay: &Relay, device: TestDevice) -> RelayClient {
     .unwrap()
 }
 
-async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> {
+async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("relay answered subscription", client.recv()).await
 }
 
 /// The devices the workspace's access record admits, as its host keeps them.
-fn members(state: &Path, workspace_id: u64) -> Vec<[u8; 32]> {
+fn members(state: &Path, workspace_id: WorkspaceId) -> Vec<[u8; 32]> {
     let directory = state.join(format!("workspaces/{workspace_id}"));
     if !directory.exists() {
         return Vec::new();

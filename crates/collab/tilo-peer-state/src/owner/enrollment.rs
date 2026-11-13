@@ -53,12 +53,7 @@ pub(crate) fn restore(
         // the record carries.
         (None, None) if record.device == record.workspace_host => {
             if let Some(hint) = &record.host_hint {
-                crate::owner::validate_host_hint(
-                    hint,
-                    &workspace.to_string(),
-                    record.workspace_id,
-                    &record.device,
-                )?;
+                crate::owner::validate_host_hint(hint, record.workspace, &record.device)?;
             }
         }
         (None, None) => {
@@ -94,7 +89,7 @@ fn validate_enrollment(
     let grant = join.grant();
     if intent.workspace() != workspace
         || record.workspace_host != *join.workspace_authority()
-        || record.workspace_id != grant.workspace_id
+        || record.workspace != grant.workspace_id
         || (record.device != *intent.local_device()
             && !crate::owner::renewal::renews(&record.device, intent.local_device()))
         || enrollment.transport_hint != *intent.transport_hint()
@@ -371,8 +366,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
-        let workspace = WorkspaceId::parse(&enrollment.bootstrap().room)
-            .ok_or("noncanonical native enrollment workspace")?;
+        let workspace = enrollment.bootstrap().workspace_id;
         let pending = self
             .0
             .authority
@@ -397,7 +391,7 @@ impl NativeWorkspaceOwner {
         }
         let bootstrap = enrollment.bootstrap();
         let mut peer = StatePeer::from_join(
-            &bootstrap.room,
+            &bootstrap.workspace_id.to_string(),
             bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             &bootstrap.revocations,
@@ -431,7 +425,6 @@ impl NativeWorkspaceOwner {
         let record = StoredWorkspace {
             version: 2,
             workspace,
-            workspace_id: bootstrap.workspace_id,
             workspace_host: bootstrap.host.clone(),
             device: enrollment.local_device().clone(),
             enrollment: Some(crate::owner::record::StoredEnrollment {

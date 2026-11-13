@@ -106,7 +106,7 @@ struct Routing(Arc<HostedBrowsers>);
 impl AppServingPlane for Routing {
     fn serve(
         &self,
-        _workspace_id: u64,
+        _workspace_id: WorkspaceId,
         _caller: &Caller,
         _message: RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<RemoteActionMessage>> {
@@ -115,7 +115,7 @@ impl AppServingPlane for Routing {
 
     fn route(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<tilo_relay::app_serving::Routing> {
@@ -124,7 +124,7 @@ impl AppServingPlane for Routing {
 
     fn route_certified(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         certificate: &DeviceCert,
         message: &RemoteActionMessage,
@@ -135,14 +135,14 @@ impl AppServingPlane for Routing {
 
     fn relayed(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         message: &RemoteActionMessage,
     ) -> Option<RemoteActionMessage> {
         self.0.relayed(workspace_id, from, message)
     }
 
-    fn tracks(&self, workspace_id: u64) -> bool {
+    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
         self.0.tracks(workspace_id)
     }
 }
@@ -297,7 +297,7 @@ async fn asked(device: &mut Approver) -> tilo_relay::certify::PendingConfirmatio
     }
 }
 
-fn to_host(workspace_id: u64, host: [u8; 32], frame: Vec<u8>) -> Envelope {
+fn to_host(workspace_id: WorkspaceId, host: [u8; 32], frame: Vec<u8>) -> Envelope {
     Envelope::RemoteAction {
         workspace_id,
         version: REMOTE_ACTION_ENVELOPE_VERSION,
@@ -316,7 +316,7 @@ async fn subscribe_in(
     relay: &tilo_relay::Relay,
     user: &TestUser,
     device: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> RelayClient {
     let client = RelayClient::connect(
         client_endpoint().await,

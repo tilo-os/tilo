@@ -4,7 +4,9 @@ use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::Signer as _;
 use neighbour_wire::NeighbourMsg;
 
-const WORKSPACE: u64 = 7;
+fn ws() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::from_u128(7)
+}
 
 fn route() -> Route {
     Route {
@@ -103,7 +105,7 @@ fn signed_frames(
                 }
             };
             crate::transport::encode(&Envelope::Delta {
-                workspace_id: WORKSPACE,
+                workspace_id: ws(),
                 author_device_public_key: author,
                 authored_at_ns: seq,
                 delta: payload.encode().unwrap(),
@@ -118,7 +120,7 @@ fn retain(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
     for frame in frames {
         *seq = seq.saturating_add(1);
         let checkpoint = matches!(
-            crate::store::retained::payload(&frame, WORKSPACE),
+            crate::store::retained::payload(&frame, ws()),
             Some((_, CoeditPayload::Checkpoint { .. }))
         );
         if checkpoint {
@@ -138,7 +140,7 @@ fn retain(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
 fn append(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
     for frame in frames {
         let Some((author, CoeditPayload::RetainedDelta { .. })) =
-            crate::store::retained::payload(&frame, WORKSPACE)
+            crate::store::retained::payload(&frame, ws())
         else {
             panic!("only a delta appends");
         };
@@ -217,7 +219,7 @@ fn compact(store: &WorkspaceStore, entries: &[ChannelEntry]) -> Replaced {
     let frames = document_frames(
         &crate::payloads::NeighbourPayloads,
         &key(99),
-        WORKSPACE,
+        ws(),
         &folded.route,
         &folded.snapshot,
     )
@@ -240,7 +242,7 @@ use crate::store::compaction::Replaced;
 #[test]
 fn the_host_folds_a_long_tail_and_a_late_joiner_converges_from_its_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "base").unwrap();
@@ -285,7 +287,7 @@ fn the_host_folds_a_long_tail_and_a_late_joiner_converges_from_its_snapshot() {
 #[test]
 fn a_change_retained_during_the_fold_or_depending_on_unreadable_content_is_kept() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     let mut base = AutoCommit::new();
     base.put(ROOT, "title", "base").unwrap();
@@ -383,7 +385,7 @@ fn a_change_retained_during_the_fold_or_depending_on_unreadable_content_is_kept(
 #[test]
 fn a_sealed_tail_is_never_folded_and_asks_for_a_member() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     let mut doc = AutoCommit::new();
     for edit in 0..COMPACT_TAIL_ENTRIES {
@@ -433,7 +435,7 @@ fn host_frames_name_their_signer_as_publisher() {
     let frames = document_frames(
         &crate::payloads::NeighbourPayloads,
         &key(7),
-        WORKSPACE,
+        ws(),
         &route(),
         &doc.save(),
     )
@@ -445,7 +447,7 @@ fn host_frames_name_their_signer_as_publisher() {
             body,
             channel: named,
         },
-    ) = crate::store::retained::payload(&frames[0], WORKSPACE).unwrap()
+    ) = crate::store::retained::payload(&frames[0], ws()).unwrap()
     else {
         panic!("the first frame is the checkpoint");
     };
@@ -475,9 +477,9 @@ fn the_host_certificate_is_retained_where_replay_leads_with_it() {
         issuer: None,
     };
     let (channel, frame) =
-        identity_frame(&crate::payloads::NeighbourPayloads, &cert, WORKSPACE).unwrap();
+        identity_frame(&crate::payloads::NeighbourPayloads, &cert, ws()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     store.retain_checkpoint(&channel, &frame).unwrap();
     store.retain_checkpoint(&channel, &frame).unwrap();
     assert_eq!(
@@ -492,7 +494,7 @@ fn the_host_certificate_is_retained_where_replay_leads_with_it() {
     );
     assert_eq!(crate::store::replay::lineage_rank(&lineage), "0");
     let (_, CoeditPayload::Checkpoint { body, .. }) =
-        crate::store::retained::payload(&frame, WORKSPACE).unwrap()
+        crate::store::retained::payload(&frame, ws()).unwrap()
     else {
         panic!("a checkpoint");
     };
@@ -521,14 +523,14 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
     let frames = document_frames(
         &crate::payloads::NeighbourPayloads,
         &key(7),
-        WORKSPACE,
+        ws(),
         &route(),
         &doc.save(),
     )
     .unwrap();
     assert!(frames.len() > 1, "a snapshot above one frame is segmented");
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     store
         .replace_channel(
             &channel(),
@@ -744,7 +746,7 @@ fn folded_doc(folded: &Folded) -> AutoCommit {
 #[test]
 fn a_tampered_entry_is_refused_even_after_its_bytes_verified_once() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     let (mut base, _) = history(&store, 10, &mut seq);
     let mut signatures = Signatures::default();
@@ -770,7 +772,7 @@ fn a_tampered_entry_is_refused_even_after_its_bytes_verified_once() {
 #[test]
 fn a_verified_body_in_another_authors_lineage_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     history(&store, 10, &mut seq);
     let mut signatures = Signatures::default();
@@ -778,7 +780,7 @@ fn a_verified_body_in_another_authors_lineage_is_refused() {
 
     let body = entries.last().unwrap().body.clone();
     let rehomed = crate::transport::encode(&Envelope::Delta {
-        workspace_id: WORKSPACE,
+        workspace_id: ws(),
         author_device_public_key: key(2).verifying_key().to_bytes(),
         authored_at_ns: 1,
         delta: CoeditPayload::RetainedDelta {
@@ -810,7 +812,7 @@ fn a_verified_body_in_another_authors_lineage_is_refused() {
 #[test]
 fn a_forged_entry_never_verifies() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     let (mut base, _) = history(&store, 4, &mut seq);
     let forged = forged_change(&mut base);
@@ -833,7 +835,7 @@ fn a_forged_entry_never_verifies() {
 #[test]
 fn a_repeat_round_verifies_only_new_entries() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     let (_, mut doc) = history(&store, 10, &mut seq);
     let mut signatures = Signatures::default();
@@ -897,7 +899,7 @@ impl crate::payloads::ShellPayloads for Opaque {
 #[test]
 fn opaque_payloads_are_never_folded_or_gc_selected() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     let (_, mut doc) = history(&store, 0, &mut seq);
     extend_with(&store, &mut doc, 300, &mut seq, append);
@@ -977,7 +979,7 @@ fn other_channel() -> [u8; 32] {
 
 /// `frame` re-framed to retain on `to`.
 fn on_channel(frame: &[u8], to: [u8; 32]) -> Vec<u8> {
-    let (author, payload) = crate::store::retained::payload(frame, WORKSPACE).unwrap();
+    let (author, payload) = crate::store::retained::payload(frame, ws()).unwrap();
     let payload = match payload {
         CoeditPayload::RetainedDelta { body, .. } => {
             CoeditPayload::RetainedDelta { channel: to, body }
@@ -985,7 +987,7 @@ fn on_channel(frame: &[u8], to: [u8; 32]) -> Vec<u8> {
         CoeditPayload::Checkpoint { body, .. } => CoeditPayload::Checkpoint { channel: to, body },
     };
     crate::transport::encode(&Envelope::Delta {
-        workspace_id: WORKSPACE,
+        workspace_id: ws(),
         author_device_public_key: author,
         authored_at_ns: 1,
         delta: payload.encode().unwrap(),
@@ -1026,7 +1028,7 @@ fn statement(
     covered: &[[u8; 32]],
 ) -> Vec<u8> {
     CoverageStatement {
-        workspace_id: WORKSPACE,
+        workspace_id: ws(),
         channel,
         request,
         snapshot: snapshot.to_vec(),
@@ -1117,7 +1119,7 @@ async fn sealed_ask() -> SealedAsk {
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
-        WORKSPACE,
+        ws(),
         false,
         crate::workspace::Membership::default(),
     )
@@ -1150,9 +1152,9 @@ async fn sealed_ask() -> SealedAsk {
         issuer: None,
     };
     let compactor = Compactor::new(key(99), cert, crate::payloads::neighbour());
-    compactor.volunteer(WORKSPACE, device(MEMBER));
+    compactor.volunteer(ws(), device(MEMBER));
     let request = compactor
-        .request(&workspace, WORKSPACE, channel(), &route())
+        .request(&workspace, ws(), channel(), &route())
         .await
         .expect("the volunteering member is asked");
     let Ok(Envelope::CompactRequest {
@@ -1166,7 +1168,7 @@ async fn sealed_ask() -> SealedAsk {
     };
     assert_eq!(
         (sent, workspace_id, record),
-        (request, WORKSPACE, route().record_id)
+        (request, ws(), route().record_id)
     );
     SealedAsk {
         _tmp: tmp,
@@ -1194,7 +1196,7 @@ impl SealedAsk {
         self.compactor
             .compacted(
                 &self.workspace,
-                WORKSPACE,
+                ws(),
                 device(from),
                 statement,
                 &signed(signer, statement),
@@ -1282,7 +1284,7 @@ async fn a_sealed_compaction_statement_the_host_never_requested_removes_nothing(
     );
     let elsewhere = statement(ask.request, other_channel(), &ask.snapshot, &ask.tail);
     let mut other_workspace = CoverageStatement::decode(&ask.whole_answer()).unwrap();
-    other_workspace.workspace_id = WORKSPACE + 1;
+    other_workspace.workspace_id = tilo_relay_protocol::WorkspaceId::from_u128(8);
     for mismatched in [elsewhere, other_workspace.encode().unwrap()] {
         assert_eq!(
             ask.answer(MEMBER, MEMBER, &mismatched).await,
@@ -1423,7 +1425,7 @@ fn keyed_round(
             sealed_document_frames(
                 &crate::payloads::NeighbourPayloads,
                 (&key(99), keys),
-                WORKSPACE,
+                ws(),
                 route,
                 snapshot,
             )
@@ -1481,7 +1483,7 @@ fn sealed_changes(
 #[test]
 fn the_node_seals_the_history_written_in_the_clear_with_every_change_and_author() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let written = written_in_the_clear(&store);
     assert_eq!(written.len(), 7);
     let entries = store.channel_entries(&channel()).unwrap().len();
@@ -1501,7 +1503,7 @@ fn the_node_seals_the_history_written_in_the_clear_with_every_change_and_author(
 #[test]
 fn a_seal_stopped_before_its_removal_loses_nothing_and_completes_on_the_next_round() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let written = written_in_the_clear(&store);
     let entries = store.channel_entries(&channel()).unwrap().len();
     let keys = node_keys();
@@ -1519,7 +1521,7 @@ fn a_seal_stopped_before_its_removal_loses_nothing_and_completes_on_the_next_rou
 #[test]
 fn a_lone_write_in_the_clear_is_folded_only_with_its_keys() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     let mut seq = 0;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "base").unwrap();

@@ -8,6 +8,7 @@ use crate::join::{
     verify_join_proof,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
+use crate::join::WorkspaceId;
 
 /// A device of the root seeded `root`, its key seeded `device`.
 fn device(root: u8, device: u8) -> (SigningKey, DeviceCert) {
@@ -29,7 +30,7 @@ fn device(root: u8, device: u8) -> (SigningKey, DeviceCert) {
 
 /// `joiner` redeeming an invitation `issuer` signed with `issuer_key`.
 fn redemption(
-    peer: &StatePeer,
+    _peer: &StatePeer,
     issuer: &DeviceCert,
     issuer_key: &SigningKey,
     (key, joiner): &(SigningKey, DeviceCert),
@@ -40,8 +41,7 @@ fn redemption(
     let now_ns = now_ns(now);
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::from_u128(7),
             issuer: issuer.clone(),
             role,
             nonce: [nonce; 16],

@@ -55,6 +55,7 @@
 //! the workspace's shared desktop, so the device opens it with those keys
 //! before the governance that decides it arrives.
 
+use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
 
 use crate::directory::DoorRefused;
@@ -189,7 +190,7 @@ pub enum Entered {
         /// The workspace's UUID.
         workspace: String,
         /// Its relay workspace.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Its name.
         name: String,
         /// What the person may do there.

@@ -7,6 +7,7 @@
 
 use super::{Arc, Caller, RuntimeActionHost};
 use tilo_user_identity::DeviceCert;
+use collab_types::WorkspaceId;
 
 /// The profile's workspace's actions, as the keys of its person reach them.
 pub(super) struct HostRuns {
@@ -18,8 +19,8 @@ pub(super) struct HostRuns {
 }
 
 impl crate::key_runs::Runs for HostRuns {
-    fn workspace(&self, workspace_id: u64) -> Option<String> {
-        (tilo_peer_state::join::room_workspace_id(&self.workspace).ok() == Some(workspace_id))
+    fn workspace(&self, workspace_id: WorkspaceId) -> Option<String> {
+        (tilo_desktop_model::WorkspaceId::parse(&self.workspace) == Some(workspace_id))
             .then(|| self.workspace.clone())
     }
 

@@ -64,7 +64,7 @@ enum Cmd {
         #[arg(long)]
         service: String,
         #[arg(long)]
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Inspect an existing legacy registry without migrating or copying it.
         #[arg(long)]
         registry: Option<PathBuf>,

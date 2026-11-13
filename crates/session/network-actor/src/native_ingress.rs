@@ -13,6 +13,7 @@ use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::TransportHint;
 pub use tilo_peer_state::owner::session::{Connect, Input, Scope};
 use tilo_peer_state::owner::session::{Holder, Link, Linked, OwnHost, Reach};
+use crate::WorkspaceId;
 
 struct Route {
     connect: Connect,
@@ -32,13 +33,13 @@ impl Drop for Route {
 }
 #[derive(Default)]
 pub(super) struct Routes {
-    entries: HashMap<u64, Route>,
+    entries: HashMap<super::WorkspaceId, Route>,
 }
 impl Routes {
-    pub(super) fn contains(&self, ws: u64) -> bool {
+    pub(super) fn contains(&self, ws: WorkspaceId) -> bool {
         self.entries.contains_key(&ws)
     }
-    pub(super) fn remove(&mut self, ws: u64) {
+    pub(super) fn remove(&mut self, ws: WorkspaceId) {
         if self.entries.remove(&ws).is_some() {
             crate::workspace_sync::forget(ws);
         }
@@ -51,13 +52,13 @@ impl Routes {
     /// Whether a link for the workspace on topic `ws` is being established:
     /// a dial, or a renewal of this device's membership ahead of one, has
     /// not reported back yet.
-    pub(super) fn establishing(&self, ws: u64) -> bool {
+    pub(super) fn establishing(&self, ws: WorkspaceId) -> bool {
         self.entries
             .get(&ws)
             .is_some_and(|route| route.link.establishing())
     }
     /// Dial the workspace on topic `ws` again now.
-    pub(super) fn retry(&self, ws: u64) {
+    pub(super) fn retry(&self, ws: WorkspaceId) {
         if let Some(route) = self.entries.get(&ws) {
             route.link.retry();
         }
@@ -65,7 +66,7 @@ impl Routes {
     /// Every workspace this device hosts itself, as its routes now stand: their
     /// links join in process, and a join that has not happened yet is
     /// work this device's loop keeps, not nothing.
-    pub(super) fn local(&self) -> impl Iterator<Item = u64> + '_ {
+    pub(super) fn local(&self) -> impl Iterator<Item = super::WorkspaceId> + '_ {
         self.entries
             .iter()
             .filter(|(_, route)| route.local)
@@ -76,7 +77,7 @@ impl Routes {
 /// One workspace's link, held by this actor: each link up, and each dial that
 /// failed, is answered to it.
 struct NativeHolder {
-    ws: u64,
+    ws: WorkspaceId,
     endpoint: iroh::Endpoint,
     local_host: Option<LocalHost>,
     tx: tokio::sync::mpsc::Sender<InternalEvent>,
@@ -219,7 +220,7 @@ pub(super) fn is_record_content(msg: &NeighbourMsg) -> bool {
 /// device that authored it. `None` for everything else, which is the
 /// workspace's state the link admitted.
 pub(super) fn content_message(
-    ws: u64,
+    ws: WorkspaceId,
     heard: &tilo_peer_state::direct::Heard,
 ) -> Option<super::NetEvent> {
     if !is_record_content(&heard.message) {
@@ -241,11 +242,11 @@ impl ActorState {
     /// the next link the workspace has sends it again; channel governance
     /// with no link up waits for the next one, which sends what this device
     /// remembers of it as it connects.
-    pub(super) fn publish_over_link(&self, ws: u64, msg: &NeighbourMsg) {
+    pub(super) fn publish_over_link(&self, ws: WorkspaceId, msg: &NeighbourMsg) {
         if let Some(link) = self.native_links.get(&ws)
             && let Err(error) = link.link.send(msg.clone())
         {
-            tracing::debug!(ws, %error, "kept for the workspace's next link");
+            tracing::debug!(ws = %ws, %error, "kept for the workspace's next link");
         }
         if !is_channel_governance(msg) {
             self.tell_unsynced(ws);
@@ -257,7 +258,7 @@ impl ActorState {
     /// committed writes in its owner's outgoing custody, all of them while no
     /// link of the workspace carries them. A write sent over a link up now is
     /// on its way, and says nothing.
-    pub(super) fn tell_unsynced(&self, ws: u64) {
+    pub(super) fn tell_unsynced(&self, ws: WorkspaceId) {
         let Some(route) = self.native_routes.entries.get(&ws) else {
             return;
         };
@@ -276,7 +277,7 @@ impl ActorState {
 
     /// A frame the workspace on topic `ws`'s link admitted: the workspace's
     /// state is in, and this device's apps take their part of it.
-    pub(super) async fn native_heard(&self, ws: u64, heard: tilo_peer_state::direct::Heard) {
+    pub(super) async fn native_heard(&self, ws: WorkspaceId, heard: tilo_peer_state::direct::Heard) {
         let Some(link) = self.native_links.get(&ws) else {
             return;
         };
@@ -304,7 +305,7 @@ impl ActorState {
     /// content, to this device's apps as the message its author sent, as one
     /// arriving on the workspace's topic is: the content service keeps the
     /// ask or answer, and the workspace's state keeps none of it.
-    async fn deliver_content(&self, ws: u64, heard: &tilo_peer_state::direct::Heard) {
+    async fn deliver_content(&self, ws: WorkspaceId, heard: &tilo_peer_state::direct::Heard) {
         let Some(message) = content_message(ws, heard) else {
             return;
         };
@@ -314,7 +315,7 @@ impl ActorState {
 
     /// Hand `heard`, a frame of the workspace on topic `ws` that this
     /// device's owner took in under `scope`, to this device's apps.
-    async fn deliver(&self, ws: u64, scope: Arc<Scope>, heard: tilo_peer_state::direct::Heard) {
+    async fn deliver(&self, ws: WorkspaceId, scope: Arc<Scope>, heard: tilo_peer_state::direct::Heard) {
         let input = Input::heard(scope, heard);
         self.tally.note(super::heard_kind(&input));
         self.publish_to_subscriber(ws, super::NetEvent::NativeInput(Box::new(input)))
@@ -332,7 +333,7 @@ impl ActorState {
         let tx = self.internal_tx.clone();
         tokio::spawn(async move {
             while let Some((workspace, heard)) = told.recv().await {
-                let ws = crate::workspace_topic_id(workspace);
+                let ws = workspace;
                 if tx
                     .send(InternalEvent::MemberHeard {
                         ws,
@@ -359,7 +360,7 @@ impl ActorState {
     /// channel service.
     pub(super) async fn member_heard(
         &mut self,
-        ws: u64,
+        ws: WorkspaceId,
         workspace: tilo_desktop_model::WorkspaceId,
         heard: tilo_peer_state::direct::Heard,
     ) {
@@ -378,7 +379,7 @@ impl ActorState {
             if (content || matches!(heard.message, NeighbourMsg::AppDocument { .. }))
                 && let Err(error) = link.link.send(heard.message.clone())
             {
-                tracing::debug!(ws, %error, "a member's write waits for the workspace's next link");
+                tracing::debug!(ws = %ws, %error, "a member's write waits for the workspace's next link");
             }
             Some(Arc::clone(&link.scope))
         } else {
@@ -390,7 +391,7 @@ impl ActorState {
         }
         let Some(scope) = scope else {
             tracing::debug!(
-                ws,
+                ws = %ws,
                 "a member's frame reaches no app: this device holds no custody of the workspace"
             );
             return;
@@ -404,7 +405,7 @@ impl ActorState {
     /// device holds none.
     fn member_scope(
         &mut self,
-        ws: u64,
+        ws: WorkspaceId,
         workspace: tilo_desktop_model::WorkspaceId,
     ) -> Option<Arc<Scope>> {
         if let Some(scope) = self.member_scopes.get(&ws) {
@@ -436,7 +437,7 @@ impl ActorState {
 
     /// The workspace on topic `ws`'s link has its host's retained history in
     /// hand: the workspace holds what its host holds.
-    pub(super) async fn native_ready(&self, ws: u64) {
+    pub(super) async fn native_ready(&self, ws: WorkspaceId) {
         crate::workspace_sync::synced(ws);
         let Some(link) = self.native_links.get(&ws) else {
             return;
@@ -463,9 +464,9 @@ impl ActorState {
 
     /// The workspace on topic `ws`'s link ended: its host said its owner
     /// `deleted` it, or the next heartbeat dials it again.
-    pub(super) async fn native_link_closed(&mut self, ws: u64, deleted: bool) {
+    pub(super) async fn native_link_closed(&mut self, ws: WorkspaceId, deleted: bool) {
         if deleted {
-            tracing::info!(ws, "a workspace's owner deleted it; nothing dials it again");
+            tracing::info!(ws = %ws, "a workspace's owner deleted it; nothing dials it again");
             // Its hold goes first, so letting go of the link dials nothing.
             self.native_routes.remove(ws);
             self.native_links.remove(&ws);
@@ -474,7 +475,7 @@ impl ActorState {
             return;
         }
         tracing::info!(
-            ws,
+            ws = %ws,
             "a workspace's link ended; the next heartbeat dials it again"
         );
         self.native_links.remove(&ws);
@@ -490,7 +491,7 @@ impl ActorState {
     /// Retirement commits to disk, so it runs off this actor.
     /// Send this device's custody of the workspace on topic `ws` over its link up now, as far as
     /// the link takes it, then retire what the workspace receipted or refused.
-    pub(super) fn drive_native_publication(&mut self, ws: u64) {
+    pub(super) fn drive_native_publication(&mut self, ws: WorkspaceId) {
         if let (Some(link), Some(route), Some(identity)) = (
             self.native_links.get_mut(&ws),
             self.native_routes.entries.get(&ws),
@@ -523,7 +524,7 @@ impl ActorState {
         self.tell_unsynced(ws);
     }
     pub(super) fn native_connect(&mut self, connect: Connect) {
-        let ws = crate::workspace_topic_id(connect.workspace());
+        let ws = connect.workspace();
         // The custody the members' frames were taken under is read again.
         self.member_scopes.remove(&ws);
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
@@ -590,7 +591,7 @@ impl ActorState {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
-        let unhosted_here: Vec<u64> = self
+        let unhosted_here: Vec<WorkspaceId> = self
             .native_routes
             .entries
             .iter()
@@ -607,7 +608,7 @@ impl ActorState {
         for (&ws, route) in &mut self.native_routes.entries {
             let material = route.connect.material(identity);
             if let Err(error) = &material {
-                tracing::debug!(%error, ws, "native workspace custody unusable for its host");
+                tracing::debug!(%error, ws = %ws, "native workspace custody unusable for its host");
             }
             route.local = material.as_ref().is_ok_and(|(hint, cert, ..)| {
                 tilo_peer_state::owner::session::hosted_by(hint, &cert.device_public_key)
@@ -624,7 +625,7 @@ impl ActorState {
     /// A dial of `via`, the workspace's governor or another of its hosts, failed.
     pub(super) fn native_dial_failed(
         &self,
-        ws: u64,
+        ws: WorkspaceId,
         via: &TransportHint,
         governor: bool,
         reason: &str,
@@ -640,7 +641,7 @@ impl ActorState {
         // The host did not answer: until a link with a host of the workspace
         // completes, its apps say it cannot be reached and work on what this
         // device has. The route dials again on the next heartbeat.
-        tracing::debug!(ws, host = %hex::encode(via.host.device_public_key), %reason, "native host dial failed; retrying");
+        tracing::debug!(ws = %ws, host = %hex::encode(via.host.device_public_key), %reason, "native host dial failed; retrying");
         crate::workspace_sync::unreachable(ws);
     }
 
@@ -648,7 +649,7 @@ impl ActorState {
     /// until `held` is let go with it.
     pub(super) fn native_link_connected(
         &mut self,
-        ws: u64,
+        ws: WorkspaceId,
         linked: Linked,
         scope: Arc<Scope>,
         held: tokio::sync::oneshot::Sender<()>,
@@ -693,7 +694,7 @@ impl ActorState {
             if let Ok(msg) = postcard::from_bytes(&bytes)
                 && let Err(error) = link.send(msg)
             {
-                tracing::warn!(ws, %error, "held state not sent to the workspace's link");
+                tracing::warn!(ws = %ws, %error, "held state not sent to the workspace's link");
             }
         }
         self.native_links.insert(
@@ -709,7 +710,7 @@ impl ActorState {
         if local {
             // A workspace this device hosts needs nothing of its own host's
             // live plane: it is the same process.
-            tracing::debug!(ws, "joined the workspace's own host in process");
+            tracing::debug!(ws = %ws, "joined the workspace's own host in process");
         }
         self.drive_native_publication(ws);
     }
@@ -719,8 +720,8 @@ impl ActorState {
 /// `material`, or reaches a host the workspace no longer names among its
 /// `hosts`.
 fn drop_unpinned(
-    links: &mut HashMap<u64, NativeLink>,
-    ws: u64,
+    links: &mut HashMap<super::WorkspaceId, NativeLink>,
+    ws: WorkspaceId,
     material: &Result<(TransportHint, super::DeviceCert, u64), String>,
     hosts: &[TransportHint],
 ) {
@@ -780,7 +781,6 @@ mod tests {
                 7,
                 &heard(NeighbourMsg::SyncResp {
                     changes: Vec::new(),
-                    room: "workspace".into(),
                 })
             )
             .is_none(),
@@ -811,7 +811,6 @@ mod tests {
             delivery: 0,
         };
         let routed = NeighbourMsg::MlsRoutedAccessRequest {
-            room: "workspace".into(),
             request: request(),
             route: Box::new(collab_types::ChannelRoute::new("app", "record")),
             delivery: 0,

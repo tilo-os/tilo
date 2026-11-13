@@ -18,7 +18,7 @@ use tilo_user_identity::{RevocationList, UserIdentity};
 #[tokio::test]
 async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
     let temp = tempfile::tempdir().unwrap();
-    let id = 7;
+    let id = WorkspaceId::from_u128(7);
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         temp.path(),
         id,

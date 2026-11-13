@@ -245,19 +245,14 @@ struct Stored {
     borrowed: Vec<String>,
 }
 
-/// The list's stable id for a workspace: its collaboration topic.
-fn entry_id(workspace: WorkspaceId) -> u64 {
-    tilo_network_actor::workspace_topic_id(workspace)
-}
-
 /// The list's entries that carry a valid workspace, in the person's order.
 fn entries_of(directory: &WorkspaceDirectory) -> Vec<(WorkspaceId, WorkspaceMeta)> {
     let mut out: Vec<(WorkspaceId, WorkspaceMeta)> = directory
         .list_workspaces()
         .into_iter()
         .filter_map(|entry| {
-            let workspace = WorkspaceId::parse(entry.room.as_deref()?)?;
-            (!workspace.is_nil() && entry_id(workspace) == entry.id).then_some((workspace, entry))
+            let workspace = entry.id;
+            (!workspace.is_nil()).then_some((workspace, entry))
         })
         .collect();
     out.sort_by(|(left_id, left), (right_id, right)| {
@@ -494,11 +489,11 @@ impl Personal {
             if self.agreed.get(workspace) == Some(entry) {
                 continue;
             }
-            let id = entry_id(*workspace);
+            let id = *workspace;
             let hosts: Vec<[u8; 32]> = entry.host.into_iter().collect();
             let written = self
                 .directory
-                .add_workspace_with_topic(id, &workspace.to_string(), &entry.name)
+                .add_workspace(id, &entry.name)
                 .and_then(|()| self.directory.set_host_devices(id, &hosts))
                 .and_then(|()| {
                     if fresh {
@@ -531,7 +526,7 @@ impl Personal {
             .copied()
             .collect();
         for workspace in deleted {
-            let _ = self.directory.remove_workspace(entry_id(workspace));
+            let _ = self.directory.remove_workspace(workspace);
             self.agreed.remove(&workspace);
             changed = true;
         }
@@ -590,7 +585,7 @@ impl Personal {
             };
             if self
                 .directory
-                .set_order(entry_id(*workspace), placed)
+                .set_order(*workspace, placed)
                 .is_ok()
             {
                 changed = true;
@@ -795,7 +790,7 @@ impl Personal {
         }
         if self
             .directory
-            .set_kept_off(entry_id(workspace), device, !shown)
+            .set_kept_off(workspace, device, !shown)
             .is_err()
         {
             return false;
@@ -850,15 +845,15 @@ impl Personal {
         let workspaces = listed
             .into_iter()
             .filter_map(|meta| {
-                let workspace = meta.room?;
-                let host = hint(&workspace).and_then(|hint| {
+                let workspace = meta.id;
+                let host = hint(&workspace.to_string()).and_then(|hint| {
                     tilo_relay_session::workspaces::WorkspaceHostAddress::of_hint(&hint)
                 });
                 Some(tilo_relay_session::workspaces::PersonalWorkspace {
                     name: meta.name,
                     host,
                     role: meta.governor.is_none().then(|| "owner".to_owned()),
-                    workspace,
+                    workspace: workspace.to_string(),
                 })
             })
             .collect();
@@ -1893,8 +1888,7 @@ mod tests {
         let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
             version: 1,
             mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-            workspace_id: tilo_peer_state::join::room_workspace_id(&workspace).expect("an id"),
-            room: workspace.clone(),
+            workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).expect("an id"),
             endpoint_addr: iroh::EndpointAddr::new(
                 iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
                     .expect("a key"),

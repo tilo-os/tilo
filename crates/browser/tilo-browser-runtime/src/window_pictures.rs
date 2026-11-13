@@ -189,7 +189,7 @@ thread_local! {
 /// Take one object of the pictures of window `tab`, which `from` publishes on `workspace_id`'s
 /// plane for the page's peer `id`: the mounts drawing that workspace show what it changed.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn heard(id: u32, workspace_id: u64, from: [u8; 32], tab: u64, body: &[u8]) {
+pub(crate) fn heard(id: u32, workspace_id: WorkspaceId, from: [u8; 32], tab: u64, body: &[u8]) {
     let window = WINDOWS.with_borrow_mut(|windows| {
         Rc::clone(
             windows

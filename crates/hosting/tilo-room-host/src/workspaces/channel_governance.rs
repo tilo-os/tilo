@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use super::{Carried, Workspaces};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Notices one workspace hands its channel service at once; a device asks
 /// again when its request is dropped.
@@ -60,7 +61,7 @@ impl Workspaces {
     /// Retain channel governance messages as this relay's own.
     pub(super) async fn retain_channel_governance(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         messages: Vec<neighbour_wire::NeighbourMsg>,
     ) -> Result<(), String> {
         for admission in self
@@ -232,7 +233,7 @@ impl Workspaces {
     /// relay's own, without waiting for them to be durable.
     async fn enqueue_channel_governance(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         messages: Vec<neighbour_wire::NeighbourMsg>,
     ) -> Result<Vec<crate::workspace_records::WorkspaceAdmission>, String> {
         let mut admissions = Vec::with_capacity(messages.len());

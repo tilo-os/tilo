@@ -150,7 +150,7 @@ struct Work {
 /// since the heads it read last where it read before, until both read whole.
 async fn guest_takes_in(
     page: &Link,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     chat: &DocumentRoute,
     part: &DocumentRoute,
 ) -> Work {

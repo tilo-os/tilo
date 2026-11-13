@@ -20,7 +20,7 @@ pub(crate) struct JoinOptions {
     #[arg(long)]
     pub service: String,
     #[arg(long)]
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     #[arg(long)]
     pub files_workspace_id: uuid::Uuid,
     #[arg(long)]

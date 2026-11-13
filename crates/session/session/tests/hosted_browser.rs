@@ -32,6 +32,7 @@ use tilo_session::{AppActions, Options, Session};
 use tilo_user_identity::IdentityPaths;
 
 use crate::common::people::{Person, Site};
+use collab_types::WorkspaceId;
 
 /// The app whose window a browser environment holds.
 const BROWSER: &str = "so.tilo.browser";
@@ -46,7 +47,7 @@ type Said = Arc<Mutex<Vec<String>>>;
 fn material(
     site: &Site,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     record: &str,
     person: &Person,
 ) -> (String, Handed) {

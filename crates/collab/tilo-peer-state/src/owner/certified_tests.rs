@@ -52,11 +52,10 @@ fn actual_redemption_at(
         "Joining device",
     );
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let workspace_id = tilo_relay_protocol::room_workspace_id(workspace).unwrap();
+    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: workspace.into(),
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
@@ -70,7 +69,6 @@ fn actual_redemption_at(
     let signed = join::issue_invitation(
         InviteGrant {
             workspace_id,
-            room: workspace.into(),
             issuer: governor.clone(),
             role: MemberRole::Editor,
             nonce: [75; 16],
@@ -133,7 +131,6 @@ fn actual_redemption_at(
         invite_id: join.invite_id(),
         device_cert: device.clone(),
         role: MemberRole::Editor,
-        room: workspace.into(),
         workspace_id,
         host: governor,
         certified_roster: peer.certificates(),
@@ -178,8 +175,8 @@ fn native_enrollment_refuses_bootstrap_scope_and_identity_substitution() {
         let (join, complete, mut bootstrap, device, hint, now) = actual_redemption();
         match change {
             0 => bootstrap.invite_id[0] ^= 1,
-            1 => bootstrap.workspace_id ^= 1,
-            2 => bootstrap.room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
+            1 => bootstrap.workspace_id = WorkspaceId::from_u128(1),
+            2 => bootstrap.host = bootstrap.device_cert.clone(),
             3 => bootstrap.device_cert = bootstrap.host.clone(),
             4 => bootstrap.role = MemberRole::Viewer,
             _ => bootstrap.generation = 0,

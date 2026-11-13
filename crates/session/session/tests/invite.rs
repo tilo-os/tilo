@@ -20,7 +20,7 @@ use ed25519_dalek::SigningKey;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
-use tilo_network_actor::{HostIdentity, workspace_topic_id};
+use tilo_network_actor::HostIdentity;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner, testing};
@@ -194,7 +194,7 @@ fn joins_with(
         let enrollment = owner::enroll::prepare_and_complete(
             tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
             identity(cert, key),
-            workspace_topic_id(workspace),
+            workspace,
             // Her owner holds no copy of the workspace yet: the enrollment makes its own slot for
             // it.
             None,

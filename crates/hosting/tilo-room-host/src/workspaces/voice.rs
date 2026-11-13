@@ -61,6 +61,7 @@ use tilo_action_policy::roles::governance;
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, Workspaces};
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The longest record or channel id a call in a carried workspace is opened on.
 const MAX_CARRIED_NAME: usize = 256;
@@ -71,7 +72,7 @@ pub(super) const OBSERVATION: Duration = Duration::from_secs(1);
 /// One device in one call.
 struct Participation {
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     call: [u8; 32],
     epoch: u64,
     device: [u8; 32],
@@ -97,8 +98,8 @@ struct State {
 
 /// The name a workspace this relay carries, but does not govern, has among the
 /// workspaces with calls: no governed workspace is named so, as those are uuids.
-pub(crate) fn carried_call_room(workspace_id: u64) -> String {
-    format!("{CARRIED}{workspace_id:016x}")
+pub(crate) fn carried_call_room(workspace_id: WorkspaceId) -> String {
+    format!("{CARRIED}{workspace_id}")
 }
 
 const CARRIED: &str = "carried-";
@@ -110,7 +111,7 @@ fn carried(workspace: &str) -> bool {
 
 /// A device told a workspace's call list whenever it changes.
 struct Watcher {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     device: [u8; 32],
     user: [u8; 32],
     outbound: mpsc::Sender<Envelope>,
@@ -781,11 +782,8 @@ impl Workspaces {
     /// The workspace of `workspace` and the call policy it is under now: its
     /// governance's when this relay governs it, else the calls it holds
     /// for a workspace it carries.
-    async fn call_policy(&self, workspace: &str) -> Result<(u64, Policy), String> {
-        if let Some(workspace_id) = workspace
-            .strip_prefix(CARRIED)
-            .and_then(|id| u64::from_str_radix(id, 16).ok())
-        {
+    async fn call_policy(&self, workspace: &str) -> Result<(WorkspaceId, Policy), String> {
+        if let Some(workspace_id) = workspace.strip_prefix(CARRIED).and_then(WorkspaceId::parse) {
             let calls = self.inner.calls.state().carried.get(workspace).cloned();
             return Ok((workspace_id, Policy::carried(calls)));
         }
@@ -1216,7 +1214,7 @@ mod tests {
         let (outbound, _) = mpsc::channel(1);
         Participation {
             workspace: "room".into(),
-            workspace_id: 1,
+            workspace_id: WorkspaceId::from_u128(1),
             call,
             epoch: 0,
             device,

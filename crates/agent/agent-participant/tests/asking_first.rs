@@ -166,7 +166,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "Careful agent",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WORKSPACE.into()],
             apps: vec![EBOOK.into()],
         },
         now,

@@ -439,7 +439,7 @@ pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
 /// Take one presence frame another member published in `workspace_id`: their word merges into the
 /// page's board for it, and the mounts that draw it ask for the frame that places what changed. A
 /// page with no board there takes none.
-pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
+pub(crate) fn hear(peer: u32, workspace_id: WorkspaceId, from: [u8; 32], body: &[u8]) {
     let changed = PAGES.with_borrow(|pages| {
         let page = pages.get(&peer)?;
         let workspace = page.workspaces.get(&workspace_id)?;
@@ -471,7 +471,7 @@ pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
 /// whose next frame shows it. Work from anyone else, or that does not hold, is dropped.
 pub(crate) fn narrated(
     peer: u32,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     from: [u8; 32],
     event: &tilo_relay_protocol::live::SemanticFrame,
 ) {

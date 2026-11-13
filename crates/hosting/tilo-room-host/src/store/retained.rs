@@ -28,6 +28,7 @@ pub(crate) use tilo_relay_store::durable::{
     GenerationGc, create_dir, current, durable_write, sync_dir, sync_dir_once,
 };
 use tilo_relay_store::frames::framed_envelope;
+use tilo_relay_protocol::WorkspaceId;
 pub(crate) use tilo_relay_store::frames::{body_of, complete_coedit_payload, payload};
 
 mod group;
@@ -41,7 +42,7 @@ fn invalid(message: &str) -> StoreError {
 
 /// Routing metadata only. Preserve the entire original frame even when its
 /// wrappers have unknown suffixes; callers must use `payload` for proof.
-fn identity(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32], bool)> {
+fn identity(bytes: &[u8], workspace: WorkspaceId) -> Option<([u8; 32], [u8; 32], bool)> {
     let (
         Envelope::Delta {
             workspace_id,
@@ -64,7 +65,7 @@ fn identity(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32], bool)> 
     Some((author_device_public_key, channel, checkpoint))
 }
 
-fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
+fn checkpoint_key(bytes: &[u8], workspace: WorkspaceId) -> Option<blake3::Hash> {
     let (author, CoeditPayload::Checkpoint { channel, body }) = payload(bytes, workspace)? else {
         return None;
     };
@@ -81,7 +82,7 @@ fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
 fn standalone(
     payloads: &dyn crate::payloads::ShellPayloads,
     bytes: &[u8],
-    workspace: u64,
+    workspace: WorkspaceId,
 ) -> Option<([u8; 32], [u8; 32])> {
     let (author, CoeditPayload::Checkpoint { channel, body }) = payload(bytes, workspace)? else {
         return None;
@@ -98,7 +99,7 @@ fn replaces(
     payloads: &dyn crate::payloads::ShellPayloads,
     checkpoint: &[u8],
     prior: &[u8],
-    workspace: u64,
+    workspace: WorkspaceId,
 ) -> bool {
     standalone(payloads, checkpoint, workspace).is_some_and(|(author, channel)| {
         identity(prior, workspace).is_some_and(|(old_author, old_channel, _)| {
@@ -179,7 +180,7 @@ fn independently_valid_chunks(bytes: &[u8]) -> bool {
 /// In particular a bare `load_incremental` is unsuitable here: it accepts
 /// partial input, so unchanged heads after that operation can hide malformed
 /// data. The isolate refuses an input with any malformed chunk whole.
-fn covers(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
+fn covers(checkpoint: &[u8], prior: &[u8], workspace: WorkspaceId) -> bool {
     let Some((author, CoeditPayload::Checkpoint { channel, body })) =
         payload(checkpoint, workspace)
     else {
@@ -553,7 +554,7 @@ pub struct RetainBuild {
     /// Digest of `bytes`, which a prior record must share to be read.
     digest: [u8; 32],
     checkpoint: bool,
-    workspace: u64,
+    workspace: WorkspaceId,
     sorter: super::bounded::Sorter,
     sorted: Option<PathBuf>,
     phase: RetainPhase,
@@ -1564,7 +1565,7 @@ fn read_current<T>(
 }
 
 #[cfg(feature = "agents")]
-fn view_channel_matches(bytes: &[u8], workspace: u64, channel: &[u8; 32]) -> bool {
+fn view_channel_matches(bytes: &[u8], workspace: WorkspaceId, channel: &[u8; 32]) -> bool {
     payload(bytes, workspace).is_some_and(|(_, value)| {
         let (CoeditPayload::Checkpoint {
             channel: actual, ..
@@ -1694,7 +1695,7 @@ pub(super) mod tests {
     #[test]
     fn only_a_build_that_made_its_scratch_holds_it() {
         let dir = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut checkpoint = store
             .start_retain(&[9; 32], None, message(true, 1))
             .unwrap();
@@ -1726,7 +1727,7 @@ pub(super) mod tests {
             }
         };
         crate::transport::encode(&Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [1; 32],
             authored_at_ns: 1,
             delta: payload.encode().unwrap(),
@@ -1748,7 +1749,7 @@ pub(super) mod tests {
             }
         };
         crate::transport::encode(&Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [1; 32],
             authored_at_ns: timestamp,
             delta: payload.encode().unwrap(),
@@ -1760,7 +1761,7 @@ pub(super) mod tests {
     fn unproved_wrapper_is_preserved(outer: bool) {
         use automerge::transaction::Transactable;
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "first", 1).unwrap();
         let initial = frame(true, document.save(), 1);
@@ -1769,7 +1770,7 @@ pub(super) mod tests {
         document.put(automerge::ROOT, "next", 2).unwrap();
         let later = frame(true, document.save(), 2);
         store.retain_checkpoint(&[9; 32], &later).unwrap();
-        let replay = WorkspaceStore::open(tmp.path(), 7, false)
+        let replay = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
             .unwrap()
             .load_retained()
             .unwrap();
@@ -1809,7 +1810,7 @@ pub(super) mod tests {
     #[test]
     fn retention_hydrates_one_prior_record_at_a_time() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let initial = frame(false, vec![0; 8192], 0);
         store.retain_delta(&[9; 32], 0, &initial).unwrap();
         let lineage = store.root.join("retained/v2").join(format!(
@@ -1899,13 +1900,13 @@ pub(super) mod tests {
                 );
             }
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             store.retain_checkpoint(&[9; 32], &baseline).unwrap();
             store
                 .retain_delta(&[9; 32], 2, &frame(false, body, 2))
                 .unwrap();
             store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             assert_eq!(store.load_retained().unwrap(), vec![checkpoint.clone()]);
         }
     }
@@ -1917,7 +1918,7 @@ pub(super) mod tests {
         assert!(automerge::Automerge::load(&malformed).is_err());
         for valid_prefix in [false, true] {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             let mut prior = if valid_prefix {
                 candidate.clone()
             } else {
@@ -1928,7 +1929,7 @@ pub(super) mod tests {
             store.retain_delta(&[9; 32], 1, &prior_frame).unwrap();
             let checkpoint = frame(true, candidate.clone(), 2);
             store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             let replay = store.load_retained().unwrap();
             assert!(
                 replay.contains(&prior_frame),
@@ -1962,11 +1963,11 @@ pub(super) mod tests {
         let checkpoint = frame(true, document.save(), 3);
         for (what, body) in [("decoder crash", decoder_crash), ("bad checksum", corrupt)] {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             let tail = frame(false, body, 1);
             store.retain_delta(&[9; 32], 1, &tail).unwrap();
             store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             let replay = store.load_retained().unwrap();
             assert!(replay.contains(&tail), "{what}: tail was collected");
             assert!(replay.contains(&checkpoint), "{what}: checkpoint missing");
@@ -1977,14 +1978,14 @@ pub(super) mod tests {
     fn malformed_candidate_suffix_cannot_be_omitted_as_a_covered_retry() {
         let (candidate, malformed) = inconsistent_heads_fixture();
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let first = frame(true, candidate.clone(), 1);
         store.retain_checkpoint(&[9; 32], &first).unwrap();
         let mut combined = candidate;
         combined.extend_from_slice(&malformed);
         let unknown = frame(true, combined, 2);
         store.retain_checkpoint(&[9; 32], &unknown).unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![first, unknown]);
     }
 
@@ -1993,7 +1994,7 @@ pub(super) mod tests {
         use automerge::transaction::Transactable;
         for fresh_timestamp in [false, true] {
             let tmp = tempfile::tempdir().unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             let mut document = automerge::AutoCommit::new();
             document.put(automerge::ROOT, "first", 1).unwrap();
             let first_body = document.save();
@@ -2005,10 +2006,10 @@ pub(super) mod tests {
             document.put(automerge::ROOT, "tail", 3).unwrap();
             let tail = frame(false, document.save_incremental(), 3);
             store.retain_delta(&[9; 32], 3, &tail).unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             let retry = frame(true, first_body, if fresh_timestamp { 99 } else { 1 });
             store.retain_checkpoint(&[9; 32], &retry).unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
             assert_eq!(
                 store.load_retained().unwrap(),
                 vec![second, tail],
@@ -2020,28 +2021,28 @@ pub(super) mod tests {
     #[test]
     fn opaque_checkpoints_preserve_receipt_order_and_body_retry_keeps_tail() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let first = frame(true, b"opaque first".to_vec(), 1);
         let second = frame(true, b"opaque second".to_vec(), 2);
         let tail = frame(false, b"opaque tail".to_vec(), 3);
         store.retain_checkpoint(&[9; 32], &first).unwrap();
         store.retain_checkpoint(&[9; 32], &second).unwrap();
         store.retain_delta(&[9; 32], 3, &tail).unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         store
             .retain_checkpoint(&[9; 32], &frame(true, b"opaque first".to_vec(), 99))
             .unwrap();
         store
             .retain_checkpoint(&[9; 32], &frame(true, b"opaque second".to_vec(), 100))
             .unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![first, second, tail]);
     }
 
     #[test]
     fn a_standalone_checkpoint_replaces_its_authors_earlier_ones() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let channel = collab_types::ChannelId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8, timestamp: u64| {
@@ -2057,7 +2058,7 @@ pub(super) mod tests {
             };
             let (route, _) = neighbour_wire::retention(&message, false).unwrap();
             let bytes = crate::transport::encode(&Envelope::Delta {
-                workspace_id: 7,
+                workspace_id: WorkspaceId::from_u128(7),
                 author_device_public_key: [1; 32],
                 authored_at_ns: timestamp,
                 delta: CoeditPayload::Checkpoint {
@@ -2101,7 +2102,7 @@ pub(super) mod tests {
                 );
             }
         }
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![third]);
     }
 
@@ -2124,7 +2125,7 @@ pub(super) mod tests {
         };
         let (route, _) = neighbour_wire::retention(&message, false).unwrap();
         let bytes = crate::transport::encode(&Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [author; 32],
             authored_at_ns: u64::from(through),
             delta: CoeditPayload::Checkpoint {
@@ -2149,7 +2150,7 @@ pub(super) mod tests {
     #[test]
     fn a_staged_first_checkpoint_costs_its_turn_one_barrier() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         // Another member's record: the workspace has retained before.
         let channel = collab_types::ChannelId::new();
         let (earlier_route, earlier) = standalone_checkpoint(channel, 2, 1);
@@ -2170,7 +2171,7 @@ pub(super) mod tests {
         // CURRENT renamed into place, then the lineage synced; nothing to
         // collect, since the stage was the lineage's only generation.
         assert_eq!(crate::store::thread_fsyncs() - before, 1);
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut retained = store.load_retained().unwrap();
         retained.sort();
         let mut expected = vec![earlier, first];
@@ -2184,7 +2185,7 @@ pub(super) mod tests {
     #[test]
     fn a_stage_its_lineage_overtook_is_retained_as_usual() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let channel = collab_types::ChannelId::new();
         let (route, first) = standalone_checkpoint(channel, 1, 1);
         let (_, second) = standalone_checkpoint(channel, 1, 2);
@@ -2211,7 +2212,7 @@ pub(super) mod tests {
             while discard.step(WorkLimit::default()).unwrap() == Step::More {}
         }
         assert!(!staged.exists());
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![second]);
     }
 
@@ -2222,7 +2223,7 @@ pub(super) mod tests {
     #[test]
     fn a_staged_replacement_costs_its_turn_one_barrier_and_its_collection() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let channel = collab_types::ChannelId::new();
         let (route, first) = standalone_checkpoint(channel, 1, 1);
         let (_, second) = standalone_checkpoint(channel, 1, 2);
@@ -2250,7 +2251,7 @@ pub(super) mod tests {
         let issued = crate::store::thread_fsyncs() - before;
         assert!((1..=2).contains(&issued), "{issued} barriers");
         assert!(!replaced.exists(), "the replaced generation is collected");
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![second.clone()]);
 
         // Repeating the retained checkpoint is not staged: the turn decides
@@ -2268,7 +2269,7 @@ pub(super) mod tests {
     #[test]
     fn a_staged_replacement_over_a_changed_generation_is_retained_as_usual() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let channel = collab_types::ChannelId::new();
         let (route, first) = standalone_checkpoint(channel, 1, 1);
         let (_, second) = standalone_checkpoint(channel, 1, 2);
@@ -2290,7 +2291,7 @@ pub(super) mod tests {
         assert_eq!(current(&lineage).unwrap(), Some(active));
         let mut build = store.start_retain(&route, None, second.clone()).unwrap();
         drive(&mut build);
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![second]);
     }
 
@@ -2299,7 +2300,7 @@ pub(super) mod tests {
     #[test]
     fn a_stage_no_turn_took_is_discarded_whole() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let channel = collab_types::ChannelId::new();
         let (earlier_route, earlier) = standalone_checkpoint(channel, 2, 1);
         store.retain_checkpoint(&earlier_route, &earlier).unwrap();
@@ -2381,7 +2382,7 @@ pub(super) mod tests {
             };
             let (route, _) = neighbour_wire::retention(&message, false).unwrap();
             let bytes = crate::transport::encode(&Envelope::Delta {
-                workspace_id: 7,
+                workspace_id: WorkspaceId::from_u128(7),
                 author_device_public_key: [1; 32],
                 authored_at_ns: u64::from(through),
                 delta: CoeditPayload::Checkpoint {
@@ -2399,7 +2400,7 @@ pub(super) mod tests {
         let (_, second) = ack(2);
         let unclassified = WorkspaceStore::open_with_payloads(
             tmp.path(),
-            7,
+            WorkspaceId::from_u128(7),
             false,
             std::sync::Arc::new(Unclassified),
         )
@@ -2413,7 +2414,7 @@ pub(super) mod tests {
         );
 
         let (_, third) = ack(3);
-        let desktop = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let desktop = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         desktop.retain_checkpoint(&route, &third).unwrap();
         assert_eq!(
             desktop.load_retained().unwrap(),
@@ -2426,7 +2427,7 @@ pub(super) mod tests {
     fn checkpoint_without_causal_tail_coverage_preserves_uncovered_tail() {
         use automerge::transaction::Transactable;
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "first", 1).unwrap();
         let first = frame(true, document.save(), 1);
@@ -2455,10 +2456,10 @@ pub(super) mod tests {
             "proven replacement checkpoint must precede uncovered tails"
         );
         tilo_automerge::ApplyIncoming::merge_incoming(&mut document, &mut branch).unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut recovered = automerge::AutoCommit::new();
         for bytes in store.load_retained().unwrap() {
-            let (_, message) = payload(&bytes, 7).unwrap();
+            let (_, message) = payload(&bytes, WorkspaceId::from_u128(7)).unwrap();
             let body = match message {
                 CoeditPayload::Checkpoint { body, .. }
                 | CoeditPayload::RetainedDelta { body, .. } => body,
@@ -2476,7 +2477,7 @@ pub(super) mod tests {
     fn opaque_checkpoint_order_is_preserved_even_between_raw_snapshots() {
         use automerge::transaction::Transactable;
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "first", 1).unwrap();
         let first = frame(true, document.save(), 1);
@@ -2486,7 +2487,7 @@ pub(super) mod tests {
         for checkpoint in [&first, &opaque, &next] {
             store.retain_checkpoint(&[9; 32], checkpoint).unwrap();
         }
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![first, opaque, next]);
     }
 
@@ -2494,7 +2495,7 @@ pub(super) mod tests {
     fn causal_proof_rejects_partial_or_missing_dependency_tails_and_keeps_publication_identity() {
         use automerge::transaction::Transactable;
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "first", 1).unwrap();
         let first = frame(true, document.save(), 1);
@@ -2520,7 +2521,7 @@ pub(super) mod tests {
         document.put(automerge::ROOT, "new", 2).unwrap();
         let checkpoint = frame(true, document.save(), 6);
         store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let replay = store.load_retained().unwrap();
         assert_eq!(replay.len(), 5);
         assert_eq!(replay[0], checkpoint);
@@ -2531,7 +2532,7 @@ pub(super) mod tests {
     fn failed_generation_commit_reopens_old_checkpoint_and_tail_then_resumes() {
         use automerge::transaction::Transactable;
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "old", 1).unwrap();
         let old = frame(true, document.save(), 1);
@@ -2568,7 +2569,7 @@ pub(super) mod tests {
         drop(fault);
         drop(build);
         drop(store);
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(
             store.load_retained().unwrap(),
             vec![old, tail, uncovered.clone()]
@@ -2601,7 +2602,7 @@ pub(super) mod tests {
         fs::write(active.join("checkpoint.delta"), message(true, 0)).unwrap();
         fs::write(active.join("00000000.delta"), message(false, 0)).unwrap();
         fs::create_dir(lineage.join("unknown-directory")).unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         assert_eq!(
             store.load_retained().unwrap(),
             vec![new.clone(), uncovered.clone(), next_tail.clone()]
@@ -2618,13 +2619,13 @@ pub(super) mod tests {
     #[test]
     fn retained_metadata_mismatch_never_mutates_existing_coverage() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let cp = message(true, 1);
         store.retain_checkpoint(&[9; 32], &cp).unwrap();
         assert!(store.retain_checkpoint(&[8; 32], &cp).is_err());
         assert!(store.retain_delta(&[9; 32], 1, &cp).is_err());
         assert!(store.retain_checkpoint(&[9; 32], b"unknown").is_err());
-        let wrong_workspace = WorkspaceStore::open(tmp.path(), 8, false).unwrap();
+        let wrong_workspace = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(8), false).unwrap();
         assert!(wrong_workspace.retain_checkpoint(&[9; 32], &cp).is_err());
         assert!(wrong_workspace.load_retained().unwrap().is_empty());
         assert_eq!(store.load_retained().unwrap(), vec![cp]);
@@ -2633,7 +2634,7 @@ pub(super) mod tests {
     #[test]
     fn same_timestamp_tails_do_not_overwrite_distinct_payloads() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let first = message(false, 1);
         let second = message(false, 2);
         store.retain_delta(&[9; 32], 1, &first).unwrap();

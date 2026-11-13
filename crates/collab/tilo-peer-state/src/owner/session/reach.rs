@@ -9,6 +9,7 @@ use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_identity_host::custody::HostIdentity;
+use crate::join::WorkspaceId;
 
 /// This device's own workspace host, running in this process: a workspace placed on
 /// this device is linked through it, as an endpoint cannot dial itself.
@@ -18,7 +19,7 @@ pub trait OwnHost: Send + Sync {
     fn join_service(&self) -> Arc<dyn LocalJoinService>;
     /// The host's end of `workspace`'s link, syncing the replica the host
     /// decides the workspace on. `None` for a workspace it does not hold.
-    fn direct(&self, workspace: u64) -> Option<DirectSync>;
+    fn direct(&self, workspace: WorkspaceId) -> Option<DirectSync>;
 }
 
 /// How this device reaches a workspace's host.
@@ -78,10 +79,7 @@ impl Reach {
         let (payload, _) =
             IrohWorkspaceHostHintV1::authenticate_transport_hint(via).map_err(|e| e.to_string())?;
         let workspace = connect.workspace();
-        if payload.workspace_id
-            != tilo_relay_protocol::room_workspace_id(&workspace.to_string())
-                .map_err(|e| e.to_string())?
-        {
+        if payload.workspace_id != workspace {
             return Err("native link workspace pin mismatch".into());
         }
         let link = connect.link(signer)?;

@@ -36,7 +36,7 @@ const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
 fn workspace_number() -> u64 {
-    tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
+    tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 /// Write `value` into the workspace's record as `key`'s device, making the record
@@ -335,7 +335,7 @@ fn hint(
     IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        workspace_id: tilo_peer_state::join::room_workspace_id(&room).unwrap(),
+        workspace_id: tilo_peer_state::join::WorkspaceId::parse(&room).unwrap(),
         room,
         endpoint_addr: addr(endpoint),
         host_user_public_key: certificate.user_public_key,
@@ -392,7 +392,7 @@ async fn joins(
     use tilo_identity_host::custody::HostIdentity;
     let owner = owner_at(state);
     let identity = HostIdentity::kept(cert.clone(), key.clone());
-    let topic = tilo_peer_state::join::room_workspace_id(WORKSPACE).expect("a workspace topic");
+    let topic = tilo_peer_state::join::WorkspaceId::parse(WORKSPACE).expect("a workspace topic");
     let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(
             service,
@@ -581,7 +581,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     assert!(
         store
             .replay(
-                tilo_peer_state::join::room_workspace_id(WORKSPACE).unwrap(),
+                tilo_peer_state::join::WorkspaceId::parse(WORKSPACE).unwrap(),
                 &[],
                 Budget::default()
             )

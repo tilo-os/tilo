@@ -31,6 +31,7 @@ use tilo_live::video::{Codec, Layer, Source, VideoObject};
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
+use collab_types::WorkspaceId;
 
 /// One tick of the native participant: a page publishes its pictures as its
 /// encoders make them, and the device at the other end of its call sends its
@@ -270,7 +271,7 @@ impl Native {
     fn step(
         &mut self,
         client: &tilo_relay::RelayClient,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         call: [u8; 32],
         participation: [u8; 32],
     ) {

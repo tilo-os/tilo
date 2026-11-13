@@ -34,7 +34,7 @@ impl DeviceSigner for Key {
 
 /// `message`, as the host relays a retained write of `author` to `workspace_id`.
 fn relayed(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     message: &neighbour_wire::NeighbourMsg,
 ) -> Envelope {

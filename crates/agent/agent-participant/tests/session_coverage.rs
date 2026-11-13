@@ -228,7 +228,7 @@ async fn every_web_app_over_the_session() {
         "Coverage agent",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WORKSPACE.into()],
             apps: catalogue.iter().map(|d| d.app_id().to_owned()).collect(),
         },
         now,
@@ -648,7 +648,7 @@ async fn planning_agent_labelled(
         label,
         [0x0f, 0x4c, 0x5c],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WORKSPACE.into()],
             apps: apps.iter().map(|app| (*app).to_owned()).collect(),
         },
         now,

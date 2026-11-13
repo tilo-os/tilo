@@ -246,7 +246,7 @@ async fn invited(
         .await
         .unwrap();
     assert_eq!(
-        admission.bootstrap.room, workspace,
+        admission.bootstrap.workspace_id.to_string(), workspace,
         "the workspace this device joined"
     );
 }

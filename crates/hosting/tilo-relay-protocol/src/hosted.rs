@@ -10,6 +10,7 @@
 //! It travels as one line of the session's input; nothing here is the host's
 //! secret.
 
+use collab_types::WorkspaceId;
 use std::net::ToSocketAddrs as _;
 
 use iroh_base::{EndpointAddr, EndpointId};
@@ -23,7 +24,7 @@ pub struct Material {
     /// The workspace, by its UUID: the one that lists the device.
     pub workspace: String,
     /// The workspace, as the host carries it.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The Browser record the window opens on.
     pub record: String,
     /// The device the workspace lists while the workspace's VM runs, and no

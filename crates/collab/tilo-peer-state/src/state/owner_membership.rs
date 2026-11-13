@@ -7,7 +7,7 @@ impl StatePeer {
         membership: &crate::join::VerifiedMembership,
         now: SystemTime,
     ) -> Result<Role, String> {
-        if membership.workspace() != self.core.workspace
+        if membership.workspace_id().to_string() != self.core.workspace
             || !self.signed_by_owner(&membership.host_device_public_key())
         {
             return Err("membership proof is not from a device of the workspace's owner".into());

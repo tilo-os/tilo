@@ -9,6 +9,7 @@ use tilo_user_identity::{
 
 use super::*;
 use crate::workspace::Membership;
+use tilo_relay_protocol::WorkspaceId;
 
 const ROOM: &str = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
 const OTHER_ROOM: &str = "0b9e8f6c-2a1d-4e3b-8c7f-5d4a3b2c1e0f";
@@ -114,7 +115,7 @@ impl Relay {
             label: "Agent".into(),
             color: [0; 3],
             scope: DelegateScope {
-                rooms: vec![workspace.into()],
+                workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
                 apps: Vec::new(),
             },
             issued_at_ns: 1,
@@ -179,7 +180,7 @@ fn member_grant(device: [u8; 32], user: [u8; 32]) -> Setup {
 }
 
 fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
-    let id = crate::room_workspace_id(ROOM).unwrap();
+    let id = WorkspaceId::parse(ROOM).unwrap();
     WorkspaceRuntime::open(root, id, false, Membership::default()).unwrap()
 }
 
@@ -480,7 +481,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     // while the session runs: what it reaches is the register's to say.
     runtime.membership.devices.push(device);
     let scope = crate::environment::EnvironmentScope::for_record(
-        crate::room_workspace_id(ROOM).unwrap(),
+        WorkspaceId::parse(ROOM).unwrap(),
         "so.tilo.browser",
         "record-1",
     );

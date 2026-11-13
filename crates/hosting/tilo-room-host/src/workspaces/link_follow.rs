@@ -19,6 +19,7 @@ use super::follow::Followed;
 use super::{GovernedWorkspace, WeakWorkspaces, Workspaces};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Carry `body`, `author`'s write the relay admitted for `workspace` from a
 /// relay session, to the devices on the workspace's link
@@ -112,10 +113,10 @@ impl Workspaces {
         {
             return;
         }
-        let Ok(number) = crate::room_workspace_id(workspace) else {
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return;
         };
-        if let Some(link) = self.inner.direct.link(number) {
+        if let Some(link) = self.inner.direct.link(workspace_id) {
             link.carry(author, message);
         }
     }
@@ -136,8 +137,8 @@ impl Workspaces {
         if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
             return;
         }
-        let (Ok(number), Some((channel, retention))) = (
-            crate::room_workspace_id(workspace),
+        let (Some(workspace_id), Some((channel, retention))) = (
+            WorkspaceId::parse(workspace),
             neighbour_wire::retention(message, false),
         ) else {
             return;
@@ -150,7 +151,7 @@ impl Workspaces {
             channel,
             checkpoint: retention == neighbour_wire::Retention::Checkpoint,
         };
-        self.carry_until_landed(workspace, number, author, commit);
+        self.carry_until_landed(workspace, workspace_id, author, commit);
     }
 
     /// Carry to the relay's sessions every record write `workspace`'s link

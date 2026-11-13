@@ -12,6 +12,7 @@ use crate::store::{GovernedAccessRecord, StoreError, WorkspaceStore};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 use crate::workspace_access::AdmissionMode;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 const AUTHORIZATION_CAPACITY: usize = 64;
 const AUTHORIZATION_WORKERS: usize = 8;
@@ -400,7 +401,7 @@ pub(crate) async fn replace_governed_access(
 
 type OpenResult = Result<SharedWorkspace, String>;
 type Opening = watch::Receiver<Option<OpenResult>>;
-type ReservationKey = (usize, u64);
+type ReservationKey = (usize, WorkspaceId);
 fn reservations() -> &'static Mutex<HashMap<ReservationKey, Opening>> {
     static RESERVATIONS: OnceLock<Mutex<HashMap<ReservationKey, Opening>>> = OnceLock::new();
     RESERVATIONS.get_or_init(Mutex::default)
@@ -409,7 +410,7 @@ fn reservations() -> &'static Mutex<HashMap<ReservationKey, Opening>> {
 async fn open_runtime(
     state_root: std::path::PathBuf,
     payloads: Arc<dyn crate::payloads::ShellPayloads>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     pinned: bool,
     admission: AdmissionMode,
 ) -> OpenResult {
@@ -442,7 +443,7 @@ async fn open_runtime(
 /// whatever still holds its runtime writes them no more, and once this
 /// returns its persistence owner has finished what was queued. Opening the
 /// workspace again ([`get_or_initialize`]) starts from those files.
-pub(crate) async fn evict(workspaces: &WorkspaceRegistry, workspace_id: u64) {
+pub(crate) async fn evict(workspaces: &WorkspaceRegistry, workspace_id: WorkspaceId) {
     let Some(workspace) = workspaces.lock().await.remove(&workspace_id) else {
         return;
     };
@@ -468,7 +469,7 @@ pub(crate) async fn get_or_initialize(
     workspaces: &WorkspaceRegistry,
     state_root: std::path::PathBuf,
     payloads: &Arc<dyn crate::payloads::ShellPayloads>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     pinned: bool,
     admission: AdmissionMode,
     capacity: usize,
@@ -572,12 +573,12 @@ mod tests {
     fn runtime(root: &std::path::Path) -> SharedWorkspace {
         // A workspace whose membership is kept: its access record, the one
         // projection of who is a member.
-        WorkspaceStore::open(root, 7, false)
+        WorkspaceStore::open(root, WorkspaceId::from_u128(7), false)
             .unwrap()
             .save_governed_access(&crate::store::GovernedAccessRecord::default())
             .unwrap();
         Arc::new(tokio::sync::Mutex::new(
-            WorkspaceRuntime::open(root, 7, false, Membership::default()).unwrap(),
+            WorkspaceRuntime::open(root, WorkspaceId::from_u128(7), false, Membership::default()).unwrap(),
         ))
     }
 
@@ -802,7 +803,7 @@ mod tests {
         let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
         warm(&workspace).await;
         // `tilo-relay-admin` edits the file from another process.
-        let external = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let external = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         external.save_membership(&[[1; 32], [2; 32]]).unwrap();
         wait_for_members(&workspace, &[[1; 32], [2; 32]]).await;
         external.save_membership(&[[2; 32]]).unwrap();
@@ -978,7 +979,7 @@ mod tests {
                 &first_registry,
                 first_root,
                 &crate::payloads::neighbour(),
-                7,
+                WorkspaceId::from_u128(7),
                 false,
                 AdmissionMode::Explicit,
                 1,
@@ -991,7 +992,7 @@ mod tests {
                 &registry,
                 root.clone(),
                 &crate::payloads::neighbour(),
-                8,
+                WorkspaceId::from_u128(8),
                 false,
                 AdmissionMode::Explicit,
                 1
@@ -1005,14 +1006,17 @@ mod tests {
             &registry,
             root,
             &crate::payloads::neighbour(),
-            7,
+            WorkspaceId::from_u128(7),
             false,
             AdmissionMode::Explicit,
             1,
         )
         .await
         .unwrap();
-        assert!(Arc::ptr_eq(&registry.lock().await[&7], &workspace));
+        assert!(Arc::ptr_eq(
+            &registry.lock().await[&WorkspaceId::from_u128(7)],
+            &workspace
+        ));
         assert_eq!(registry.lock().await.len(), 1);
     }
 
@@ -1031,7 +1035,7 @@ mod tests {
                 &first_registry,
                 first_root,
                 &crate::payloads::neighbour(),
-                7,
+                WorkspaceId::from_u128(7),
                 false,
                 AdmissionMode::Explicit,
                 1,
@@ -1044,7 +1048,7 @@ mod tests {
             &registry,
             root.clone(),
             &payloads,
-            7,
+            WorkspaceId::from_u128(7),
             false,
             AdmissionMode::Explicit,
             1,
@@ -1065,7 +1069,7 @@ mod tests {
                 &registry,
                 root,
                 &crate::payloads::neighbour(),
-                7,
+                WorkspaceId::from_u128(7),
                 false,
                 AdmissionMode::Explicit,
                 1

@@ -1187,8 +1187,8 @@ fn ops_from_js(ops: Vec<JsPreviewOp>) -> Result<Vec<PreviewOp>, JsError> {
         .collect()
 }
 
-pub(crate) fn workspace_number(text: &str) -> Result<u64, JsError> {
-    tilo_relay_protocol::room_workspace_id(text).map_err(|_| js_error("not a workspace uuid"))
+pub(crate) fn workspace_number(text: &str) -> Result<tilo_relay_protocol::WorkspaceId, JsError> {
+    tilo_relay_protocol::WorkspaceId::parse(text).ok_or_else(|| js_error("not a workspace uuid"))
 }
 
 /// One live (non-presence) message another member published.
@@ -1426,7 +1426,7 @@ fn layer_of_name(name: &str) -> Option<tilo_live::video::Layer> {
 }
 
 fn workspace_of(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspaces: &RefCell<std::collections::HashMap<u64, String>>,
 ) -> String {
     workspaces

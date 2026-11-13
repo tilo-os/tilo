@@ -11,6 +11,7 @@ use tilo_actions::{
     door::{ActionAddress, DoorError},
 };
 use ui::record::RecordId;
+use tilo_relay_protocol::WorkspaceId;
 
 pub(super) fn record_id(wire: &str) -> Result<RecordId, String> {
     RecordId::from_route(wire).ok_or_else(|| "invalid record route".into())
@@ -26,7 +27,7 @@ impl CanonicalRead {
     pub(super) fn prepare(
         catalogue: &AppCatalogue,
         link: &dyn WorkspaceRecordsLink,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
     ) -> Result<Self, String> {
@@ -71,7 +72,7 @@ impl CanonicalRead {
     pub(super) fn recheck(
         &mut self,
         link: &dyn WorkspaceRecordsLink,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
     ) -> Result<(), String> {
@@ -90,7 +91,7 @@ impl CanonicalRead {
     pub(super) fn invoke(
         &mut self,
         link: &dyn WorkspaceRecordsLink,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
         address: &ActionAddress,

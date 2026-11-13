@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 
 use super::{WeakWorkspaces, Workspaces};
 use crate::workspace_records::HostCommit;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The first wait before a failed copy is tried again.
 const FIRST_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
@@ -27,7 +28,7 @@ const LONGEST_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 /// One write on its way to the relay's sessions.
 struct Carried {
     workspace: String,
-    number: u64,
+    number: WorkspaceId,
     author: [u8; 32],
     commit: HostCommit,
 }
@@ -35,7 +36,7 @@ struct Carried {
 /// Each workspace's carrier: the queue its writes wait in.
 #[derive(Default)]
 pub(super) struct SessionCarriers {
-    queues: Mutex<HashMap<u64, mpsc::UnboundedSender<Carried>>>,
+    queues: Mutex<HashMap<WorkspaceId, mpsc::UnboundedSender<Carried>>>,
     /// Copies a test has fail before they are tried, as a relay whose
     /// sessions' store refuses a write for a while.
     #[cfg(test)]
@@ -49,7 +50,7 @@ impl Workspaces {
     pub(super) fn carry_until_landed(
         &self,
         workspace: &str,
-        number: u64,
+        number: WorkspaceId,
         author: [u8; 32],
         commit: HostCommit,
     ) {
@@ -155,7 +156,7 @@ impl Workspaces {
     /// The link's history cannot be read.
     pub(crate) fn link_frames_lacking(
         &self,
-        number: u64,
+        number: WorkspaceId,
         channel: [u8; 32],
         held: &[crate::transport::Envelope],
     ) -> Result<Vec<crate::transport::Envelope>, String> {

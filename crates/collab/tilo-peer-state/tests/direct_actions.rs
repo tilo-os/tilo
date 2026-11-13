@@ -489,8 +489,7 @@ fn guest(
 ) -> VerifiedRedemption {
     let issued = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: WORKSPACE.into(),
+            workspace_id: WorkspaceId::from_u128(7),
             issuer: a.1.clone(),
             role: MemberRole::Editor,
             nonce: [43; 16],
@@ -554,7 +553,7 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
         "Scribe",
         [10, 20, 30],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WORKSPACE.into()],
             apps: Vec::new(),
         },
         ns(now - Duration::from_secs(1)),

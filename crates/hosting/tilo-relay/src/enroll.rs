@@ -135,7 +135,7 @@ enum Command {
         #[arg(long, default_value = "/var/lib/tilo/fs-capabilities.json")]
         acl: PathBuf,
         #[arg(long = "relay-workspace-id")]
-        relay_workspace_ids: Vec<u64>,
+        relay_workspace_ids: Vec<WorkspaceId>,
         #[arg(long)]
         expected_device: Option<String>,
         #[arg(long)]
@@ -1052,7 +1052,7 @@ fn register_home_peer(
     identity_root: &std::path::Path,
     cert: &DeviceCert,
     relay_service_node_id: [u8; 32],
-    relay_workspace_ids: &[u64],
+    relay_workspace_ids: &[WorkspaceId],
     relay_endpoint: Option<iroh_base::EndpointAddr>,
 ) -> anyhow::Result<()> {
     if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {

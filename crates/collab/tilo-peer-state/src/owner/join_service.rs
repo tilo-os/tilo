@@ -67,7 +67,6 @@ struct OwnerWorkspace<'a> {
     workspace: WorkspaceId,
     /// The workspace's id as the exchange names it.
     named: String,
-    workspace_id: u64,
     /// The workspace state this exchange decides on and answers with.
     peer: StatePeer,
     record: record::StoredWorkspace,
@@ -112,7 +111,7 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
         Governed {
             peer: (&self.peer).into(),
             host: &self.record.device,
-            workspace_id: self.workspace_id,
+            workspace_id: self.workspace,
             generation: self.record.generation,
             governance_messages: None,
         }
@@ -146,7 +145,7 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
             let governed = Governed {
                 peer: (&self.peer).into(),
                 host: &self.record.device,
-                workspace_id: self.workspace_id,
+                workspace_id: self.workspace,
                 generation,
                 governance_messages: None,
             };
@@ -235,13 +234,10 @@ impl OwnerJoinWorkspaces {
             .ok_or_else(|| JoinError::new("this device holds no such workspace"))?;
         let _turn = self.owner.0.mutation.lock();
         let view = self.owner.view(workspace).map_err(JoinError::new)?;
-        let workspace_id = crate::join::room_workspace_id(&workspace.to_string())
-            .map_err(|error| JoinError::new(error.to_string()))?;
         let mut held = OwnerWorkspace {
             owner: &self.owner,
             workspace,
             named: workspace.to_string(),
-            workspace_id,
             peer: view.live().clone(),
             record: view.record.clone(),
             replica: view.replica.clone(),
@@ -310,8 +306,7 @@ impl NativeWorkspaceOwner {
                     let governed = Governed {
                         peer: view.peer().into(),
                         host: &record.device,
-                        workspace_id: crate::join::room_workspace_id(&workspace.to_string())
-                            .map_err(|error| error.to_string())?,
+                        workspace_id: workspace,
                         generation: record.generation,
                         governance_messages: None,
                     };

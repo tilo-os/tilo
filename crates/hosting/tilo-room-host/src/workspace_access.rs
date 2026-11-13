@@ -93,6 +93,7 @@ use crate::peer::AgentRegistry;
 use crate::policy::TrustPolicy;
 use crate::workspace::WorkspaceRuntime;
 use tilo_lock::RwLockRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// How a workspace admits devices beyond its exact membership.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -354,7 +355,7 @@ impl RelayTrust<'_> {
     pub(crate) fn agent(
         &self,
         device: &[u8; 32],
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         now_ns: u64,
     ) -> Result<(), DenyReason> {
         let agents = self.agents.read_recover();
@@ -376,7 +377,7 @@ impl RelayTrust<'_> {
     pub(crate) fn delegation(
         &self,
         device: &[u8; 32],
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         now_ns: u64,
     ) -> Option<tilo_relay_protocol::delegation::Delegation> {
         self.agents
@@ -398,7 +399,7 @@ impl RelayTrust<'_> {
     pub(crate) fn principal(
         &self,
         peer: &AuthenticatedPeer,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         now_ns: u64,
     ) -> Result<(), DenyReason> {
         self.cert(peer, now_ns)?;
@@ -607,7 +608,7 @@ fn grant_decision(
     let reaches = match scope {
         tilo_user_identity::AgentScope::AllWorkspaces => true,
         tilo_user_identity::AgentScope::Workspace(_) => {
-            crate::room_workspace_id(&scope.name()).is_ok_and(|id| id == here)
+            WorkspaceId::parse(&scope.name()) == Some(here)
         }
     };
     let agents_plane = matches!(

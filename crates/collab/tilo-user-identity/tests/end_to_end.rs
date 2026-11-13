@@ -18,8 +18,8 @@
 
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
-    WorkspaceDirectory, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
-    sign_device_cert, verify_device_cert_at, verify_enrollment_token,
+    WorkspaceDirectory, WorkspaceId, decode_enrollment_token, encode_enrollment_token,
+    mint_enrollment_token, sign_device_cert, verify_device_cert_at, verify_enrollment_token,
 };
 
 #[test]
@@ -83,8 +83,8 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
         // 6. Both devices open a directory + author distinct changes.
         let mut primary_dir = WorkspaceDirectory::new(user.public_key, primary_dev.public_key);
         let mut phone_dir = WorkspaceDirectory::new(user.public_key, phone_dev.public_key);
-        primary_dir.add_workspace(1, "Notes").unwrap();
-        phone_dir.add_workspace(2, "Photos").unwrap();
+        primary_dir.add_workspace(WorkspaceId::from_u128(1), "Notes").unwrap();
+        phone_dir.add_workspace(WorkspaceId::from_u128(2), "Photos").unwrap();
 
         // 7. They exchange deltas. Both accept because:
         //    - Every delta's author cert chains to the same user identity.
@@ -156,11 +156,11 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
         sign_device_cert(&mut b_cert, &bob_sk).unwrap();
 
         let mut alice_dir = WorkspaceDirectory::new(alice.public_key, a_dev.public_key);
-        alice_dir.add_workspace(1, "Personal").unwrap();
+        alice_dir.add_workspace(WorkspaceId::from_u128(1), "Personal").unwrap();
         let alice_delta = alice_dir.sync_incremental(&a_dev_sk, 300).unwrap();
 
         let mut bob_dir = WorkspaceDirectory::new(bob.public_key, b_dev.public_key);
-        bob_dir.add_workspace(1, "Personal").unwrap();
+        bob_dir.add_workspace(WorkspaceId::from_u128(1), "Personal").unwrap();
         let bob_delta = bob_dir.sync_incremental(&b_dev_sk, 300).unwrap();
 
         // Bob presenting his cert against Alice's directory: rejected.

@@ -32,6 +32,7 @@ use tilo_relay_client::link::{Dialer, Purpose};
 
 use super::{Command, DeviceSigner, Task};
 use channel_crypto::ChannelContentKeys;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The message a page shows in its members' place when its live plane cannot
 /// be joined: the page keeps asking quietly, and nobody is listed from the
@@ -143,23 +144,23 @@ pub(crate) const MISSES_BEFORE_NOTE: u8 = 2;
 /// The page's planes, one per joined workspace.
 #[derive(Default)]
 pub(crate) struct Planes {
-    joined: BTreeMap<u64, Joined>,
-    asking: BTreeMap<u64, Waiting>,
+    joined: BTreeMap<WorkspaceId, Joined>,
+    asking: BTreeMap<WorkspaceId, Waiting>,
     /// Per workspace, how many asks in a row did not reach a plane.
-    misses: BTreeMap<u64, u8>,
+    misses: BTreeMap<WorkspaceId, u8>,
 }
 
 impl Planes {
-    pub(crate) fn joined(&self, workspace_id: u64) -> Option<&Joined> {
+    pub(crate) fn joined(&self, workspace_id: WorkspaceId) -> Option<&Joined> {
         self.joined.get(&workspace_id)
     }
 
-    pub(crate) fn joined_mut(&mut self, workspace_id: u64) -> Option<&mut Joined> {
+    pub(crate) fn joined_mut(&mut self, workspace_id: WorkspaceId) -> Option<&mut Joined> {
         self.joined.get_mut(&workspace_id)
     }
 
     /// The plane of `workspace_id`, dropped (which ends its session).
-    pub(crate) fn leave(&mut self, workspace_id: u64) -> Option<Joined> {
+    pub(crate) fn leave(&mut self, workspace_id: WorkspaceId) -> Option<Joined> {
         self.asking.remove(&workspace_id);
         self.misses.remove(&workspace_id);
         self.joined.remove(&workspace_id)
@@ -204,7 +205,7 @@ impl Planes {
 
     /// Drop the planes of workspaces this page is no longer in, and the asks
     /// for them.
-    pub(crate) fn keep_only(&mut self, workspaces: &BTreeSet<u64>) {
+    pub(crate) fn keep_only(&mut self, workspaces: &BTreeSet<WorkspaceId>) {
         self.joined
             .retain(|workspace_id, _| workspaces.contains(workspace_id));
         self.asking
@@ -223,7 +224,7 @@ impl Planes {
 
     /// Whether `workspace_id`'s plane is to be asked for at `now_ms`: it is
     /// neither joined nor waiting.
-    pub(crate) fn due(&self, workspace_id: u64, now_ms: u64) -> bool {
+    pub(crate) fn due(&self, workspace_id: WorkspaceId, now_ms: u64) -> bool {
         if self.joined.contains_key(&workspace_id) {
             return false;
         }
@@ -240,7 +241,7 @@ impl Planes {
     /// `members` until the keys or the governance move.
     pub(crate) fn began(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         now_ms: u64,
         epoch: u64,
         members: &BTreeSet<[u8; 32]>,
@@ -256,23 +257,23 @@ impl Planes {
     }
 
     /// The answer to the ask for `workspace_id`, if one is still owed.
-    pub(crate) fn answered(&mut self, workspace_id: u64) -> Option<Waiting> {
+    pub(crate) fn answered(&mut self, workspace_id: WorkspaceId) -> Option<Waiting> {
         self.asking.remove(&workspace_id)
     }
 
     /// The plane of `workspace_id` opened.
-    pub(crate) fn insert(&mut self, workspace_id: u64, joined: Joined) {
+    pub(crate) fn insert(&mut self, workspace_id: WorkspaceId, joined: Joined) {
         self.misses.remove(&workspace_id);
         self.joined.insert(workspace_id, joined);
     }
 
     /// Ask for `workspace_id` again at `at_ms`.
-    pub(crate) fn later(&mut self, workspace_id: u64, at_ms: u64) {
+    pub(crate) fn later(&mut self, workspace_id: WorkspaceId, at_ms: u64) {
         self.asking.insert(workspace_id, Waiting::Later { at_ms });
     }
 
     /// The workspace refused this page's plane: ask again at `at_ms`.
-    pub(crate) fn refused(&mut self, workspace_id: u64, at_ms: u64) {
+    pub(crate) fn refused(&mut self, workspace_id: WorkspaceId, at_ms: u64) {
         // The host answered, so the plane was reached: only asks that reached
         // nothing count towards the note in the members' place.
         self.misses.remove(&workspace_id);
@@ -281,7 +282,7 @@ impl Planes {
 
     /// An ask for `workspace_id`'s plane reached no plane: how many asks in a
     /// row that is now.
-    pub(crate) fn missed(&mut self, workspace_id: u64) -> u8 {
+    pub(crate) fn missed(&mut self, workspace_id: WorkspaceId) -> u8 {
         let misses = self.misses.entry(workspace_id).or_default();
         *misses = misses.saturating_add(1);
         *misses
@@ -318,7 +319,7 @@ pub(crate) struct PlaneJoin {
     /// carries it. Empty over WebTransport, where the device proves itself.
     pub delegation: Vec<u8>,
     /// The workspace joined.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The workspace.
     pub workspace: String,
     /// The workspace's content keys.
@@ -448,7 +449,7 @@ thread_local! {
 /// plane down under that name, which is what an ask the session dropped for
 /// another workspace leaves.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn arrived(workspace_id: u64) -> Result<Arc<Plane>, Failed> {
+pub(crate) fn arrived(workspace_id: WorkspaceId) -> Result<Arc<Plane>, Failed> {
     ARRIVED
         .with(|arrived| {
             let mut arrived = arrived.borrow_mut();
@@ -463,7 +464,7 @@ pub(crate) fn arrived(workspace_id: u64) -> Result<Arc<Plane>, Failed> {
 /// has no plane left answers neither.
 pub(crate) fn wake_and_ended(
     plane: &Plane,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     commands: &tokio::sync::mpsc::WeakUnboundedSender<Command>,
 ) {
     let heard = commands.clone();
@@ -492,7 +493,7 @@ impl Task {
         };
         self.planes.keep_only(&self.workspaces);
         let now = tilo_clock::unix_now_ms();
-        let due: Vec<u64> = std::mem::take(&mut self.planes_due)
+        let due: Vec<WorkspaceId> = std::mem::take(&mut self.planes_due)
             .into_iter()
             .filter(|workspace_id| self.workspaces.contains(workspace_id))
             .collect();
@@ -568,7 +569,7 @@ impl Task {
     }
 
     /// The answer to this page's ask for `workspace_id`'s plane.
-    pub(super) fn plane_joined(&mut self, workspace_id: u64, joined: Result<Arc<Plane>, Failed>) {
+    pub(super) fn plane_joined(&mut self, workspace_id: WorkspaceId, joined: Result<Arc<Plane>, Failed>) {
         self.planes_due.insert(workspace_id);
         let Some(Waiting::Joining { epoch, members, .. }) = self.planes.answered(workspace_id)
         else {
@@ -630,7 +631,7 @@ impl Task {
     /// Publish `frames` on `workspace_id`'s plane as this page's voice, in
     /// the order given: one Opus frame per voice object, numbered on from the
     /// last this page published.
-    pub(super) fn publish_call_audio(&mut self, workspace_id: u64, frames: Vec<crate::CallFrame>) {
+    pub(super) fn publish_call_audio(&mut self, workspace_id: WorkspaceId, frames: Vec<crate::CallFrame>) {
         use tilo_live::live::Track;
         for frame in frames {
             let Some(joined) = self.planes.joined_mut(workspace_id) else {
@@ -659,7 +660,7 @@ impl Task {
     /// every device showing that layer.
     pub(super) fn publish_call_pictures(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pictures: Vec<super::CallPicture>,
     ) {
         for picture in pictures {
@@ -687,7 +688,7 @@ impl Task {
     /// Show the devices' `shown` layers here, and stop reading the devices
     /// left out: the plane asks each owner for exactly these, and for the
     /// pages this page draws of it.
-    pub(super) fn show_call_pictures(&mut self, workspace_id: u64, shown: &[super::CallShown]) {
+    pub(super) fn show_call_pictures(&mut self, workspace_id: WorkspaceId, shown: &[super::CallShown]) {
         use tilo_live::live::Track;
         let Some(joined) = self.planes.joined_mut(workspace_id) else {
             return;
@@ -715,7 +716,7 @@ impl Task {
     /// is what makes it travel. A window travels as its page when its app
     /// draws one and as its pictures otherwise, and only its host knows
     /// which: both are asked, and the host publishes the one it has.
-    pub(super) fn show_pages(&mut self, workspace_id: u64, shown: &[super::PageShown]) {
+    pub(super) fn show_pages(&mut self, workspace_id: WorkspaceId, shown: &[super::PageShown]) {
         use tilo_live::live::Track;
         use tilo_live::video::Layer;
         let Some(joined) = self.planes.joined_mut(workspace_id) else {
@@ -741,7 +742,7 @@ impl Task {
     /// page's decoder can begin at.
     pub(super) fn restart_call_picture(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
         source: tilo_live::video::Source,
     ) {
@@ -775,7 +776,7 @@ impl Task {
     /// Take what `workspace_id`'s plane heard since the last call: each
     /// member's track object, already opened with the scope's keys, as
     /// [`crate::Event::LivePlane`].
-    pub(super) fn plane_heard(&mut self, workspace_id: u64) {
+    pub(super) fn plane_heard(&mut self, workspace_id: WorkspaceId) {
         use tilo_live::live::Track;
         let heard: Vec<_> = match self.planes.joined(workspace_id) {
             Some(joined) => std::iter::from_fn(|| joined.plane.try_recv()).collect(),
@@ -873,7 +874,7 @@ impl Task {
     /// `workspace_id`'s plane ended: the relay cut it (the device was removed,
     /// or the keys moved under it) or the carrier went away. It is joined
     /// again, until the workspace refuses this page.
-    pub(super) fn plane_ended(&mut self, workspace_id: u64) {
+    pub(super) fn plane_ended(&mut self, workspace_id: WorkspaceId) {
         self.planes_due.insert(workspace_id);
         if self.planes.leave(workspace_id).is_some() {
             self.planes.later(

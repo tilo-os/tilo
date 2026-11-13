@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
 use super::GovernedDelegateRow;
+use crate::join::WorkspaceId;
 
 /// A device row: its key, the bytes it was read from, and the row they hold.
 pub(crate) type IdentityRow = (String, Vec<u8>, GovernedIdentity);
@@ -165,7 +166,7 @@ struct StoredIdentityRef<'a> {
 pub(crate) struct WorkspaceDelegation {
     pub(crate) version: u32,
     pub(crate) room: String,
-    pub(crate) workspace_id: u64,
+    pub(crate) workspace_id: WorkspaceId,
     pub(crate) authority_device_public_key: [u8; 32],
     pub(crate) delegate: DeviceCert,
     pub(crate) permissions: WorkspaceDelegationPermissions,

@@ -16,6 +16,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::WorkspaceShell;
 use crate::host::HostEndpoint;
+use tilo_relay_protocol::WorkspaceId;
 
 /// How the service takes part in the host's workspaces: as the host's own
 /// device, a member of each workspace's channels like any other. It opens only
@@ -74,19 +75,19 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     /// Whether `workspace` admits `caller`, on the device it speaks for: a
     /// person the workspace lets in, as its governance records them, and the
     /// person the host serves itself. Anyone else is a stranger to it.
-    fn admits(&self, _workspace: u64, _caller: &Caller) -> bool {
+    fn admits(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {
         false
     }
     /// What the workspace whose channels are `workspace` is called, which a
     /// desktop the host starts there is named after, as a page names its own.
-    fn workspace_name(&self, _workspace: u64) -> Option<String> {
+    fn workspace_name(&self, _workspace: WorkspaceId) -> Option<String> {
         None
     }
     /// Current certified-device admission and exact record Read capability.
     /// Absence denies; this never inherits document invocation authority.
     fn view_read_policy(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         _caller: &Caller,
         _app: &str,
         _record: &str,
@@ -96,7 +97,7 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     /// The certified caller's standing across `workspace` now, with no
     /// record's read checked: what its content and its new records are
     /// decided by. Absence denies.
-    fn workspace_policy(&self, _workspace: u64, _caller: &Caller) -> Option<ViewReadPolicy> {
+    fn workspace_policy(&self, _workspace: WorkspaceId, _caller: &Caller) -> Option<ViewReadPolicy> {
         None
     }
     /// Read an exact existing source using already-owned host keys. The host
@@ -104,7 +105,7 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     /// and again before returning. Missing keys never cause enrollment.
     fn view_document(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         _caller: &Caller,
         _source: &DocumentRoute,
     ) -> Result<ViewDocument, String> {
@@ -150,7 +151,7 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     }
     /// Whether the bot installed as `installation` in `workspace` may show
     /// other names on what it writes. Absence refuses.
-    fn bot_personas(&self, _workspace: u64, _installation: &str) -> bool {
+    fn bot_personas(&self, _workspace: WorkspaceId, _installation: &str) -> bool {
         false
     }
     /// Where the workspaces' Terminal sessions run their shells on this
@@ -161,14 +162,14 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     }
     /// The bytes `workspace`'s content store holds under `hash`, for an
     /// avatar an appearance names. Absence refuses the appearance.
-    fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
+    fn content_blob(&self, _workspace: WorkspaceId, _hash: &str) -> Option<Vec<u8>> {
         None
     }
     /// `workspace`'s content store on this host: where a caller's uploads
     /// go, what the record workers it runs actions in are lent, and what
     /// the host answers the workspace's members from. Absence leaves the
     /// workers without one and refuses uploads.
-    fn workspace_content(&self, _workspace: u64) -> Option<tilo_content::ContentStore> {
+    fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         None
     }
     /// The model the host looks over its reporters' reviews with, when it
@@ -183,7 +184,7 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     /// the invocation refused: nobody else confirms for them.
     fn ask_person(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         _caller: &Caller,
         _question: ConfirmationQuestion,
     ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {

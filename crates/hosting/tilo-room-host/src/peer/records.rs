@@ -2,6 +2,7 @@
 //! ([`crate::store::record_sync`]) is sent to it once it asks.
 
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperation};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Handle `OpenRecord`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then answer
@@ -15,7 +16,7 @@ use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperati
 pub(super) async fn handle_open_record(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     envelope: Envelope,
     answer: &mut Vec<Envelope>,
 ) -> Result<Option<Envelope>, PeerError> {

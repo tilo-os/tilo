@@ -33,7 +33,7 @@ async fn fill_with_cross_workspace(fixture: &Fixture) {
     let session = &runtime.state_sessions[&fixture.recipient.device_public_key];
     let mut cross_workspace = fixture.envelope(3);
     if let Envelope::Delta { workspace_id, .. } = &mut cross_workspace {
-        *workspace_id = 99;
+        *workspace_id = WorkspaceId::from_u128(99);
     }
     session
         .tx
@@ -93,7 +93,7 @@ async fn replay_boundary_full_live_queue_lags_instead_of_ending_the_session() {
     assert!(fixture.recipient_disconnected.try_recv().is_err());
     assert_eq!(
         lag.unwrap().next(),
-        Some(7),
+        Some(WorkspaceId::from_u128(7)),
         "the room resumes after `Ready`"
     );
     assert_eq!(
@@ -119,7 +119,7 @@ async fn replay_boundary_live_byte_exhaustion_lags_instead_of_ending_the_session
     assert!(fixture.recipient_disconnected.try_recv().is_err());
     assert_eq!(
         lag.unwrap().next(),
-        Some(7),
+        Some(WorkspaceId::from_u128(7)),
         "the room resumes after `Ready`"
     );
     assert_eq!(
@@ -205,7 +205,7 @@ async fn overflow_before_final_ready_lags_and_ready_still_follows() {
     let (result, wire) = task.await.unwrap();
     result.unwrap();
     assert!(wrote_ready(&wire).await, "the replay answered `Ready`");
-    assert_eq!(lag.next(), Some(7), "the room resumes after `Ready`");
+    assert_eq!(lag.next(), Some(WorkspaceId::from_u128(7)), "the room resumes after `Ready`");
 }
 
 #[tokio::test]

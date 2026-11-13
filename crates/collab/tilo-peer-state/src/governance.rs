@@ -274,7 +274,7 @@ fn member_display_name<'a>(
 mod display_name_tests {
     use super::*;
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
+        InviteGrant, JoinChallenge, MemberRole, WorkspaceId, issue_invitation, sign_join_proof,
         verify_join_proof,
     };
     use ed25519_dalek::SigningKey;
@@ -296,8 +296,7 @@ mod display_name_tests {
     fn grant(recipient: Option<[u8; 32]>, invitee_name: Option<&str>) -> InviteGrant {
         let authority = cert("owner");
         InviteGrant {
-            workspace_id: 7,
-            room: "room".into(),
+            workspace_id: WorkspaceId::from_u128(7),
             issuer: authority,
             role: MemberRole::Editor,
             nonce: [0; 16],
@@ -392,8 +391,7 @@ mod display_name_tests {
         sign_device_cert(&mut guest_cert, &guest_root).unwrap();
         let signed = issue_invitation(
             InviteGrant {
-                workspace_id: 7,
-                room: peer.workspace_id().into(),
+                workspace_id: WorkspaceId::from_u128(7),
                 issuer: peer.owner_certificates()[0].clone(),
                 role: MemberRole::Editor,
                 nonce: [53; 16],
@@ -450,6 +448,7 @@ mod display_name_tests {
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+    use crate::join::WorkspaceId;
     use crate::join::{
         InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, issue_invitation,
         sign_join_proof, verify_join_proof,
@@ -484,8 +483,7 @@ mod retention_tests {
     ) -> VerifiedRedemption {
         let signed = issue_invitation(
             InviteGrant {
-                workspace_id: 7,
-                room: peer.workspace_id().into(),
+                workspace_id: WorkspaceId::from_u128(7),
                 issuer: peer.owner_certificates()[0].clone(),
                 role: MemberRole::Editor,
                 nonce: [nonce; 16],

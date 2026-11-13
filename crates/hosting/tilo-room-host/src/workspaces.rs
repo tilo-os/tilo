@@ -118,6 +118,7 @@ pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use listing::DoorRefusal;
 pub use pages::PreAdmitRequest;
+use tilo_relay_protocol::WorkspaceId;
 pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
 
 // The administration vocabulary (the actions' names and answers), under the
@@ -180,7 +181,7 @@ mod shared_bytes {
 struct WorkspaceRecord {
     version: u32,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     name: String,
     authority: DeviceCert,
     peer: Vec<peer_parts::PeerPart>,
@@ -382,8 +383,8 @@ impl GovernedWorkspace {
         let mut parts = peer_parts::PeerParts::open(&path)?;
         let record = WorkspaceRecord {
             version: RECORD_VERSION,
-            workspace_id: crate::room_workspace_id(&workspace)
-                .map_err(|error| error.to_string())?,
+            workspace_id: WorkspaceId::parse(&workspace)
+                .ok_or_else(|| "a workspace is named by its id".to_string())?,
             workspace: workspace.clone(),
             name: name.to_owned(),
             authority: authority.clone(),
@@ -472,9 +473,7 @@ impl GovernedWorkspace {
         {
             return Err("workspace is governed by a different device".into());
         }
-        if !crate::room_workspace_id_matches(&record.workspace, record.workspace_id)
-            || record.published > record.outgoing.len()
-        {
+        if record.published > record.outgoing.len() {
             return Err("workspace record is inconsistent".into());
         }
         let mut peer = StatePeer::restore(
@@ -580,7 +579,7 @@ impl GovernedWorkspace {
         &self.record.workspace
     }
 
-    const fn workspace_id(&self) -> u64 {
+    const fn workspace_id(&self) -> WorkspaceId {
         self.record.workspace_id
     }
 
@@ -951,7 +950,7 @@ struct WorkspacesInner {
     changes: tokio::sync::broadcast::Sender<String>,
     /// Each workspace deleted here, and its relay workspace
     /// ([`Workspaces::deletions`]).
-    deletions: tokio::sync::broadcast::Sender<(String, u64)>,
+    deletions: tokio::sync::broadcast::Sender<(String, WorkspaceId)>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
     /// What the changes a record's repair kept wait for, by record, so a
@@ -1373,7 +1372,7 @@ impl Workspaces {
         // A workspace this host serves for its governor elsewhere is that
         // governor's: governing it here as well would fork it.
         if let Some(workspace_id) =
-            workspace.and_then(|workspace| tilo_relay_protocol::room_workspace_id(workspace).ok())
+            workspace.and_then(WorkspaceId::parse)
         {
             let bound = self
                 .inner
@@ -1421,7 +1420,7 @@ impl Workspaces {
         self.name_own_host(&mut governed).await?;
         self.serve_direct(&governed)?;
         drop(governed);
-        tracing::info!(workspace = %summary.workspace, workspace_id = summary.workspace_id, "governed room created");
+        tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "governed room created");
         Ok(summary)
     }
 
@@ -1468,7 +1467,7 @@ impl Workspaces {
             )
             .await
             .map_err(|error| error.to_string())?;
-        tracing::info!(%workspace, workspace_id = governed.workspace_id(), "governed room released");
+        tracing::info!(%workspace, workspace_id = %governed.workspace_id(), "governed workspace released");
         // Nobody lists a workspace this host governs no longer.
         self.inner.memberships.forget(workspace);
         drop(governed);
@@ -1545,7 +1544,7 @@ impl Workspaces {
     )]
     pub async fn list_device(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
         listed: bool,
     ) -> Result<(), String> {
@@ -2896,7 +2895,7 @@ fn system_time(now_ns: u64) -> SystemTime {
 pub(crate) fn member_bootstrap(
     peer: &StatePeer,
     host: &DeviceCert,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     generation: u64,
     device: &DeviceCert,
 ) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
@@ -2918,7 +2917,6 @@ pub(crate) fn member_bootstrap(
             JoinTransportResponse::OwnerMembershipComplete(OwnerBootstrapV1 {
                 version: 1,
                 device_cert: device.clone(),
-                room: peer.workspace_id().to_owned(),
                 workspace_id,
                 host: host.clone(),
                 certified_roster,
@@ -2938,7 +2936,6 @@ pub(crate) fn member_bootstrap(
                 collab_types::Role::Moderator => MemberRole::Moderator,
                 _ => MemberRole::Viewer,
             },
-            room: peer.workspace_id().to_owned(),
             workspace_id,
             host: host.clone(),
             certified_roster,
