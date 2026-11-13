@@ -12,6 +12,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Membership set for a workspace on this relay, as the workspace's governance
 /// or an explicit admission set it. Peers listed here get
@@ -312,7 +313,7 @@ impl WorkspaceRuntime {
     /// exists but fails to load as an Automerge document.
     pub fn open(
         state_root: &std::path::Path,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pinned: bool,
         membership: Membership,
     ) -> Result<Self, crate::store::StoreError> {
@@ -333,7 +334,7 @@ impl WorkspaceRuntime {
     /// The same as [`Self::open`].
     pub fn open_with_payloads(
         state_root: &std::path::Path,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pinned: bool,
         membership: Membership,
         payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
@@ -652,7 +653,11 @@ impl WorkspaceRuntime {
     /// Add subscriber `device` to the live plane and tell the other live
     /// members. Returns the members already present. A device that is not
     /// subscribed cannot join.
-    pub fn live_join(&mut self, device: [u8; 32], workspace_id: u64) -> Option<Vec<[u8; 32]>> {
+    pub fn live_join(
+        &mut self,
+        device: [u8; 32],
+        workspace_id: WorkspaceId,
+    ) -> Option<Vec<[u8; 32]>> {
         if !self.subscribers.contains_key(&device) {
             return None;
         }
@@ -669,7 +674,7 @@ impl WorkspaceRuntime {
     }
 
     /// Remove `device` from the live plane and tell the remaining members.
-    pub fn live_leave(&mut self, device: &[u8; 32], workspace_id: u64) {
+    pub fn live_leave(&mut self, device: &[u8; 32], workspace_id: WorkspaceId) {
         if self.live_members.remove(device) {
             self.announce_live_member(*device, workspace_id, false);
         }
@@ -678,7 +683,7 @@ impl WorkspaceRuntime {
     /// Tell every other live member that `device` is on the plane (`active`)
     /// or left it. Ephemeral: a member notice lost to a full queue costs
     /// only a stale peer list, never a change.
-    fn announce_live_member(&self, device: [u8; 32], workspace_id: u64, active: bool) {
+    fn announce_live_member(&self, device: [u8; 32], workspace_id: WorkspaceId, active: bool) {
         let envelope = Envelope::RetiredLiveMember {
             workspace_id,
             device_public_key: device,
@@ -936,13 +941,25 @@ mod tests {
             seq: n,
             digest: [2; 32],
         };
-        let mut ws = WorkspaceRuntime::open(tmp.path(), 5, false, Membership::default()).unwrap();
+        let mut ws = WorkspaceRuntime::open(
+            tmp.path(),
+            WorkspaceId::from_u128(5),
+            false,
+            Membership::default(),
+        )
+        .unwrap();
         let total = MAX_REMEMBERED_COMMITS as u64 * 2 + 10;
         for n in 1..=total {
             ws.remember_commit(record(n)).persist(&ws.store);
         }
         drop(ws);
-        let ws = WorkspaceRuntime::open(tmp.path(), 5, false, Membership::default()).unwrap();
+        let ws = WorkspaceRuntime::open(
+            tmp.path(),
+            WorkspaceId::from_u128(5),
+            false,
+            Membership::default(),
+        )
+        .unwrap();
         let oldest_kept = total - MAX_REMEMBERED_COMMITS as u64 + 1;
         assert_eq!(
             ws.admitted_commit(&[1; 32], &record(total).op),
@@ -975,7 +992,7 @@ mod tests {
             crate::coedit::CoeditPayload::RetainedDelta { channel, body }
         };
         Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: author,
             authored_at_ns: 1,
             delta: payload.encode().unwrap(),
@@ -1027,7 +1044,8 @@ mod tests {
         let membership = Membership {
             devices: (10..42).map(|key| [key; 32]).collect(),
         };
-        let rt = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
+        let rt = WorkspaceRuntime::open(tmp.path(), WorkspaceId::from_u128(7), false, membership)
+            .unwrap();
         let other_author = retained_envelope([2; 32], [3; 32], true, 201);
         let other_channel = retained_envelope([1; 32], [4; 32], true, 202);
         publish(&rt, &other_author, 1);
@@ -1056,7 +1074,7 @@ mod tests {
             latest.clear();
             for (offset, payload) in [checkpoint, tail].into_iter().enumerate() {
                 let envelope = Envelope::Delta {
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::from_u128(7),
                     author_device_public_key: [1; 32],
                     authored_at_ns: u64::from(round),
                     delta: payload.encode().unwrap(),
@@ -1087,7 +1105,9 @@ mod tests {
             let membership = Membership {
                 devices: (10..10 + offline_peers).map(|key| [key; 32]).collect(),
             };
-            let runtime = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
+            let runtime =
+                WorkspaceRuntime::open(tmp.path(), WorkspaceId::from_u128(7), false, membership)
+                    .unwrap();
             for round in 1..=24u8 {
                 publish(
                     &runtime,
@@ -1122,7 +1142,13 @@ mod tests {
         const AUTHOR: [u8; 32] = [1; 32];
         const RECIPIENT: [u8; 32] = [2; 32];
         let tmp = tempfile::tempdir().unwrap();
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap();
+        let mut rt = WorkspaceRuntime::open(
+            tmp.path(),
+            WorkspaceId::from_u128(9),
+            false,
+            Membership::default(),
+        )
+        .unwrap();
         let (tx, mut rx) = mpsc::channel(8);
         let (disconnect, _disconnect_rx) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
@@ -1133,7 +1159,7 @@ mod tests {
         let mailbox = Arc::new(PresenceMailbox::default());
         rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
         let presence = Envelope::RetiredPresence {
-            workspace_id: 9,
+            workspace_id: WorkspaceId::from_u128(9),
             payload: b"caret".to_vec(),
         };
 
@@ -1155,7 +1181,13 @@ mod tests {
     async fn a_commit_claim_holds_off_its_copies_only() {
         const AUTHOR: [u8; 32] = [1; 32];
         let tmp = tempfile::tempdir().unwrap();
-        let rt = WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap();
+        let rt = WorkspaceRuntime::open(
+            tmp.path(),
+            WorkspaceId::from_u128(9),
+            false,
+            Membership::default(),
+        )
+        .unwrap();
         let claim = rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap();
         let other = rt.claim_commit(AUTHOR, [2; 16]).ok().unwrap();
         let elsewhere = rt.claim_commit([2; 32], [1; 16]).ok().unwrap();
@@ -1232,7 +1264,13 @@ mod standing_wait_tests {
 
     fn shared(tmp: &tempfile::TempDir) -> SharedWorkspace {
         Arc::new(AsyncMutex::new(
-            WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap(),
+            WorkspaceRuntime::open(
+                tmp.path(),
+                WorkspaceId::from_u128(9),
+                false,
+                Membership::default(),
+            )
+            .unwrap(),
         ))
     }
 

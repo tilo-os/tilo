@@ -20,9 +20,14 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
 use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
+use collab_types::WorkspaceId;
 
 /// `device`'s own session with the workspace, subscribed.
-async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {
+async fn session(
+    address: iroh::EndpointAddr,
+    workspace_id: WorkspaceId,
+    device: &Device,
+) -> RelayClient {
     let client = RelayCoeditSession::join(
         RelayClient::connect_to_pinned_host(
             endpoint(&device.key).await,

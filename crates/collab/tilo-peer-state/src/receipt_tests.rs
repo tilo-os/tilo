@@ -14,6 +14,7 @@ use tilo_actions::{
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 
+use crate::join::WorkspaceId;
 use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
 use crate::owner::testing::member_certificate as certificate;
 use crate::owner::testing::{now, receive};
@@ -142,8 +143,7 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
     let guest = certificate(&guest_root, &guest_key, "guest");
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: WORKSPACE.into(),
+            workspace_id: WorkspaceId::parse(WORKSPACE).unwrap(),
             issuer: owner,
             role,
             nonce: [43; 16],

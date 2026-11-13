@@ -15,6 +15,7 @@ use super::{
 };
 use crate::metrics::EgressWrite;
 use reader::{ReaderQueues, SessionReaderLoop};
+use tilo_relay_protocol::WorkspaceId;
 use wire::{Heartbeats, Wire};
 use writer::{SessionWriter, WriterQueues};
 
@@ -170,7 +171,7 @@ where
     let stop = Arc::new(tokio::sync::Notify::new());
     let mut reader = SessionReader::new(read);
     // Track our subscriptions so we can unregister on disconnect.
-    let mut subscribed: Vec<u64> = Vec::new();
+    let mut subscribed: Vec<WorkspaceId> = Vec::new();
     let mut authority = crate::authority_epoch::subscribe();
     authority.mark_unchanged();
     // The host's own device, connected in process, is audited only on change.
@@ -359,7 +360,7 @@ fn trace_session_end(
     peer: &AuthenticatedPeer,
     bytes_sent: u64,
     outcome: &Result<(), PeerError>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
 ) {
     tracing::debug!(
         device = %hex::encode(&peer.device_public_key[..4]),
@@ -374,7 +375,7 @@ fn trace_session_end(
 /// Remove this session's subscriber from every workspace it subscribed to.
 async fn unregister_subscriber(
     workspaces: &super::WorkspaceRegistry,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     device: &[u8; 32],
     outbound: &mpsc::Sender<Envelope>,
 ) {

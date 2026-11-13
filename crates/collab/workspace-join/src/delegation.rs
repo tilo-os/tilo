@@ -8,11 +8,8 @@
 //! window. A bot's additionally names exactly one workspace and lasts at
 //! most 30 days, because the workspace it was installed in is all it may
 //! touch and a bot nobody renews should stop on its own.
-//!
-//! The `rooms` field of a scope keeps its name: a delegation's signer and
-//! readers (agents, bots, hosts and the desktop shell) name it, and postcard
-//! encodes by field order, so the scope's bytes are the same either way.
 
+use collab_types::WorkspaceId;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -67,8 +64,9 @@ impl Delegate {
 /// Where a delegate may act.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegateScope {
-    /// Workspace uuids, 1..=[`MAX_DELEGATED_ROOMS`]; exactly one for a bot.
-    pub rooms: Vec<String>,
+    /// Workspaces it may act in, 1..=[`MAX_DELEGATED_ROOMS`]; exactly one
+    /// for a bot.
+    pub workspaces: Vec<WorkspaceId>,
     /// App ids; empty means every app in those workspaces.
     pub apps: Vec<String>,
 }
@@ -196,15 +194,8 @@ impl Delegation {
             }
             _ => {}
         }
-        if self.scope.rooms.is_empty()
-            || self.scope.rooms.len() > MAX_DELEGATED_ROOMS
-            || self
-                .scope
-                .rooms
-                .iter()
-                .any(|workspace| crate::room_workspace_id(workspace).is_err())
-        {
-            return Err(DelegationError::Invalid("rooms"));
+        if self.scope.workspaces.is_empty() || self.scope.workspaces.len() > MAX_DELEGATED_ROOMS {
+            return Err(DelegationError::Invalid("workspaces"));
         }
         if self.scope.apps.len() > MAX_DELEGATED_APPS
             || self
@@ -219,7 +210,7 @@ impl Delegation {
             return Err(DelegationError::Invalid("validity window"));
         }
         if let Delegate::Bot { .. } = self.delegate {
-            if self.scope.rooms.len() != 1 {
+            if self.scope.workspaces.len() != 1 {
                 return Err(DelegationError::Invalid(
                     "a bot delegation names exactly one workspace",
                 ));
@@ -253,20 +244,10 @@ impl Delegation {
         Ok(())
     }
 
-    /// Whether the delegate may be in relay workspace `workspace_id`.
+    /// Whether the delegate may be in `workspace`.
     #[must_use]
-    pub fn permits_workspace(&self, workspace_id: u64) -> bool {
-        self.scope
-            .rooms
-            .iter()
-            .any(|workspace| crate::room_workspace_id(workspace).is_ok_and(|id| id == workspace_id))
-    }
-
-    /// Whether the delegate may be in the workspace whose canonical UUID is
-    /// `workspace`.
-    #[must_use]
-    pub fn permits_workspace_uuid(&self, workspace: &str) -> bool {
-        crate::room_workspace_id(workspace).is_ok_and(|id| self.permits_workspace(id))
+    pub fn permits_workspace(&self, workspace: WorkspaceId) -> bool {
+        self.scope.workspaces.contains(&workspace)
     }
 
     /// Whether the delegate may act in `app_id`.
@@ -341,9 +322,9 @@ impl DelegateProposal {
         }
         let scope = &delegation.scope;
         if !scope
-            .rooms
+            .workspaces
             .iter()
-            .all(|workspace| self.scope.rooms.contains(workspace))
+            .all(|workspace| self.scope.workspaces.contains(workspace))
         {
             return Err("the delegation names a workspace that was not proposed");
         }
@@ -363,6 +344,7 @@ impl DelegateProposal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collab_types::WorkspaceId;
 
     const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const OTHER_WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -375,9 +357,9 @@ mod tests {
 
     fn scope(workspaces: &[&str]) -> DelegateScope {
         DelegateScope {
-            rooms: workspaces
+            workspaces: workspaces
                 .iter()
-                .map(|workspace| (*workspace).to_owned())
+                .filter_map(|workspace| WorkspaceId::parse(workspace))
                 .collect(),
             apps: Vec::new(),
         }
@@ -420,7 +402,7 @@ mod tests {
             .unwrap();
         assert_eq!(decoded.delegate.agent_id(), Some("scribe"));
         assert_eq!(decoded.delegate.installation(), None);
-        assert!(decoded.permits_workspace_uuid(OTHER_WORKSPACE));
+        assert!(decoded.permits_workspace(WorkspaceId::parse(OTHER_WORKSPACE).unwrap()));
         assert_eq!(
             decoded.verify(&root().verifying_key().to_bytes(), 20),
             Err(DelegationError::Expired)

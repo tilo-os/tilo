@@ -3,6 +3,7 @@
 //! attributed to its own key; and dead the moment its delegation ends or the
 //! governor withdraws it, while its history stays on the roster.
 
+use crate::join::WorkspaceId;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
@@ -62,7 +63,7 @@ fn delegation(
         "Scribe",
         [10, 20, 30],
         DelegateScope {
-            rooms: vec![workspace.into()],
+            workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
             apps: Vec::new(),
         },
         ns(issued),
@@ -322,7 +323,7 @@ fn admit_agent_refuses_a_bot_delegation() {
         "Bridge",
         [0; 3],
         DelegateScope {
-            rooms: vec![workspace],
+            workspaces: vec![WorkspaceId::parse(&workspace).unwrap()],
             apps: vec![],
         },
         ns(now - Duration::from_secs(1)),

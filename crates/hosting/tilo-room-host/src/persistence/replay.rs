@@ -740,6 +740,7 @@ impl State {
 mod tests {
     use super::*;
     use crate::store::replay::DEFAULT_BATCH_BYTES;
+    use tilo_relay_protocol::WorkspaceId;
 
     fn capture(state: &mut State, ticket: &ReplayTicket) -> ReplayHandle {
         loop {
@@ -754,7 +755,9 @@ mod tests {
     async fn detached_handle_requires_exact_bound_authority_and_rejects_post_finish_advance() {
         let slots = Arc::new(Semaphore::new(2));
         let tmp = tempfile::tempdir().unwrap();
-        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store =
+            crate::store::WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
+                .unwrap();
         let mut state = State {
             store,
             doc: None,
@@ -808,7 +811,9 @@ mod tests {
     async fn detached_cleanup_preserves_same_path_replacement() {
         let slots = Arc::new(Semaphore::new(1));
         let tmp = tempfile::tempdir().unwrap();
-        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store =
+            crate::store::WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
+                .unwrap();
         let raw = crate::transport::encode(&crate::transport::Envelope::Ping).unwrap();
         let device = [2; 32];
         let pending = store.enqueue_pending(&device, 1, &raw).unwrap();
@@ -860,7 +865,9 @@ mod tests {
         for poison in [false, true] {
             let slots = Arc::new(Semaphore::new(1));
             let tmp = tempfile::tempdir().unwrap();
-            let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let store =
+                crate::store::WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
+                    .unwrap();
             let mut state = State {
                 store,
                 doc: None,
@@ -925,7 +932,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(ReplayTicket::reserve_from([2; 32], None, slots.clone()).is_err());
         let tmp = tempfile::tempdir().unwrap();
-        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store =
+            crate::store::WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
+                .unwrap();
         for i in 0..257 {
             store
                 .enqueue_pending(
@@ -1055,7 +1064,9 @@ mod tests {
     async fn a_catch_up_cut_takes_the_first_replays_name_and_leaves_its_work_to_the_discard() {
         let slots = Arc::new(Semaphore::new(1));
         let tmp = tempfile::tempdir().unwrap();
-        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store =
+            crate::store::WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
+                .unwrap();
         let mut state = State {
             store,
             doc: None,
@@ -1097,7 +1108,9 @@ mod tests {
     #[test]
     fn retiring_replay_work_moves_it_aside_whole_for_its_discard() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store =
+            crate::store::WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
+                .unwrap();
         let id = ReplayId([5; 16]);
         let work = store.root().join(crate::store::replay::WORK_DIR);
         let named = work.join(format!("replay-{}", hex::encode(id.0)));
@@ -1126,9 +1139,11 @@ mod tests {
     fn owner_output_budget_holds_one_oversized_batch_through_write_and_saturation() {
         let slots = Arc::new(Semaphore::new(2));
         let tmp = tempfile::tempdir().unwrap();
-        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store =
+            crate::store::WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false)
+                .unwrap();
         let frame = crate::transport::encode(&crate::transport::Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [1; 32],
             authored_at_ns: 1,
             signature: [0; 64],

@@ -28,6 +28,7 @@ use tilo_relay_protocol::voice::{CallOperation, CallState, Directions, VoiceGran
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying, wait_for};
+use collab_types::WorkspaceId;
 
 pub const CHAT: &str = "so.tilo.chat";
 pub const BOTH: Directions = Directions {
@@ -168,7 +169,7 @@ pub struct GovernedCall {
     pub relay: Relay,
     pub web: WebHandle,
     pub cluster_id: String,
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// Alice's laptop's session with the workspace.
     pub owner: RelayClient,
     /// The chat's voice channel the call is on.
@@ -192,7 +193,7 @@ pub async fn native<T>(client: &RelayClient, mut pick: impl FnMut(Envelope) -> O
 /// Ask the host to change a call as the native device `client`.
 pub async fn operate(
     client: &RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     request: u8,
     operation: CallOperation,
 ) -> Result<CallState, String> {
@@ -219,7 +220,7 @@ pub async fn operate(
 /// publication never creates a record.
 pub async fn create_voice_channel(
     address: iroh::EndpointAddr,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &str,
     host: &DeviceCert,
     device: &Device,

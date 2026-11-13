@@ -17,6 +17,7 @@
 
 use super::fixtures::{door_join_as, governor, test_host};
 use super::*;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::entering::{Entered, Entering, Entry, Through};
 use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
@@ -90,7 +91,7 @@ async fn assert_still_a_member_everywhere(
     workspaces: &Workspaces,
     host: &DeviceCert,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     person: [u8; 32],
 ) {
     let registry = &workspaces.inner.host.workspaces;

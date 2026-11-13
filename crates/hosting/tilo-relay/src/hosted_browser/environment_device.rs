@@ -30,6 +30,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
 use super::HostedBrowsers;
+use crate::WorkspaceId;
 
 /// What one ask needs once it leaves the lock: who asked, in which workspace,
 /// and how this host reaches that workspace's keys and governance.
@@ -47,7 +48,7 @@ impl HostedBrowsers {
     /// Linux apps session and nobody else. `None` for any other request.
     pub(super) fn environment_asked(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<crate::app_serving::Routing> {
@@ -81,15 +82,16 @@ impl HostedBrowsers {
 
     /// The device `caller` is, when it is the device this host placed for
     /// `workspace_id`'s Browser or Linux apps, with what answering it needs.
-    fn asking_device(&self, workspace_id: u64, caller: &Caller) -> Option<Asked> {
+    fn asking_device(&self, workspace_id: WorkspaceId, caller: &Caller) -> Option<Asked> {
         let device = *caller.device_public_key()?;
-        let placed = |sessions: &std::sync::Mutex<std::collections::BTreeMap<u64, super::Open>>| {
-            sessions
-                .lock_recover()
-                .get(&workspace_id)
-                .filter(|up| up.device.device_public_key == device)
-                .map(|up| (up.device.clone(), up.workspace.clone()))
-        };
+        let placed =
+            |sessions: &std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, super::Open>>| {
+                sessions
+                    .lock_recover()
+                    .get(&workspace_id)
+                    .filter(|up| up.device.device_public_key == device)
+                    .map(|up| (up.device.clone(), up.workspace.clone()))
+            };
         let (device, workspace) = placed(&self.open).or_else(|| placed(&self.apps))?;
         let workspaces = self.authority.lock_recover().as_ref()?.workspaces.clone();
         Some(Asked {

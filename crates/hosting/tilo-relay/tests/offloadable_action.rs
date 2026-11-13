@@ -31,7 +31,7 @@ use tilo_relay::host::HostMode;
 use tilo_relay::host_jobs::ComputeJobs;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::IssueInvitationRequest;
-use tilo_relay::{ComputeContentStore, ComputeSandbox, ComputeSandboxInvocation};
+use tilo_relay::{ComputeContentStore, ComputeSandbox, ComputeSandboxInvocation, WorkspaceId};
 use tilo_runtime::offload::{
     BindError, MediaFuture, OutputContent, PlanePeers, WorkspaceMedia, offer_offload,
 };
@@ -246,7 +246,8 @@ async fn invited(
         .await
         .unwrap();
     assert_eq!(
-        admission.bootstrap.room, workspace,
+        admission.bootstrap.workspace_id,
+        WorkspaceId::parse(workspace).unwrap(),
         "the workspace this device joined"
     );
 }

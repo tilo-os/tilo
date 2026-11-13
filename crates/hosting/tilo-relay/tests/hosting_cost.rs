@@ -50,9 +50,10 @@ use tilo_relay::Envelope;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
+use tilo_relay::WorkspaceId;
 
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000625";
-const WORKSPACE: u64 = 625;
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(625);
 /// Four routes, as in a room with four open documents.
 const ROUTES: [(&str, &str); 4] = [
     ("so.tilo.word-processor", "tab:0000000000000001"),
@@ -73,8 +74,9 @@ const DOCUMENT_CHARS: usize = 10_000;
 /// Ceiling for the median one-character keystroke frame uncoded:
 /// 481 B measured on Linux CI before every change named its action, plus
 /// the keystroke's compact continuation of its word's gesture (~60 B; a
-/// cleartext op carries no second copy of it). Measured here: 542 B.
-const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 550;
+/// cleartext op carries no second copy of it), plus the 17 bytes a
+/// frame's workspace id takes. Measured here: 558 B.
+const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 570;
 /// Ceiling for the largest such frame, a word's first keystroke carrying
 /// the gesture's full entry in its compact form: measured 599 B, held to
 /// the 697 B of the frame before changes named their actions.
@@ -198,7 +200,7 @@ async fn subscribe(
 
 #[derive(Debug, PartialEq, Eq)]
 struct DeltaFields {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     authored_at_ns: u64,
     delta: Vec<u8>,

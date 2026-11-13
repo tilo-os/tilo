@@ -731,8 +731,7 @@ fn address_on_b(
     let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
         version: 1,
         mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        workspace_id: tilo_peer_state::join::room_workspace_id(workspace).unwrap(),
-        room: workspace.to_owned(),
+        workspace_id: tilo_desktop_model::WorkspaceId::parse(workspace).unwrap(),
         endpoint_addr: addr(&b.endpoint),
         host_user_public_key: person.b.1.user_public_key,
         host_device_certificate: person.b.1.clone(),

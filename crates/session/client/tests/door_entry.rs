@@ -32,6 +32,7 @@ use tilo_session_client::device::{Entering, Held, door_entry, entered};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
+use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -247,7 +248,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         )
     };
     let frame = |hello: &Hello| postcard::to_allocvec(hello).unwrap();
-    let records = |workspace_id: u64| {
+    let records = |workspace_id: WorkspaceId| {
         [Envelope::Subscribe { workspace_id }, Envelope::Ping].map(|asked| {
             tilo_delivery_protocol::transport_v2::encode(
                 &tilo_delivery_protocol::transport_v2::EnvelopeV2::State(asked),
@@ -392,7 +393,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
             &hint,
         )
         .expect("the host signed its address");
-    assert_eq!(address.room, lounge.workspace);
+    assert_eq!(address.workspace_id.to_string(), lounge.workspace);
     assert_eq!(address.workspace_id, lounge.workspace_id);
     assert_eq!(
         address.host_device_certificate.device_public_key, host_device.cert.device_public_key,

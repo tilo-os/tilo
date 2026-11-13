@@ -709,7 +709,7 @@ fn wait_until_their_pointer(
     what: &str,
 ) {
     let workspace_id =
-        tilo_relay_protocol::room_workspace_id(&room.workspace).expect("a workspace id");
+        tilo_relay_protocol::WorkspaceId::parse(&room.workspace).expect("a workspace id");
     let deadline = Instant::now()
         .checked_add(tilo_test_env::hang_bound())
         .expect("the wait's bound fits in an Instant");

@@ -37,8 +37,7 @@ fn responses() -> Vec<JoinTransportResponse> {
     )
     .unwrap();
     let grant = InviteGrant {
-        workspace_id: 42,
-        room: peer.workspace_id().into(),
+        workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         issuer: member.clone(),
         role: Role::Editor,
         nonce: [17; 16],
@@ -74,8 +73,7 @@ fn responses() -> Vec<JoinTransportResponse> {
     )
     .unwrap();
     let membership = MembershipChallenge::new(
-        peer.workspace_id(),
-        42,
+        WorkspaceId::parse(peer.workspace_id()).unwrap(),
         &peer.owner_certificates()[0],
         &member,
         [20; 32],
@@ -89,8 +87,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         invite_id: verified.invite_id(),
         device_cert: member,
         role: Role::Editor,
-        room: peer.workspace_id().into(),
-        workspace_id: 42,
+        workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         host: peer.owner_certificates()[0].clone(),
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
@@ -107,7 +104,6 @@ fn responses() -> Vec<JoinTransportResponse> {
     let owner = OwnerBootstrapV1 {
         version: 1,
         device_cert: bootstrap.device_cert.clone(),
-        room: bootstrap.room.clone(),
         workspace_id: bootstrap.workspace_id,
         host: bootstrap.host.clone(),
         certified_roster: bootstrap.certified_roster.clone(),

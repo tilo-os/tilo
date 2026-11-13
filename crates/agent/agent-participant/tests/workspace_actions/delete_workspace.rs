@@ -14,8 +14,8 @@ use tilo_session_client::{Cmd, Outbox};
 
 /// Every path under `root` that is `workspace`'s, as the relay names what it
 /// keeps of one: its id, first in a file's name, or its relay workspace.
-fn traces(root: &Path, workspace: &str, workspace_id: u64) -> Vec<PathBuf> {
-    let names = [workspace_id.to_string(), format!("{workspace_id:016x}")];
+fn traces(root: &Path, workspace: &str, workspace_id: WorkspaceId) -> Vec<PathBuf> {
+    let names = [workspace_id.to_string()];
     let mut found = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
@@ -98,7 +98,7 @@ async fn invite(
 
 /// Wait until `page` heard that `workspace_id` was deleted, and stopped
 /// holding it: it says `workspace-deleted`, never that it was not admitted.
-async fn heard_deleted(page: &tilo_session_client::Link, workspace_id: u64) {
+async fn heard_deleted(page: &tilo_session_client::Link, workspace_id: WorkspaceId) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = page.status();
@@ -138,7 +138,7 @@ async fn only_member_hears_deleted(
     on_relay: &OnRelay,
     page: &Device,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) {
     let back = start_peer(
         on_relay.relay_host(),
@@ -220,7 +220,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         )
         .await;
     let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
-    let workspace_id = tilo_relay_protocol::room_workspace_id(&workspace).unwrap();
+    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(&workspace).unwrap();
     let kept = account
         .did(
             "account/workspaces#create",

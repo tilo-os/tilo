@@ -96,6 +96,9 @@ pub fn hand_off(material: &str, relay: Endpoint) -> Result<String, String> {
 }
 
 #[cfg(test)]
+use tilo_relay_protocol::WorkspaceId;
+
+#[cfg(test)]
 /// The material the relay writes a session, joining the workspace at
 /// `relay`: what the tests of a hand-off start from.
 pub fn test_material(relay: &str) -> String {
@@ -111,7 +114,7 @@ pub fn test_material(relay: &str) -> String {
     };
     let material = Material {
         workspace: "ws1".into(),
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         record: "browser-1".into(),
         device: cert,
         secret: [2; 32],

@@ -19,13 +19,14 @@ use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, TrustPolicy};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint};
+use tilo_relay::WorkspaceId;
 
 /// The collaborator's own room, governed natively on this host.
-const GOVERNED: u64 = 801;
+const GOVERNED: WorkspaceId = WorkspaceId::from_u128(801);
 /// The owner's room, bound on demand by the owner's first subscribe.
-const OWNERS: u64 = 802;
+const OWNERS: WorkspaceId = WorkspaceId::from_u128(802);
 /// A room nobody bound yet.
-const UNBOUND: u64 = 803;
+const UNBOUND: WorkspaceId = WorkspaceId::from_u128(803);
 
 struct HomeHost {
     relay: Relay,
@@ -89,13 +90,13 @@ async fn connect(relay: &Relay, device: TestDevice) -> RelayClient {
     .unwrap()
 }
 
-async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> {
+async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("relay answered subscription", client.recv()).await
 }
 
 /// The devices the workspace's access record admits, as its host keeps them.
-fn members(state: &Path, workspace_id: u64) -> Vec<[u8; 32]> {
+fn members(state: &Path, workspace_id: WorkspaceId) -> Vec<[u8; 32]> {
     let directory = state.join(format!("workspaces/{workspace_id}"));
     if !directory.exists() {
         return Vec::new();

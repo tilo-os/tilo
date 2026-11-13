@@ -1928,7 +1928,7 @@ fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
 fn other_member_arrives(lounge: &Lounge) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.send(Cmd::Presence(
-        tilo_relay_protocol::room_workspace_id(&lounge.workspace).expect("a workspace id"),
+        tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
         vec![collab_types::presence::Presence::desktop(
             &lounge.workspace,
             collab_types::PeerPresencePayload::Arrived,
@@ -1941,7 +1941,7 @@ fn other_member_arrives(lounge: &Lounge) {
 fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.send(Cmd::Presence(
-        tilo_relay_protocol::room_workspace_id(&lounge.workspace).expect("a workspace id"),
+        tilo_relay_protocol::WorkspaceId::parse(&lounge.workspace).expect("a workspace id"),
         vec![collab_types::presence::Presence::pointing(
             &lounge.workspace,
             tab,

@@ -26,7 +26,7 @@ use tilo_action_broker::record_content::{ContentSources, ContentState};
 use tilo_broker_core::route::CrdtRoute;
 use tilo_content::hash_bytes;
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
-use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
+use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
 
 use super::Plane;
 use crate::sync::Cmd;
@@ -45,8 +45,7 @@ fn route() -> CrdtRoute {
 }
 
 fn topic() -> WorkspaceId {
-    let workspace = ModelWorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    workspace_topic_id(workspace)
+    ModelWorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
 
 /// One of the workspace's devices: its plane, its address on the network, and what it said, waiting

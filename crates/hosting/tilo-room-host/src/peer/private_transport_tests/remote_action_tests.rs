@@ -2,6 +2,7 @@
 //! longer act, and an allowed one spends its member's change budget.
 
 use super::*;
+use tilo_relay_protocol::WorkspaceId;
 
 #[tokio::test]
 async fn revoked_device_remote_action_is_refused() {
@@ -19,7 +20,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (host, _) = certified_device(&root, user.public_key, "host");
     let (a, _) = certified_device(&root, user.public_key, "a");
-    let id = 11;
+    let id = WorkspaceId::from_u128(11);
     let tmp = tempfile::tempdir().unwrap();
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -149,7 +150,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
     // A guest: another person than the host's, whose budget applies.
     let (guest_root, guest) = UserIdentity::generate("guest", 1);
     let (a, _) = certified_device(&guest_root, guest.public_key, "a");
-    let id = 12;
+    let id = WorkspaceId::from_u128(12);
     let tmp = tempfile::tempdir().unwrap();
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -299,7 +300,7 @@ struct SilentPlane {
 impl crate::app_serving::AppServingPlane for SilentPlane {
     fn serve(
         &self,
-        _workspace_id: u64,
+        _workspace_id: WorkspaceId,
         _caller: &tilo_actions::remote::Caller,
         _message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
@@ -313,7 +314,7 @@ impl crate::app_serving::AppServingPlane for SilentPlane {
         _certificate: &tilo_user_identity::DeviceCert,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
-        self.serve(0, caller, message)
+        self.serve(WorkspaceId::nil(), caller, message)
     }
 }
 
@@ -350,7 +351,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (host, _) = certified_device(&root, user.public_key, "host");
     let (a, _) = certified_device(&root, user.public_key, "a");
-    let id = 13;
+    let id = WorkspaceId::from_u128(13);
     let tmp = tempfile::tempdir().unwrap();
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),

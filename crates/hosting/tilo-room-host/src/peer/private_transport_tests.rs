@@ -2,6 +2,7 @@ use super::*;
 
 /// Remote actions: who may still act, and what acting costs.
 mod remote_action_tests;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
 };
@@ -133,7 +134,7 @@ async fn shared_retained_metrics_count_only_newly_written_payload_bytes() {
     let tmp = tempfile::tempdir().unwrap();
     let runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
-        7,
+        WorkspaceId::from_u128(7),
         false,
         crate::workspace::Membership::default(),
     )
@@ -141,7 +142,7 @@ async fn shared_retained_metrics_count_only_newly_written_payload_bytes() {
     let workspace = Arc::new(AsyncMutex::new(runtime));
     let metrics = Arc::new(crate::metrics::Metrics::default());
     let envelope = Envelope::Delta {
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         author_device_public_key: [1; 32],
         authored_at_ns: 1,
         signature: [0; 64],
@@ -189,7 +190,7 @@ async fn plain_subscription_discards_stale_lag_after_explicit_unsubscribe() {
 
 /// A read-only state request whose reply queues on the state lane like any
 /// other: a stand-in for replies waiting behind a held writer.
-fn reply_filler(workspace_id: u64) -> Vec<u8> {
+fn reply_filler(workspace_id: WorkspaceId) -> Vec<u8> {
     tilo_delivery_protocol::transport_v2::encode_state(&Envelope::VoiceCalls { workspace_id })
         .unwrap()
 }
@@ -205,7 +206,7 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
     let (b, _) = certified_device(&root, user.public_key, "b");
     // The relay's own device is neither of the peers it carries frames for.
     let (own, _) = certified_device(&root, user.public_key, "relay");
-    let id = 7_u64;
+    let id = WorkspaceId::from_u128(7);
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -527,14 +528,14 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
-        7,
+        WorkspaceId::from_u128(7),
         false,
         crate::workspace::Membership::default(),
     )
     .unwrap();
     runtime.admit_device(peer.device_public_key).unwrap();
     let envelope = |author, payload: crate::coedit::CoeditPayload| Envelope::Delta {
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         author_device_public_key: [author; 32],
         authored_at_ns: 1,
         delta: payload.encode().unwrap(),
@@ -600,7 +601,10 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
     let active = std::fs::read_to_string(lineage.join("CURRENT")).unwrap();
     std::fs::write(lineage.join(active.trim()).join("opaque.delta"), opaque).unwrap();
     let shared = Arc::new(AsyncMutex::new(runtime));
-    let registry = Arc::new(AsyncMutex::new(HashMap::from([(7, shared.clone())])));
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+        WorkspaceId::from_u128(7),
+        shared.clone(),
+    )])));
     let (outbound, _rx) = mpsc::channel(8);
     let (disconnect, _) = mpsc::channel(1);
     let doors = Doors::open();
@@ -614,7 +618,9 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
     drop(reader);
     assert!(
         Box::pin(handle_inbound_frame(
-            Envelope::Subscribe { workspace_id: 7 },
+            Envelope::Subscribe {
+                workspace_id: WorkspaceId::from_u128(7)
+            },
             &peer,
             &session,
             &mut Vec::new(),
@@ -707,14 +713,16 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
     // Reopen the actual disk state after the failed replay.
     *shared.lock().await = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
-        7,
+        WorkspaceId::from_u128(7),
         false,
         crate::workspace::Membership::default(),
     )
     .unwrap();
     let mut wire = Vec::new();
     Box::pin(handle_inbound_frame(
-        Envelope::Subscribe { workspace_id: 7 },
+        Envelope::Subscribe {
+            workspace_id: WorkspaceId::from_u128(7),
+        },
         &peer,
         &session,
         &mut Vec::new(),
@@ -737,7 +745,7 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
             tail,
             other,
             Envelope::Ready {
-                workspace_id: 7,
+                workspace_id: WorkspaceId::from_u128(7),
                 pending_deltas: 3,
                 records_when_opened: false,
             }
@@ -762,7 +770,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
     let (root, user) = UserIdentity::generate("alice", 1);
     let (a, _) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
-    let id = 7_u64;
+    let id = WorkspaceId::from_u128(7);
     let tmp = tempfile::tempdir().unwrap();
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -850,7 +858,7 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (a, _) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
-    let id = 7_u64;
+    let id = WorkspaceId::from_u128(7);
     let tmp = tempfile::tempdir().unwrap();
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -952,7 +960,7 @@ struct CountingPlane(std::sync::atomic::AtomicUsize);
 impl crate::app_serving::AppServingPlane for CountingPlane {
     fn serve(
         &self,
-        _workspace_id: u64,
+        _workspace_id: WorkspaceId,
         _caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
@@ -978,7 +986,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     let (native, _) = certified_device(&root, user.public_key, "native");
     let (browser, _) = certified_device(&root, user.public_key, "browser");
     let workspace = uuid::Uuid::from_u128(7);
-    let id = crate::room_workspace_id(&workspace.to_string()).unwrap();
+    let id = WorkspaceId::parse(&workspace.to_string()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -1061,7 +1069,7 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
     let (root, user) = UserIdentity::generate("owner", 1);
     let (b, _) = certified_device(&root, user.public_key, "b");
     let workspace = uuid::Uuid::from_u128(91);
-    let id = crate::room_workspace_id(&workspace.to_string()).unwrap();
+    let id = WorkspaceId::parse(&workspace.to_string()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -1141,7 +1149,7 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
     let (a, _) = certified_device(&root, user.public_key, "a");
     let (b, _) = certified_device(&root, user.public_key, "b");
     let (own, _) = certified_device(&root, user.public_key, "relay");
-    let id = 73_u64;
+    let id = WorkspaceId::from_u128(73);
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
@@ -1284,7 +1292,7 @@ async fn a_retired_private_action_frame_ends_the_session() {
 async fn an_opened_records_answer_is_written_whole_before_live_frames() {
     let (root, user) = UserIdentity::generate("owner", 1);
     let (b, _) = certified_device(&root, user.public_key, "b");
-    let id = 74_u64;
+    let id = WorkspaceId::from_u128(74);
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),

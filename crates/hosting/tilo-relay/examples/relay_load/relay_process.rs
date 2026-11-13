@@ -33,7 +33,7 @@ pub struct Setup {
     pub relay_secret_key: [u8; 32],
     pub relay_cert: DeviceCert,
     /// Each room's workspace id and the device keys of its members.
-    pub workspaces: Vec<(u64, Vec<[u8; 32]>)>,
+    pub workspaces: Vec<(collab_types::WorkspaceId, Vec<[u8; 32]>)>,
 }
 
 #[derive(Serialize, Deserialize)]

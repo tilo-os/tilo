@@ -52,6 +52,7 @@ use tilo_session_client::device::{Entering, door_entry};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{enrol, enter_page, keyed, start_workspace_host_relaying};
+use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -598,7 +599,7 @@ struct Member {
     host: Host,
     host_cert: tilo_user_identity::DeviceCert,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     desktop: DocumentRoute,
 }
 
@@ -719,7 +720,7 @@ struct Place<'a> {
     /// over with the page (`tilo-relay page-host`).
     site: &'a tilo_relay_protocol::web::PageHost,
     workspace: &'a str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     host: iroh::EndpointId,
     relay: iroh::RelayUrl,
     desktop: &'a DocumentRoute,

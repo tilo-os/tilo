@@ -33,6 +33,7 @@ use tilo_agent_participant::{
     Replica, ReplicaActor, Seed, Step, StepAction,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::directory::Listing;
@@ -245,7 +246,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![workspace.clone()],
+            workspaces: vec![WorkspaceId::parse(&workspace).unwrap()],
             apps: vec![WRITER.into(), CHAT.into()],
         },
         now,

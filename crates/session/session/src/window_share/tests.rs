@@ -347,7 +347,7 @@ fn member_on(
 fn tell(to: &Member, from: &Member, msg: NeighbourMsg) {
     let ws = to
         .sync
-        .workspace_topic(WORKSPACE)
+        .workspace_of(WORKSPACE)
         .expect("the workspace's topic");
     to.sync.hear(said(from, ws, msg));
 }
@@ -526,7 +526,7 @@ fn send_input(viewer: &Member, host: &Member, surface: u64, event: &SharedInput)
     let event = postcard::to_stdvec(event).expect("input");
     let ws = host
         .sync
-        .workspace_topic(WORKSPACE)
+        .workspace_of(WORKSPACE)
         .expect("the workspace's topic");
     host.sync.hear(Event::Msg {
         ws,
@@ -1994,7 +1994,7 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     let ws = viewer
         .sync
-        .workspace_topic(WORKSPACE)
+        .workspace_of(WORKSPACE)
         .expect("the workspace's topic");
     viewer.sync.hear(Event::Msg {
         ws,

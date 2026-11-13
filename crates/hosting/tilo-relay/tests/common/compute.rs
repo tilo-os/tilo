@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use package_store::InstalledPackage;
 use tilo_relay::{
     ComputePackageCatalogue, DeviceRole, PowerAvailability, ServerAdvertisement,
-    ServiceCapabilities,
+    ServiceCapabilities, WorkspaceId,
 };
 
 /// The catalogue of a device with exactly one installed package.
@@ -238,7 +238,11 @@ impl tilo_relay::HeldContent for WorkspaceVersions {
 }
 
 /// What worker `worker` offers for `app` in `workspace`, to its executor.
-pub fn worker_advertisement(worker: [u8; 32], workspace: u64, app: &str) -> ServerAdvertisement {
+pub fn worker_advertisement(
+    worker: [u8; 32],
+    workspace: WorkspaceId,
+    app: &str,
+) -> ServerAdvertisement {
     ServerAdvertisement {
         device: worker,
         role: DeviceRole::AlwaysOnServer,

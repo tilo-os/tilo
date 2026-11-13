@@ -28,6 +28,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
 use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
+use collab_types::WorkspaceId;
 
 /// The kinds of workspace a person can be in on a host.
 #[derive(Clone, Copy, Debug)]
@@ -47,7 +48,7 @@ const KINDS: [Kind; 3] = [Kind::Governed, Kind::Invited, Kind::Carried];
 /// the host's answer, `Ready` or `NotAuthorised`.
 async fn subscribe(
     address: iroh::EndpointAddr,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     device: &Device,
 ) -> (RelayClient, Result<(), String>) {
     let client = RelayCoeditSession::join(
@@ -75,7 +76,11 @@ async fn subscribe(
 }
 
 /// `device`'s own session with `workspace_id`, subscribed.
-async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {
+async fn session(
+    address: iroh::EndpointAddr,
+    workspace_id: WorkspaceId,
+    device: &Device,
+) -> RelayClient {
     let (client, answer) = subscribe(address, workspace_id, device).await;
     if let Err(reason) = answer {
         panic!("device not admitted: {reason}");
@@ -136,7 +141,7 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
             Kind::Carried => {
                 // Her devices sync her workspace through her host: it takes
                 // it on for them, and governs no workspace for it.
-                let workspace_id = 0x0077_6e00_0000_0001;
+                let workspace_id = WorkspaceId::from_u128(0x0077_6e00_0000_0001);
                 let first = session(address.clone(), workspace_id, &laptop).await;
                 let second = session(address.clone(), workspace_id, &phone).await;
                 (workspace_id, first, second, "voice".to_owned())

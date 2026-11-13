@@ -27,6 +27,7 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::delegation::{Delegate, Delegation};
 
 use super::{GovernedIdentity, Role, SystemTime, err, now_ns, workspace};
+use crate::join::WorkspaceId;
 
 /// What a governed identity carries when its device is a delegate of its
 /// person: an agent, or an installed bot.
@@ -85,8 +86,7 @@ impl GovernedDelegateRow {
         delegation
             .verify(&cert.user_public_key, now_ns)
             .map_err(|_| DelegateInactive::Delegation)?;
-        let workspace = tilo_workspace_join::room_workspace_id(workspace)
-            .map_err(|_| DelegateInactive::OtherWorkspace)?;
+        let workspace = WorkspaceId::parse(workspace).ok_or(DelegateInactive::OtherWorkspace)?;
         if !delegation.permits_workspace(workspace) {
             return Err(DelegateInactive::OtherWorkspace);
         }

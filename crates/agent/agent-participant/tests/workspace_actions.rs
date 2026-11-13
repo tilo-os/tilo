@@ -23,6 +23,8 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
+use tilo_relay_protocol::WorkspaceId;
+
 #[cfg(test)]
 #[path = "workspace_actions/agent_mcp.rs"]
 mod agent_mcp;
@@ -491,7 +493,7 @@ impl tilo_agent_participant::workspace_actions::WorkspaceRecordsLink for Deliver
     }
     fn view_read_policy(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         app: &str,
         record: &str,
@@ -519,7 +521,7 @@ impl tilo_agent_participant::workspace_actions::WorkspaceRecordsLink for Deliver
     }
     fn view_document(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         source: &DocumentRoute,
     ) -> Result<tilo_agent_participant::workspace_actions::ViewDocument, String> {

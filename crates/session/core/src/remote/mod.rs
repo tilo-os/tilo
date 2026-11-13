@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use collab_types::WorkspaceId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
     ConfirmedInvocation, ContentGetAnswer, ContentPutAnswer, Found, InvocationReceipt,
@@ -43,13 +44,13 @@ const HELD: Duration = Duration::from_secs(5);
 pub enum Heard {
     /// A device answered, or another of the person's devices sent a request of its own.
     Action {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         from: [u8; 32],
         frame: Vec<u8>,
     },
     /// The session could not carry a request to the device, and why.
     Undeliverable {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         to: [u8; 32],
         reason: String,
     },
@@ -64,7 +65,7 @@ pub trait RemoteSession: Send + Sync {
     /// The session cannot carry it.
     fn send_remote_action(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
         frame: Vec<u8>,
     ) -> Result<(), String>;
@@ -81,7 +82,7 @@ pub struct SessionActions(Arc<Inner>);
 
 struct Inner {
     session: Arc<dyn RemoteSession>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     device: [u8; 32],
     waiting: Mutex<Waiting>,
     next_correlation: AtomicU64,
@@ -409,7 +410,7 @@ impl SessionActions {
     #[must_use]
     pub fn new(
         session: impl Into<Arc<dyn RemoteSession>>,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
     ) -> Self {
         let session: Arc<dyn RemoteSession> = session.into();
@@ -933,7 +934,7 @@ mod tests {
         fn say(&self, message: RemoteActionMessage) {
             let frame = RemoteActionFrame::new(message).encode().expect("encodes");
             self.heard.lock_recover().push(Heard::Action {
-                workspace_id: 1,
+                workspace_id: WorkspaceId::from_u128(1),
                 from: DEVICE,
                 frame,
             });
@@ -945,7 +946,12 @@ mod tests {
     }
 
     impl RemoteSession for Device {
-        fn send_remote_action(&self, _: u64, _: [u8; 32], frame: Vec<u8>) -> Result<(), String> {
+        fn send_remote_action(
+            &self,
+            _: WorkspaceId,
+            _: [u8; 32],
+            frame: Vec<u8>,
+        ) -> Result<(), String> {
             let message = RemoteActionFrame::decode(&frame)
                 .map_err(|error| error.to_string())?
                 .message;
@@ -1014,7 +1020,11 @@ mod tests {
     fn an_invocation_nobody_follows_reads_as_the_device_says_it_ended() {
         let invocation = InvocationId::new();
         let device = Device::new(invocation, false);
-        let actions = SessionActions::new(Arc::clone(&device) as Arc<dyn RemoteSession>, 1, DEVICE);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
         accepted(&actions, invocation);
 
         *device.state.lock_recover() = InvocationUpdate::Succeeded {
@@ -1042,7 +1052,11 @@ mod tests {
     fn a_held_ask_out_reads_what_the_device_said() {
         let invocation = InvocationId::new();
         let device = Device::new(invocation, true);
-        let actions = SessionActions::new(Arc::clone(&device) as Arc<dyn RemoteSession>, 1, DEVICE);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
         accepted(&actions, invocation);
 
         let change = actions.next_change(&caller(), &invocation);

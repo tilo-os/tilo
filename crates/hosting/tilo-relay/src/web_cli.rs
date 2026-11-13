@@ -795,7 +795,7 @@ async fn approve_every_browser(
                 );
                 tracing::info!(
                     agent = %agent.proposal.label,
-                    workspaces = ?agent.proposal.scope.rooms,
+                    workspaces = ?agent.proposal.scope.workspaces,
                     apps = ?agent.proposal.scope.apps,
                     pairing_code = %pending.pairing_code,
                     "approving an agent grant"

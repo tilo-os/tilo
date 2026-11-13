@@ -193,7 +193,7 @@ impl Site {
 
     /// The workspace `workspace` as the site's host carries it, by its id here: what a machine an
     /// environment runs in is handed, and what a page action names.
-    pub fn workspace_id(&self, workspace: &str) -> Option<u64> {
+    pub fn workspace_id(&self, workspace: &str) -> Option<tilo_desktop_model::WorkspaceId> {
         self.runtime
             .block_on(self.workspaces.summary(workspace))
             .ok()

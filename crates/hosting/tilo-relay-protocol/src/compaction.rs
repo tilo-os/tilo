@@ -9,6 +9,7 @@
 //! both sides hold byte for byte. The host removes exactly those entries and
 //! keeps everything else, including every entry the member never saw.
 
+use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
 
 const STATEMENT_DOMAIN: &[u8] = b"tilo-compaction-statement-v1\0";
@@ -25,7 +26,7 @@ pub fn entry_id(body: &[u8]) -> [u8; 32] {
 /// What a member's snapshot of one route contains.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageStatement {
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// Retention channel of the route.
     pub channel: [u8; 32],
     /// The host request this answers.
@@ -118,7 +119,7 @@ mod tests {
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let device = key.verifying_key().to_bytes();
         let statement = CoverageStatement {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             channel: [1; 32],
             request: [2; 16],
             snapshot: vec![[4; 32]],

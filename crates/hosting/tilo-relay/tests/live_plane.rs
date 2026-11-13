@@ -13,8 +13,9 @@ use tilo_relay::Envelope;
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{TestUser, connect, next, spawn_relay};
+use tilo_relay::WorkspaceId;
 
-const WS: u64 = 41;
+const WS: WorkspaceId = WorkspaceId::from_u128(41);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(

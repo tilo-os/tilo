@@ -32,6 +32,7 @@ use crate::transport::{
     DISCOVERY_ALPN, HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN,
     MAX_FRAME_BYTES,
 };
+use collab_types::WorkspaceId;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_relay_client::frame::{read_frame, write_frame};
 
@@ -55,7 +56,7 @@ pub struct RelayClient {
     /// Workspaces successfully subscribed on this connection. Drop queues an
     /// explicit unsubscribe for each one before gracefully finishing the
     /// stream, so the host can begin offline delivery without a QUIC timeout.
-    subscriptions: Mutex<HashSet<u64>>,
+    subscriptions: Mutex<HashSet<WorkspaceId>>,
     /// Present only for the opaque signed interactive-owner trust path.
     workspace_scope: Option<InteractiveWorkspaceScope>,
     /// Owns the authenticated pump's transport lifetime, independently of the
@@ -134,7 +135,7 @@ impl Entrance {
 
 #[derive(Clone, Debug)]
 struct InteractiveWorkspaceScope {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     authority: DeviceCert,
 }
 
@@ -481,7 +482,7 @@ impl RelayClient {
     pub async fn discover_content_endpoint(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         own_user_public_key: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
@@ -507,7 +508,7 @@ impl RelayClient {
     pub async fn discover_content_peer(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         own_user_public_key: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
@@ -530,7 +531,7 @@ impl RelayClient {
     async fn discover_content_peer_with_server_trust(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         expected_server: Option<([u8; 32], [u8; 32])>,
         own_cert: DeviceCert,
         own_sk: impl DeviceSigner,
@@ -1190,7 +1191,7 @@ impl RelayClient {
                 ..
             } = &env
         {
-            tracing::info!(phase = "client_delta_queue", workspace_id, authored_at_ns);
+            tracing::info!(phase = "client_delta_queue", workspace_id = %workspace_id, authored_at_ns);
         }
         let subscription_update = match &env {
             Envelope::Subscribe { workspace_id } => Some((*workspace_id, true)),
@@ -1357,7 +1358,7 @@ where
                 ..
             } = &env
         {
-            tracing::info!(phase = "client_delta_write", workspace_id, authored_at_ns);
+            tracing::info!(phase = "client_delta_write", workspace_id = %workspace_id, authored_at_ns);
         }
         let mut out = Vec::new();
         if !encode_states(std::slice::from_ref(&env), &mut out) {
@@ -1407,7 +1408,7 @@ async fn run_v2_reader<R>(
                         ..
                     } = &env
                 {
-                    tracing::info!(phase = "client_delta_read", workspace_id, authored_at_ns);
+                    tracing::info!(phase = "client_delta_read", workspace_id = %workspace_id, authored_at_ns);
                 }
                 // The bounded sink plus this one decoded frame is the complete
                 // inbound state allowance. Do not read the next wire frame
@@ -1633,7 +1634,9 @@ mod scheduling_tests {
 
         started_rx.await.unwrap();
         assert_eq!(written.lock().unwrap().len(), 1);
-        let response = Envelope::Subscribe { workspace_id: 7 };
+        let response = Envelope::Subscribe {
+            workspace_id: WorkspaceId::from_u128(7),
+        };
         relay_write
             .write_all(
                 &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(response.clone()))
@@ -1672,7 +1675,7 @@ mod scheduling_tests {
 
         let (state_tx, mut states) = mpsc::channel(256);
         let (state_sink, mut state_inbound) = mpsc::channel(256);
-        let workspace_id = crate::room_workspace_id(&uuid::Uuid::from_u128(9).to_string()).unwrap();
+        let workspace_id = tilo_relay_protocol::WorkspaceId::from_u128(9);
         for _ in 0..255 {
             state_tx.try_send(Envelope::Ping).unwrap();
         }
@@ -1865,8 +1868,8 @@ mod scheduling_tests {
 
     #[tokio::test]
     async fn full_state_consumer_holds_one_decoded_frame_and_resumes_in_order() {
-        let frame = |id| Envelope::Ready {
-            workspace_id: id,
+        let frame = |id: u128| Envelope::Ready {
+            workspace_id: tilo_relay_protocol::WorkspaceId::from_u128(id),
             pending_deltas: 0,
             records_when_opened: false,
         };

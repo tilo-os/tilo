@@ -20,6 +20,7 @@ use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint};
+use tilo_relay::WorkspaceId;
 
 async fn connect(
     relay: &Relay,
@@ -35,7 +36,7 @@ async fn connect(
     .await
 }
 
-async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> {
+async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("relay answered subscription", client.recv()).await
 }
@@ -89,7 +90,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
 
     relay
         .replace_governed_workspace_access(
-            701,
+            WorkspaceId::from_u128(701),
             true,
             GovernedAccess {
                 member_devices: vec![alice_a_key, bob_key, charlie_key],
@@ -101,7 +102,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         .unwrap();
     relay
         .replace_governed_workspace_access(
-            702,
+            WorkspaceId::from_u128(702),
             true,
             GovernedAccess {
                 member_devices: vec![alice_a_key],
@@ -115,18 +116,18 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     let alice_client = connect(&relay, alice_a).await.unwrap();
     let bob_client = connect(&relay, bob_device).await.unwrap();
     assert!(matches!(
-        subscribe(&alice_client, 701).await,
+        subscribe(&alice_client, WorkspaceId::from_u128(701)).await,
         Some(Envelope::Ready { .. })
     ));
     assert!(matches!(
-        subscribe(&bob_client, 701).await,
+        subscribe(&bob_client, WorkspaceId::from_u128(701)).await,
         Some(Envelope::Ready { .. })
     ));
     // Charlie's device may host workspaces of his own; here it is the member
     // device his room authority names, so it takes part like any other.
     let charlie_client = connect(&relay, charlie_device).await.unwrap();
     assert!(matches!(
-        subscribe(&charlie_client, 701).await,
+        subscribe(&charlie_client, WorkspaceId::from_u128(701)).await,
         Some(Envelope::Ready { .. })
     ));
     assert!(connect(&relay, diana_device).await.is_err());
@@ -134,14 +135,14 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     // A valid certificate under an admitted root is still not an exact member device.
     let alice_unlisted = connect(&relay, alice_b).await.unwrap();
     assert!(matches!(
-        subscribe(&alice_unlisted, 701).await,
+        subscribe(&alice_unlisted, WorkspaceId::from_u128(701)).await,
         Some(Envelope::NotAuthorised { .. })
     ));
     drop(alice_unlisted);
 
     relay
         .replace_governed_workspace_access(
-            701,
+            WorkspaceId::from_u128(701),
             true,
             GovernedAccess {
                 member_devices: vec![bob_key],
@@ -158,7 +159,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     // stream, so a write racing the removal can find the session already
     // ended (the client fails closed when the relay closes); it never lands.
     let _ = alice_client.send(Envelope::Delta {
-        workspace_id: 701,
+        workspace_id: WorkspaceId::from_u128(701),
         author_device_public_key: alice_a_key,
         authored_at_ns: 2,
         delta: retained_delta(b"removed-live-writer"),
@@ -168,8 +169,9 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     assert!(
         matches!(
             &told,
-            Some(Envelope::NotAuthorised { workspace_id: 701, reason })
-                if reason == "workspace membership changed"
+            Some(Envelope::NotAuthorised { workspace_id, reason })
+                if *workspace_id == WorkspaceId::from_u128(701)
+                    && reason == "workspace membership changed"
         ),
         "{told:?}"
     );
@@ -179,7 +181,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
             .is_err()
     );
     assert!(
-        tilo_relay::store::WorkspaceStore::open(state.path(), 701, true)
+        tilo_relay::store::WorkspaceStore::open(state.path(), WorkspaceId::from_u128(701), true)
             .unwrap()
             .load_retained()
             .unwrap()
@@ -195,8 +197,16 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
             .await
             .is_none()
     );
-    assert!(!relay.is_subscribed(701, &alice_a_key).await);
-    assert!(relay.is_subscribed(701, &bob_key).await);
+    assert!(
+        !relay
+            .is_subscribed(WorkspaceId::from_u128(701), &alice_a_key)
+            .await
+    );
+    assert!(
+        relay
+            .is_subscribed(WorkspaceId::from_u128(701), &bob_key)
+            .await
+    );
 
     let alice_reconnect = RelayClient::connect_to_pinned_host(
         client_endpoint().await,
@@ -208,16 +218,16 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     .await
     .unwrap();
     assert!(matches!(
-        subscribe(&alice_reconnect, 701).await,
+        subscribe(&alice_reconnect, WorkspaceId::from_u128(701)).await,
         Some(Envelope::NotAuthorised { .. })
     ));
     assert!(matches!(
-        subscribe(&alice_reconnect, 702).await,
+        subscribe(&alice_reconnect, WorkspaceId::from_u128(702)).await,
         Some(Envelope::Ready { .. })
     ));
     alice_reconnect
         .send(Envelope::Delta {
-            workspace_id: 701,
+            workspace_id: WorkspaceId::from_u128(701),
             author_device_public_key: alice_a_key,
             authored_at_ns: 2,
             delta: b"removed-writer".to_vec(),
@@ -242,13 +252,13 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     .await
     .unwrap();
     assert!(matches!(
-        subscribe(&alice_room_b, 702).await,
+        subscribe(&alice_room_b, WorkspaceId::from_u128(702)).await,
         Some(Envelope::NotAuthorised { .. })
     ));
 
     bob_client
         .send(Envelope::Delta {
-            workspace_id: 701,
+            workspace_id: WorkspaceId::from_u128(701),
             author_device_public_key: bob_key,
             authored_at_ns: 1,
             delta: b"after-removal".to_vec(),
@@ -281,8 +291,16 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     // governance restates who it admits, as the governor and a hosting
     // member do when they resume.
     for (room, devices, roots) in [
-        (701, vec![bob_key], vec![bob.user_pk]),
-        (702, vec![alice_a_key], vec![alice.user_pk]),
+        (
+            WorkspaceId::from_u128(701),
+            vec![bob_key],
+            vec![bob.user_pk],
+        ),
+        (
+            WorkspaceId::from_u128(702),
+            vec![alice_a_key],
+            vec![alice.user_pk],
+        ),
     ] {
         restarted
             .replace_governed_workspace_access(
@@ -307,7 +325,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     .await
     .unwrap();
     assert!(matches!(
-        subscribe(&bob_after_restart, 701).await,
+        subscribe(&bob_after_restart, WorkspaceId::from_u128(701)).await,
         Some(Envelope::Ready { .. })
     ));
     let alice_after_restart = connect(
@@ -317,7 +335,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     .await
     .expect("room 702 keeps Alice's root in the handshake union");
     assert!(matches!(
-        subscribe(&alice_after_restart, 701).await,
+        subscribe(&alice_after_restart, WorkspaceId::from_u128(701)).await,
         Some(Envelope::NotAuthorised { .. })
     ));
 }

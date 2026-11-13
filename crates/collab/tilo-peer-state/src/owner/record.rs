@@ -44,7 +44,7 @@ impl NativeAuthorityStorage {
     pub fn held(&self) -> impl Iterator<Item = (WorkspaceId, WorkspaceSlot)> + '_ {
         self.workspaces
             .iter()
-            .map(|(workspace, stored)| (*workspace, WorkspaceSlot(stored.workspace_id)))
+            .map(|(workspace, stored)| (*workspace, WorkspaceSlot::of_workspace(stored.workspace)))
     }
     /// Every workspace an enrollment is in flight into, with the local workspace
     /// it installs into, where it names one.
@@ -58,13 +58,8 @@ impl NativeAuthorityStorage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StoredWorkspace {
     pub version: u32,
-    /// The workspace this device holds. Files written before this field was
-    /// named for it carry `room`.
-    #[serde(rename = "room")]
+    /// The workspace this device holds.
     pub workspace: WorkspaceId,
-    /// The workspace's transport shard, as its record names it.
-    #[serde(rename = "workspace")]
-    pub workspace_id: u64,
     /// The host this workspace's commits are ordered by: a device of its owner,
     /// this device itself for a workspace its own host keeps. Written under
     /// `room_host`, the key builds before the vocabulary change wrote (and
@@ -133,7 +128,7 @@ impl StoredWorkspace {
             serde_json::to_vec(&(
                 record.version,
                 &record.workspace,
-                record.workspace_id,
+                record.workspace,
                 &record.workspace_host,
                 &record.device,
                 &record.enrollment,

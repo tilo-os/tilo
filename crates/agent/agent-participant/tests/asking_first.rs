@@ -32,6 +32,7 @@ use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, start_host, wait_for};
+use tilo_relay_protocol::WorkspaceId;
 
 const EBOOK: &str = "so.tilo.ebook";
 
@@ -166,7 +167,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "Careful agent",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: vec![EBOOK.into()],
         },
         now,

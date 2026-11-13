@@ -10,8 +10,7 @@ use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod files;
 
-/// A workspace's transport topic: the workspace id its hosts shard it by.
-pub type WorkspaceId = u64;
+pub use collab_types::WorkspaceId;
 
 /// Where a host reads its device custody from, when it keeps one beyond memory: the identity
 /// files of the person's own machine, the page's store on the web.

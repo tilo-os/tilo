@@ -17,13 +17,13 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_delivery_protocol::refusal::UnavailableReason;
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_relay::{ActionHostPlane, Envelope, RelayClient};
+use tilo_relay::{ActionHostPlane, Envelope, RelayClient, WorkspaceId};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
 
-const WS: u64 = 11;
+const WS: WorkspaceId = WorkspaceId::from_u128(11);
 
 async fn subscribed(
     addr: iroh_base::EndpointAddr,
@@ -37,7 +37,7 @@ async fn subscribed_in(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     device: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> RelayClient {
     let (client, ready) = subscribe(addr, user, device, workspace_id).await;
     assert!(
@@ -53,7 +53,7 @@ async fn subscribe(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     device: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> (RelayClient, Option<Envelope>) {
     let client = RelayClient::connect(
         client_endpoint().await,
@@ -393,7 +393,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     let host_key = host.device_pubkey();
     let agent = user.enrol("agent", DeviceCapabilities::member());
     let room = "6f1c2a3e-2b7d-4c55-9a0e-5d1f00c0ffee";
-    let ws = tilo_relay::room_workspace_id(room).unwrap();
+    let ws = tilo_relay::WorkspaceId::parse(room).unwrap();
     let actions = Arc::new(RecordingHost::default());
     let relay = Box::pin(spawn_relay_serving_apps(
         &user,
@@ -438,7 +438,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
             "Helper",
             [0x7c, 0x3a, 0xed],
             DelegateScope {
-                rooms: vec![room.into()],
+                workspaces: vec![WorkspaceId::parse(room).unwrap()],
                 apps: Vec::new(),
             },
             issued,

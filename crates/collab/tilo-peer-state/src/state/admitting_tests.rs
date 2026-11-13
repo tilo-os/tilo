@@ -3,6 +3,7 @@
 //! itself, and a device certified by a member's root is written in by any
 //! participant.
 use super::*;
+use crate::join::WorkspaceId;
 use crate::join::{
     InviteGrant, JoinChallenge, Role, VerifiedRedemption, issue_invitation, sign_join_proof,
     verify_join_proof,
@@ -40,8 +41,7 @@ fn redemption(
     let now_ns = now_ns(now);
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: issuer.clone(),
             role,
             nonce: [nonce; 16],

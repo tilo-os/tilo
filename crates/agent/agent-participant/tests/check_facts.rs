@@ -26,6 +26,7 @@ use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, UserIdentity};
 
 use crate::support::{WORKSPACE, enrol, start_host, wait_for};
+use tilo_relay_protocol::WorkspaceId;
 
 const VIDEO: &str = "so.tilo.video-editor";
 
@@ -85,7 +86,7 @@ fn delegate_to_ed(
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: vec![VIDEO.into()],
         },
         now,
@@ -311,7 +312,7 @@ async fn ed_planning_with(
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: vec![VIDEO.into()],
         },
         now,

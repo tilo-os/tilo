@@ -22,6 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::transport::Envelope;
+use tilo_relay_protocol::WorkspaceId;
 
 const KEY_CONTEXT: &str = "tilo-relay subscription position v2";
 const VERSION: u8 = 2;
@@ -32,7 +33,7 @@ pub const MAX_POSITION_BYTES: usize = 256;
 #[derive(Serialize, Deserialize)]
 struct Claims {
     version: u8,
-    workspace: u64,
+    workspace: WorkspaceId,
     device: [u8; 32],
     generation: [u8; 16],
     log: [u8; 16],
@@ -65,7 +66,7 @@ impl PositionIssuer {
     /// The position covering `resume` for `device` in `workspace`.
     pub fn issue(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         device: [u8; 32],
         generation: [u8; 16],
         resume: Resume,
@@ -89,7 +90,7 @@ impl PositionIssuer {
     pub fn verify(
         &self,
         position: &[u8],
-        workspace: u64,
+        workspace: WorkspaceId,
         device: &[u8; 32],
         generation: &[u8; 16],
     ) -> Option<Resume> {
@@ -116,7 +117,7 @@ impl PositionIssuer {
     /// The envelope telling `device` it holds `resume`.
     pub fn envelope(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         device: [u8; 32],
         generation: [u8; 16],
         resume: Resume,
@@ -139,38 +140,81 @@ mod tests {
             log: [4; 16],
             len: 42,
         };
-        let position = issuer.issue(7, [2; 32], [3; 16], resume);
+        let position = issuer.issue(
+            tilo_relay_protocol::WorkspaceId::from_u128(7),
+            [2; 32],
+            [3; 16],
+            resume,
+        );
         assert_eq!(
-            issuer.verify(&position, 7, &[2; 32], &[3; 16]),
+            issuer.verify(
+                &position,
+                tilo_relay_protocol::WorkspaceId::from_u128(7),
+                &[2; 32],
+                &[3; 16]
+            ),
             Some(resume)
         );
         assert_eq!(
-            issuer.verify(&position, 8, &[2; 32], &[3; 16]),
+            issuer.verify(
+                &position,
+                tilo_relay_protocol::WorkspaceId::from_u128(8),
+                &[2; 32],
+                &[3; 16]
+            ),
             None,
             "workspace"
         );
         assert_eq!(
-            issuer.verify(&position, 7, &[9; 32], &[3; 16]),
+            issuer.verify(
+                &position,
+                tilo_relay_protocol::WorkspaceId::from_u128(7),
+                &[9; 32],
+                &[3; 16]
+            ),
             None,
             "device"
         );
         assert_eq!(
-            issuer.verify(&position, 7, &[2; 32], &[9; 16]),
+            issuer.verify(
+                &position,
+                tilo_relay_protocol::WorkspaceId::from_u128(7),
+                &[2; 32],
+                &[9; 16]
+            ),
             None,
             "generation"
         );
         assert_eq!(
-            PositionIssuer::new(&[5; 32]).verify(&position, 7, &[2; 32], &[3; 16]),
+            PositionIssuer::new(&[5; 32]).verify(
+                &position,
+                tilo_relay_protocol::WorkspaceId::from_u128(7),
+                &[2; 32],
+                &[3; 16]
+            ),
             None,
             "another host"
         );
         let mut forged = position;
         forged[1] ^= 1;
         assert_eq!(
-            issuer.verify(&forged, 7, &[2; 32], &[3; 16]),
+            issuer.verify(
+                &forged,
+                tilo_relay_protocol::WorkspaceId::from_u128(7),
+                &[2; 32],
+                &[3; 16]
+            ),
             None,
             "tampered"
         );
-        assert_eq!(issuer.verify(&[], 7, &[2; 32], &[3; 16]), None);
+        assert_eq!(
+            issuer.verify(
+                &[],
+                tilo_relay_protocol::WorkspaceId::from_u128(7),
+                &[2; 32],
+                &[3; 16]
+            ),
+            None
+        );
     }
 }

@@ -40,6 +40,7 @@ pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES, WebLink};
 
 use crate::daemon::{Relay, RelayError, WebContext};
+use collab_types::WorkspaceId;
 
 /// Configuration of the browser listener.
 #[derive(Clone, Debug)]
@@ -1013,8 +1014,8 @@ async fn route(
         tilo_relay_protocol::web::WORKSPACE_DELETED_PATH => {
             let workspace: String = decode(&bytes)?;
             let deleted = web.workspaces.as_ref().is_some_and(|workspaces| {
-                tilo_relay_protocol::room_workspace_id(&workspace)
-                    .is_ok_and(|workspace_id| workspaces.deleted(workspace_id))
+                WorkspaceId::parse(&workspace)
+                    .is_some_and(|workspace_id| workspaces.deleted(workspace_id))
             });
             Ok(encoded(&deleted))
         }

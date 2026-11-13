@@ -95,7 +95,7 @@ fn door_agent(f: &Fixture) -> DoorAgent {
         device.user_public_key,
         key.verifying_key().to_bytes(),
         DOOR_ISSUE,
-        workspace_id().to_string(),
+        workspace_id(),
         now.saturating_sub(1),
         now.saturating_add(HOUR_NS),
     )

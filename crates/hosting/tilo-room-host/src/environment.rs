@@ -62,6 +62,7 @@ use serde::{Deserialize, Serialize};
 use tilo_lock::RwLockRecover as _;
 
 use crate::workspace_access::WorkspaceOperation;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The record's channel on the state plane: [`neighbour_wire::app_document_channel`]
 /// for the record's app and id. The state plane names a record by this alone;
@@ -77,7 +78,7 @@ pub fn record_channel(app: &str, record: &str) -> [u8; 32] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnvironmentScope {
     /// The workspace it was placed in, by this relay's workspace id.
-    pub workspace: u64,
+    pub workspace: WorkspaceId,
     /// The channel of its Browser record ([`record_channel`]).
     pub channel: [u8; 32],
 }
@@ -85,7 +86,7 @@ pub struct EnvironmentScope {
 impl EnvironmentScope {
     /// The scope of an environment placed in `workspace` for `record` of `app`.
     #[must_use]
-    pub fn for_record(workspace: u64, app: &str, record: &str) -> Self {
+    pub fn for_record(workspace: WorkspaceId, app: &str, record: &str) -> Self {
         Self {
             workspace,
             channel: record_channel(app, record),
@@ -103,7 +104,7 @@ impl EnvironmentScope {
     /// Every other plane — compute, an environment, content discovery,
     /// membership — is not its to ask.
     #[must_use]
-    pub const fn admits(self, workspace: u64, op: WorkspaceOperation) -> bool {
+    pub fn admits(self, workspace: WorkspaceId, op: WorkspaceOperation) -> bool {
         self.workspace == workspace
             && matches!(
                 op,
@@ -348,7 +349,7 @@ impl EnvironmentRegistry {
     /// The environments placed in `workspace` and still running: each
     /// device, what it reaches, and when its certificate expires.
     #[must_use]
-    pub fn placed_in(&self, workspace: u64) -> Vec<([u8; 32], EnvironmentScope, u64)> {
+    pub fn placed_in(&self, workspace: WorkspaceId) -> Vec<([u8; 32], EnvironmentScope, u64)> {
         let now = tilo_clock::unix_now_ns();
         self.table
             .devices
@@ -503,7 +504,7 @@ struct StoredDevice {
 
 #[derive(Serialize, Deserialize)]
 struct StoredScope {
-    workspace: u64,
+    workspace: WorkspaceId,
     /// The record's channel, hex.
     channel: String,
 }
@@ -594,10 +595,12 @@ fn load(path: &Path) -> Result<HashMap<[u8; 32], Kept>, Unreadable> {
 mod tests {
     use super::*;
 
-    const WORKSPACE: u64 = 7;
+    fn workspace() -> tilo_relay_protocol::WorkspaceId {
+        tilo_relay_protocol::WorkspaceId::from_u128(7)
+    }
 
     fn scope() -> EnvironmentScope {
-        EnvironmentScope::for_record(WORKSPACE, "so.tilo.browser", "record-1")
+        EnvironmentScope::for_record(workspace(), "so.tilo.browser", "record-1")
     }
 
     fn soon() -> u64 {
@@ -612,15 +615,18 @@ mod tests {
         );
         assert_ne!(
             scope().channel,
-            EnvironmentScope::for_record(WORKSPACE, "so.tilo.browser", "record-2").channel,
+            EnvironmentScope::for_record(workspace(), "so.tilo.browser", "record-2").channel,
             "another record is another channel"
         );
     }
 
     #[test]
     fn an_environment_reaches_its_workspace_and_no_other() {
-        assert!(scope().admits(WORKSPACE, WorkspaceOperation::State));
-        assert!(!scope().admits(WORKSPACE + 1, WorkspaceOperation::State));
+        assert!(scope().admits(workspace(), WorkspaceOperation::State));
+        assert!(!scope().admits(
+            tilo_relay_protocol::WorkspaceId::from_u128(8),
+            WorkspaceOperation::State
+        ));
     }
 
     #[test]
@@ -634,14 +640,14 @@ mod tests {
             WorkspaceOperation::RemoteAction,
             WorkspaceOperation::ChannelAccess,
         ] {
-            assert!(scope().admits(WORKSPACE, op), "{op:?}");
+            assert!(scope().admits(workspace(), op), "{op:?}");
         }
         for op in [
             WorkspaceOperation::Compute,
             WorkspaceOperation::Environment,
             WorkspaceOperation::ContentDiscovery,
         ] {
-            assert!(!scope().admits(WORKSPACE, op), "{op:?}");
+            assert!(!scope().admits(workspace(), op), "{op:?}");
         }
     }
 
@@ -721,7 +727,10 @@ mod tests {
             let relay = EnvironmentRegistry::at(&path);
             relay.place([1; 32], scope(), until).unwrap();
             relay.stop([2; 32], until).unwrap();
-            assert_eq!(relay.placed_in(WORKSPACE), vec![([1; 32], scope(), until)]);
+            assert_eq!(
+                relay.placed_in(workspace()),
+                vec![([1; 32], scope(), until)]
+            );
         }
         let restarted = EnvironmentRegistry::at(&path);
         assert_eq!(
@@ -735,7 +744,7 @@ mod tests {
             "and a restart keeps a stopped one refused"
         );
         assert_eq!(
-            restarted.placed_in(WORKSPACE),
+            restarted.placed_in(workspace()),
             vec![([1; 32], scope(), until)]
         );
     }

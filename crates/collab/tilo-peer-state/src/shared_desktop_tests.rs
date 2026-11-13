@@ -16,6 +16,7 @@ use tilo_desktop_model::{
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
+use crate::join::WorkspaceId;
 use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
 use crate::owner::testing::member_certificate as certificate;
 use crate::owner::testing::{now, receive};
@@ -108,8 +109,7 @@ fn workspace_with(role: Role) -> (StatePeer, String, SigningKey, DeviceCert) {
     let guest = certificate(&SigningKey::from_bytes(&[41; 32]), &guest_key, "guest");
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: WORKSPACE.into(),
+            workspace_id: WorkspaceId::parse(WORKSPACE).unwrap(),
             issuer: owner,
             role,
             nonce: [43; 16],

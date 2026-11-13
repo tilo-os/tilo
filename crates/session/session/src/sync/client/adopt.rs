@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
-use tilo_network_actor::{HostIdentity, NetCmd, NetEvent, workspace_topic_id};
+use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 
 use crate::channels::ChannelLink;
 use crate::engine::Engine;
@@ -24,7 +24,7 @@ pub(super) async fn redeem(
     request: Enrolling,
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
-    let topic = workspace_topic_id(request.workspace_id);
+    let topic = request.workspace_id;
     // Renewal precedes presentation: a device that slept past the end of its certificate joins with
     // the renewal, reissued here or signed by the person's devices, and a join that cannot renew
     // says why rather than presenting what the host refuses.
@@ -68,7 +68,6 @@ pub(super) async fn redeem(
                     identity,
                     owner.clone(),
                     request.workspace_id,
-                    topic,
                     hint,
                     tilo_clock::wall(),
                 ),
@@ -128,7 +127,7 @@ async fn through_door(
     name: &str,
 ) -> Result<tilo_peer_state::join::TransportHint, String> {
     use tilo_relay_protocol::entering::{Entered, Entering, Through};
-    let topic = workspace_topic_id(workspace);
+    let topic = workspace;
     let client = tilo_workspace_directory::client()?;
     let origin = door.origin().ascii_serialization();
     let host = tilo_relay_client::https::Origin::new(&client, &origin);
@@ -228,7 +227,7 @@ pub(super) async fn take_part_in(
     // drops it.
     plane
         .send(NetCmd::JoinWorkspace {
-            ws: workspace_topic_id(workspace_id),
+            ws: workspace_id,
             on_event: events.clone(),
         })
         .await
@@ -255,7 +254,7 @@ pub(super) async fn enter(
     request: Entering,
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
-    let topic = workspace_topic_id(request.workspace_id);
+    let topic = request.workspace_id;
     identity.current_material(topic)?;
     let owner = engine.owner().clone();
     let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
@@ -266,7 +265,6 @@ pub(super) async fn enter(
             identity,
             owner.clone(),
             request.workspace_id,
-            topic,
             request.host,
             tilo_clock::wall(),
         ),

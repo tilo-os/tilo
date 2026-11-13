@@ -80,6 +80,7 @@ pub mod task_budget;
 pub mod task_presentation;
 pub mod units;
 pub mod validator;
+pub mod workspace_id;
 pub mod workspace_record;
 
 /// The URI scheme that asks an app to open one of its own records
@@ -155,6 +156,7 @@ pub use validator::{
     ChannelState, DEFAULT_WORKSPACE, ValidationError, document_node, named_record_of_channel,
     named_records, validate_admitted_inbound_op, validate_inbound_op, validate_replayed_inbound_op,
 };
+pub use workspace_id::WorkspaceId;
 pub use workspace_record::{
     WORKSPACE_RECORDS, WorkspaceRecord, workspace_record, workspace_record_id,
 };

@@ -39,6 +39,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::device::{Entering, door_entry};
 use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
@@ -150,7 +151,7 @@ struct Work {
 /// since the heads it read last where it read before, until both read whole.
 async fn guest_takes_in(
     page: &Link,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     chat: &DocumentRoute,
     part: &DocumentRoute,
 ) -> Work {

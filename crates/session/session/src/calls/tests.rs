@@ -24,7 +24,7 @@ use tilo_channels::{
 };
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
-use tilo_network_actor::{HostIdentity, workspace_topic_id};
+use tilo_network_actor::HostIdentity;
 
 use super::*;
 use crate::sync::{Client, Entry, OwnPresence};
@@ -250,7 +250,7 @@ fn step(session: &mut Session) {
 /// One thing `from` said in the workspace.
 fn said(from: u8, msg: neighbour_wire::NeighbourMsg) -> Event {
     Event::Msg {
-        ws: workspace_topic_id(workspace_id()),
+        ws: workspace_id(),
         peer: public(from),
         msg: Box::new(msg),
     }

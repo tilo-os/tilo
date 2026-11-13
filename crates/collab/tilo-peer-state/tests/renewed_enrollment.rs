@@ -16,6 +16,7 @@
 )]
 
 use crate::common::endpoint;
+use tilo_peer_state::join::WorkspaceId;
 
 use std::time::Duration;
 
@@ -62,7 +63,7 @@ struct Admitted {
     _state: tempfile::TempDir,
     _directory: tempfile::TempDir,
     workspace: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     invitation: String,
     owner: tilo_peer_state::owner::NativeWorkspaceOwner,
     client: WorkspaceJoinClient,

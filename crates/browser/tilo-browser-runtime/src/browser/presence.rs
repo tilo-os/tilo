@@ -11,6 +11,7 @@ use ui::presence::PresenceKey;
 use wasm_bindgen::prelude::*;
 
 use crate::peer_sync::BoardView;
+use tilo_relay_protocol::WorkspaceId;
 
 use super::{Mount, error, with_mount_quietly};
 
@@ -225,9 +226,9 @@ fn selection_anchors(
 }
 
 impl Mount {
-    /// The workspace this mount draws, as the live plane numbers it.
-    fn workspace_number(&self) -> Option<u64> {
-        crate::peer::workspace_number(&self.workspace).ok()
+    /// The workspace this mount draws.
+    fn workspace_id(&self) -> Option<WorkspaceId> {
+        crate::peer::workspace_id(&self.workspace).ok()
     }
 
     /// Show the pointer shape the surface asks for where the pointer is, as
@@ -307,7 +308,7 @@ pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
 /// One object of another device's window page reached this page: the mounts showing
 /// `workspace` of `peer` build window `tab` again, so the frame that arrived is drawn, and ask for
 /// the frame that shows it.
-pub(crate) fn page_arrived(peer: u32, workspace: u64, tab: u64) {
+pub(crate) fn page_arrived(peer: u32, workspace: WorkspaceId, tab: u64) {
     super::MOUNTS.with(|mounts| {
         // A page that arrives while a mount is being served is drawn by the frame that service asks
         // for: never a second borrow.
@@ -315,7 +316,7 @@ pub(crate) fn page_arrived(peer: u32, workspace: u64, tab: u64) {
             return;
         };
         for mount in mounts.values() {
-            if mount.peer == Some(peer) && mount.workspace_number() == Some(workspace) {
+            if mount.peer == Some(peer) && mount.workspace_id() == Some(workspace) {
                 if let Some(desktop) = &mount.desktop {
                     desktop.handle.rebuild(tab);
                 }
@@ -325,7 +326,7 @@ pub(crate) fn page_arrived(peer: u32, workspace: u64, tab: u64) {
     });
 }
 
-pub(crate) fn heard(peer: u32, workspace: u64) {
+pub(crate) fn heard(peer: u32, workspace: WorkspaceId) {
     super::MOUNTS.with(|mounts| {
         // A word that arrives while a mount is being served is laid out by
         // the frame that service asks for: never a second borrow.
@@ -333,7 +334,7 @@ pub(crate) fn heard(peer: u32, workspace: u64) {
             return;
         };
         for mount in mounts.values() {
-            if mount.peer == Some(peer) && mount.workspace_number() == Some(workspace) {
+            if mount.peer == Some(peer) && mount.workspace_id() == Some(workspace) {
                 mount.window.request_redraw();
             }
         }

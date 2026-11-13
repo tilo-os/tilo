@@ -23,6 +23,7 @@ use web_time::Duration as Wait;
 use crate::session::{HOST_ITSELF, PeerConfig};
 use crate::{Cmd, Link, Outbox, TransportPhase};
 use crate::{MemoryPeerStore, PeerStore};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_session_core::remote::SessionActions;
 
 /// How long joining a workspace waits for its host to admit this device.
@@ -44,7 +45,7 @@ pub struct Device {
     /// The host's own device: whose device answers a workspace's own actions.
     host_cert: DeviceCert,
     /// The workspace the device entered.
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     /// What this device calls itself, as its host's journals name it.
     label: String,
 }
@@ -70,7 +71,7 @@ impl Device {
             ),
             cert: config.cert,
             host_cert: config.host_cert,
-            workspace_id: 0,
+            workspace_id: WorkspaceId::from_u128(0),
             label: label.to_owned(),
         }
     }
@@ -83,7 +84,7 @@ impl Device {
             peer,
             cert,
             host_cert,
-            workspace_id: 0,
+            workspace_id: WorkspaceId::from_u128(0),
             label: label.to_owned(),
         }
     }
@@ -130,8 +131,8 @@ impl Device {
         signer: Arc<dyn DeviceSigner>,
     ) -> Result<Self, CertifyError> {
         let workspace = sign_in.link.workspace_id();
-        tilo_relay_protocol::room_workspace_id(&workspace)
-            .map_err(|error| CertifyError::Request(error.to_string()))?;
+        WorkspaceId::parse(&workspace)
+            .ok_or_else(|| CertifyError::Request("the link names no workspace".to_string()))?;
         let entering = door.and_then(Door::workspace).map(|workspace| {
             tilo_relay_protocol::entering::Entering {
                 workspace,
@@ -177,7 +178,7 @@ impl Device {
 
     /// The workspace this device entered.
     #[must_use]
-    pub fn workspace_id(&self) -> u64 {
+    pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
 
@@ -200,10 +201,9 @@ impl Device {
     ///
     /// # Errors
     /// It is no workspace UUID, the session is closed, or its host did not admit this device.
-    pub async fn join(&self, workspace: &str) -> Result<u64, CertifyError> {
-        let id = tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| {
-            CertifyError::Request(format!("{workspace} names no workspace: {error}"))
-        })?;
+    pub async fn join(&self, workspace: &str) -> Result<WorkspaceId, CertifyError> {
+        let id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| CertifyError::Request(format!("{workspace} names no workspace")))?;
         self.peer
             .send(Cmd::Join(id))
             .map_err(|closed| CertifyError::Request(closed.to_string()))?;
@@ -216,7 +216,7 @@ impl Device {
     }
 
     /// Whether the session is in `workspace_id`, waiting for its host to say so.
-    pub async fn admitted(&self, workspace_id: u64) -> bool {
+    pub async fn admitted(&self, workspace_id: WorkspaceId) -> bool {
         let started = tilo_clock::now();
         loop {
             let status = self.peer.status();
@@ -273,10 +273,9 @@ impl Device {
         &self,
         workspace: &str,
         shown_as: &str,
-    ) -> Result<u64, HostRefusal> {
-        let id = tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| {
-            HostRefusal::malformed(format!("{workspace} names no workspace: {error}"))
-        })?;
+    ) -> Result<WorkspaceId, HostRefusal> {
+        let id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| HostRefusal::malformed(format!("{workspace} names no workspace")))?;
         if self.peer.status().workspaces.get(&id) == Some(&true) {
             return Ok(id);
         }
@@ -442,7 +441,7 @@ impl Device {
     /// The host did not answer, refused, or did not finish.
     pub async fn ask_host(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         target: RemoteActionTarget,
         arguments: Map<String, Value>,
         caller: &str,
@@ -478,7 +477,7 @@ impl Device {
 
     /// This device's actions in `workspace_id`, asked of the workspace's host.
     #[must_use]
-    pub fn actions(&self, workspace_id: u64) -> SessionActions {
+    pub fn actions(&self, workspace_id: WorkspaceId) -> SessionActions {
         SessionActions::new(&self.peer, workspace_id, self.host_cert.device_public_key)
     }
 
@@ -674,7 +673,7 @@ fn invitation_entering(
         tilo_peer_state::join_ledger::invitation_workspace(invitation, tilo_clock::unix_now_ns())
             .map_err(|error| format!("This invitation cannot be used: {error}"))?;
     Ok(tilo_relay_protocol::entering::Entering {
-        workspace,
+        workspace: workspace.to_string(),
         name: tilo_relay_protocol::web::kept(
             name,
             tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,

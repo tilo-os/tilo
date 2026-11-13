@@ -14,6 +14,7 @@ use crate::handshake::{Doorway, EntryFuture};
 use crate::workspace_access::person_device;
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
+use tilo_relay_protocol::WorkspaceId;
 
 /// A refusal of the join itself, after the door let the person in.
 const fn refused(reason: String) -> EnterRefusal {
@@ -88,7 +89,9 @@ impl Doorway for Workspaces {
                         &invitation,
                         tilo_clock::unix_now_ns(),
                     );
-                    if names.as_deref().ok() != Some(entering.workspace.as_str()) {
+                    if names.ok().map(|workspace| workspace.to_string()).as_deref()
+                        != Some(entering.workspace.as_str())
+                    {
                         return Entered::Refused(refused(
                             "the invitation is not for the workspace this device enters".to_owned(),
                         ));
@@ -328,7 +331,7 @@ impl Workspaces {
             tracing::debug!(%workspace, "an entry's channel request was not the device's own for the workspace's group");
             return;
         }
-        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return;
         };
         if !self

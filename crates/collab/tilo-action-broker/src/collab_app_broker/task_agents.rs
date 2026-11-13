@@ -26,7 +26,7 @@ pub(super) fn admit_task_delegation(admitted: &mut AdmittedJoinIdentity, task: T
 pub(super) fn verify_task_delegation(
     task: &TaskDelegation,
     cert: &tilo_user_identity::DeviceCert,
-    workspace: &str,
+    workspace: collab_types::WorkspaceId,
     now_ns: u64,
 ) -> Result<(), String> {
     task.verify(cert, workspace, now_ns)
@@ -116,7 +116,13 @@ pub(super) fn verify_task_agent_join(
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     let task = TaskDelegation::decode(&presentation.delegation)
         .map_err(|error| format!("task delegation refused: {error}"))?;
-    verify_task_delegation(&task, &cert, &route.cluster_id, now_ns)?;
+    verify_task_delegation(
+        &task,
+        &cert,
+        collab_types::WorkspaceId::parse(&route.cluster_id)
+            .ok_or("the task's workspace is not a workspace id")?,
+        now_ns,
+    )?;
     task.verify_agent_signature(
         &runtime_identity::collaboration_join_signing_bytes(&route.cluster_id),
         &presentation.proof,

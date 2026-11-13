@@ -21,7 +21,8 @@ use tilo_session_core::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
-use crate::peer::{JsRecord, js_error, workspace_number};
+use crate::peer::{JsRecord, js_error, workspace_id};
+use tilo_relay_protocol::WorkspaceId;
 
 /// `{kind: 'person' | 'agent', label, color: '#rrggbb', profile_ms}`: `profile_ms` when the
 /// person last changed their profile, as this page knows it (`0` for unknown).
@@ -198,7 +199,7 @@ struct Page {
     /// The session's sync, saying this page's word on each workspace's presence track.
     client: Rc<Client>,
     /// The workspaces the page shows, by topic.
-    workspaces: HashMap<Topic, String>,
+    workspaces: HashMap<WorkspaceId, String>,
     /// The wave this page said last, so the same one said again is the same wave.
     waved: Option<u32>,
     /// Semantic work its agents narrated since the mounts last took it, by workspace, admitted and
@@ -206,15 +207,15 @@ struct Page {
     interactions: HashMap<String, Vec<tilo_actions::SemanticInteraction>>,
     /// The doors this page asks the host's actions through, one per workspace: one session path,
     /// shared by the page's Rust and its JavaScript.
-    doors: RefCell<HashMap<u64, SessionActions>>,
+    doors: RefCell<HashMap<WorkspaceId, SessionActions>>,
     /// Opens a door: the session's remote actions (their wire and the pump answering them) load
     /// with the peer's code, which registers the page, and not with the start module, which only
     /// asks for a door once a peer is in.
-    open_door: fn(&Link, u64, [u8; 32]) -> SessionActions,
+    open_door: fn(&Link, WorkspaceId, [u8; 32]) -> SessionActions,
 }
 
 /// A door to `workspace`'s host actions over `handle`, with the host `host`.
-fn open_door(handle: &Link, workspace: u64, host: [u8; 32]) -> SessionActions {
+fn open_door(handle: &Link, workspace: WorkspaceId, host: [u8; 32]) -> SessionActions {
     SessionActions::new(handle, workspace, host)
 }
 
@@ -319,7 +320,7 @@ pub(crate) fn handle_of(id: u32) -> Option<Link> {
 
 /// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
 /// host: one session path per workspace, whichever of the page's callers asks.
-pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
+pub(crate) fn actions_of(id: u32, workspace: WorkspaceId) -> Option<SessionActions> {
     PAGES.with_borrow(|pages| {
         let page = pages.get(&id)?;
         let mut doors = page.doors.borrow_mut();
@@ -379,7 +380,7 @@ impl Page {
 /// one schedule. Answers when it next has something to say, in the page's own clock (`Date.now()`
 /// ms), or `0` when it has nothing.
 pub(crate) fn say(peer: u32, workspace: &str, value: &JsPresence) -> Result<f64, JsError> {
-    let number = workspace_number(workspace)?;
+    let number = workspace_id(workspace)?;
     PAGES.with_borrow_mut(|pages| {
         let page = pages
             .get_mut(&peer)
@@ -411,7 +412,7 @@ pub(crate) fn say(peer: u32, workspace: &str, value: &JsPresence) -> Result<f64,
 /// (`0` for nothing). A member the board forgot on the way, gone quiet, is taken down by the
 /// mounts that draw the workspace.
 pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
-    workspace_number(workspace)?;
+    workspace_id(workspace)?;
     let (next, forgot) = PAGES.with_borrow_mut(|pages| {
         let page = pages
             .get_mut(&peer)
@@ -439,7 +440,7 @@ pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
 /// Take one presence frame another member published in `workspace_id`: their word merges into the
 /// page's board for it, and the mounts that draw it ask for the frame that places what changed. A
 /// page with no board there takes none.
-pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
+pub(crate) fn hear(peer: u32, workspace_id: WorkspaceId, from: [u8; 32], body: &[u8]) {
     let changed = PAGES.with_borrow(|pages| {
         let page = pages.get(&peer)?;
         let workspace = page.workspaces.get(&workspace_id)?;
@@ -471,7 +472,7 @@ pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
 /// whose next frame shows it. Work from anyone else, or that does not hold, is dropped.
 pub(crate) fn narrated(
     peer: u32,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     from: [u8; 32],
     event: &tilo_relay_protocol::live::SemanticFrame,
 ) {
@@ -572,7 +573,7 @@ pub(crate) fn members(peer: u32, workspace: &str) -> Option<Vec<Shown>> {
 
 /// `peer` leaves `workspace`: the members take it down now.
 pub(crate) fn leave(peer: u32, workspace: &str) -> Result<(), JsError> {
-    let number = workspace_number(workspace)?;
+    let number = workspace_id(workspace)?;
     PAGES.with_borrow_mut(|pages| {
         let page = pages
             .get_mut(&peer)

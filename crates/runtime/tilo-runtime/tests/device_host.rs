@@ -27,6 +27,7 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
     ReceiptStatus,
 };
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_room_host::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
 use tilo_runtime::enter::Entered;
@@ -207,8 +208,8 @@ struct DeviceRuns {
 }
 
 impl Runs for DeviceRuns {
-    fn workspace(&self, workspace_id: u64) -> Option<String> {
-        (tilo_peer_state::join::room_workspace_id(&self.workspace).ok() == Some(workspace_id))
+    fn workspace(&self, workspace_id: WorkspaceId) -> Option<String> {
+        (tilo_desktop_model::WorkspaceId::parse(&self.workspace) == Some(workspace_id))
             .then(|| self.workspace.clone())
     }
 

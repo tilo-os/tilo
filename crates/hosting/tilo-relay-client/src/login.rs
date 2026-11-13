@@ -30,6 +30,7 @@ use crate::https;
 use crate::https::HttpClient;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::signer::DeviceSigner;
+use collab_types::WorkspaceId;
 
 /// A person's user root, hex, in `?pair=`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -306,7 +307,7 @@ pub struct Admission {
     /// The workspace's UUID.
     pub workspace: String,
     /// Its relay workspace.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// Its name.
     pub name: String,
     /// What the device's person may do there.

@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use tilo_desktop_model::WorkspaceId;
 use tilo_live::video::{Codec, VideoObject};
 use ui::a11y::{AccessNode, Role};
 use ui::kurbo::{Affine, Point, Rect};
@@ -76,7 +77,7 @@ pub(crate) struct Window {
     /// Why this page cannot show the window's pictures.
     failed: Option<String>,
     /// Where the window's input goes: the device hosting it, in the workspace its plane is of.
-    host: Option<(u64, [u8; 32])>,
+    host: Option<(WorkspaceId, [u8; 32])>,
     /// The person's input on the window since the host was last sent it, each a postcard-encoded
     /// [`neighbour_wire::input::InputEvent`].
     input: Vec<Vec<u8>>,
@@ -189,7 +190,7 @@ thread_local! {
 /// Take one object of the pictures of window `tab`, which `from` publishes on `workspace_id`'s
 /// plane for the page's peer `id`: the mounts drawing that workspace show what it changed.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn heard(id: u32, workspace_id: u64, from: [u8; 32], tab: u64, body: &[u8]) {
+pub(crate) fn heard(id: u32, workspace_id: WorkspaceId, from: [u8; 32], tab: u64, body: &[u8]) {
     let window = WINDOWS.with_borrow_mut(|windows| {
         Rc::clone(
             windows
@@ -228,7 +229,7 @@ pub(crate) fn tile(tab: u64, title: &str, app_id: &str) -> Option<TileHost> {
 /// The person's input on the windows this page draws since the last call, each to the device
 /// hosting its window: `(workspace, host, tab, event)`, `event` a postcard-encoded
 /// [`neighbour_wire::input::InputEvent`].
-pub(crate) fn take_input() -> Vec<(u64, [u8; 32], u64, Vec<u8>)> {
+pub(crate) fn take_input() -> Vec<(WorkspaceId, [u8; 32], u64, Vec<u8>)> {
     WINDOWS.with_borrow(|windows| {
         let mut out = Vec::new();
         for (tab, window) in windows {
@@ -677,7 +678,7 @@ mod tests {
         const HOST: [u8; 32] = [7; 32];
         let window = Rc::new(RefCell::new(Window::new()));
         window.borrow_mut().heard(&object(1, true, &[1]), counted);
-        window.borrow_mut().host = Some((3, HOST));
+        window.borrow_mut().host = Some((WorkspaceId::from_u128(3), HOST));
         WINDOWS.with_borrow_mut(|windows| windows.insert(TAB, Rc::clone(&window)));
         let mut view = WindowView::new(window, "Calculator", "org.gnome.Calculator");
         // The 1280 x 720 window drawn at half size in a 640 x 400 tile, 20 points above and below.
@@ -696,7 +697,7 @@ mod tests {
             !view.input(&cursor_moved(320.0, 5.0), 1.0, none),
             "the band above the picture is not the window"
         );
-        let sent: Vec<(u64, [u8; 32], u64, InputEvent)> = take_input()
+        let sent: Vec<(WorkspaceId, [u8; 32], u64, InputEvent)> = take_input()
             .into_iter()
             .map(|(workspace, host, tab, event)| {
                 let event = postcard::from_bytes(&event).expect("an input event");
@@ -707,13 +708,13 @@ mod tests {
             sent,
             vec![
                 (
-                    3,
+                    WorkspaceId::from_u128(3),
                     HOST,
                     TAB,
                     InputEvent::PointerMotion { x: 640.0, y: 360.0 }
                 ),
                 (
-                    3,
+                    WorkspaceId::from_u128(3),
                     HOST,
                     TAB,
                     InputEvent::PointerButton {
@@ -722,7 +723,7 @@ mod tests {
                     }
                 ),
                 (
-                    3,
+                    WorkspaceId::from_u128(3),
                     HOST,
                     TAB,
                     InputEvent::Key {

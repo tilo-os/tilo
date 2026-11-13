@@ -58,10 +58,8 @@ impl NativeWorkspaceOwner {
                 return Err("this device holds that workspace already".into());
             }
             let workspace = id.to_string();
-            let workspace_id =
-                crate::join::room_workspace_id(&workspace).map_err(|error| error.to_string())?;
             if let Some(host_hint) = &host_hint {
-                crate::owner::validate_host_hint(host_hint, &workspace, workspace_id, device)?;
+                crate::owner::validate_host_hint(host_hint, id, device)?;
             }
             let roster = vec![device.clone()];
             let mut peer = StatePeer::new(
@@ -98,7 +96,6 @@ impl NativeWorkspaceOwner {
                 StoredWorkspace {
                     version: 2,
                     workspace: id,
-                    workspace_id,
                     workspace_host: device.clone(),
                     device: device.clone(),
                     // No other device admitted this one into its own workspace, so
@@ -182,8 +179,7 @@ impl NativeWorkspaceOwner {
         }
         crate::owner::validate_host_hint(
             &hint,
-            &workspace.to_string(),
-            candidate.record.workspace_id,
+            candidate.record.workspace,
             &candidate.record.device,
         )?;
         let mut record = candidate.record.clone();

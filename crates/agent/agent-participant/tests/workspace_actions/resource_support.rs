@@ -10,7 +10,7 @@ pub(super) async fn open_admitted_peer(
     host: &Device,
     cluster_id: &str,
 ) -> Browser {
-    let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
+    let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
     let peer = start_peer(
         Host::at(hosted.relay.node_addr()),
         device.cert.clone(),

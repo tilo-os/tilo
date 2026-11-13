@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_broker_core::services::TrackerRun;
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::join::WorkspaceId;
 use tilo_peer_state::join::task_delegation::{MAX_TASK_DELEGATION_NS, TaskDelegation};
 
 /// The address every door connection's run is named under: no record holds it.
@@ -206,7 +207,7 @@ pub(crate) fn mint(
         certificate.user_public_key,
         agent_key.verifying_key().to_bytes(),
         issue.clone(),
-        admitted.workspace.to_owned(),
+        WorkspaceId::parse(admitted.workspace).ok_or("the admission names no workspace")?,
         now_ns,
         now_ns.saturating_add(MAX_TASK_DELEGATION_NS),
     )

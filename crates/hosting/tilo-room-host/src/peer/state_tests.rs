@@ -13,7 +13,11 @@
 use super::private_transport_tests::certified_device;
 use super::*;
 use crate::workspace::{Membership, WorkspaceRuntime};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{RevocationList, UserIdentity};
+
+/// The workspace the fixtures here hold.
+const WS: WorkspaceId = WorkspaceId::from_u128(7);
 
 mod channel_replay;
 mod crowd_replay;
@@ -112,7 +116,7 @@ impl Fixture {
             unreachable!("the fixture's envelopes are changes")
         };
         Envelope::Commit {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             op,
             author_device_public_key: self.source.peer.device_public_key,
             authored_at_ns: 1,
@@ -146,12 +150,16 @@ impl Fixture {
         delivery_capacity: usize,
         workers: Arc<tokio::sync::Semaphore>,
     ) -> Self {
-        Self::with_delivery_capacity_workers_and_workspace(delivery_capacity, workers, 7)
+        Self::with_delivery_capacity_workers_and_workspace(
+            delivery_capacity,
+            workers,
+            WorkspaceId::from_u128(7),
+        )
     }
     fn with_delivery_capacity_workers_and_workspace(
         delivery_capacity: usize,
         workers: Arc<tokio::sync::Semaphore>,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     ) -> Self {
         let (root, user) = UserIdentity::generate("owner", 1);
         let (author, source_key) = certified_device(&root, user.public_key, "author");
@@ -247,7 +255,7 @@ impl Fixture {
             }
         };
         Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: self.source.peer.device_public_key,
             authored_at_ns: u64::from(kind),
             delta,
@@ -268,7 +276,7 @@ impl Fixture {
         enqueue_state(
             &self.workspace,
             Envelope::Delta {
-                workspace_id: 7,
+                workspace_id: WorkspaceId::from_u128(7),
                 author_device_public_key: self.source.peer.device_public_key,
                 authored_at_ns,
                 delta: crate::coedit::CoeditPayload::Checkpoint {
@@ -480,7 +488,7 @@ async fn the_hosts_own_checkpoint_reaches_a_device_that_took_one_this_session() 
     );
     for time in 2..=3_u64 {
         let rebased = Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [9; 32],
             authored_at_ns: time,
             delta: crate::coedit::CoeditPayload::Checkpoint {
@@ -623,7 +631,7 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         crate::store::test_barrier::install(fixture.store.root(), "state-persist");
     let session = fixture.ctx(Side::Source, None, None, None);
     let commit = fixture.commit(1, [5; 16]);
-    let mut committing = Box::pin(handle_commit(&fixture.source.peer, &session, &[7], commit));
+    let mut committing = Box::pin(handle_commit(&fixture.source.peer, &session, &[WS], commit));
     tokio::select! {
         _ = &mut committing => panic!("a commit was acknowledged before it was retained"),
         reached = reached => reached.unwrap(),
@@ -652,14 +660,14 @@ async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
     let mut first = Box::pin(handle_commit(
         &fixture.source.peer,
         &session,
-        &[7],
+        &[WS],
         commit.clone(),
     ));
     tokio::select! {
         _ = &mut first => panic!("a commit was acknowledged before it was retained"),
         reached = reached => reached.unwrap(),
     }
-    let mut copy = Box::pin(handle_commit(&fixture.source.peer, &session, &[7], commit));
+    let mut copy = Box::pin(handle_commit(&fixture.source.peer, &session, &[WS], commit));
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(200), &mut copy)
             .await
@@ -697,7 +705,7 @@ async fn two_commits_with_a_burst_of_one(stranger: Option<[u8; 32]>) -> Vec<Opti
         let commit = fixture.commit(index, op);
         let answer = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            handle_commit(&fixture.source.peer, &session, &[7], commit),
+            handle_commit(&fixture.source.peer, &session, &[WS], commit),
         )
         .await
         .unwrap()
@@ -1109,7 +1117,7 @@ async fn failed_sync_fallback_does_not_advance_the_materialized_retry_fence() {
         .put(automerge::ROOT, "value", "durable sync")
         .unwrap();
     let envelope = Envelope::Delta {
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         author_device_public_key: [0; 32],
         authored_at_ns: 1,
         delta: document.save_incremental(),
@@ -1232,7 +1240,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
                 lag: Box::leak(Box::default()),
             };
-            handle_sync_request(&source.peer, &session, 7, vec![]).await
+            handle_sync_request(&source.peer, &session, WorkspaceId::from_u128(7), vec![]).await
         });
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), &mut task)
@@ -1290,7 +1298,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
             else {
                 panic!("unexpected sync reply")
             };
-            assert_eq!(workspace_id, 7);
+            assert_eq!(workspace_id, WorkspaceId::from_u128(7));
             let mut received = automerge::AutoCommit::new();
             tilo_automerge::ApplyIncoming::load_incoming(&mut received, &delta_since).unwrap();
             assert_eq!(received.get_heads(), expected_heads);
@@ -1315,9 +1323,14 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         .await
         .remove_subscriber(&fixture.source.peer.device_public_key);
     let session = fixture.ctx(Side::Source, None, None, None);
-    handle_sync_request(&fixture.source.peer, &session, 7, vec![])
-        .await
-        .unwrap();
+    handle_sync_request(
+        &fixture.source.peer,
+        &session,
+        WorkspaceId::from_u128(7),
+        vec![],
+    )
+    .await
+    .unwrap();
     let (replacement, _rx) = mpsc::channel(2);
     fixture.workspace.lock().await.add_subscriber(Subscriber {
         device_public_key: fixture.source.peer.device_public_key,
@@ -1426,7 +1439,7 @@ async fn retained_transactions_release_global_workers_between_quanta() {
 impl Fixture {
     async fn subscribe_result(
         &self,
-    ) -> Result<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>), PeerError> {
+    ) -> Result<(WorkspaceId, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>), PeerError> {
         let (state_tx, _state_rx) = mpsc::channel(32);
         let session = self.ctx(Side::Recipient, Some(&state_tx), None, None);
         let mut replay = None;
@@ -1442,7 +1455,9 @@ impl Fixture {
         replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
     }
 
-    async fn subscribe_ticket(&self) -> (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>) {
+    async fn subscribe_ticket(
+        &self,
+    ) -> (WorkspaceId, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>) {
         self.subscribe_result().await.unwrap()
     }
 }
@@ -2062,7 +2077,7 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
     assert_eq!(
         reader.read_next().await.unwrap(),
         Some(EnvelopeV2::State(Envelope::Ready {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             pending_deltas: 25,
             records_when_opened: false,
         }))

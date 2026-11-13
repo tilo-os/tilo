@@ -30,6 +30,7 @@ use super::{
 };
 use crate::host_authority::HostOperation;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// One pre-admission to record: the owner's signed grant and, when the
 /// invitation is for one person only, that person.
@@ -73,7 +74,7 @@ impl Presented {
 
     /// The workspace the invitation names, read without trusting it: the
     /// redemption is then verified against what that workspace issued.
-    fn workspace(&self, now: u64) -> Result<String, CollaborationError> {
+    fn workspace(&self, now: u64) -> Result<WorkspaceId, CollaborationError> {
         tilo_peer_state::join_ledger::invitation_workspace(&self.invitation, now)
     }
 
@@ -237,7 +238,7 @@ impl Workspaces {
             } => {
                 let request = IssueInvitationRequest {
                     request_id,
-                    role: role,
+                    role,
                     recipient_user_public_key: recipient,
                     invitee_name: None,
                     expires_at_ns,
@@ -425,7 +426,7 @@ impl Workspaces {
                     SetMemberRoleRequest {
                         request_id,
                         user_public_key,
-                        role: role,
+                        role,
                     },
                 )
                 .await?;
@@ -1023,9 +1024,9 @@ impl Workspaces {
     async fn inspected(&self, invitation: &[u8]) -> Result<JoinReply, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let workspace = self
-            .workspace(&tilo_peer_state::join_ledger::invitation_workspace(
-                invitation, now,
-            )?)
+            .workspace(
+                &tilo_peer_state::join_ledger::invitation_workspace(invitation, now)?.to_string(),
+            )
             .await?;
         let workspace = workspace.lock().await;
         let join = workspace
@@ -1136,7 +1137,7 @@ impl Workspaces {
         let request_id = presented.request_id;
         let device = presented.device();
         let proof_digest = presented.digest()?;
-        let governed = self.workspace(&identity).await?;
+        let governed = self.workspace(&identity.to_string()).await?;
         let mut workspace = governed.lock().await;
         // A page that asked again under the same request — a reload, a lost
         // answer — hears what became of it, not that its invitation is spent.
@@ -1198,9 +1199,7 @@ impl Workspaces {
                 collab_types::role::Role::Moderator => Role::Moderator,
                 collab_types::role::Role::Commenter => Role::Commenter,
                 collab_types::role::Role::Viewer => Role::Viewer,
-                collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
-                    Role::Editor
-                }
+                collab_types::role::Role::Owner | collab_types::role::Role::Editor => Role::Editor,
             },
         })
     }
@@ -1223,7 +1222,7 @@ impl Workspaces {
         let proof_digest = presented.digest()?;
         let (answer, answered) = tokio::sync::oneshot::channel();
         let first = self.queue_admission(
-            &workspace,
+            &workspace.to_string(),
             QueuedAdmission {
                 presented,
                 proof_digest,
@@ -1236,7 +1235,7 @@ impl Workspaces {
             // Its own task: a page that goes away mid-pass must not cut off
             // the answers of everyone else in it.
             let workspaces = self.clone();
-            tokio::spawn(async move { workspaces.admit_queued(&workspace).await });
+            tokio::spawn(async move { workspaces.admit_queued(&workspace.to_string()).await });
         }
         answered
             .await
@@ -1400,10 +1399,8 @@ impl Workspaces {
         join: &QueuedAdmission,
         invites: &mut std::collections::BTreeSet<[u8; 32]>,
         now: u64,
-    ) -> Result<
-        (VerifiedRedemption, String, Role),
-        Box<Result<JoinReply, CollaborationError>>,
-    > {
+    ) -> Result<(VerifiedRedemption, String, Role), Box<Result<JoinReply, CollaborationError>>>
+    {
         let redemption = join
             .presented
             .redeem(workspace, now)

@@ -20,6 +20,7 @@ use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceH
 use tilo_user_identity::DeviceCert;
 
 use super::{APP, certificate};
+use collab_types::WorkspaceId;
 
 /// Longest a join challenge stays open.
 const CHALLENGE_NS: u64 = 60_000_000_000;
@@ -32,7 +33,7 @@ pub struct TestGovernor {
     host_key: SigningKey,
     /// The host is a dedicated certified host, not the governor itself.
     certified_host: bool,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     generation: u64,
     outgoing: Vec<Vec<u8>>,
     /// What the last commit published: the whole checkpoint after
@@ -77,10 +78,9 @@ impl TestGovernor {
         let mut host = certificate(&person, &host_key, "Certified host");
         host.capabilities.can_act_as_host = true;
         tilo_user_identity::sign_device_cert(&mut host, &person).unwrap();
-        let workspace = uuid::Builder::from_random_bytes(random())
-            .into_uuid()
-            .to_string();
-        let workspace_id = tilo_relay_protocol::room_workspace_id(&workspace).unwrap();
+        let workspace = uuid::Builder::from_random_bytes(random()).into_uuid();
+        let workspace_id = WorkspaceId::from(workspace);
+        let workspace = workspace.to_string();
         let mut peer = StatePeer::new(
             &workspace,
             governor.clone(),
@@ -156,8 +156,8 @@ impl TestGovernor {
             return Err("interactive fixture custody cannot govern this workspace".into());
         }
         let now = tilo_clock::wall();
-        let workspace_id =
-            tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| error.to_string())?;
+        let workspace_id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| "the fixture's workspace is not a workspace id".to_string())?;
         let mut peer = StatePeer::new(
             workspace,
             governor.clone(),
@@ -209,7 +209,7 @@ impl TestGovernor {
         self.peer.workspace_id()
     }
     #[must_use]
-    pub fn workspace_id(&self) -> u64 {
+    pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
     #[must_use]
@@ -250,7 +250,6 @@ impl TestGovernor {
             } else {
                 WorkspaceHostMode::NativeInteractiveWorkspaceOwner
             },
-            room: self.workspace().into(),
             workspace_id: self.workspace_id,
             endpoint_addr,
             host_user_public_key: self.host.user_public_key,
@@ -274,7 +273,6 @@ impl TestGovernor {
         let signed = join::issue_invitation(
             join::InviteGrant {
                 workspace_id: self.workspace_id,
-                room: self.workspace().into(),
                 issuer: self.host.clone(),
                 role,
                 nonce: random(),
@@ -578,7 +576,6 @@ impl TestGovernor {
             invite_id: redemption.join().invite_id(),
             device_cert: cert,
             role: redemption.join().grant().role,
-            room: self.workspace().into(),
             workspace_id: self.workspace_id,
             host: self.host.clone(),
             certified_roster: self.peer.certificates(),

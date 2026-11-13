@@ -2,6 +2,7 @@
 //! and withdrawn only through governed changes, and never acting beyond
 //! their installer or their grant.
 
+use crate::join::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
 
@@ -68,7 +69,7 @@ pub(super) fn bot_delegation(
         "Discord Bridge",
         [88, 101, 242],
         DelegateScope {
-            rooms: vec![workspace.into()],
+            workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
             apps: vec![],
         },
         ns(now.checked_sub(Duration::from_secs(1)).unwrap()),

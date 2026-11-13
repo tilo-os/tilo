@@ -472,7 +472,7 @@ impl Presence {
 
     /// The topic of the workspace `workspace`, while this session takes part in it.
     #[must_use]
-    pub fn workspace_topic(&self, workspace: &str) -> Option<Topic> {
+    pub fn workspace_of(&self, workspace: &str) -> Option<Topic> {
         self.plane
             .borrow()
             .workspaces

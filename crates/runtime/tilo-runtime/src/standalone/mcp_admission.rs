@@ -1,6 +1,6 @@
 //! Exact selected-workspace material for a single runtime MCP execution.
 //! Uses existing custody and enrollment; never enrolls, provisions or grants.
-use super::{Arc, Connect, Joined, WorkspaceId, workspace_topic};
+use super::{Arc, Connect, Joined, WorkspaceId};
 use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
 
@@ -121,7 +121,7 @@ impl Joined {
     ) -> Result<(DeviceCert, (tilo_peer_state::join::TransportHint, u64)), String> {
         // Read apart, so a custody that no longer matches the enrollment is
         // a confirmed change rather than a read that failed.
-        let (certificate, _) = self.custody.current_material(workspace_topic(workspace)?)?;
+        let (certificate, _) = self.custody.current_material(workspace)?;
         let enrollment = self.owner.with_current(workspace, |view| {
             Ok((view.transport_hint()?.clone(), view.continuity()))
         })?;

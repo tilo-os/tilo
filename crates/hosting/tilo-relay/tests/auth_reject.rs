@@ -21,6 +21,7 @@ use tilo_user_identity::{
 };
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
+use tilo_relay::WorkspaceId;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -39,7 +40,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         let relay = Box::pin(spawn_relay(
             &alice,
             alice_relay_dev,
-            &[1],
+            &[WorkspaceId::from_u128(1)],
             &[alice_ws_member.device_pubkey()],
         ))
         .await;
@@ -91,7 +92,13 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             revocations: revs,
         };
         let relay = crate::common::start_relay(cfg, identity).await.unwrap();
-        crate::common::admit_members(&relay, 9, &[good_dev.device_pubkey()], &state_root).await;
+        crate::common::admit_members(
+            &relay,
+            WorkspaceId::from_u128(9),
+            &[good_dev.device_pubkey()],
+            &state_root,
+        )
+        .await;
         let addr = relay.node_addr();
 
         // The revoked device tries to connect — must fail.
@@ -151,7 +158,9 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         .await
         .unwrap();
         client
-            .send(tilo_relay::Envelope::Subscribe { workspace_id: 33 })
+            .send(tilo_relay::Envelope::Subscribe {
+                workspace_id: WorkspaceId::from_u128(33),
+            })
             .unwrap();
         let _ = tilo_test_env::within("a message on client", client.recv()).await;
 
@@ -199,7 +208,13 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     )
     .await
     .unwrap();
-    crate::common::admit_members(&relay, 34, &[device_key], state.path()).await;
+    crate::common::admit_members(
+        &relay,
+        WorkspaceId::from_u128(34),
+        &[device_key],
+        state.path(),
+    )
+    .await;
     let client = RelayClient::connect(
         client_endpoint().await,
         relay.node_addr(),
@@ -211,7 +226,9 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     .await
     .unwrap();
     client
-        .send(tilo_relay::Envelope::Subscribe { workspace_id: 34 })
+        .send(tilo_relay::Envelope::Subscribe {
+            workspace_id: WorkspaceId::from_u128(34),
+        })
         .unwrap();
     assert!(matches!(
         tilo_test_env::within("the subscription", client.recv()).await,

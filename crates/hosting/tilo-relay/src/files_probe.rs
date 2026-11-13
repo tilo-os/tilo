@@ -2,6 +2,7 @@
 //! but never publish a ticket or refresh the user's registry as a side effect.
 use std::path::Path;
 
+use crate::WorkspaceId;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use tilo_user_identity::{IdentityPaths, persist};
@@ -9,7 +10,7 @@ use tilo_user_identity::{IdentityPaths, persist};
 #[derive(Debug, Serialize)]
 struct FilesStatus {
     schema_version: u8,
-    relay_workspace_id: u64,
+    relay_workspace_id: WorkspaceId,
     files_workspace_id: uuid::Uuid,
     files_endpoint_id: String,
     relay_service_id: String,
@@ -17,7 +18,7 @@ struct FilesStatus {
 
 fn public_status(
     registration: &tilo_relay::transport::ContentPeerRegistration,
-    relay_workspace_id: u64,
+    relay_workspace_id: WorkspaceId,
     service: [u8; 32],
 ) -> Result<FilesStatus> {
     anyhow::ensure!(
@@ -39,7 +40,7 @@ pub(super) fn discover(
     root: &Path,
     device: &str,
     service: &str,
-    workspace: u64,
+    workspace: WorkspaceId,
     registry: Option<&Path>,
 ) -> Result<tilo_relay::transport::ContentPeerRegistration> {
     let paths = IdentityPaths::under(root);
@@ -131,7 +132,7 @@ pub(super) fn run(
     root: &Path,
     device: &str,
     service: &str,
-    workspace: u64,
+    workspace: WorkspaceId,
     registry: Option<&Path>,
 ) -> Result<()> {
     let registration = discover(root, device, service, workspace, registry)?;
@@ -154,7 +155,16 @@ mod tests {
     fn missing_credentials_do_not_create_an_identity_or_registry() {
         let dir = tempfile::tempdir().expect("isolated profile");
         let root = dir.path().join("identity");
-        assert!(run(&root, &hex::encode([1; 32]), &hex::encode([2; 32]), 3, None).is_err());
+        assert!(
+            run(
+                &root,
+                &hex::encode([1_u8; 32]),
+                &hex::encode([2_u8; 32]),
+                WorkspaceId::from_u128(3),
+                None
+            )
+            .is_err()
+        );
         assert!(!root.exists());
     }
 
@@ -171,11 +181,12 @@ mod tests {
             ticket: encoded.clone(),
             relay_service_id: [9; 32],
         };
-        let status = public_status(&registration, 10, [9; 32]).expect("matching service");
+        let status = public_status(&registration, WorkspaceId::from_u128(10), [9; 32])
+            .expect("matching service");
         assert_eq!(status.files_workspace_id, ticket.workspace_id());
         let json = serde_json::to_string(&status).expect("public JSON");
         assert!(!json.contains(&encoded));
         assert!(!json.contains("ticket"));
-        assert!(public_status(&registration, 10, [11; 32]).is_err());
+        assert!(public_status(&registration, WorkspaceId::from_u128(10), [11; 32]).is_err());
     }
 }

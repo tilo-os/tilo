@@ -56,6 +56,7 @@ pub use connect::{SessionMemberHost, member_host};
 use connect::{connect, link_error};
 use entry::{Refusal, refusal};
 use governance::HostGovernance;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -133,7 +134,7 @@ type CustodyEntry = ([u8; 32], Vec<u8>, [u8; 32], neighbour_wire::Retention);
 /// The workspace id a session asks the host's own operations under: none of its workspaces, the
 /// host itself (creating, listing and entering the person's workspaces). Its answers come back
 /// from the host's device under the same id.
-pub const HOST_ITSELF: u64 = 0;
+pub const HOST_ITSELF: WorkspaceId = WorkspaceId::nil();
 
 /// What a session's task is told: the client's own commands, and the transport's own.
 #[expect(
@@ -144,19 +145,22 @@ enum Command {
     /// One of the client's commands.
     Client(Cmd),
     /// The host answered the placement of this workspace.
-    Placed(u64),
+    Placed(WorkspaceId),
     /// What asking the host for `workspace_id`'s live plane, and joining it,
     /// came to: the plane itself, except on wasm, where the page's carrier
     /// cannot travel in a command and waits in [`plane::arrived`].
     #[cfg(not(target_arch = "wasm32"))]
-    PlaneJoined(u64, Result<Arc<tilo_live::plane::Plane>, plane::Failed>),
+    PlaneJoined(
+        WorkspaceId,
+        Result<Arc<tilo_live::plane::Plane>, plane::Failed>,
+    ),
     #[cfg(target_arch = "wasm32")]
-    PlaneJoined(u64),
+    PlaneJoined(WorkspaceId),
     /// The plane of `workspace_id` heard something: drain it.
-    PlaneHeard(u64),
+    PlaneHeard(WorkspaceId),
     /// The plane of `workspace_id` ended: the relay closed it, or the plane
     /// no longer admits what it reads.
-    PlaneEnded(u64),
+    PlaneEnded(WorkspaceId),
 }
 
 /// What sealing a live frame came to.
@@ -349,7 +353,7 @@ struct Answered {
 
 /// A document the host delivered, waiting for its workspace's replica to decide it.
 struct Arrived {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     message: neighbour_wire::NeighbourMsg,
     route: DocumentRoute,
@@ -370,7 +374,7 @@ struct Task {
     dial: Dial,
     /// What this session reports to its links.
     reports: Arc<Reports>,
-    workspaces: BTreeSet<u64>,
+    workspaces: BTreeSet<tilo_relay_protocol::WorkspaceId>,
     /// Whether the host deleted the last workspace this session held: it has
     /// nothing left to be admitted to, so it stays done instead of dialling a
     /// host that only ends the connection again.
@@ -380,15 +384,15 @@ struct Task {
     /// keys or plane changed since it last looked, and every one on each
     /// channel tick. A page in many workspaces pays for the ones that
     /// changed, not for all of them on every frame it reads.
-    planes_due: BTreeSet<u64>,
+    planes_due: BTreeSet<WorkspaceId>,
     /// Governance frames received and not admitted yet, admitted together
     /// ([`Self::admit_governance`]).
     governance_batch: Option<inbound::GovernanceBatch>,
     /// What this device keeps of each workspace's content ([`Cmd::KeepContent`]).
-    kept: BTreeMap<u64, Arc<dyn Kept>>,
+    kept: BTreeMap<WorkspaceId, Arc<dyn Kept>>,
     /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
-    placing: BTreeMap<u64, (String, String)>,
+    placing: BTreeMap<WorkspaceId, (String, String)>,
     /// This page's own live plane per joined workspace
     /// ([`crate::session::plane`]).
     planes: plane::Planes,
@@ -429,16 +433,16 @@ struct Task {
     /// The host's last position per workspace, presented when resubscribing so
     /// the host replays only what came after it. Kept for the session task's
     /// lifetime only: it describes what this page has received.
-    positions: BTreeMap<u64, Vec<u8>>,
+    positions: BTreeMap<WorkspaceId, Vec<u8>>,
     /// The on-demand records this page opened, by retained channel: opened
     /// again after every resubscription.
-    opened_records: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
+    opened_records: BTreeMap<[u8; 32], (WorkspaceId, DocumentRoute)>,
     /// The routes this session was asked to open ([`Cmd::OpenRoute`]):
     /// in a workspace that sends records when opened, each is opened as a
     /// record too, so it arrives.
     opened_routes: BTreeSet<DocumentRoute>,
     /// The workspaces whose host said they send records only when opened.
-    when_opened: BTreeSet<u64>,
+    when_opened: BTreeSet<WorkspaceId>,
     /// Each waits for the writes that were in this device's custody when it was called, and
     /// completes with the host's refusal of any of them.
     barriers: Vec<(BTreeSet<[u8; 32]>, Option<String>, Completion)>,
@@ -446,11 +450,11 @@ struct Task {
     sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::custody::Sending>,
     /// Writes the owner holds for an app surface this page does not have, by that surface: the
     /// routes the host replays once it arrived.
-    awaiting_surface: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
+    awaiting_surface: BTreeMap<[u8; 32], (WorkspaceId, DocumentRoute)>,
     /// Whether an app surface arrived since the session last asked for what waited for one.
     surfaces_arrived: bool,
     /// Compactions the host asked for and this session has not answered yet.
-    compactions: Vec<(u64, [u8; 16], DocumentRoute)>,
+    compactions: Vec<(WorkspaceId, [u8; 16], DocumentRoute)>,
     /// Compactions committed for the host's requests, each with the entries delivered before
     /// it, answered once custody sends them ([`Self::answer_compactions`]).
     answering: Vec<Answering>,
@@ -495,7 +499,7 @@ struct Task {
     /// host subscribed this connection to them, so it takes what the page
     /// says there — its certificate ([`Self::introduce`]) and its channels'
     /// governance ([`Self::send_governance`]) — while the replay runs.
-    begun: BTreeSet<u64>,
+    begun: BTreeSet<WorkspaceId>,
     /// The records that landed in a workspace whose governance, as this
     /// device's replica holds it, did not admit this device yet, with the
     /// author of the write that landed last: this device reads a record as the
@@ -504,12 +508,12 @@ struct Task {
     unadmitted: BTreeMap<DocumentRoute, Option<[u8; 32]>>,
     /// The workspaces whose governance, as this device's replica holds it,
     /// admitted this device on this session.
-    admitted_here: BTreeSet<u64>,
+    admitted_here: BTreeSet<WorkspaceId>,
 }
 
 /// One action frame held until the host admits this session to its workspace.
 struct HeldAction {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     to: [u8; 32],
     frame: Vec<u8>,
 }
@@ -519,7 +523,7 @@ struct HeldAction {
 const MAX_DELIVERED_ENTRIES: usize = 1 << 17;
 /// A compaction request this device compacted for: the workspace, the request, the record and
 /// the entries delivered for it before.
-type Answering = (u64, [u8; 16], DocumentRoute, Vec<[u8; 32]>);
+type Answering = (WorkspaceId, [u8; 16], DocumentRoute, Vec<[u8; 32]>);
 
 /// Open compaction requests kept; the oldest goes first.
 const MAX_COMPACTIONS: usize = 16;
@@ -568,7 +572,7 @@ impl Task {
     /// request only once they hold its certificate, so a page told only at
     /// `Ready` got its keys a whole replay late. Returns `false` when the
     /// session could not take it.
-    fn introduce(&mut self, client: &RelayClient, workspace_id: u64) -> bool {
+    fn introduce(&mut self, client: &RelayClient, workspace_id: WorkspaceId) -> bool {
         if !self.begun.insert(workspace_id) {
             return true;
         }
@@ -580,7 +584,7 @@ impl Task {
     /// certificate (unless the replay's start told it already) and that it
     /// answers compaction requests. Returns `false` when the session could
     /// not take them.
-    fn announce(&mut self, client: &RelayClient, workspace_id: u64) -> bool {
+    fn announce(&mut self, client: &RelayClient, workspace_id: WorkspaceId) -> bool {
         if !self.introduce(client, workspace_id) {
             return false;
         }
@@ -610,7 +614,7 @@ impl Task {
         if !changed {
             return true;
         }
-        let admitted: Vec<u64> = self.reports.read(|status| {
+        let admitted: Vec<WorkspaceId> = self.reports.read(|status| {
             status
                 .workspaces
                 .iter()
@@ -631,7 +635,12 @@ impl Task {
 
     /// Note `request`, the host's ask for a snapshot of `route`: answered from this device's
     /// replica at the top of the session loop ([`Self::compact`]).
-    fn compaction_requested(&mut self, workspace_id: u64, request: [u8; 16], route: DocumentRoute) {
+    fn compaction_requested(
+        &mut self,
+        workspace_id: WorkspaceId,
+        request: [u8; 16],
+        route: DocumentRoute,
+    ) {
         if !self.workspaces.contains(&workspace_id)
             || route.workspace_id().ok() != Some(workspace_id)
         {
@@ -646,7 +655,10 @@ impl Task {
     /// Compact `route`'s sealed history as this device's replica holds it for request `request`:
     /// the compaction is the record's checkpoint, which every replica takes in place of exactly
     /// the writes it folds. It is answered once custody sends it ([`Self::answer_compactions`]).
-    async fn compact(&mut self, (workspace_id, request, route): (u64, [u8; 16], DocumentRoute)) {
+    async fn compact(
+        &mut self,
+        (workspace_id, request, route): (WorkspaceId, [u8; 16], DocumentRoute),
+    ) {
         let covered: Vec<[u8; 32]> = self
             .delivered
             .get(&route)
@@ -772,7 +784,7 @@ impl Task {
     /// last received: the host replays only what came after it, and a page
     /// that holds no position (its first session, or a refresh) gets the
     /// workspace whole.
-    fn subscribe(&self, workspace_id: u64) -> Envelope {
+    fn subscribe(&self, workspace_id: WorkspaceId) -> Envelope {
         Envelope::SubscribeFrom {
             workspace_id,
             position: self.positions.get(&workspace_id).cloned(),
@@ -1275,7 +1287,7 @@ impl Task {
     /// refusal is the answer, and the caller need not wait for it.
     fn remote_action(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         to: [u8; 32],
         frame: Vec<u8>,
         client: Option<&RelayClient>,
@@ -1323,12 +1335,18 @@ impl Task {
     /// Whether the host admitted this session to `workspace_id`: `None` for a
     /// workspace it did not ask to join, `Some(false)` while the host has not
     /// admitted it yet, and `Some(true)` once it has.
-    fn admitted_to(&self, workspace_id: u64) -> Option<bool> {
+    fn admitted_to(&self, workspace_id: WorkspaceId) -> Option<bool> {
         self.reports
             .read(|status| status.workspaces.get(&workspace_id).copied())
     }
 
-    fn send_action(&self, client: &RelayClient, workspace_id: u64, to: [u8; 32], frame: Vec<u8>) {
+    fn send_action(
+        &self,
+        client: &RelayClient,
+        workspace_id: WorkspaceId,
+        to: [u8; 32],
+        frame: Vec<u8>,
+    ) {
         let _ = client.send(Envelope::RemoteAction {
             workspace_id,
             version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
@@ -1342,7 +1360,7 @@ impl Task {
     /// Send the action frames that waited for `workspace_id`'s admission, in
     /// the order they were made. What this session owes another workspace
     /// waits for that one.
-    fn flush_held_actions(&mut self, workspace_id: u64, client: &RelayClient) {
+    fn flush_held_actions(&mut self, workspace_id: WorkspaceId, client: &RelayClient) {
         let (due, waiting): (Vec<HeldAction>, Vec<HeldAction>) =
             std::mem::take(&mut self.held_actions)
                 .into_iter()
@@ -1356,7 +1374,12 @@ impl Task {
     /// Ask the workspace for content ([`Cmd::WantContent`]): the host
     /// fans the request out and answers with what it keeps. Nothing while
     /// disconnected.
-    fn want_content(&self, workspace_id: u64, request: Vec<u8>, client: Option<&RelayClient>) {
+    fn want_content(
+        &self,
+        workspace_id: WorkspaceId,
+        request: Vec<u8>,
+        client: Option<&RelayClient>,
+    ) {
         let Some(client) = client else {
             return;
         };
@@ -1371,7 +1394,7 @@ impl Task {
     /// track, sealed under the workspace scope's keys by the plane itself.
     fn publish_presence(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         frames: Vec<collab_types::presence::Presence>,
     ) {
         let Some(joined) = self.planes.joined_mut(workspace_id) else {
@@ -1558,7 +1581,7 @@ impl Task {
     /// is dropped.
     fn send_control(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         msg: &neighbour_wire::NeighbourMsg,
         target: iroh_base::EndpointId,
         client: Option<&RelayClient>,
@@ -1583,7 +1606,7 @@ impl Task {
     }
 
     /// Subscribe to `workspace_id`, now or once connected.
-    fn join(&mut self, workspace_id: u64, client: Option<&RelayClient>) -> bool {
+    fn join(&mut self, workspace_id: WorkspaceId, client: Option<&RelayClient>) -> bool {
         // Taking part again is taking part: a page's client says it on every pass over the
         // workspaces it shows, and one still being placed is subscribed once the host governs it.
         if self.workspaces.contains(&workspace_id) || self.placing.contains_key(&workspace_id) {
@@ -1606,7 +1629,7 @@ impl Task {
         name: String,
         client: Option<&RelayClient>,
     ) -> bool {
-        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(&workspace) else {
+        let Some(workspace_id) = WorkspaceId::parse(&workspace) else {
             return true;
         };
         if self.workspaces.contains(&workspace_id) {
@@ -1627,7 +1650,7 @@ impl Task {
 
     /// Ask the host to govern the workspace joined as `workspace_id`; it is
     /// subscribed once the host answers, whatever it answers.
-    fn place(&mut self, workspace_id: u64, client: &RelayClient) -> bool {
+    fn place(&mut self, workspace_id: WorkspaceId, client: &RelayClient) -> bool {
         let Some((workspace, name)) = self.placing.get(&workspace_id).cloned() else {
             return true;
         };
@@ -1858,7 +1881,7 @@ impl Task {
 
     /// Seal canonical live `frame` of `workspace_id` with the content cipher
     /// of the record it names. A frame naming no record is never sent.
-    fn seal_live(&self, workspace_id: u64, frame: &[u8]) -> Sealing {
+    fn seal_live(&self, workspace_id: WorkspaceId, frame: &[u8]) -> Sealing {
         let Some(frame) = tilo_relay_protocol::live::LiveFrame::decode(frame).ok() else {
             return Sealing::Dropped;
         };
@@ -1889,7 +1912,7 @@ impl Task {
 
     /// Open sealed live `frame` of `workspace_id` with the content cipher of
     /// its channel into the canonical frame.
-    fn open_live(&self, workspace_id: u64, frame: &[u8]) -> Opening {
+    fn open_live(&self, workspace_id: WorkspaceId, frame: &[u8]) -> Opening {
         let Ok(sealed) = tilo_relay_protocol::live::SealedLiveFrame::decode(frame) else {
             return Opening::Dropped;
         };
@@ -2183,7 +2206,7 @@ fn unit(route: &DocumentRoute) -> collab_types::ChannelId {
 /// stand-in approver it holds for them, is refused from the moment each entry
 /// names on, and what they signed before stays valid.
 fn identity_hello(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     cert: &DeviceCert,
     revocations: &RevocationList,
 ) -> Option<Envelope> {
@@ -2243,7 +2266,7 @@ mod tests {
         assert!(!places_workspaces(&cert(4, 5), &host));
     }
 
-    fn status(workspaces: &[(u64, bool)]) -> PeerStatus {
+    fn status(workspaces: &[(WorkspaceId, bool)]) -> PeerStatus {
         PeerStatus {
             phase: TransportPhase::Connected,
             authenticated: true,
@@ -2255,7 +2278,10 @@ mod tests {
     #[test]
     fn workspaces_not_admitted_within_the_timeout_are_overdue_once_subscribed() {
         let since = 1_000;
-        let waiting = status(&[(1, true), (2, false)]);
+        let waiting = status(&[
+            (WorkspaceId::from_u128(1), true),
+            (WorkspaceId::from_u128(2), false),
+        ]);
         assert_eq!(
             admission_state(&waiting, None, since + ADMISSION_TIMEOUT_MS),
             Admission::Waiting
@@ -2268,7 +2294,10 @@ mod tests {
             admission_state(&waiting, Some(since), since + ADMISSION_TIMEOUT_MS),
             Admission::Overdue
         );
-        let admitted = status(&[(1, true), (2, true)]);
+        let admitted = status(&[
+            (WorkspaceId::from_u128(1), true),
+            (WorkspaceId::from_u128(2), true),
+        ]);
         assert_eq!(
             admission_state(&admitted, Some(since), since + ADMISSION_TIMEOUT_MS),
             Admission::Admitted
@@ -2306,20 +2335,28 @@ mod tests {
     #[test]
     fn a_plane_that_was_not_reached_is_named_in_the_channel_diagnostics() {
         let mut planes = plane::Planes::default();
-        planes.later(7, 12_000);
+        planes.later(WorkspaceId::from_u128(7), 12_000);
         assert_eq!(
             planes.describe(),
-            "plane 7: not joined. No live plane was reached; asking again at 12000"
+            "plane 00000000-0000-0000-0000-000000000007: not joined. No live plane was reached; \
+             asking again at 12000"
         );
-        assert_eq!(planes.missed(7), 1);
-        assert_eq!(planes.missed(7), plane::MISSES_BEFORE_NOTE);
-        planes.refused(7, 60_000);
+        assert_eq!(planes.missed(WorkspaceId::from_u128(7)), 1);
+        assert_eq!(
+            planes.missed(WorkspaceId::from_u128(7)),
+            plane::MISSES_BEFORE_NOTE
+        );
+        planes.refused(WorkspaceId::from_u128(7), 60_000);
         assert_eq!(
             planes.describe(),
-            "plane 7: not joined. The workspace does not admit this page's plane; asking again \
-             at 60000"
+            "plane 00000000-0000-0000-0000-000000000007: not joined. The workspace does not \
+             admit this page's plane; asking again at 60000"
         );
-        assert_eq!(planes.missed(7), 1, "an answer starts the count again");
+        assert_eq!(
+            planes.missed(WorkspaceId::from_u128(7)),
+            1,
+            "an answer starts the count again"
+        );
     }
 }
 

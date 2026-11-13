@@ -1797,6 +1797,7 @@ mod tests {
     fn installed_device_joins_the_setup_fleet_without_the_root_secret() {
         use ed25519_dalek::Signer;
         use tilo_relay_protocol::HomePeerRegistration;
+        use tilo_relay_protocol::WorkspaceId;
 
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let local_device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1827,7 +1828,7 @@ mod tests {
             label: "home".into(),
             user_public_key: identity_id.clone(),
             device_cert: None,
-            relay_workspace_ids: vec![1],
+            relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
         };
         let other = HomePeerRegistration {
             user_public_key: hex::encode([9_u8; 32]),
@@ -1986,6 +1987,7 @@ mod tests {
     #[test]
     fn enroll_from_local_identity_signs_with_the_active_person_not_a_copied_root() {
         use tilo_relay_protocol::HomePeerRegistration;
+        use tilo_relay_protocol::WorkspaceId;
 
         let dir = tempfile::tempdir().unwrap();
         let local_identity = dir.path().join("local-identity");
@@ -2014,7 +2016,7 @@ mod tests {
                 label: "home".into(),
                 user_public_key: identity_id,
                 device_cert: None,
-                relay_workspace_ids: vec![1],
+                relay_workspace_ids: vec![WorkspaceId::from_u128(1)],
             }])
             .unwrap(),
         )

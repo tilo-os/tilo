@@ -25,7 +25,7 @@ async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {
         device.key.clone(),
     );
     let events = peer.events();
-    let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
+    let workspace = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
 
     // The page joins and asks the workspace for its catalogue at once, as a
     // page does when it opens on the workspace's records: the join is a round

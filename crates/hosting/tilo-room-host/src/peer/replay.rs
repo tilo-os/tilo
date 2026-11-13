@@ -9,6 +9,7 @@ use super::{
     trace_native_publication, unix_now_ns, workspace_access,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// What a resuming subscriber has received: the frames this connection wrote
 /// to it are appended to its resume log, and a [`Envelope::Position`] naming
@@ -55,7 +56,7 @@ impl ResumeLog {
 /// and return the position to write after them.
 pub(super) fn resume_record<'f>(
     session: &SessionCtx<'_>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     frames: impl IntoIterator<Item = &'f Envelope>,
 ) -> Option<Envelope> {
     let mut resumes = session.resumes.lock_recover();
@@ -63,7 +64,7 @@ pub(super) fn resume_record<'f>(
 }
 
 pub(super) struct ReplayWrite {
-    pub(super) ticket: Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
+    pub(super) ticket: Option<(WorkspaceId, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
     /// What an opened record's answer sends ahead of its reply: the record's
     /// retained frames, written with no live frame between them.
     pub(super) answer: Vec<Envelope>,
@@ -94,7 +95,7 @@ pub(super) async fn authorize_state_frame(
 
 /// The workspace a state frame goes to, and whether it needs this connection to
 /// be the workspace's current subscriber; `None` for frames that need neither.
-const fn state_frame_room(frame: &Envelope) -> Option<(u64, bool)> {
+const fn state_frame_room(frame: &Envelope) -> Option<(WorkspaceId, bool)> {
     match frame {
         Envelope::Delta { workspace_id, .. }
         | Envelope::Ready { workspace_id, .. }
@@ -113,7 +114,7 @@ const fn state_frame_room(frame: &Envelope) -> Option<(u64, bool)> {
     reason = "the membership guard spans the whole authorization so it observes one roster generation"
 )]
 pub(super) async fn authorize_state_recipient(
-    id: u64,
+    id: WorkspaceId,
     subscribed: bool,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -144,7 +145,7 @@ pub(super) async fn authorize_state_recipient(
 /// connects, so that the app-serving peer of a host that may act as host
 /// decides its workspaces like any other member.
 async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     ws: &SharedWorkspace,
     catchup: &ReplayCatchup,
     peer: &AuthenticatedPeer,
@@ -317,7 +318,7 @@ impl ReplayFilter {
 /// its persistence owner, and the replay ticket's authority and catch-up.
 #[derive(Clone, Copy)]
 struct ReplayRun<'r> {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     workspace: &'r SharedWorkspace,
     owner: &'r crate::persistence::Persistence,
     authority: &'r Arc<crate::persistence::ReplayAuthority>,
@@ -518,7 +519,7 @@ async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
     // A batch is authorised once, as presence authorises each
     // workspace's run: checked per frame, a crowd's replays queued
     // every writer in the workspace on its lock for every frame.
-    let mut workspaces: Vec<(u64, bool)> = Vec::new();
+    let mut workspaces: Vec<(WorkspaceId, bool)> = Vec::new();
     for workspace in frames.frames().filter_map(state_frame_room) {
         if !workspaces.contains(&workspace) {
             workspaces.push(workspace);

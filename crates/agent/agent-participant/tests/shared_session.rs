@@ -69,6 +69,7 @@ use tilo_user_identity::{
 
 use crate::common::catalogue;
 use crate::support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Plans the task `gated` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
@@ -374,7 +375,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "Writer helper",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: vec![SCRATCHPAD.into()],
         },
         now,
@@ -501,7 +502,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     agent
         .peer()
         .send(Cmd::Join(
-            tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap(),
+            tilo_relay_protocol::WorkspaceId::parse(OTHER_WORKSPACE).unwrap(),
         ))
         .unwrap();
     wait_for(

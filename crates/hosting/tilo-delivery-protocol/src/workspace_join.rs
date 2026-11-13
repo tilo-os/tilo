@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::future::Future;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::{
     JoinBootstrap, JoinTransportRequest, JoinTransportResponse,
@@ -43,8 +44,7 @@ pub enum WorkspaceHostTrust {
 /// Opaque proof that a primary device may host one exact governed workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InteractiveOwnerTrust {
-    room: String,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     host: DeviceCert,
     service_public_key: [u8; 32],
 }
@@ -59,13 +59,8 @@ pub struct WorkspaceJoinAdmission {
 }
 
 impl InteractiveOwnerTrust {
-    /// Canonical workspace UUID this exception covers.
-    pub fn room(&self) -> &str {
-        &self.room
-    }
-
-    /// Exact workspace ID this exception covers.
-    pub fn workspace_id(&self) -> u64 {
+    /// The workspace this exception covers.
+    pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
 
@@ -82,23 +77,10 @@ impl InteractiveOwnerTrust {
     /// Verify that `host` may serve exactly `workspace`/`workspace_id` right now, and bind
     /// that scope to the Iroh service key terminating it.
     pub fn verify(
-        room: String,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         host: DeviceCert,
         service_public_key: [u8; 32],
     ) -> Result<Self, WorkspaceJoinError> {
-        let canonical_room = uuid::Uuid::parse_str(&room)
-            .map(|room| room.to_string())
-            .map_err(|_| {
-                WorkspaceJoinError::Protocol("interactive owner room is invalid".into())
-            })?;
-        if canonical_room != room
-            || !tilo_relay_protocol::room_workspace_id_matches(&room, workspace_id)
-        {
-            return Err(WorkspaceJoinError::Protocol(
-                "interactive owner room/workspace binding is invalid".into(),
-            ));
-        }
         tilo_user_identity::verify_device_cert_at(&host, tilo_clock::unix_now_ns())
             .map_err(|error| WorkspaceJoinError::Protocol(error.to_string()))?;
         if !host.capabilities.can_own_workspaces {
@@ -107,7 +89,6 @@ impl InteractiveOwnerTrust {
             ));
         }
         Ok(InteractiveOwnerTrust {
-            room,
             workspace_id,
             host,
             service_public_key,
@@ -123,10 +104,8 @@ pub struct IrohWorkspaceHostHintV1 {
     pub version: u32,
     /// Explicit trust mode; never inferred from an unsigned local setting.
     pub mode: WorkspaceHostMode,
-    /// Canonical governed workspace UUID served by this endpoint.
-    pub room: String,
-    /// Exact governed workspace ID served by this endpoint.
-    pub workspace_id: u64,
+    /// The workspace this endpoint serves.
+    pub workspace_id: WorkspaceId,
     /// Exact Iroh service address the guest dials.
     pub endpoint_addr: iroh_base::EndpointAddr,
     /// Person root that certified the host device.
@@ -308,7 +287,7 @@ impl IrohWorkspaceHostHintV1 {
         &self,
         grant: &tilo_workspace_join::InviteGrant,
     ) -> Result<WorkspaceHostTrust, WorkspaceJoinError> {
-        if grant.room != self.room || grant.workspace_id != self.workspace_id {
+        if grant.workspace_id != self.workspace_id {
             return Err(WorkspaceJoinError::Protocol(
                 "invitation scope does not match its signed workspace host hint".into(),
             ));
@@ -327,8 +306,8 @@ impl IrohWorkspaceHostHintV1 {
         bootstrap: &JoinBootstrap,
     ) -> Result<WorkspaceHostTrust, WorkspaceJoinError> {
         // The host that answered is the one the hint signs for.
-        if (&bootstrap.room, bootstrap.workspace_id, &bootstrap.host)
-            != (&self.room, self.workspace_id, &self.host_device_certificate)
+        if (bootstrap.workspace_id, &bootstrap.host)
+            != (self.workspace_id, &self.host_device_certificate)
         {
             return Err(WorkspaceJoinError::Protocol(
                 "workspace bootstrap does not match its signed host hint".into(),
@@ -342,7 +321,6 @@ impl IrohWorkspaceHostHintV1 {
             WorkspaceHostMode::CertifiedHost => WorkspaceHostTrust::CertifiedHost,
             WorkspaceHostMode::NativeInteractiveWorkspaceOwner => {
                 WorkspaceHostTrust::InteractiveOwner(InteractiveOwnerTrust {
-                    room: self.room.clone(),
                     workspace_id: self.workspace_id,
                     host: self.host_device_certificate.clone(),
                     service_public_key: *self.endpoint_addr.id.as_bytes(),
@@ -352,12 +330,8 @@ impl IrohWorkspaceHostHintV1 {
     }
 
     fn validate(&self) -> Result<(), WorkspaceJoinError> {
-        let canonical_room = uuid::Uuid::parse_str(&self.room)
-            .map(|room| room.to_string())
-            .map_err(|_| WorkspaceJoinError::Protocol("workspace host room is invalid".into()))?;
         if self.version != 1
-            || canonical_room != self.room
-            || !tilo_relay_protocol::room_workspace_id_matches(&self.room, self.workspace_id)
+            || self.workspace_id.is_nil()
             || self.host_device_certificate.user_public_key != self.host_user_public_key
         {
             return Err(WorkspaceJoinError::Protocol(

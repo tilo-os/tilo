@@ -11,6 +11,7 @@ use tilo_user_identity::{
 };
 
 use super::*;
+use tilo_relay::WorkspaceId;
 
 fn revoke(user: &TestUser, device: &TestDevice) -> RevocationEntry {
     let mut entry = RevocationEntry {
@@ -67,7 +68,7 @@ async fn join(
         .unwrap()
         .bootstrap;
     let mut peer = StatePeer::new(
-        &bootstrap.room,
+        &bootstrap.workspace_id.to_string(),
         bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),
@@ -86,7 +87,7 @@ async fn join(
     peer
 }
 
-async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace_id: u64) {
+async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) {
     tilo_test_env::within(what, async {
         while admitted(relay, device, workspace_id).await {
             tokio::task::yield_now().await;

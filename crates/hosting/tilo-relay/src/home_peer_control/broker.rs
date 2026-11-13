@@ -36,7 +36,7 @@ enum BrokerCommand {
         #[arg(long)]
         identity_dir: Option<PathBuf>,
         #[arg(long = "workspace-id")]
-        workspace_ids: Vec<u64>,
+        workspace_ids: Vec<tilo_relay_protocol::WorkspaceId>,
         #[arg(long)]
         expected_device: Option<String>,
         #[arg(long)]
@@ -64,7 +64,7 @@ enum BrokerCommand {
 struct ApplyRequest {
     identity_root: PathBuf,
     role: String,
-    workspace_ids: Vec<u64>,
+    workspace_ids: Vec<tilo_relay_protocol::WorkspaceId>,
     replication: String,
     inbound_relay: bool,
     remote_control_relay: bool,
@@ -138,7 +138,10 @@ fn service(action: &str, unit: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn export_local_home_peer(identity_root: &Path, workspace_ids: &[u64]) -> anyhow::Result<Vec<u8>> {
+fn export_local_home_peer(
+    identity_root: &Path,
+    workspace_ids: &[tilo_relay_protocol::WorkspaceId],
+) -> anyhow::Result<Vec<u8>> {
     let mut random = [0_u8; 16];
     getrandom::rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut random);
     let temp_dir = PathBuf::from(format!(
@@ -198,7 +201,10 @@ fn needs_local_home_peer_export(config: &RelayConfig, home_peer_exists: bool) ->
     config.device_role == DeviceRole::AlwaysOnServer && !home_peer_exists
 }
 
-fn project_home_peer_workspaces(bytes: &[u8], selected_ids: &[u64]) -> anyhow::Result<Vec<u8>> {
+fn project_home_peer_workspaces(
+    bytes: &[u8],
+    selected_ids: &[tilo_relay_protocol::WorkspaceId],
+) -> anyhow::Result<Vec<u8>> {
     let mut home: fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(bytes)?)?;
     fs::full_replica::validate_home_peer_set(&home)?;
     let workspace = home
@@ -503,7 +509,7 @@ fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow
 fn approve_enrollment(
     identity_root: &Path,
     identity_dir: Option<&Path>,
-    workspace_ids: Vec<u64>,
+    workspace_ids: Vec<tilo_relay_protocol::WorkspaceId>,
     expected_device: Option<String>,
     expected_service: Option<String>,
 ) -> anyhow::Result<()> {
@@ -749,7 +755,11 @@ mod tests {
             let request = ApplyRequest {
                 identity_root: PathBuf::from("/var/lib/tilo"),
                 role: "always-on".into(),
-                workspace_ids: vec![9, 2, 9],
+                workspace_ids: vec![
+                    tilo_relay_protocol::WorkspaceId::from_u128(9),
+                    tilo_relay_protocol::WorkspaceId::from_u128(2),
+                    tilo_relay_protocol::WorkspaceId::from_u128(9),
+                ],
                 replication: "full".into(),
                 inbound_relay: true,
                 remote_control_relay: false,
@@ -824,7 +834,7 @@ mod tests {
             let config = desired_config(&ApplyRequest {
                 identity_root: PathBuf::from("/var/lib/tilo"),
                 role: "always-on".into(),
-                workspace_ids: vec![12],
+                workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(12)],
                 replication: "on-demand".into(),
                 inbound_relay: true,
                 remote_control_relay: false,
@@ -856,23 +866,46 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: Some(authority),
                     principals: Vec::new(),
-                    relay_workspace_ids: vec![7, 8],
+                    relay_workspace_ids: vec![
+                        tilo_relay_protocol::WorkspaceId::from_u128(7),
+                        tilo_relay_protocol::WorkspaceId::from_u128(8),
+                    ],
                 }],
             };
             let original = toml::to_string_pretty(&bundle).unwrap();
             tilo_files::native::atomic::write(&home, original.as_bytes()).unwrap();
 
-            let added = project_home_peer_workspaces(original.as_bytes(), &[8, 9]).unwrap();
+            let added = project_home_peer_workspaces(
+                original.as_bytes(),
+                &[
+                    tilo_relay_protocol::WorkspaceId::from_u128(8),
+                    tilo_relay_protocol::WorkspaceId::from_u128(9),
+                ],
+            )
+            .unwrap();
             commit_transaction(&relay, b"relay-add", &home, Some(&added), || Ok(())).unwrap();
             let after_add: fs::full_replica::HomePeerSet =
                 toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
-            assert_eq!(after_add.workspaces[0].relay_workspace_ids, vec![8, 9]);
+            assert_eq!(
+                after_add.workspaces[0].relay_workspace_ids,
+                vec![
+                    tilo_relay_protocol::WorkspaceId::from_u128(8),
+                    tilo_relay_protocol::WorkspaceId::from_u128(9)
+                ]
+            );
 
-            let removed = project_home_peer_workspaces(&added, &[9]).unwrap();
+            let removed = project_home_peer_workspaces(
+                &added,
+                &[tilo_relay_protocol::WorkspaceId::from_u128(9)],
+            )
+            .unwrap();
             commit_transaction(&relay, b"relay-remove", &home, Some(&removed), || Ok(())).unwrap();
             let after_remove: fs::full_replica::HomePeerSet =
                 toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
-            assert_eq!(after_remove.workspaces[0].relay_workspace_ids, vec![9]);
+            assert_eq!(
+                after_remove.workspaces[0].relay_workspace_ids,
+                vec![tilo_relay_protocol::WorkspaceId::from_u128(9)]
+            );
         }
     }
 }

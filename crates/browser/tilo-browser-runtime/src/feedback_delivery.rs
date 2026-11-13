@@ -16,6 +16,7 @@ use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
+use tilo_relay_protocol::WorkspaceId;
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::{Events, Link};
 use tilo_session_core::remote::Heard;
@@ -44,7 +45,7 @@ pub(crate) struct Connection {
     reporter: DeviceCert,
     owner: DeviceCert,
     destination: FeedbackDestination,
-    workspace: u64,
+    workspace: WorkspaceId,
     serial: u64,
     pending: HashMap<u64, (web_time::Instant, Option<Submission>)>,
     /// Reports filed through the owner, by the invocation that files them.
@@ -69,8 +70,8 @@ pub(crate) fn configure(
     owner: DeviceCert,
     destination: FeedbackDestination,
 ) -> Result<(), String> {
-    let workspace = tilo_relay_protocol::room_workspace_id(&destination.workspace)
-        .map_err(|_| "feedback workspace must be a uuid")?;
+    let workspace = tilo_relay_protocol::WorkspaceId::parse(&destination.workspace)
+        .ok_or("feedback workspace must be a uuid")?;
     Destination {
         room: destination.workspace.clone(),
         provider: destination.provider.clone(),

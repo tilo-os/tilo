@@ -6669,7 +6669,13 @@ impl AppBrokerState {
                         .certificate
                         .as_ref()
                         .ok_or("task agent session lost its device certificate")?;
-                    verify_task_delegation(task, cert, &route.cluster_id, now)?;
+                    verify_task_delegation(
+                        task,
+                        cert,
+                        collab_types::WorkspaceId::parse(&route.cluster_id)
+                            .ok_or("the task's workspace is not a workspace id")?,
+                        now,
+                    )?;
                     admit_task_delegation(&mut current, (**task).clone());
                 } else if let Some(agent_id) = &admitted.agent_id {
                     let roster = agents.ok_or("this host reads no workspace's agents")?;

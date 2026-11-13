@@ -26,7 +26,7 @@ use tilo_user_identity::{
 };
 
 use tilo_relay::{
-    Envelope, RelayClient, RelayConfig,
+    Envelope, RelayClient, RelayConfig, WorkspaceId,
     daemon::{Relay, RelayIdentity},
     host::{HostConfig, HostIdentity, HostMode, WorkspaceHost},
 };
@@ -93,7 +93,7 @@ pub struct TestRelay {
 pub async fn spawn_relay(
     user: &TestUser,
     relay_dev: TestDevice,
-    workspaces: &[u64],
+    workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
 ) -> TestRelay {
     let tmp = tempfile::tempdir().unwrap();
@@ -125,7 +125,7 @@ pub async fn spawn_relay_on(
     state_root: &std::path::Path,
     user: &TestUser,
     relay_dev: TestDevice,
-    workspaces: &[u64],
+    workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
 ) -> Relay {
     Box::pin(spawn_relay_with(
@@ -139,7 +139,7 @@ pub async fn spawn_relay_on(
 pub async fn spawn_relay_serving_apps(
     user: &TestUser,
     relay_dev: TestDevice,
-    workspaces: &[u64],
+    workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
     plane: std::sync::Arc<dyn tilo_relay::AppServingPlane>,
 ) -> TestRelay {
@@ -165,7 +165,7 @@ async fn spawn_relay_with(
     state_root: &std::path::Path,
     user: &TestUser,
     relay_dev: TestDevice,
-    workspaces: &[u64],
+    workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
     plane: Option<std::sync::Arc<dyn tilo_relay::AppServingPlane>>,
 ) -> Relay {
@@ -236,7 +236,7 @@ pub fn start_relay_serving(
 /// the devices are all the relay owner's.
 pub async fn admit_members(
     relay: &Relay,
-    workspace: u64,
+    workspace: WorkspaceId,
     members: &[[u8; 32]],
     state_root: &std::path::Path,
 ) {
@@ -346,7 +346,7 @@ pub async fn publisher(
     relay: &TestRelay,
     user: &TestUser,
     author: &TestDevice,
-    workspace: u64,
+    workspace: WorkspaceId,
 ) -> tilo_relay::RelayCoeditSession {
     let publisher = tilo_relay::RelayCoeditSession::join(
         RelayClient::connect_v2_to_enrolled_home_peer(
@@ -380,7 +380,7 @@ pub async fn connect(
     user: &TestUser,
     device: &TestDevice,
     addr: iroh_base::EndpointAddr,
-    workspace: u64,
+    workspace: WorkspaceId,
 ) -> RelayClient {
     let client = RelayClient::connect(
         client_endpoint().await,
@@ -428,7 +428,7 @@ pub async fn next(client: &RelayClient, mut want: impl FnMut(&Envelope) -> bool)
 ///
 /// From then on a delta published on `relay` reaches `peer`; a test waits for
 /// it instead of sleeping and hoping the handshake finished in time.
-pub async fn wait_until_subscribed(relay: &Relay, workspace: u64, peer: &[u8; 32]) {
+pub async fn wait_until_subscribed(relay: &Relay, workspace: WorkspaceId, peer: &[u8; 32]) {
     tilo_test_env::within("the peer subscribed to the workspace", async {
         while !relay.is_subscribed(workspace, peer).await {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;

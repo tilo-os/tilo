@@ -12,6 +12,7 @@ use super::{
 };
 #[cfg(test)]
 use super::{ReplayWrite, answered_as_replay, finish_replay_write};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Handle one successfully-decoded inbound envelope: dispatch to
 /// [`handle_envelope`], then write any replay backlog to the wire —
@@ -23,7 +24,7 @@ pub(super) async fn handle_inbound_frame<W>(
     env: Envelope,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &mut Vec<u64>,
+    subscribed: &mut Vec<WorkspaceId>,
     write: &mut W,
 ) -> Result<(), PeerError>
 where
@@ -57,8 +58,8 @@ pub(super) async fn handle_envelope(
     peer: &AuthenticatedPeer,
     env: Envelope,
     session: &SessionCtx<'_>,
-    subscribed: &mut Vec<u64>,
-    replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
+    subscribed: &mut Vec<WorkspaceId>,
+    replay: &mut Option<(WorkspaceId, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
     answer: &mut Vec<Envelope>,
 ) -> Result<Option<Envelope>, PeerError> {
     match env {

@@ -35,8 +35,8 @@ const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
-fn workspace_number() -> u64 {
-    tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
+fn workspace_id() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 /// Write `value` into the workspace's record as `key`'s device, making the record
@@ -242,7 +242,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
     a.publish(|_| Ok(kept.clone())).unwrap();
     let retained = || {
         store
-            .replay(workspace_number(), &[], Budget::default())
+            .replay(workspace_id(), &[], Budget::default())
             .unwrap()
     };
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -294,7 +294,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
     .await;
     assert!(
         store
-            .replay(workspace_number(), &b.cursors(), Budget::default())
+            .replay(workspace_id(), &b.cursors(), Budget::default())
             .unwrap()
             .frames
             .is_empty(),
@@ -331,12 +331,10 @@ fn hint(
     key: &SigningKey,
 ) -> tilo_peer_state::join::TransportHint {
     use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-    let room = workspace.to_string();
     IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        workspace_id: tilo_peer_state::join::room_workspace_id(&room).unwrap(),
-        room,
+        workspace_id: workspace,
         endpoint_addr: addr(endpoint),
         host_user_public_key: certificate.user_public_key,
         host_device_certificate: certificate.clone(),
@@ -392,7 +390,7 @@ async fn joins(
     use tilo_identity_host::custody::HostIdentity;
     let owner = owner_at(state);
     let identity = HostIdentity::kept(cert.clone(), key.clone());
-    let topic = tilo_peer_state::join::room_workspace_id(WORKSPACE).expect("a workspace topic");
+    let topic = tilo_peer_state::join::WorkspaceId::parse(WORKSPACE).expect("a workspace topic");
     let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(
             service,
@@ -406,8 +404,7 @@ async fn joins(
     )
     .await
     .expect("the workspace's device admits this one");
-    let workspace = tilo_desktop_model::WorkspaceId::parse(&enrollment.bootstrap().room)
-        .expect("a workspace id");
+    let workspace = enrollment.bootstrap().workspace_id;
     owner
         .install(&enrollment, SystemTime::now())
         .expect("the join installs here");
@@ -581,7 +578,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     assert!(
         store
             .replay(
-                tilo_peer_state::join::room_workspace_id(WORKSPACE).unwrap(),
+                tilo_peer_state::join::WorkspaceId::parse(WORKSPACE).unwrap(),
                 &[],
                 Budget::default()
             )
@@ -882,7 +879,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
     until(&a, "a has the host's rows", |a| a.rows() == host_rows).await;
 
     // The workspace's owner deletes it: the member's live link ends, saying so.
-    serving.delete(workspace_number());
+    serving.delete(workspace_id());
     let ended = tokio::time::timeout(Duration::from_secs(30), a_link)
         .await
         .expect("the member's link ends")
@@ -902,7 +899,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
         again,
         Err(tilo_relay_protocol::refusal::WORKSPACE_DELETED.to_owned())
     );
-    assert!(serving.link(workspace_number()).is_none());
+    assert!(serving.link(workspace_id()).is_none());
 }
 
 /// What a device commits to a workspace it hosts itself reaches the members linked to it at

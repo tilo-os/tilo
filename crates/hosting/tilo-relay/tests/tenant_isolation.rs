@@ -46,6 +46,7 @@ use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, device_endpoint};
+use tilo_relay::WorkspaceId;
 
 /// How long a refused write is given to surface anywhere before its absence
 /// counts as evidence.
@@ -71,7 +72,7 @@ async fn try_connect(
 }
 
 /// The relay's first answer to `client` subscribing to `workspace_id`.
-async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> {
+async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("the relay answers the subscription", async {
         loop {
@@ -88,7 +89,7 @@ async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> 
 }
 
 /// A session of `device` that the relay admitted to `workspace_id`.
-async fn subscribed(relay: &Relay, device: &TestDevice, workspace_id: u64) -> RelayClient {
+async fn subscribed(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) -> RelayClient {
     let client = connect(relay, device).await;
     assert!(
         matches!(
@@ -291,7 +292,7 @@ async fn next_within_quiet(client: &RelayClient) -> Option<Envelope> {
 fn to_host(
     client: &RelayClient,
     host: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     message: RemoteActionMessage,
 ) {
     client
@@ -344,7 +345,7 @@ fn invite_action(room: &str) -> RemoteActionMessage {
 async fn governance_resources(
     client: &RelayClient,
     host: &TestDevice,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> Vec<String> {
     to_host(
         client,
@@ -828,7 +829,7 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
         "Acme helper",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![t.acme.workspace.clone()],
+            workspaces: vec![t.acme.workspace_id],
             apps: Vec::new(),
         },
         issued,

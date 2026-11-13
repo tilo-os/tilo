@@ -5,6 +5,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::Change;
 
 mod editor;
+use crate::join::WorkspaceId;
 use editor::owner_signs;
 pub(crate) use editor::{other_owner, seeded_editor};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -195,8 +196,8 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     peer.receive(
         cert.device_public_key,
         NeighbourMsg::SyncResp {
-            room: workspace_id.into(),
             changes,
+            room: peer.workspace_id().to_owned(),
         },
         now,
     )
@@ -405,8 +406,7 @@ pub(crate) fn add_member_with(
         .unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: owner,
             role: Role::Editor,
             nonce: [device_seed.wrapping_add(1); 16],
@@ -511,8 +511,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     sign_device_cert(&mut guest_cert, &guest_root).unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
             role: Role::Editor,
             nonce: [43; 16],
@@ -737,7 +736,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     restored
         .governance()
         .membership_challenge(
-            7,
+            WorkspaceId::parse(restored.workspace_id()).unwrap(),
             &restored.owner_certificates()[0],
             &guest_cert,
             [49; 32],
@@ -761,7 +760,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .governance()
             .membership_challenge(
-                7,
+                WorkspaceId::parse(restored.workspace_id()).unwrap(),
                 &restored.owner_certificates()[0],
                 &guest_cert,
                 [51; 32],
@@ -813,8 +812,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
         .unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 10,
-            room: base.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
             issuer: base.owner_certificates()[0].clone(),
             role: Role::Editor,
             nonce: [70; 16],
@@ -959,8 +957,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     };
     sign_device_cert(&mut guest, &guest_root).unwrap();
     let grant = |nonce, issuer| InviteGrant {
-        workspace_id: 11,
-        room: base.workspace_id().into(),
+        workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
         issuer,
         role: Role::Editor,
         nonce: [nonce; 16],
@@ -2537,8 +2534,7 @@ fn guest_redemption(
         .unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
             role: Role::Editor,
             nonce: [nonce; 16],
@@ -2797,8 +2793,7 @@ fn admitted_guest(
     sign_device_cert(&mut cert, &root).unwrap();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
             role: Role::Editor,
             nonce: [63; 16],

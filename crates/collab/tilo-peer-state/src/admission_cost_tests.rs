@@ -1,6 +1,7 @@
 //! What one more admission costs a workspace's governor as the workspace grows.
 
 use crate::StatePeer;
+use crate::join::WorkspaceId;
 use crate::join::{
     InviteGrant, JoinChallenge, Role, VerifiedRedemption, issue_invitation, sign_join_proof,
     verify_join_proof,
@@ -45,8 +46,7 @@ pub(crate) fn redemption(
     nonce[..4].copy_from_slice(&n.to_le_bytes());
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: peer.owner_certificates()[0].clone(),
             role: Role::Editor,
             nonce,

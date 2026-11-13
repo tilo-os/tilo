@@ -1650,7 +1650,7 @@ async fn subscribe(
     workspace: &str,
     device: &DeviceCert,
 ) -> Result<(), crate::workspace_access::DenyReason> {
-    let id = tilo_relay_protocol::room_workspace_id(workspace).unwrap();
+    let id = tilo_relay_protocol::WorkspaceId::parse(workspace).unwrap();
     let runtime = workspaces
         .inner
         .host

@@ -342,7 +342,7 @@ mod tests {
                 capability_json: "[]".into(),
                 authority: None,
                 principals: Vec::new(),
-                relay_workspace_ids: vec![42],
+                relay_workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(42)],
             }],
         };
         std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();

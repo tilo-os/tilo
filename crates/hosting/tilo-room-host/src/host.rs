@@ -34,6 +34,7 @@ use crate::metrics::Metrics;
 use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, run_peer_until};
 use crate::policy::TrustPolicy;
 use crate::transport::{ALPN, MAX_FRAME_BYTES};
+use tilo_relay_protocol::WorkspaceId;
 
 /// How much an in-process session buffers each way before its writer waits.
 const LOCAL_SESSION_BUFFER: usize = 1 << 20;
@@ -355,7 +356,7 @@ impl HostSessions {
     /// initialization or durable replacement fails.
     pub async fn replace_governed_workspace_access(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pinned: bool,
         access: tilo_peer_state::GovernedAccess,
         state_root: PathBuf,
@@ -377,7 +378,7 @@ impl HostSessions {
     }
 
     /// Whether the host counts `device` as subscribed to `workspace_id`.
-    pub async fn is_subscribed(&self, workspace_id: u64, device: &[u8; 32]) -> bool {
+    pub async fn is_subscribed(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
         let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
         match ws {
             Some(ws) => ws.lock().await.has_subscriber(device),
@@ -664,7 +665,7 @@ impl WorkspaceHost {
     #[cfg(all(test, feature = "agents"))]
     pub(crate) async fn runtime(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     ) -> Option<crate::workspace::SharedWorkspace> {
         self.sessions
             .workspaces
@@ -688,7 +689,7 @@ impl WorkspaceHost {
     }
 
     /// Whether this host counts `device` as subscribed to `workspace_id`.
-    pub async fn is_subscribed(&self, workspace_id: u64, device: &[u8; 32]) -> bool {
+    pub async fn is_subscribed(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
         self.sessions.is_subscribed(workspace_id, device).await
     }
 
@@ -812,7 +813,11 @@ impl GovernedAccessWriter {
     /// Whether the relay decides `workspace_id`'s changes against standings
     /// that hold `device`'s. A workspace this relay has not opened yet is
     /// projected by the settle that opens it, so it counts as holding it.
-    pub(crate) async fn projects_standing(&self, workspace_id: u64, device: [u8; 32]) -> bool {
+    pub(crate) async fn projects_standing(
+        &self,
+        workspace_id: WorkspaceId,
+        device: [u8; 32],
+    ) -> bool {
         let Some(workspace) = self.workspaces.lock().await.get(&workspace_id).cloned() else {
             return true;
         };
@@ -827,7 +832,7 @@ impl GovernedAccessWriter {
     /// Replace the standing of each member device of the workspace.
     pub(crate) async fn replace_standings(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pinned: bool,
         standings: crate::workspace::Standings,
     ) -> Result<(), HostError> {
@@ -851,7 +856,7 @@ impl GovernedAccessWriter {
     )]
     pub(crate) async fn replace(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pinned: bool,
         access: tilo_peer_state::GovernedAccess,
     ) -> Result<Vec<[u8; 32]>, HostError> {
@@ -1304,7 +1309,7 @@ impl tilo_peer_state::owner::session::OwnHost for WorkspaceHost {
         Self::join_service(self)
     }
 
-    fn direct(&self, workspace: u64) -> Option<tilo_peer_state::direct::DirectSync> {
+    fn direct(&self, workspace: WorkspaceId) -> Option<tilo_peer_state::direct::DirectSync> {
         self.workspaces().direct().link(workspace)
     }
 }

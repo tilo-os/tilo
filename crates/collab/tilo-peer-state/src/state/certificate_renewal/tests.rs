@@ -2,12 +2,12 @@
 //! role stays, and only its person's root renews it.
 use crate::StatePeer;
 use crate::admission_tests::seeded;
+use crate::join::WorkspaceId;
 use crate::join::{
-    InviteGrant, JoinChallenge, Role, MembershipChallengeRequest, MembershipCompleteRequest,
+    InviteGrant, JoinChallenge, MembershipChallengeRequest, MembershipCompleteRequest, Role,
     issue_invitation, sign_join_proof, sign_membership_proof,
 };
 use crate::join_ledger::{Governed, JoinLedger};
-use collab_types::Role;
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
@@ -51,8 +51,7 @@ fn admit(
     let owner = peer.owner_certificates()[0].clone();
     let signed = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: peer.workspace_id().into(),
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             issuer: owner,
             role: Role::Editor,
             nonce: [53; 16],
@@ -256,7 +255,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         let workspace = Governed {
             peer: (&peer).into(),
             host: &host_cert,
-            workspace_id: 7,
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             generation: 1,
             governance_messages: Some(&messages),
         };
@@ -265,8 +264,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
                 &workspace,
                 renewed.device_public_key,
                 MembershipChallengeRequest {
-                    room: peer.workspace_id().into(),
-                    workspace_id: 7,
+                    workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
                     device_cert: renewed.clone(),
                     request_id: [60; 32],
                 },
@@ -283,7 +281,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         let workspace = Governed {
             peer: (&peer).into(),
             host: &host_cert,
-            workspace_id: 7,
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             generation: 1,
             governance_messages: Some(&messages),
         };
@@ -299,7 +297,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     let workspace = Governed {
         peer: (&peer).into(),
         host: &host_cert,
-        workspace_id: 7,
+        workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 2,
         governance_messages: Some(&messages),
     };

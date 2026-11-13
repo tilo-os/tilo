@@ -27,6 +27,7 @@ use super::super::tests::{caller, settled};
 use super::super::{GovernedPlane, HostWorkspaceActions};
 use crate::app_serving::AppServingPlane as _;
 use crate::workspaces::tests::{governor, guest_device, test_host};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Another device of the relay's own person: the one `governor` certifies
 /// the relay for.
@@ -277,7 +278,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     // Without the certificate the transport verified, the host's operations
     // are not there at all.
     let unverified = settled(
-        host.in_workspace(7)
+        host.in_workspace(WorkspaceId::from_u128(7))
             .invoke(&caller(&laptop), host_request(LIST_ROOMS, json!({}))),
     )
     .await;

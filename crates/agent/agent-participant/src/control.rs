@@ -26,6 +26,7 @@ use tilo_actions::{
     OperationKind,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::agents::{
     AGENT_KIND, AgentGrant, AgentInfo, AgentMessage, AgentStatus, AgentStep, AgentTask,
     AgentsStatus, CANCEL_TASK_ACTION, GrantRequest, GrantState, MESSAGE_ACTION, MessageRole,
@@ -725,7 +726,7 @@ pub trait AgentHostLink: Send + Sync {
     /// What the workspace whose channels are `workspace` is called, which a
     /// desk the agent starts there is named after; `None` when the host does
     /// not govern it.
-    fn workspace_name(&self, workspace: u64) -> Option<String> {
+    fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
         let _ = workspace;
         None
     }
@@ -951,7 +952,11 @@ impl AgentSupervisor {
             label: label.to_owned(),
             color,
             scope: DelegateScope {
-                rooms: request.workspaces.clone(),
+                workspaces: request
+                    .workspaces
+                    .iter()
+                    .filter_map(|workspace| WorkspaceId::parse(workspace))
+                    .collect(),
                 apps: request.apps.clone(),
             },
             expires_at_ns: now_ns
@@ -1116,14 +1121,19 @@ impl AgentSupervisor {
             };
             let scope = &identity.delegation.scope;
             let workspace = match workspace {
-                Some(workspace) if scope.rooms.iter().any(|own| own == workspace) => {
+                Some(workspace)
+                    if scope
+                        .workspaces
+                        .iter()
+                        .any(|own| own.to_string() == workspace) =>
+                {
                     workspace.to_owned()
                 }
                 Some(_) => return Err("the grant does not cover this workspace".into()),
                 None => scope
-                    .rooms
+                    .workspaces
                     .first()
-                    .cloned()
+                    .map(ToString::to_string)
                     .ok_or("the grant names no workspace")?,
             };
             if state.agents.get(grant).is_some_and(|agent| !agent.ended()) {
@@ -1166,7 +1176,13 @@ impl AgentSupervisor {
                 .map(|grant| AgentGrant {
                     id: grant.id().to_owned(),
                     label: grant.proposal.label.clone(),
-                    workspaces: grant.proposal.scope.rooms.clone(),
+                    workspaces: grant
+                        .proposal
+                        .scope
+                        .workspaces
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
                     apps: grant.proposal.scope.apps.clone(),
                     in_use: state
                         .agents
@@ -1638,7 +1654,7 @@ pub(crate) mod tests {
             "Writer helper",
             [0x7c, 0x3a, 0xed],
             DelegateScope {
-                rooms: vec![WORKSPACE.into()],
+                workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
                 apps: Vec::new(),
             },
             1,

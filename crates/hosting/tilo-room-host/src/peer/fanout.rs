@@ -236,7 +236,7 @@ impl LiveFanout<'_> {
                 ..
             } = &**self.frame.envelope
         {
-            tracing::info!(phase="server_delta_publication", workspace_id, authored_at_ns, recipient=%hex::encode(&recipient[..4]));
+            tracing::info!(phase="server_delta_publication", workspace_id = %workspace_id, authored_at_ns, recipient=%hex::encode(&recipient[..4]));
         }
         let delivery = StateDelivery {
             envelope: self.frame.envelope.clone(),

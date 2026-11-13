@@ -2,6 +2,7 @@
 //! routes and the coverage statements the host acts on.
 
 use super::{AuthenticatedPeer, Envelope, SessionCtx};
+use tilo_relay_protocol::WorkspaceId;
 
 /// A member volunteering to compact sealed routes, or its coverage
 /// statement for one: the host removes the entries the statement names. A
@@ -10,7 +11,7 @@ use super::{AuthenticatedPeer, Envelope, SessionCtx};
 pub(super) async fn handle_compaction(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
     env: Envelope,
 ) {
     let Some(compactor) = session.compactor else {
@@ -51,6 +52,6 @@ pub(super) async fn handle_compaction(
         )
         .await
     {
-        tracing::warn!(workspace_id, %error, "refused a compaction statement");
+        tracing::warn!(workspace_id = %workspace_id, %error, "refused a compaction statement");
     }
 }

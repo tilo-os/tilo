@@ -12,6 +12,7 @@ use super::{
     StateCommit, StateSource, Step, StoreError, WorkLimit, live_budget, test_point,
     trace_native_publication,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 pub(super) async fn enqueue_state(
     workspace: &SharedWorkspace,
@@ -39,7 +40,7 @@ pub(super) struct AdmittedState {
 struct StateAdmissionTrace {
     id: blake3::Hash,
     kind: &'static str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 4],
 }
 
@@ -75,7 +76,7 @@ impl StateAdmissionTrace {
     fn emit(&self, phase: &str) {
         tracing::debug!(target: "tilo_relay::native_publication",
             phase, id = %self.id, kind = self.kind,
-            workspace_id = self.workspace_id,
+            workspace_id = %self.workspace_id,
             author = %hex::encode(self.author),
             "native relay publication hop");
     }
@@ -521,7 +522,7 @@ fn admitted_delta(envelope: &Envelope) -> Result<([u8; 32], &[u8]), PeerError> {
             ..
         } = envelope
     {
-        tracing::info!(phase = "server_delta_admit", workspace_id, authored_at_ns);
+        tracing::info!(phase = "server_delta_admit", workspace_id = %workspace_id, authored_at_ns);
     }
     Ok((*author, delta))
 }
@@ -1004,7 +1005,7 @@ impl StatePublisher {
         {
             tracing::info!(
                 phase = "server_delta_committed",
-                workspace_id,
+                workspace_id = %workspace_id,
                 authored_at_ns,
                 sessions = commit.sessions.len()
             );

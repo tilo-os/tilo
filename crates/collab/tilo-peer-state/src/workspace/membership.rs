@@ -281,7 +281,7 @@ pub fn invitation_admits(
     )
     .map_err(refused)?;
     let grant = join.grant().clone();
-    if grant.room != workspace {
+    if grant.workspace_id.to_string() != workspace {
         return Err(refused("it is for another workspace".into()));
     }
     let issuer = hex::encode(grant.issuer.user_public_key);

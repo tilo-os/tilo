@@ -45,6 +45,7 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
+use tilo_relay::WorkspaceId;
 
 /// How long a device waits for an answer the host owes it. Every wait below
 /// is for a reply the protocol guarantees, so this only turns a hang into a
@@ -96,7 +97,7 @@ async fn connect_and_subscribe(
     user: &TestUser,
     a: &crate::common::TestDevice,
     b: &crate::common::TestDevice,
-    ws: u64,
+    ws: WorkspaceId,
 ) -> (RelayClient, RelayClient) {
     let ep_a = client_endpoint().await;
     let a_client = RelayClient::connect(
@@ -149,7 +150,7 @@ async fn connect_and_subscribe(
 /// Unsubscribe was fully applied — B is no longer a subscriber, so
 /// the next delta is guaranteed to be store-and-forwarded rather
 /// than racing a half-torn-down live channel.
-async fn take_b_offline(b_client: &RelayClient, ws: u64) {
+async fn take_b_offline(b_client: &RelayClient, ws: WorkspaceId) {
     b_client
         .send(Envelope::Unsubscribe { workspace_id: ws })
         .unwrap();
@@ -162,7 +163,7 @@ async fn reconnect_b_and_catch_up(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
-    ws: u64,
+    ws: WorkspaceId,
     doc_a: &mut AutoCommit,
     doc_b: &mut AutoCommit,
 ) {
@@ -221,7 +222,7 @@ fn count_delta_files(dir: &std::path::Path) -> usize {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_devices_converge_through_host_with_offline_store_forward() {
-    const WS: u64 = 7;
+    const WS: WorkspaceId = WorkspaceId::from_u128(7);
 
     let user = TestUser::fresh("Alice");
     let host_dev = user.enrol("home-server", DeviceCapabilities::host());

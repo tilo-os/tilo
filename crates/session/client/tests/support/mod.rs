@@ -17,6 +17,7 @@ use tilo_session_client::{Cmd, Link, Outbox, TransportPhase};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
+use collab_types::WorkspaceId;
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
@@ -117,8 +118,8 @@ pub fn is_host(device: &[u8; 32]) -> bool {
 }
 
 /// Whether `event` is a document a member wrote, not one of a host's.
-pub fn workspace() -> u64 {
-    tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
+pub fn workspace() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 /// Have `relay` govern [`WORKSPACE`], the person's workspace, unless it does,
@@ -594,7 +595,7 @@ pub async fn ready(peers: &[&Link]) {
 /// [`ready`] too, so a page that is about to act in one waits on that one
 /// rather than on the session: an action sent before the host subscribed the
 /// page is refused by the relay and never answered.
-pub async fn admitted_to(peer: &Link, workspace: u64) {
+pub async fn admitted_to(peer: &Link, workspace: tilo_relay_protocol::WorkspaceId) {
     wait_for("the session admitted to its workspace", || {
         let status = peer.status();
         async move {
@@ -838,7 +839,7 @@ pub async fn enter(
     cert: &DeviceCert,
     key: &SigningKey,
     host_cert: &DeviceCert,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> Link {
     redeem(host, door, cert, key).await;
     let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
@@ -847,7 +848,7 @@ pub async fn enter(
     peer
 }
 
-pub async fn in_workspace(peer: &Link, workspace_id: u64) {
+pub async fn in_workspace(peer: &Link, workspace_id: WorkspaceId) {
     ready(&[peer]).await;
     wait_for("the governed workspace to let the page in", || async {
         (peer.status().workspaces.get(&workspace_id) == Some(&true)).then_some(())

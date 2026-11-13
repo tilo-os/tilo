@@ -584,10 +584,7 @@ fn verify_workspace(text: &str, user: [u8; 32]) -> Result<String, String> {
         tilo_clock::unix_now_ns(),
     )
     .map_err(|error| format!("that invitation is not for you: {error}"))?;
-    let workspace = verified.grant().room.clone();
-    tilo_desktop_model::WorkspaceId::parse(&workspace)
-        .ok_or_else(|| "that invitation names an invalid workspace".to_owned())?;
-    Ok(workspace)
+    Ok(verified.grant().workspace_id.to_string())
 }
 
 /// What joining the pasted `text` got: the name the workspace goes by, when
@@ -891,9 +888,8 @@ mod tests {
         };
         tilo_user_identity::sign_device_cert(&mut issuer, &host).expect("a certified host");
         let grant = tilo_workspace_join::InviteGrant {
-            workspace_id: tilo_workspace_join::room_workspace_id(WORKSPACE)
+            workspace_id: tilo_workspace_join::WorkspaceId::parse(WORKSPACE)
                 .expect("a workspace's id"),
-            room: WORKSPACE.to_owned(),
             issuer,
             role: tilo_workspace_join::Role::Viewer,
             nonce: [0x33; 16],

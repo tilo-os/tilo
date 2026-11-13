@@ -135,7 +135,7 @@ fn workspace_sync(
         .or_insert_with(|| crate::identity::person_in(&workspace_id.to_string(), person))
         .clone();
     tilo_network_actor::workspace_sync::told(
-        tilo_network_actor::workspace_topic_id(workspace_id),
+        workspace_id,
         &workspace.name,
         workspace.app_writes_at(&person, app, tilo_clock::unix_now()),
     )

@@ -52,6 +52,7 @@ use ui::record::{RecordId, RecordSync};
 use ui::state::DocumentReplica;
 
 use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_RECORD};
+use tilo_relay_protocol::WorkspaceId;
 
 /// How often a page asks again what the workspace lets its person do: a role the
 /// workspace grants or withdraws while they are in it reaches their page within
@@ -113,7 +114,7 @@ pub(crate) struct Joined {
     uuid: String,
     /// `uuid`, as the routes of the workspace's records name it.
     cluster: uuid::Uuid,
-    workspace: u64,
+    workspace: WorkspaceId,
     store: Rc<MemoryStore>,
     /// Where `store` lives.
     kept: Kept,
@@ -204,8 +205,8 @@ pub(crate) fn open(
     workspace: &str,
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
-    let workspace_id = tilo_relay_protocol::room_workspace_id(workspace)
-        .map_err(|_| "a workspace must be a uuid")?;
+    let workspace_id =
+        tilo_relay_protocol::WorkspaceId::parse(workspace).ok_or("a workspace must be a uuid")?;
     peer.send(Cmd::KeepContent(
         workspace_id,
         Arc::new(kept_content(id, workspace.to_owned())),

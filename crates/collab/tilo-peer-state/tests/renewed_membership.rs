@@ -49,7 +49,7 @@ impl HeldWorkspace {
         Governed {
             peer: (&self.peer.0).into(),
             host: &self.host,
-            workspace_id: join::room_workspace_id(WORKSPACE).unwrap(),
+            workspace_id: join::WorkspaceId::parse(WORKSPACE).unwrap(),
             generation: self.generation,
             governance_messages: None,
         }
@@ -252,11 +252,10 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let joined_at = SystemTime::now();
     let joined_ns = testing::ns(joined_at).unwrap();
     let governor = JoinAnswer(MemoryWorkspaces::new(&device, &key, joined_at));
-    let workspace_id = join::room_workspace_id(WORKSPACE).unwrap();
+    let workspace_id = join::WorkspaceId::parse(WORKSPACE).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: WORKSPACE.into(),
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&device.device_public_key).unwrap(),
@@ -355,7 +354,6 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
             &governor,
             slot_key.verifying_key().to_bytes(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
-                room: WORKSPACE.into(),
                 workspace_id,
                 device_cert: device_cert.clone(),
                 request_id: [seed; 32],

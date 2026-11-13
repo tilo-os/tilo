@@ -222,11 +222,12 @@ impl WorkspaceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_relay_protocol::WorkspaceId;
 
     #[test]
     fn concurrent_first_uses_agree_on_one_generation() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let minted: Vec<[u8; 16]> = std::thread::scope(|scope| {
             #[expect(
                 clippy::needless_collect,
@@ -247,7 +248,7 @@ mod tests {
     #[test]
     fn a_resume_log_keeps_what_was_delivered_and_starts_over_cleanly() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let generation = store.generation().unwrap();
         assert_eq!(store.generation().unwrap(), generation, "minted once");
         let device = [2; 32];
@@ -288,7 +289,7 @@ mod tests {
     #[test]
     fn a_position_survives_a_fork_the_device_never_heard_of() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let device = [2; 32];
         let log = store.start_resume(&device).unwrap();
         store

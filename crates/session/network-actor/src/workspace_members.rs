@@ -220,7 +220,7 @@ impl WorkspaceMembers {
 mod tests {
     use super::*;
 
-    const WORKSPACE: WorkspaceId = 7;
+    const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(7);
 
     fn device(seed: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
@@ -270,7 +270,7 @@ mod tests {
             "a non-member's is dropped"
         );
         assert_eq!(
-            admitted(&mut members, WORKSPACE + 1, member, 1),
+            admitted(&mut members, WorkspaceId::from_u128(8), member, 1),
             None,
             "membership of one workspace is no membership of another"
         );

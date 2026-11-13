@@ -15,6 +15,7 @@ use super::adopt::{enter, redeem};
 use super::{
     ChannelLink, DeviceActions, Engine, Enrolled, HostCmd, HostEvent, PeerDocuments, endpoint_for,
 };
+use tilo_network_actor::WorkspaceId;
 
 /// What the peer actor heard, as the client's own vocabulary says it: the transport keeps the
 /// differences an endpoint's, and the client hears one kind of word from every host. What only this
@@ -642,7 +643,7 @@ enum Taken {
     Input(Box<tilo_network_actor::native_ingress::Input>),
     /// It finished replaying what it retains of the workspace on this topic, and whether it sends
     /// records only once a device opens them.
-    Ready(u64, bool),
+    Ready(WorkspaceId, bool),
 }
 
 /// Take what hosts replay into the workspaces this device holds, as it arrives: each run of one

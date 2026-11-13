@@ -860,6 +860,7 @@ mod door_tests {
         RemoteActionTarget,
     };
     use tilo_peer_state::join::Role;
+    use tilo_relay_protocol::WorkspaceId;
     use tilo_relay_protocol::directory::{DoorJoin, Listing};
     use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission};
     use tilo_relay_session::workspaces::RemoveMemberRequest;
@@ -906,7 +907,7 @@ mod door_tests {
     /// The owner invokes the workspace's governance `verb` with `argument`.
     async fn govern(
         workspaces: &Workspaces,
-        workspace: u64,
+        workspace: WorkspaceId,
         owner: &DeviceCert,
         request: InvokeRequest,
     ) -> serde_json::Value {

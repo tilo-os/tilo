@@ -16,6 +16,7 @@
 //! Redeeming an invitation is an entry on the device's session
 //! ([`crate::entering::Through::Invitation`]).
 
+use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
 
 /// What a member may do in a workspace.
@@ -43,7 +44,7 @@ pub struct Workspace {
     #[serde(rename = "room")]
     pub workspace: String,
     /// The relay workspace carrying it.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     pub name: String,
     /// Its committed governance generation.
     pub generation: u64,
@@ -461,7 +462,7 @@ pub enum JoinReply {
         #[serde(rename = "room")]
         workspace: String,
         /// Its relay workspace.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         name: String,
         /// The role it grants.
         role: Role,
@@ -479,7 +480,7 @@ pub enum JoinReply {
         #[serde(rename = "room")]
         workspace: String,
         /// Its relay workspace.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         name: String,
         role: Role,
     },

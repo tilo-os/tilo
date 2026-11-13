@@ -41,8 +41,9 @@ use tilo_relay::{AttributedPresence, Envelope, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
+use tilo_relay::WorkspaceId;
 
-const WORKSPACE: u64 = 710;
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(710);
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
 

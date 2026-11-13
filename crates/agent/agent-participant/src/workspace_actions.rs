@@ -76,6 +76,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
@@ -103,7 +104,6 @@ use tilo_actions::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::room_workspace_id;
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::RevocationList;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
@@ -125,19 +125,19 @@ const JOIN_WAIT: Duration = Duration::from_secs(30);
 const KEYS_WAIT: Duration = Duration::from_secs(10);
 enum Job {
     Feedback {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         query: Box<tilo_actions::remote::feedback::FeedbackQuery>,
         caller: Caller,
         done: Completer<Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError>>,
     },
     Catalogue {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         query: Box<CatalogueQuery>,
         caller: Caller,
         done: Completer<Result<CataloguePage, ActionHostError>>,
     },
     Invoke {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         invocation: InvocationId,
         done: Completer<InvocationReceipt>,
     },
@@ -146,7 +146,7 @@ enum Job {
     /// A step of an upload into a workspace whose store the service has not
     /// found yet.
     Content {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: Caller,
         step: tilo_actions::remote::ContentPutStep,
         done: Completer<Result<tilo_actions::remote::ContentPutAnswer, ActionHostError>>,
@@ -154,7 +154,7 @@ enum Job {
     /// A piece of content asked of a workspace whose store the service has
     /// not found yet.
     ContentGet {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: Caller,
         content: String,
         offset: u64,
@@ -163,26 +163,29 @@ enum Job {
     },
     /// A search of what a workspace holds.
     Search {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: Caller,
         needle: String,
         done: Completer<Result<Vec<tilo_actions::remote::Found>, ActionHostError>>,
     },
     /// The changes to a workspace's records after a cursor.
     Changes {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: Caller,
         after: Option<String>,
         done: Completer<Result<tilo_actions::remote::ChangePage, ActionHostError>>,
     },
     /// An agent's run connected to a workspace and has asked nothing yet:
     /// it is present there, waiting ([`run_voice`]).
-    Arrived { workspace_id: u64, caller: Caller },
+    Arrived {
+        workspace_id: WorkspaceId,
+        caller: Caller,
+    },
     /// A workspace requests wait to be joined to changed: those it joined
     /// run.
-    Joined(u64),
+    Joined(WorkspaceId),
     /// A workspace was deleted: the service lets go of all it holds of it.
-    Forget(u64),
+    Forget(WorkspaceId),
 }
 
 impl Job {
@@ -203,7 +206,7 @@ impl Job {
     }
 
     /// The workspace whose records the job reads or changes.
-    const fn workspace(&self) -> Option<u64> {
+    const fn workspace(&self) -> Option<WorkspaceId> {
         match self {
             Self::Catalogue { workspace_id, .. }
             | Self::Invoke { workspace_id, .. }
@@ -253,7 +256,7 @@ struct Shared {
     /// first requests of many fresh workspaces join side by side instead of
     /// each waiting for the joins before it. `Some` until the thread takes
     /// the membership over.
-    joins: Mutex<HashMap<u64, Option<Workspace>>>,
+    joins: Mutex<HashMap<WorkspaceId, Option<Workspace>>>,
     /// Each workspace's content store, once found.
     stores: content::Stores,
     /// The uploads callers have open.
@@ -308,7 +311,7 @@ impl WorkspaceActions {
 
     /// The workspace `workspace_id` was deleted: the service lets go of all
     /// it holds of it, its app workers' replicas included.
-    pub fn forget_workspace(&self, workspace_id: u64) {
+    pub fn forget_workspace(&self, workspace_id: WorkspaceId) {
         if let Some(jobs) = self.shared.jobs.lock_recover().as_ref() {
             let _ = jobs.send((Instant::now(), Job::Forget(workspace_id)));
         }
@@ -318,7 +321,7 @@ impl WorkspaceActions {
     /// present there from now on, waiting, before its first request, as the
     /// host speaks for the runs it executes ([`run_voice`]). Nothing for a
     /// caller in no run.
-    pub fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+    pub fn run_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
         if caller.agent_run().is_none() {
             return;
         }
@@ -365,7 +368,7 @@ impl WorkspaceActions {
     /// waits only for what is still missing when it reaches the request.
     /// Joining sends the subscription and returns; the session runs on the
     /// member's runtime.
-    fn join_ahead(&self, workspace_id: u64) {
+    fn join_ahead(&self, workspace_id: WorkspaceId) {
         let Some(member) = self.shared.member.get() else {
             return;
         };
@@ -380,7 +383,7 @@ impl WorkspaceActions {
             }
             Err(error) => {
                 drop(joins);
-                tracing::debug!(%error, workspace_id, "workspace actions: a workspace was not joined ahead");
+                tracing::debug!(%error, workspace_id = %workspace_id, "workspace actions: a workspace was not joined ahead");
             }
         }
     }
@@ -420,7 +423,7 @@ impl WorkspaceActions {
     )]
     pub fn serve(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
@@ -543,7 +546,7 @@ impl WorkspaceActions {
     /// answering its receipt.
     fn invoke_request(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         mut request: InvokeRequest,
     ) -> Pending<RemoteActionMessage> {
@@ -605,7 +608,7 @@ impl WorkspaceActions {
 
     fn feedback_request(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         correlation: u64,
         query: tilo_actions::remote::feedback::FeedbackQuery,
@@ -680,7 +683,7 @@ impl HostActions {
     /// `None` for a message that is not a request.
     pub fn serve(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
@@ -859,7 +862,7 @@ struct GaveUp {
 /// has the surface they were written with and their workspace's governance.
 fn sealed_for(
     routes: &BTreeSet<DocumentRoute>,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     needs: Needs<'_>,
     gave_up: &GaveUp,
 ) -> Vec<DocumentRoute> {
@@ -879,7 +882,7 @@ fn sealed_for(
     routes
         .iter()
         .filter(|route| {
-            room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
+            WorkspaceId::parse(&route.cluster_id) == Some(workspace_id)
                 && match needs {
                     Needs::Joined => false,
                     Needs::Workspace => !gave_up.listed,
@@ -931,7 +934,7 @@ struct Workspace {
 impl Workspace {
     fn join(
         member: &WorkspaceMember,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         shared: &Arc<Shared>,
     ) -> Result<Self, String> {
         let _runtime = member.runtime.enter();
@@ -978,7 +981,7 @@ impl Workspace {
         })
     }
 
-    fn pump(&mut self, workspace_id: u64) {
+    fn pump(&mut self, workspace_id: WorkspaceId) {
         for event in self.events.drain() {
             match event {
                 Event::HostReady {
@@ -1013,7 +1016,7 @@ impl Workspace {
                     }
                 }
                 Event::Landed { route, .. } => {
-                    if room_workspace_id(&route.cluster_id).ok() != Some(workspace_id) {
+                    if WorkspaceId::parse(&route.cluster_id) != Some(workspace_id) {
                         continue;
                     }
                     let engine = self.peer.engine();
@@ -1075,7 +1078,7 @@ impl Workspace {
     /// The records of the workspace that `needs` reads and that hold
     /// undecided documents: they open once what the documents wait for
     /// arrives.
-    fn sealed(&self, workspace_id: u64, needs: Needs<'_>) -> Vec<DocumentRoute> {
+    fn sealed(&self, workspace_id: WorkspaceId, needs: Needs<'_>) -> Vec<DocumentRoute> {
         sealed_for(&self.undecided, workspace_id, needs, &self.gave_up)
     }
 
@@ -1092,7 +1095,7 @@ impl Workspace {
     /// again.
     fn wait_for(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         needs: Needs<'_>,
         link: Option<&dyn WorkspaceRecordsLink>,
     ) -> Result<(), ActionHostError> {
@@ -1193,7 +1196,7 @@ impl Workspace {
 
     /// The cluster id of the workspace `workspace_id` names, from what the member has
     /// seen of it: its records, or, in a workspace with none yet, its governance.
-    fn cluster_id(&self, workspace_id: u64) -> Option<String> {
+    fn cluster_id(&self, workspace_id: WorkspaceId) -> Option<String> {
         if let Some(records) = &self.records {
             return Some(records.workspace().to_owned());
         }
@@ -1202,7 +1205,7 @@ impl Workspace {
             .workspaces()
             .into_iter()
             .map(|workspace| workspace.to_string())
-            .find(|workspace| room_workspace_id(workspace).ok() == Some(workspace_id))
+            .find(|workspace| WorkspaceId::parse(workspace) == Some(workspace_id))
     }
 }
 
@@ -1222,7 +1225,7 @@ struct Worker {
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
     participant: String,
-    workspaces: HashMap<u64, Workspace>,
+    workspaces: HashMap<WorkspaceId, Workspace>,
     mounted: BTreeMap<DocumentRoute, Mounted>,
     /// The replicas callers served within bounds act through ([`bounded`]).
     bounded: BTreeMap<bounded::BoundedKey, bounded::BoundedReplica>,
@@ -1234,7 +1237,7 @@ struct Worker {
     channels_opened: HashSet<DocumentRoute>,
     /// Requests waiting for their workspace to be ready for them, oldest
     /// first, by workspace: the thread answers others meanwhile.
-    joining: HashMap<u64, VecDeque<Waiting>>,
+    joining: HashMap<WorkspaceId, VecDeque<Waiting>>,
     clock: u64,
     /// What the apps call the records the host changes, read in a confined
     /// worker kept for the next ([`publish`]).
@@ -1242,7 +1245,7 @@ struct Worker {
     /// The writes the job being served handed to the session, by workspace:
     /// an invocation is answered done only once the host holds them
     /// ([`publish::Worker::saving`]).
-    handed: HashMap<u64, Vec<publish::Written>>,
+    handed: HashMap<WorkspaceId, Vec<publish::Written>>,
 }
 
 /// The door's answer for an action it has nothing by that address.
@@ -1415,7 +1418,7 @@ impl Worker {
     /// join and [`KEYS_WAIT`] for keys, the job runs anyway and says how far
     /// it got: a join that never comes, or keys that never arrive, answer the
     /// request rather than holding it for ever.
-    fn hold(&mut self, workspace_id: u64, queued: Instant, job: Job) {
+    fn hold(&mut self, workspace_id: WorkspaceId, queued: Instant, job: Job) {
         let bound = if self.joined(workspace_id) {
             KEYS_WAIT
         } else {
@@ -1436,7 +1439,7 @@ impl Worker {
     /// Run the requests waiting for `workspace_id`, its change just arrived:
     /// those that are ready run here, and those still waiting for keys are
     /// held again with what they have waited so far.
-    fn resume(&mut self, workspace_id: u64) {
+    fn resume(&mut self, workspace_id: WorkspaceId) {
         let Some(waiting) = self.joining.remove(&workspace_id) else {
             return;
         };
@@ -1467,7 +1470,7 @@ impl Worker {
     /// Whether a request for `workspace_id` can run now: the workspace is
     /// joined, or it could not be joined at all, which the request reports;
     /// and what it reads has opened, or the host holds no keys to hand it.
-    fn ready(&mut self, workspace_id: u64, needs: Needs<'_>) -> bool {
+    fn ready(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
         if !self.joined(workspace_id) {
             return false;
         }
@@ -1478,7 +1481,7 @@ impl Worker {
     /// `needs` reads that are still sealed, and say whether they opened. A
     /// record keeps waiting until what the keys open arrives: the session's
     /// next change wakes this thread to look again.
-    fn opened(&mut self, workspace_id: u64, needs: Needs<'_>) -> bool {
+    fn opened(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
         if self.membership(workspace_id).is_err() {
             // Nothing is there to read: the request says so itself.
             return true;
@@ -1509,7 +1512,7 @@ impl Worker {
 
     /// Whether a request for `workspace_id` can run now: the workspace is
     /// joined, or it could not be joined at all, which the request reports.
-    fn joined(&mut self, workspace_id: u64) -> bool {
+    fn joined(&mut self, workspace_id: WorkspaceId) -> bool {
         match self.membership(workspace_id) {
             Ok(workspace) => {
                 workspace.pump(workspace_id);
@@ -1521,14 +1524,14 @@ impl Worker {
 
     /// Ask the session to hand this thread `workspace_id`'s next change, or
     /// stop asking once nothing waits for it.
-    fn awaiting(&self, workspace_id: u64, waiting: bool) {
+    fn awaiting(&self, workspace_id: WorkspaceId, waiting: bool) {
         if let Some(workspace) = self.workspaces.get(&workspace_id) {
             workspace.awaited.store(waiting, Ordering::SeqCst);
         }
     }
 
     /// Stop asking to be woken for `workspace_id` once nothing waits for it.
-    fn stop_waiting_if_idle(&self, workspace_id: u64) {
+    fn stop_waiting_if_idle(&self, workspace_id: WorkspaceId) {
         if !self.joining.contains_key(&workspace_id) {
             self.awaiting(workspace_id, false);
         }
@@ -1682,9 +1685,9 @@ impl Worker {
     /// membership, the records mounted and the replicas callers acted
     /// through there, and its content store. Requests still waiting for it
     /// run, and are told it is not there.
-    fn forget(&mut self, workspace_id: u64) {
+    fn forget(&mut self, workspace_id: WorkspaceId) {
         let of =
-            |route: &DocumentRoute| room_workspace_id(&route.cluster_id).ok() == Some(workspace_id);
+            |route: &DocumentRoute| WorkspaceId::parse(&route.cluster_id) == Some(workspace_id);
         self.workspaces.remove(&workspace_id);
         self.shared.joins.lock_recover().remove(&workspace_id);
         self.shared.stores.lock_recover().remove(&workspace_id);
@@ -1702,7 +1705,7 @@ impl Worker {
     /// records have not merged yet.
     /// The service's membership of `workspace_id`: the one joined when its
     /// first request arrived, or joined now.
-    fn membership(&mut self, workspace_id: u64) -> Result<&mut Workspace, ActionHostError> {
+    fn membership(&mut self, workspace_id: WorkspaceId) -> Result<&mut Workspace, ActionHostError> {
         if !self.workspaces.contains_key(&workspace_id) {
             let ahead = self
                 .shared
@@ -1726,7 +1729,7 @@ impl Worker {
 
     fn refresh(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         needs: Needs<'_>,
     ) -> Result<WorkspaceState, ActionHostError> {
         self.membership(workspace_id)?;
@@ -1885,7 +1888,7 @@ impl Worker {
     /// nothing else; the owner, what the mounted record offers.
     fn listed(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         bounded: Option<&bounded::Bounded>,
         route: &DocumentRoute,
         state: &WorkspaceState,
@@ -1936,7 +1939,7 @@ impl Worker {
 
     fn view_catalogue_page(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         query: &CatalogueQuery,
     ) -> Result<CataloguePage, ActionHostError> {
@@ -1988,7 +1991,7 @@ impl Worker {
     /// Whether `workspace` admits `caller`: the person whose device runs this
     /// service, or a member the workspace's governance lets in. Answered here,
     /// on the service's own thread, where asking the host blocks.
-    fn admits_member(&self, workspace: u64, caller: &Caller) -> bool {
+    fn admits_member(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
         if self.serves_as_owner(caller) {
             return true;
         }
@@ -1998,7 +2001,7 @@ impl Worker {
 
     fn registered_read_catalogue(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         provider: &str,
         query: &CatalogueQuery,
@@ -2036,7 +2039,7 @@ impl Worker {
         ))
     }
 
-    fn invoke(&mut self, workspace_id: u64, invocation: InvocationId) -> InvocationReceipt {
+    fn invoke(&mut self, workspace_id: WorkspaceId, invocation: InvocationId) -> InvocationReceipt {
         let (caller, request) = match self.claim(invocation) {
             Ok(claimed) => claimed,
             Err(receipt) => return receipt,
@@ -2165,7 +2168,7 @@ impl Worker {
     /// allows it, and only on a record's own actions.
     fn admit_appearance(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Option<tilo_actions::Appearance>, ActionHostError> {
@@ -2215,7 +2218,7 @@ impl Worker {
     /// record it changed.
     fn perform(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
@@ -2348,12 +2351,12 @@ impl Worker {
     )]
     fn open_asked(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         named: &str,
         target: &tilo_actions::remote::RemoteActionTarget,
     ) -> Result<ActionOutput, Outcome> {
-        if room_workspace_id(named).ok() != Some(workspace_id) {
+        if WorkspaceId::parse(named) != Some(workspace_id) {
             return Err(unknown_action());
         }
         let who = if self.serves_as_owner(caller) {
@@ -2389,7 +2392,7 @@ impl Worker {
     )]
     fn show_on_desk(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         (named, app): (&str, &str),
         request: &InvokeRequest,
@@ -2397,7 +2400,7 @@ impl Worker {
         let unknown = || Outcome::Rejected(ActionHostError::UnknownAction);
         let target = &request.target;
         if target.address.action != APPLICATION_OPEN_ACTION
-            || room_workspace_id(named).ok() != Some(workspace_id)
+            || WorkspaceId::parse(named) != Some(workspace_id)
         {
             return Err(unknown());
         }
@@ -2492,7 +2495,7 @@ impl Worker {
     /// is why a commit failed.
     fn commit_taken(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: &DocumentRoute,
         taken: Vec<(DocumentRoute, DocumentMutation)>,
     ) -> Result<(), String> {
@@ -2520,7 +2523,7 @@ impl Worker {
 
     fn try_registered_read(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Option<ActionOutput>, Box<Outcome>> {
@@ -2597,7 +2600,7 @@ impl Worker {
     )]
     fn open_new(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         workspace: &str,
         app: &str,
         who: Option<&bounded::Bounded>,
@@ -2716,7 +2719,7 @@ impl Worker {
     )]
     fn share_link(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         (route, state, kind): (&DocumentRoute, &WorkspaceState, String),
         target: &tilo_actions::remote::RemoteActionTarget,
@@ -2819,7 +2822,7 @@ impl Worker {
     )]
     fn link_asker(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         (route, state): (&DocumentRoute, &WorkspaceState),
         target: &tilo_actions::remote::RemoteActionTarget,
@@ -2846,7 +2849,7 @@ impl Worker {
     )]
     fn record_link(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
         request: &ui::tilo_resource::share::ShareRequest,

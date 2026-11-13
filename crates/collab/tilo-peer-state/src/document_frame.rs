@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::join::WorkspaceId;
 use channel_crypto::ChannelContentKeys;
 use collab_types::{
     DocumentFrame, DocumentMutation, DocumentMutationKind, SignedOp, document_artifact_id,
@@ -44,10 +45,10 @@ impl DocumentRoute {
             record: record_id.clone(),
         })
     }
-    /// The relay workspace that carries this route's workspace.
-    pub fn workspace_id(&self) -> Result<u64, DocumentError> {
-        tilo_relay_protocol::room_workspace_id(&self.cluster_id)
-            .map_err(|_| DocumentError::Route("workspace is not a uuid".into()))
+    /// The workspace that carries this route.
+    pub fn workspace_id(&self) -> Result<WorkspaceId, DocumentError> {
+        WorkspaceId::parse(&self.cluster_id)
+            .ok_or_else(|| DocumentError::Route("workspace is not a uuid".into()))
     }
 
     /// The artifact every frame of this route is signed for.

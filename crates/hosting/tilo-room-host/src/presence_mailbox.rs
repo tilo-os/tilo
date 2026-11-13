@@ -25,6 +25,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
@@ -39,7 +40,7 @@ const MAX_PENDING: usize = 32;
 #[derive(Debug)]
 pub struct DuePresence {
     /// The workspace it was fanned out in.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The author-stamped `AttributedPresence` bytes, shared by every
     /// connection it was posted to.
     pub payload: Arc<[u8]>,
@@ -60,7 +61,7 @@ struct State {
 }
 
 struct Event {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     payload: Arc<[u8]>,
     since: Instant,
 }
@@ -87,7 +88,7 @@ impl PresenceMailbox {
 
     /// Post `payload`, which its author sent to workspace `workspace_id`. A full
     /// mailbox drops its oldest pending presence to take this one.
-    pub fn post(&self, workspace_id: u64, payload: Arc<[u8]>, now: Instant) {
+    pub fn post(&self, workspace_id: WorkspaceId, payload: Arc<[u8]>, now: Instant) {
         let mut state = self.state();
         if state.events.len() >= MAX_PENDING {
             state.events.pop_front();
@@ -164,7 +165,9 @@ impl PresenceMailbox {
 mod tests {
     use super::*;
 
-    const WORKSPACE: u64 = 7;
+    fn workspace() -> tilo_relay_protocol::WorkspaceId {
+        tilo_relay_protocol::WorkspaceId::from_u128(7)
+    }
 
     fn bytes(text: &str) -> Arc<[u8]> {
         Arc::from(text.as_bytes().to_vec())
@@ -180,8 +183,8 @@ mod tests {
     fn presence_goes_after_the_window_in_posting_order() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        mailbox.post(WORKSPACE, bytes("pointer"), t0);
-        mailbox.post(WORKSPACE, bytes("caret"), t0);
+        mailbox.post(workspace(), bytes("pointer"), t0);
+        mailbox.post(workspace(), bytes("caret"), t0);
         assert_eq!(mailbox.next_due(), Some(t0 + BATCH_WINDOW));
         assert!(
             mailbox.take(t0, false).is_empty(),
@@ -198,7 +201,7 @@ mod tests {
     fn riding_takes_presence_before_its_window() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        mailbox.post(WORKSPACE, bytes("caret"), t0);
+        mailbox.post(workspace(), bytes("caret"), t0);
         assert!(mailbox.take(t0, false).is_empty());
         assert_eq!(texts(&mailbox.take(t0, true)), ["caret"]);
         assert_eq!(mailbox.next_due(), None);
@@ -209,9 +212,9 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         for step in 0..MAX_PENDING {
-            mailbox.post(WORKSPACE, bytes(&step.to_string()), t0);
+            mailbox.post(workspace(), bytes(&step.to_string()), t0);
         }
-        mailbox.post(WORKSPACE, bytes("last"), t0);
+        mailbox.post(workspace(), bytes("last"), t0);
         let due = mailbox.take(t0 + BATCH_WINDOW, false);
         assert_eq!(due.len(), MAX_PENDING);
         assert_eq!(texts(&due).last().map(String::as_str), Some("last"));
@@ -234,7 +237,7 @@ mod tests {
         });
         tokio::task::yield_now().await;
         let posted = Instant::now();
-        mailbox.post(WORKSPACE, bytes("caret"), posted);
+        mailbox.post(workspace(), bytes("caret"), posted);
         let woke = waiter.await.unwrap();
         assert!(woke >= posted + BATCH_WINDOW);
         assert_eq!(texts(&mailbox.take(woke, false)), ["caret"]);

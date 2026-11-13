@@ -29,6 +29,7 @@ use tilo_user_identity::{
 };
 
 use crate::relay_process::Setup;
+use collab_types::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 
 /// The document every room edits together.
@@ -77,7 +78,7 @@ impl Device {
 }
 
 struct Room {
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     uuid: String,
     members: Vec<Device>,
     /// The room as its authority seeded it; each member starts from a copy.
@@ -416,7 +417,9 @@ impl Room {
         )
         .map_err(|error| anyhow!("{error}"))?;
         Ok(Self {
-            workspace_id: 592_000_u64.saturating_add(u64::try_from(index)?),
+            workspace_id: WorkspaceId::from_u128(
+                592_000_u128.saturating_add(u128::try_from(index)?),
+            ),
             uuid,
             members,
             seed,

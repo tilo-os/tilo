@@ -1,8 +1,9 @@
 use super::*;
 use crate::{coedit::CoeditPayload, transport};
+use tilo_relay_protocol::WorkspaceId;
 fn frame(value: u8, size: usize, timestamp: u64) -> Vec<u8> {
     transport::encode(&Envelope::Delta {
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         author_device_public_key: [1; 32],
         authored_at_ns: timestamp,
         signature: [0; 64],
@@ -72,7 +73,7 @@ fn one_entry() -> WorkLimit {
 #[test]
 fn bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let retained = raw_generation(&store, 0, 9);
     for i in (0..300).rev() {
         fs::write(retained.join(format!("{i:016x}.delta")), frame(1, 2048, i)).unwrap();
@@ -119,7 +120,7 @@ fn bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch() {
 #[test]
 fn collisions_malformed_twins_and_replaced_pending_never_authorize_retirement() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let first = frame(1, 10, 1);
     let second = frame(2, 10, 2);
     let same_body_new_publication = frame(1, 10, 2);
@@ -164,7 +165,7 @@ fn collisions_malformed_twins_and_replaced_pending_never_authorize_retirement() 
 #[test]
 fn oversized_batch_budget_and_overlimit_files_are_bounded() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     for (i, size) in [(1, 10), (2, 2 * 1024 * 1024), (3, 10)] {
         store
             .enqueue_pending(&[2; 32], i, &frame(1, size, i))
@@ -207,7 +208,7 @@ fn oversized_batch_budget_and_overlimit_files_are_bounded() {
 #[test]
 fn replay_history_payload_and_metadata_regression() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let retained = raw_generation(&store, 0, 9);
     for i in 0..600 {
         fs::write(retained.join(format!("{i:016x}.delta")), frame(1, 8192, i)).unwrap();
@@ -229,12 +230,12 @@ fn replay_history_payload_and_metadata_regression() {
 fn pinned_generation_survives_gc_and_restart_reclaims_only_owned_work() {
     use automerge::transaction::Transactable;
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let mut document = automerge::AutoCommit::new();
     document.put(automerge::ROOT, "first", 1).unwrap();
     let make_checkpoint = |body| {
         transport::encode(&Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [1; 32],
             authored_at_ns: 0,
             signature: [0; 64],
@@ -272,7 +273,7 @@ fn pinned_generation_survives_gc_and_restart_reclaims_only_owned_work() {
     let unknown = store.root.join("store-work-v1/unknown");
     fs::create_dir(&unknown).unwrap();
     fs::write(unknown.join("keep"), b"unknown").unwrap();
-    let reopened = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let reopened = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let mut gc = reopened.start_work_reclamation().unwrap();
     while matches!(gc.step(one_entry()).unwrap(), Step::More) {}
     assert!(pending.exists());
@@ -287,7 +288,7 @@ fn pinned_generation_survives_gc_and_restart_reclaims_only_owned_work() {
 #[test]
 fn retention_rejects_oversized_proof_allocation_and_preserves_unknown_record() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     store.retain_delta(&[9; 32], 1, &frame(1, 8, 1)).unwrap();
     let lineage = store.root.join("retained/v2").join(format!(
         "{}-{}",
@@ -315,7 +316,7 @@ fn retention_rejects_oversized_proof_allocation_and_preserves_unknown_record() {
 #[test]
 fn replay_budget_includes_transport_encoder_allocation_capacity() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let bytes = frame(42, 100_000, 1);
     store.enqueue_pending(&[2; 32], 1, &bytes).unwrap();
     let mut snapshot = snapshot(&store);
@@ -344,7 +345,7 @@ fn replay_budget_includes_transport_encoder_allocation_capacity() {
 #[test]
 fn partial_cleanup_restart_preserves_remaining_pending_and_unknown_snapshot_files() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let mut paths = Vec::new();
     for i in 0..3 {
         paths.push(
@@ -383,7 +384,7 @@ fn snapshot_for_device(store: &WorkspaceStore) -> ReplaySnapshot {
 #[test]
 fn noncanonical_prefix_and_generic_envelope_do_not_prove_pending_retirement() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let mut malformed = frame(1, 16, 1);
     malformed[0] ^= 1;
     let generic = transport::encode(&Envelope::Ping).unwrap();
@@ -412,7 +413,7 @@ fn noncanonical_prefix_and_generic_envelope_do_not_prove_pending_retirement() {
 #[test]
 fn capture_preserves_lineage_checkpoint_tail_and_filename_order() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     for (channel, stamp) in [(0x0b, 20), (0x0a, 10)] {
         let generation = raw_generation(&store, 0, channel);
         fs::write(generation.join("checkpoint.delta"), frame(1, 8, stamp)).unwrap();
@@ -450,7 +451,7 @@ fn capture_preserves_lineage_checkpoint_tail_and_filename_order() {
 #[test]
 fn capture_replays_certificate_lineages_first() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let edits = raw_generation(&store, 0, 0x0a);
     fs::write(edits.join("checkpoint.delta"), frame(1, 8, 10)).unwrap();
     fs::write(edits.join("1.delta"), frame(1, 8, 11)).unwrap();
@@ -500,7 +501,7 @@ fn capture_replays_certificate_lineages_first() {
 fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     // A record whose channel orders before any other by hash.
     let other = raw_generation(&store, 0, 0x00);
     store.learn_record([0x00; 32], "notes", "note-1");
@@ -567,7 +568,7 @@ fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
 #[test]
 fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let retained = raw_generation(&store, 0, 9);
     for i in 0..260 {
         fs::write(retained.join(format!("{i:016x}.delta")), [0]).unwrap();
@@ -635,7 +636,7 @@ fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries()
 #[test]
 fn a_capture_lists_the_rooms_frames_and_its_preparation_pins_them() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     for author in 0..64 {
         let generation = raw_generation(&store, author, 9);
         fs::write(
@@ -664,10 +665,10 @@ fn a_capture_lists_the_rooms_frames_and_its_preparation_pins_them() {
 fn retention_collects_what_a_capture_listed_only_once_it_is_pinned() {
     use automerge::transaction::Transactable;
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let checkpoint = |body| {
         transport::encode(&Envelope::Delta {
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             author_device_public_key: [1; 32],
             authored_at_ns: 0,
             signature: [0; 64],
@@ -832,7 +833,7 @@ fn direct_discard_retries_exact_entry_after_transient_unlink_failure() {
 fn startup_reclaimer_retries_exact_entry_after_transient_unlink_failure() {
     for child in [false, true] {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let pending = store
             .enqueue_pending(&[2; 32], 1, &frame(1, 16, 1))
             .unwrap();
@@ -856,7 +857,7 @@ fn startup_reclaimer_retries_exact_entry_after_transient_unlink_failure() {
 #[cfg(unix)]
 fn generation_gc_retries_exact_entry_after_transient_unlink_failure() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     store.retain_delta(&[9; 32], 1, &frame(1, 16, 1)).unwrap();
     let lineage = store.root.join("retained/v2").join(format!(
         "{}-{}",
@@ -884,7 +885,7 @@ fn generation_gc_retries_exact_entry_after_transient_unlink_failure() {
 #[test]
 fn replay_budget_includes_v2_wire_encoding_overlap() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     store
         .enqueue_pending(&[2; 32], 1, &frame(42, 100_000, 1))
         .unwrap();
@@ -917,7 +918,7 @@ fn replay_budget_includes_v2_wire_encoding_overlap() {
 #[test]
 fn disposable_reclamation_treats_disappeared_recognized_entries_as_completed() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let work = store.root().join("store-work-v1");
     fs::create_dir_all(&work).unwrap();
     let root = work.join("replay-00000000000000000000000000000001");
@@ -948,7 +949,7 @@ fn disposable_reclamation_treats_disappeared_recognized_entries_as_completed() {
 #[test]
 fn startup_reclamation_treats_disappeared_selected_work_root_as_completed() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let root = store
         .root()
         .join("store-work-v1/replay-00000000000000000000000000000001");
@@ -983,7 +984,7 @@ fn startup_reclamation_treats_disappeared_selected_work_root_as_completed() {
 #[test]
 fn disposable_reclamation_finishes_when_selected_child_and_root_disappear() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let root = store
         .root()
         .join("store-work-v1/replay-00000000000000000000000000000001");
@@ -1003,7 +1004,7 @@ fn disposable_reclamation_finishes_when_selected_child_and_root_disappear() {
 #[test]
 fn unproved_coedit_wrapper_cannot_supply_replay_duplicate_coverage() {
     let temp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(temp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(temp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let bytes = super::super::test_support::wrapper_suffix(&frame(1, 10, 1), false);
     store.retain_delta(&[9; 32], 1, &bytes).unwrap();
     let pending = store.enqueue_pending(&[2; 32], 1, &bytes).unwrap();
@@ -1020,7 +1021,7 @@ fn unproved_coedit_wrapper_cannot_supply_replay_duplicate_coverage() {
 /// A frame of `author` on `channel`, as `frame` makes one.
 fn authored(author: u8, channel: u8, value: u8, timestamp: u64) -> ([u8; 32], Vec<u8>) {
     let bytes = transport::encode(&Envelope::Delta {
-        workspace_id: 7,
+        workspace_id: WorkspaceId::from_u128(7),
         author_device_public_key: [author; 32],
         authored_at_ns: timestamp,
         signature: [0; 64],
@@ -1054,7 +1055,7 @@ fn listing_hits() -> u64 {
 #[test]
 fn captures_remember_each_lineage_until_it_changes() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let (first, a1) = authored(1, 9, 1, 1);
     let (second, b1) = authored(2, 8, 2, 2);
     store.retain_delta(&first, 1, &a1).unwrap();
@@ -1119,7 +1120,7 @@ fn captures_remember_each_lineage_until_it_changes() {
 #[test]
 fn a_hello_the_workspace_forgets_is_replayed_no_more() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     let hello = |author: [u8; 32], stamp: u64| {
         let channel = crate::store::compaction::hello_channel(&author);
         let lineage = store.root.join("retained/v2").join(format!(
@@ -1167,7 +1168,7 @@ fn a_hello_the_workspace_forgets_is_replayed_no_more() {
         1
     );
     assert_eq!(stamps(&store), vec![51]);
-    let reopened = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let reopened = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     assert_eq!(stamps(&reopened), vec![51], "forgotten for good");
     assert_eq!(
         reopened.forget_hellos(&[[0xf1; 32]], &|_| false).unwrap(),

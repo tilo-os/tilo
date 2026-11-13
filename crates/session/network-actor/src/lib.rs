@@ -28,14 +28,9 @@ pub mod services;
 pub mod siblings;
 pub mod workspace_sync;
 
-/// Compatibility/control topic used only when a message has no workspace identity.
-pub const DEFAULT_WS_TOPIC: u64 = 0;
-
-/// Stable transport/host shard for a durable workspace. Local workspace handles are
-/// deliberately not used: they differ between devices.
-pub fn workspace_topic_id(workspace: tilo_desktop_model::WorkspaceId) -> u64 {
-    tilo_relay_protocol::workspace_topic(&workspace.to_string())
-}
+/// The workspace a message has none for.
+pub const DEFAULT_WS_TOPIC: tilo_desktop_model::WorkspaceId =
+    tilo_desktop_model::WorkspaceId::nil();
 
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
@@ -183,7 +178,7 @@ struct PersonalFabricWireFrame {
     payload: PersonalFabricPayload,
 }
 
-pub type WorkspaceId = u64;
+pub use tilo_desktop_model::WorkspaceId;
 pub type PeerId = EndpointId;
 pub use tilo_identity_host::custody::HostIdentity;
 
@@ -222,7 +217,7 @@ pub enum NetCmd {
     /// wait for it.
     LocalHostReady,
     NativePublish {
-        ws: u64,
+        ws: WorkspaceId,
     },
     /// What this device has received from its peers, by kind.
     WireTally(tokio::sync::oneshot::Sender<Arc<WireTally>>),
@@ -493,31 +488,31 @@ enum InternalEvent {
     /// A workspace's hold reached a host: the link runs until the actor lets
     /// go of `held`.
     NativeLinkConnected {
-        ws: u64,
+        ws: WorkspaceId,
         linked: Box<tilo_peer_state::owner::session::Linked>,
         scope: Arc<native_ingress::Scope>,
         held: tokio::sync::oneshot::Sender<()>,
     },
     /// A workspace's link brought a frame into this device's owner.
     NativeHeard {
-        ws: u64,
+        ws: WorkspaceId,
         heard: tilo_peer_state::direct::Heard,
     },
     /// A device that takes part in workspace `ws` through this one brought a
     /// frame into this device's owner over its link.
     MemberHeard {
-        ws: u64,
+        ws: WorkspaceId,
         workspace: tilo_desktop_model::WorkspaceId,
         heard: tilo_peer_state::direct::Heard,
     },
     /// A workspace's link has the host's retained history in hand.
-    NativeReady { ws: u64 },
+    NativeReady { ws: WorkspaceId },
     /// A workspace's link ended; `deleted` when its host said the
     /// workspace's owner deleted it.
-    NativeLinkClosed { ws: u64, deleted: bool },
+    NativeLinkClosed { ws: WorkspaceId, deleted: bool },
     /// A workspace's hold failed to dial `via`, its `governor` or another host.
     NativeDialFailed {
-        ws: u64,
+        ws: WorkspaceId,
         via: Box<tilo_peer_state::join::TransportHint>,
         governor: bool,
         reason: String,
@@ -983,13 +978,13 @@ struct ActorState {
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     /// Each joined workspace's link, on the direct lane.
-    native_links: HashMap<u64, native_ingress::NativeLink>,
+    native_links: HashMap<WorkspaceId, native_ingress::NativeLink>,
     /// The devices that take part in this device's workspaces through it
     /// ([`NetCmd::ServeMembers`]).
     members: Option<tilo_peer_state::direct::Owning>,
     /// What this device's apps take the members' frames of each workspace under while no link of
     /// it is up, as they take a link's: a workspace this device hosts itself has none.
-    member_scopes: HashMap<u64, Arc<native_ingress::Scope>>,
+    member_scopes: HashMap<WorkspaceId, Arc<native_ingress::Scope>>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     /// Approver sessions that put this person's agents' questions on the
@@ -1224,7 +1219,7 @@ impl ActorState {
                     link.link.ask_replay();
                 } else {
                     tracing::debug!(
-                        ws,
+                        ws = %ws,
                         "no link of the workspace is up; the next one replays as it starts"
                     );
                 }
@@ -1241,13 +1236,13 @@ impl ActorState {
                     .collect();
                 if sessions.is_empty() {
                     tracing::debug!(
-                        ws,
+                        ws = %ws,
                         "no host session of the workspace is up; the record is asked for again when one is"
                     );
                 }
                 for session in sessions {
                     if let Err(error) = session.open_record(channel) {
-                        tracing::debug!(ws, %error, "could not ask a host for a record");
+                        tracing::debug!(ws = %ws, %error, "could not ask a host for a record");
                     }
                 }
             }
@@ -1650,7 +1645,7 @@ impl ActorState {
                 | NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
         ) {
-            tracing::warn!(ws, "refused a non-control message on the control route");
+            tracing::warn!(ws = %ws, "refused a non-control message on the control route");
             return;
         }
         if self.live_surface_route(target) {
@@ -1693,7 +1688,7 @@ impl ActorState {
             NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
         ) {
             tracing::warn!(
-                ws,
+                ws = %ws,
                 "refused a non-content message on the record-content route"
             );
             return;
@@ -1705,7 +1700,7 @@ impl ActorState {
             && link.scope.host().host.device_public_key == *target.as_bytes()
         {
             if let Err(error) = link.link.send(msg) {
-                tracing::debug!(ws, %error, "a record's content waits for the workspace's next link");
+                tracing::debug!(ws = %ws, %error, "a record's content waits for the workspace's next link");
             }
             return;
         }
@@ -1720,7 +1715,7 @@ impl ActorState {
             _ => msg,
         };
         if !self.relay_to_device(ws, target, &msg) {
-            tracing::debug!(ws, "record content has no route to the device that asked");
+            tracing::debug!(ws = %ws, "record content has no route to the device that asked");
         }
     }
 
@@ -1762,7 +1757,7 @@ impl ActorState {
         msg: NeighbourMsg,
     ) -> Result<(), Box<NeighbourMsg>> {
         if !self.is_surface_member(ws, target) {
-            tracing::warn!(ws, peer = %target, "direct route is no longer live");
+            tracing::warn!(ws = %ws, peer = %target, "direct route is no longer live");
             return Err(Box::new(msg));
         }
         // Input must land within an interactive frame budget or not at all;
@@ -1794,7 +1789,7 @@ impl ActorState {
             budget,
         };
         self.lanes.queue_direct(ws, direct).inspect_err(|_| {
-            tracing::warn!(ws, peer = %target, "workspace's remote work is backed up; not sent directly");
+            tracing::warn!(ws = %ws, peer = %target, "workspace's remote work is backed up; not sent directly");
         })
     }
 
@@ -2039,7 +2034,7 @@ impl ActorState {
                 Admission::Member(epoch) => Some(epoch),
                 Admission::Refused => None,
                 Admission::Expired(removed) => {
-                    tracing::info!(ws, peer = %peer, "surface frame from a device whose certificate expired");
+                    tracing::info!(ws = %ws, peer = %peer, "surface frame from a device whose certificate expired");
                     self.close_removed(removed, b"certificate expired");
                     return;
                 }
@@ -2048,7 +2043,7 @@ impl ActorState {
             self.siblings.get(&peer).map(|sibling| sibling.epoch)
         };
         let Some(membership_epoch) = membership else {
-            tracing::warn!(ws, peer = %peer, "surface frame from a device that is no member");
+            tracing::warn!(ws = %ws, peer = %peer, "surface frame from a device that is no member");
             return;
         };
         // Input has no event id or timestamp, so two deliberate
@@ -2159,12 +2154,12 @@ impl ActorState {
         }
         match *result {
             Ok(session) => {
-                tracing::info!(ws, host = %peer, "workspace host session started");
+                tracing::info!(ws = %ws, host = %peer, "workspace host session started");
                 let session = Arc::new(session);
                 self.announce_identity_to_new_host(ws, &session);
                 for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
                     if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {
-                        tracing::warn!(ws, %error, "could not send channel governance to the workspace host");
+                        tracing::warn!(ws = %ws, %error, "could not send channel governance to the workspace host");
                     }
                 }
                 for (channel, retention, bytes) in self.host_backlog.remove(&ws).unwrap_or_default()
@@ -2174,11 +2169,11 @@ impl ActorState {
                         Retention::Delta => session.publish_retained_delta(channel, bytes),
                     };
                     if let Err(error) = sent {
-                        tracing::warn!(ws, %error, "could not send held collaboration state to the workspace host");
+                        tracing::warn!(ws = %ws, %error, "could not send held collaboration state to the workspace host");
                     }
                 }
                 if let Err(error) = session.live_join() {
-                    tracing::warn!(ws, %error, "could not join the workspace host's live plane");
+                    tracing::warn!(ws = %ws, %error, "could not join the workspace host's live plane");
                 }
                 let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
                 let pump = spawn_host_pump(
@@ -2193,7 +2188,7 @@ impl ActorState {
                     .insert((ws, peer), HostRuntime { session, pump });
             }
             Err(error) => {
-                tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
+                tracing::warn!(ws = %ws, peer = %peer, %error, "workspace host connection failed");
             }
         }
     }
@@ -2275,7 +2270,7 @@ impl ActorState {
 
     /// The session of `ws` with the host at `peer` ended.
     fn host_session_closed(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
-        tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
+        tracing::info!(ws = %ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
         if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
             runtime.pump.abort();
         }
@@ -2311,7 +2306,7 @@ impl ActorState {
             msg,
             NeighbourMsg::RemoteInput { .. } | NeighbourMsg::IdentityHello { .. }
         ) {
-            tracing::debug!(ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
+            tracing::debug!(ws = %ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
         }
         // A replay the host was asked for repeats what this device saw
         // before on purpose: the broker drops what it holds.
@@ -2486,7 +2481,7 @@ impl ActorState {
         if topic.identity_sent.is_none_or(|sent| sent == fingerprint) {
             return;
         }
-        tracing::info!(ws, "device identity material changed; announcing it again");
+        tracing::info!(ws = %ws, "device identity material changed; announcing it again");
         self.announce_identity(ws);
     }
 
@@ -2564,7 +2559,7 @@ impl ActorState {
             };
             backlog.bytes = backlog.bytes.saturating_sub(dropped.len());
             tracing::debug!(
-                ws,
+                ws = %ws,
                 "collaboration state held for the workspace host overflowed; the oldest is dropped"
             );
         }
@@ -2598,7 +2593,7 @@ impl ActorState {
             return;
         };
         if let Err(error) = session.publish_checkpoint(channel, bytes) {
-            tracing::warn!(ws, %error, "could not send the identity announcement to the workspace host");
+            tracing::warn!(ws = %ws, %error, "could not send the identity announcement to the workspace host");
         }
     }
 
@@ -3113,7 +3108,7 @@ fn encode_for_hosts(ws: WorkspaceId, msg: &NeighbourMsg) -> Option<(Vec<u8>, Hos
     match postcard::to_allocvec(msg) {
         Ok(bytes) => Some((bytes, retention(msg, false))),
         Err(error) => {
-            tracing::warn!(ws, %error, "collaboration message encode failed");
+            tracing::warn!(ws = %ws, %error, "collaboration message encode failed");
             None
         }
     }
@@ -3132,7 +3127,7 @@ fn send_encoded(
         None => session.publish_presence(bytes),
     };
     if let Err(error) = result {
-        tracing::warn!(ws, %error, "workspace host publish failed");
+        tracing::warn!(ws = %ws, %error, "workspace host publish failed");
     }
 }
 
@@ -3316,7 +3311,7 @@ impl HostRouteScheduler<'_> {
                         .into_iter()
                         .any(|entry| discovery_revocations.insert(entry).is_err())
                     {
-                        tracing::warn!(ws, "workspace identity has an invalid revocation entry");
+                        tracing::warn!(ws = %ws, "workspace identity has an invalid revocation entry");
                         tokio::time::sleep(Duration::from_secs(10)).await;
                         continue;
                     }
@@ -3343,11 +3338,11 @@ impl HostRouteScheduler<'_> {
                             retry = Duration::from_secs(30);
                         }
                         Ok(Err(error)) => {
-                            tracing::debug!(%error, ws, "relay content discovery is not ready");
+                            tracing::debug!(%error, ws = %ws, "relay content discovery is not ready");
                             retry = retry.saturating_mul(2).min(Duration::from_secs(10));
                         }
                         Err(_) => {
-                            tracing::debug!(ws, "relay content discovery timed out");
+                            tracing::debug!(ws = %ws, "relay content discovery timed out");
                             retry = retry.saturating_mul(2).min(Duration::from_secs(10));
                         }
                     }
@@ -3369,7 +3364,7 @@ impl HostRouteScheduler<'_> {
         let mut revocations = RevocationList::new();
         for entry in revocation_entries {
             if revocations.insert(entry).is_err() {
-                tracing::warn!(ws, "workspace identity has an invalid revocation entry");
+                tracing::warn!(ws = %ws, "workspace identity has an invalid revocation entry");
                 connecting.remove(&(ws, host));
                 return;
             }
@@ -3594,7 +3589,7 @@ fn host_event(
         // link's store kept.
         HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
         HostInbound::CommitRefused { reason, .. } => {
-            tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
+            tracing::warn!(ws = %ws, host = %host, %reason, "the host did not keep a sealed write");
             return None;
         }
         HostInbound::RemoteAction { from, frame } => {
@@ -3663,7 +3658,7 @@ fn spawn_host_pump(
                 // nobody connected wakes for nothing.
                 alive = host_keepalive(&session, &mut pinged), if keepalive => {
                     if !alive {
-                        tracing::warn!(ws, host = %host, "workspace host stopped answering; reconnecting");
+                        tracing::warn!(ws = %ws, host = %host, "workspace host stopped answering; reconnecting");
                         break;
                     }
                     continue;
@@ -3705,7 +3700,7 @@ fn spawn_host_pump(
 /// Run a workspace's link and report what it brings: each frame it admits
 /// into the workspace's owner, its catch-up, and its end.
 fn spawn_direct_pump(
-    ws: u64,
+    ws: WorkspaceId,
     linked: tilo_peer_state::owner::session::Linked,
     link: Arc<tilo_peer_state::direct::DirectSync>,
     tx: mpsc::Sender<InternalEvent>,
@@ -3746,7 +3741,7 @@ fn spawn_direct_pump(
                 result = &mut running => {
                     if let Err(reason) = result {
                         deleted = reason == tilo_relay_protocol::refusal::WORKSPACE_DELETED;
-                        tracing::debug!(ws, %reason, "a workspace's link ended");
+                        tracing::debug!(ws = %ws, %reason, "a workspace's link ended");
                     }
                     break;
                 }

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
@@ -307,7 +308,7 @@ async fn every_settled_decision_is_announced_with_its_room() {
 #[cfg(feature = "agents")]
 async fn assert_view_reader_refused(
     workspaces: &Workspaces,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &tilo_actions::remote::Caller,
     source: &tilo_peer_state::document_frame::DocumentRoute,
 ) {
@@ -334,7 +335,7 @@ async fn assert_view_reader_refused(
 async fn publish_a_revocation_with_a_reader_waiting(
     workspaces: &Workspaces,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     caller: &tilo_actions::remote::Caller,
     source: &tilo_peer_state::document_frame::DocumentRoute,
     revoked: tilo_user_identity::RevocationEntry,
@@ -418,7 +419,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     );
     assert_eq!(
         workspaces
-            .resource_view_document(0, &caller, &source)
+            .resource_view_document(WorkspaceId::from_u128(0), &caller, &source)
             .await
             .err()
             .unwrap(),
@@ -435,7 +436,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     }
     assert!(
         workspaces
-            .resource_view_policy(0, &caller, "so.tilo.chat", "")
+            .resource_view_policy(WorkspaceId::from_u128(0), &caller, "so.tilo.chat", "")
             .await
             .is_none()
     );
@@ -500,7 +501,7 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
         );
     }
     assert!(
-        !workspaces.admits(0, &agent).await,
+        !workspaces.admits(WorkspaceId::from_u128(0), &agent).await,
         "a workspace this host does not govern admits nobody"
     );
     // Revoking the device ends it, though the workspace still lists its
@@ -1529,7 +1530,7 @@ impl AskedForAChannel {
     /// Whether the workspace kept the member's request among the records it
     /// retains for the devices that take part in its channels.
     async fn retains_the_request(&self) -> bool {
-        let workspace_id = crate::room_workspace_id(&self.workspace).unwrap();
+        let workspace_id = WorkspaceId::parse(&self.workspace).unwrap();
         self.relay
             .workspace_records()
             .retained(workspace_id)
@@ -1875,11 +1876,11 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
         .map(automerge::Change::hash)
         .collect::<Vec<_>>();
     let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
-        room: created.workspace.clone(),
         changes: changes
             .iter()
             .map(|change| change.raw_bytes().to_vec())
             .collect(),
+        room: created.workspace.clone(),
     })
     .unwrap();
 
@@ -1956,8 +1957,8 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
         let changes = written.workspace_changes_since(&heads);
         drop(governed);
         postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
-            room: workspace.clone(),
             changes,
+            room: workspace.clone(),
         })
         .unwrap()
     };
@@ -2467,7 +2468,6 @@ async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_
         .handle(
             endpoint,
             JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
-                room: created.workspace.clone(),
                 workspace_id: created.workspace_id,
                 device_cert: laptop_cert.clone(),
                 request_id: [13; 32],
@@ -2492,7 +2492,6 @@ async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_
     assert_eq!(current.invite_id, delivered.invite_id);
     assert_eq!(current.device_cert, laptop_cert);
     assert_eq!(current.role, delivered.role);
-    assert_eq!(current.room, delivered.room);
     assert_eq!(current.workspace_id, delivered.workspace_id);
     assert_eq!(current.host, delivered.host);
     assert!(current.generation > 0);
@@ -2519,7 +2518,7 @@ async fn a_room_moved_here_keeps_its_identity() {
     assert_eq!(moved.workspace, workspace, "the room keeps its identity");
     assert_eq!(
         moved.workspace_id,
-        crate::room_workspace_id(workspace).unwrap(),
+        WorkspaceId::parse(workspace).unwrap(),
         "and its workspace the id every device derives from it"
     );
     assert!(
@@ -2589,7 +2588,6 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
         service.handle(
             endpoint,
             JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
-                room: created.workspace.clone(),
                 workspace_id: created.workspace_id,
                 device_cert,
                 request_id: [seed; 32],

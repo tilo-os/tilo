@@ -17,6 +17,7 @@ use crate::workspaces::fixtures::test_host_taking_part;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 pub(super) const APP: &str = "so.tilo.notes";
@@ -98,7 +99,7 @@ pub(super) struct Lounge {
     pub(super) relay: crate::workspaces::fixtures::TestHost,
     pub(super) workspaces: Workspaces,
     pub(super) workspace: String,
-    pub(super) workspace_id: u64,
+    pub(super) workspace_id: WorkspaceId,
     pub(super) governor: DeviceCert,
     pub(super) governor_key: ed25519_dalek::SigningKey,
     pub(super) member_key: ed25519_dalek::SigningKey,
@@ -267,7 +268,7 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
 /// order: what a newcomer is sent.
 async fn retained_writes(
     relay: &crate::workspaces::fixtures::TestHost,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     record: &str,
 ) -> Vec<SignedOp> {
     relay
@@ -295,7 +296,7 @@ pub(super) async fn subscribed_member(
     relay: &crate::workspaces::fixtures::TestHost,
     key: &ed25519_dalek::SigningKey,
     cert: DeviceCert,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> crate::RelayClient {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
@@ -325,7 +326,7 @@ pub(super) async fn subscribed_member(
 /// Send `delta`, `member`'s write, to the host `client` reaches.
 fn send_members_delta(
     client: &crate::RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     member: &ed25519_dalek::SigningKey,
     delta: &crate::CoeditPayload,
 ) {
@@ -344,7 +345,7 @@ fn send_members_delta(
 /// as the member's own writes travel.
 fn send_sealed(
     client: &crate::RelayClient,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     key: &ed25519_dalek::SigningKey,
     message: &NeighbourMsg,
 ) {
@@ -366,7 +367,7 @@ pub(super) fn seal_and_send_title(
     member: &SealingMember,
     client: &crate::RelayClient,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     key: &ed25519_dalek::SigningKey,
     line: &str,
 ) {
@@ -796,7 +797,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
 /// What the relay retains of `record`, once it retains a write `wanted`.
 async fn retained_once(
     relay: &crate::workspaces::fixtures::TestHost,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     record: &str,
     wanted: impl Fn(&SignedOp) -> bool + Send + Sync,
 ) -> Vec<SignedOp> {
@@ -1065,7 +1066,7 @@ fn retained_files(
 async fn state_root(
     workspaces: &Workspaces,
     workspace: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
 ) -> std::path::PathBuf {
     workspaces
         .workspace(workspace)
@@ -2444,7 +2445,7 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
 
 /// What the relay sends `page` when it opens `record`: how many frames, before
 /// it says the record was sent whole.
-async fn opened_frames(page: &crate::RelayClient, workspace_id: u64, record: &str) -> u32 {
+async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, record: &str) -> u32 {
     let channel = neighbour_wire::app_document_channel(APP, record);
     page.send(crate::Envelope::OpenRecord {
         workspace_id,

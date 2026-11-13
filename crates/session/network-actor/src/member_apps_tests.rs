@@ -79,8 +79,7 @@ fn hint(
     IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        workspace_id: crate::workspace_topic_id(workspace),
-        room: workspace.to_string(),
+        workspace_id: workspace,
         endpoint_addr: addr(endpoint),
         host_user_public_key: certificate.user_public_key,
         host_device_certificate: certificate.clone(),
@@ -144,14 +143,14 @@ async fn joins(
             key.verifying_key().to_bytes(),
         ),
         identity,
-        crate::workspace_topic_id(workspace),
+        workspace,
         None,
         invitation,
         owner.clone(),
     )
     .await
     .expect("the workspace's device admits this one");
-    assert_eq!(enrollment.bootstrap().room, workspace.to_string());
+    assert_eq!(enrollment.bootstrap().workspace_id, workspace);
     owner
         .install(&enrollment, SystemTime::now())
         .expect("the join installs here");
@@ -440,7 +439,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
         .expect("the actor is running");
     for workspace in [here, elsewhere] {
         cmd.send(NetCmd::JoinWorkspace {
-            ws: crate::workspace_topic_id(workspace),
+            ws: workspace,
             on_event: on_event.clone(),
         })
         .await
@@ -457,14 +456,14 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     event(
         &mut events,
         "this device links the workspace of its separate host",
-        |event| matches!(event, NetEvent::HostReady { ws, .. } if *ws == crate::workspace_topic_id(elsewhere)),
+        |event| matches!(event, NetEvent::HostReady { ws, .. } if *ws == elsewhere),
     )
     .await;
     // The workspace this device hosts itself has no link: nothing of it pairs
     // with a host elsewhere.
     let opened = tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(event) = events.recv().await {
-            if matches!(event, NetEvent::HostReady { ws, .. } if ws == crate::workspace_topic_id(here)) {
+            if matches!(event, NetEvent::HostReady { ws, .. } if ws == here) {
                 panic!("the workspace this device hosts is never dialled");
             }
         }

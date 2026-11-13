@@ -33,6 +33,7 @@ use tilo_session_core::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
 
 use crate::mcp::{McpServer, Surface};
+use collab_types::WorkspaceId;
 
 /// A key of the person's: its signing key and the certificate their root (or
 /// a grant of theirs) signed for it.
@@ -50,7 +51,7 @@ pub enum Entered {
     Host {
         server: Box<McpServer<SessionActions>>,
         device: Box<Device>,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     },
 }
 
@@ -106,7 +107,7 @@ pub async fn enter(
     name: &str,
 ) -> Result<Entered, String> {
     let host = host_of(address)?;
-    if host.room != workspace {
+    if host.workspace_id.to_string() != workspace {
         return Err("that address is another workspace's".to_owned());
     }
     if *endpoint.id().as_bytes() != key.cert.device_public_key {
@@ -163,7 +164,7 @@ impl Entered {
     /// `device`'s entry into `workspace` (`workspace_id` on its session), which a dedicated host
     /// serves: the agent surface runs here over the host's actions, as the run called `name`.
     #[must_use]
-    pub fn on_host(device: Device, workspace_id: u64, workspace: &str, name: &str) -> Self {
+    pub fn on_host(device: Device, workspace_id: WorkspaceId, workspace: &str, name: &str) -> Self {
         let person = collab_types::Principal::of_person(device.cert().user_public_key)
             .id()
             .to_owned();

@@ -13,6 +13,7 @@ use tilo_actions::remote::{
 use tilo_agent_participant::workspace_actions::{
     ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
 };
+use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::Outbox;
 use ui::permissions::Role;
 
@@ -57,12 +58,12 @@ impl WorkspaceRecordsLink for Membership {
     fn member(&self) -> WorkspaceMember {
         self.member.clone()
     }
-    fn admits(&self, _workspace: u64, caller: &Caller) -> bool {
+    fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
         self.standing(caller).is_some()
     }
     fn view_read_policy(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         caller: &Caller,
         _app: &str,
         _record: &str,
@@ -74,15 +75,15 @@ impl WorkspaceRecordsLink for Membership {
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
         })
     }
-    fn workspace_policy(&self, workspace: u64, caller: &Caller) -> Option<ViewReadPolicy> {
+    fn workspace_policy(&self, workspace: WorkspaceId, caller: &Caller) -> Option<ViewReadPolicy> {
         self.view_read_policy(workspace, caller, "", "")
     }
-    fn workspace_content(&self, _workspace: u64) -> Option<tilo_content::ContentStore> {
+    fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         Some(self.content.clone())
     }
     fn ask_person(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         caller: &Caller,
         _question: ConfirmationQuestion,
     ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
@@ -100,7 +101,7 @@ impl WorkspaceRecordsLink for Membership {
 /// What the service answers `caller` for `message`.
 fn served(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
@@ -116,7 +117,7 @@ fn served(
 /// The status `caller`'s `request` is answered with.
 fn invoked(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     request: &InvokeRequest,
 ) -> ReceiptStatus {
@@ -155,7 +156,7 @@ fn invoked(
 )]
 fn put(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     bytes: &[u8],
 ) -> Result<String, ActionHostError> {
@@ -191,7 +192,7 @@ fn put(
 )]
 fn got(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     content: &str,
 ) -> Result<Vec<u8>, ActionHostError> {
@@ -218,7 +219,7 @@ fn got(
 /// the one it names, so the record is walked as an agent walks it.
 fn listed(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     provider: &str,
 ) -> Vec<tilo_actions::ActionDescriptor> {

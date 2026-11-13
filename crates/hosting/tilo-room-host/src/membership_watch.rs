@@ -30,6 +30,7 @@ use tokio::task::JoinHandle;
 
 use crate::store::GOVERNED_ACCESS_FILE;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Changes queued from the native watches to the watch task.
 const QUEUED_CHANGES: usize = 256;
@@ -38,7 +39,7 @@ const QUEUED_CHANGES: usize = 256;
 pub(crate) struct MembershipWatch {
     root: PathBuf,
     live: AtomicBool,
-    workspaces: Mutex<HashMap<u64, Arc<AtomicU64>>>,
+    workspaces: Mutex<HashMap<WorkspaceId, Arc<AtomicU64>>>,
     /// Changes the native watches delivered, for tests that the store's
     /// churn is not watched at all.
     #[cfg(test)]
@@ -46,7 +47,7 @@ pub(crate) struct MembershipWatch {
 }
 
 impl MembershipWatch {
-    fn workspace(&self, workspace_id: u64) -> Arc<AtomicU64> {
+    fn workspace(&self, workspace_id: WorkspaceId) -> Arc<AtomicU64> {
         self.workspaces
             .lock_recover()
             .entry(workspace_id)
@@ -56,7 +57,7 @@ impl MembershipWatch {
 
     /// A workspace nobody has attached to yet needs no bump: its first read loads
     /// the disk anyway.
-    fn bump(&self, workspace_id: u64) {
+    fn bump(&self, workspace_id: WorkspaceId) {
         let workspace = self.workspaces.lock_recover().get(&workspace_id).cloned();
         if let Some(workspace) = workspace {
             workspace.fetch_add(1, Ordering::Release);
@@ -73,7 +74,7 @@ impl MembershipWatch {
     /// workspace and announced whatever it narrowed; announcing each rewrite
     /// again woke every session in a public workspace to re-audit, and to read
     /// the file back, for every newcomer.
-    async fn changed(&self, workspace_id: u64, file: &str) {
+    async fn changed(&self, workspace_id: WorkspaceId, file: &str) {
         let path = self.root.join(workspace_id.to_string()).join(file);
         let own = match tokio::fs::read(&path).await {
             Ok(bytes) => is_own(&path, &bytes),
@@ -142,7 +143,7 @@ fn registry() -> &'static Mutex<Vec<Weak<MembershipWatch>>> {
 pub(crate) fn attach(room_root: &Path) -> Option<DiskGeneration> {
     let workspace_id = tilo_failure::ignored!(
         "a path not named as a workspace's is not covered by a watch",
-        room_root.file_name()?.to_str()?.parse().ok()?
+        tilo_relay_protocol::WorkspaceId::parse(room_root.file_name()?.to_str()?)?
     );
     let workspaces = room_root.parent()?;
     let watch = registry()
@@ -214,7 +215,7 @@ pub fn spawn_membership_watch(state_root: &Path) -> JoinHandle<()> {
 #[derive(Clone, Copy, Debug)]
 enum Origin {
     Workspaces,
-    Workspace(u64),
+    Workspace(tilo_relay_protocol::WorkspaceId),
 }
 
 /// The native watches of one established watch, each forwarding its changes
@@ -222,7 +223,7 @@ enum Origin {
 struct Watches {
     changes: mpsc::Receiver<(Origin, Change)>,
     sender: mpsc::Sender<(Origin, Change)>,
-    workspaces: HashMap<u64, JoinHandle<()>>,
+    workspaces: HashMap<WorkspaceId, JoinHandle<()>>,
     forwards: Vec<JoinHandle<()>>,
 }
 
@@ -239,14 +240,14 @@ impl Watches {
         })
     }
 
-    fn watch_workspace(&mut self, workspace_id: u64, native: Watch) {
+    fn watch_workspace(&mut self, workspace_id: WorkspaceId, native: Watch) {
         let forward = self.forward(Origin::Workspace(workspace_id), native);
         if let Some(previous) = self.workspaces.insert(workspace_id, forward) {
             previous.abort();
         }
     }
 
-    fn unwatch_workspace(&mut self, workspace_id: u64) {
+    fn unwatch_workspace(&mut self, workspace_id: WorkspaceId) {
         if let Some(forward) = self.workspaces.remove(&workspace_id) {
             forward.abort();
         }
@@ -318,7 +319,7 @@ async fn workspace_changed(
             // Gone again already: its removal follows.
             Ok(Err(FsError::NotFound)) => {}
             Ok(Err(error)) => {
-                tracing::warn!(workspace_id, %error, "a room's membership files cannot be watched");
+                tracing::warn!(workspace_id = %workspace_id, %error, "a workspace's membership files cannot be watched");
                 return Err(());
             }
             Err(_) => return Err(()),
@@ -353,7 +354,7 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
             let Some(workspace_id) = entry.file_name().to_str().and_then(|name| {
                 tilo_failure::ignored!(
                     "an entry not named as a workspace's is not one",
-                    name.parse::<u64>().ok()
+                    tilo_relay_protocol::WorkspaceId::parse(name)
                 )
             }) else {
                 continue;
@@ -403,11 +404,11 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
 
 /// The workspace a change among the entries of `workspaces` names, if it names
 /// one.
-fn room_directory(path: &VPath) -> Option<u64> {
+fn room_directory(path: &VPath) -> Option<tilo_relay_protocol::WorkspaceId> {
     let mut components = path.components();
     let workspace_id = tilo_failure::ignored!(
         "a change to an entry not named as a workspace's names none",
-        components.next()?.parse().ok()?
+        tilo_relay_protocol::WorkspaceId::parse(components.next()?)?
     );
     components.next().is_none().then_some(workspace_id)
 }
@@ -469,9 +470,18 @@ mod tests {
 
     #[test]
     fn only_membership_files_and_workspace_directories_name_a_workspace() {
-        assert_eq!(room_directory(&path("7")), Some(7));
+        assert_eq!(
+            room_directory(&path(&WorkspaceId::from_u128(7).to_string())),
+            Some(WorkspaceId::from_u128(7))
+        );
         assert_eq!(room_directory(&path("notes")), None);
-        assert_eq!(room_directory(&path("7/governed-access.log")), None);
+        assert_eq!(
+            room_directory(&path(&format!(
+                "{}/governed-access.log",
+                WorkspaceId::from_u128(7)
+            ))),
+            None
+        );
         assert_eq!(room_directory(&VPath::root()), None);
         assert!(names_membership(&path("governed-access.log")));
         assert!(!names_membership(&path("snapshot.automerge")));
@@ -483,7 +493,7 @@ mod tests {
     /// watch vouches for it.
     async fn live_workspace(
         state_root: &Path,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
     ) -> (JoinHandle<()>, DiskGeneration) {
         let task = spawn_membership_watch(state_root);
         let generation = attach(&state_root.join(format!("workspaces/{workspace_id}"))).unwrap();
@@ -508,9 +518,11 @@ mod tests {
     #[tokio::test]
     async fn an_access_file_change_bumps_its_workspace() {
         let tmp = tempfile::tempdir().unwrap();
-        let workspace = tmp.path().join("workspaces/7");
+        let workspace = tmp
+            .path()
+            .join(format!("workspaces/{}", WorkspaceId::from_u128(7)));
         std::fs::create_dir_all(&workspace).unwrap();
-        let (task, generation) = live_workspace(tmp.path(), 7).await;
+        let (task, generation) = live_workspace(tmp.path(), WorkspaceId::from_u128(7)).await;
         let before = generation.current();
         std::fs::write(workspace.join(GOVERNED_ACCESS_FILE), b"[]").unwrap();
         moves_from(&generation, before, "the room to bump").await;
@@ -522,9 +534,11 @@ mod tests {
     #[tokio::test]
     async fn the_relays_own_access_write_is_not_announced_again() {
         let tmp = tempfile::tempdir().unwrap();
-        let workspace = tmp.path().join("workspaces/7");
+        let workspace = tmp
+            .path()
+            .join(format!("workspaces/{}", WorkspaceId::from_u128(7)));
         std::fs::create_dir_all(&workspace).unwrap();
-        let (task, generation) = live_workspace(tmp.path(), 7).await;
+        let (task, generation) = live_workspace(tmp.path(), WorkspaceId::from_u128(7)).await;
         // Let the establishing events settle before comparing.
         tokio::time::sleep(Duration::from_millis(300)).await;
         let file = workspace.join(GOVERNED_ACCESS_FILE);
@@ -549,9 +563,11 @@ mod tests {
     #[tokio::test]
     async fn a_room_created_after_the_watch_began_is_watched() {
         let tmp = tempfile::tempdir().unwrap();
-        let (task, generation) = live_workspace(tmp.path(), 9).await;
+        let (task, generation) = live_workspace(tmp.path(), WorkspaceId::from_u128(9)).await;
         let before = generation.current();
-        let workspace = tmp.path().join("workspaces/9");
+        let workspace = tmp
+            .path()
+            .join(format!("workspaces/{}", WorkspaceId::from_u128(9)));
         std::fs::create_dir(&workspace).unwrap();
         // Bumped once its own watch exists: anything written before is read.
         moves_from(&generation, before, "the new room to bump").await;
@@ -564,10 +580,12 @@ mod tests {
     #[tokio::test]
     async fn store_churn_below_a_room_is_not_watched() {
         let tmp = tempfile::tempdir().unwrap();
-        let workspace = tmp.path().join("workspaces/7");
+        let workspace = tmp
+            .path()
+            .join(format!("workspaces/{}", WorkspaceId::from_u128(7)));
         let channel = workspace.join("retained/channel");
         std::fs::create_dir_all(&channel).unwrap();
-        let (task, generation) = live_workspace(tmp.path(), 7).await;
+        let (task, generation) = live_workspace(tmp.path(), WorkspaceId::from_u128(7)).await;
         // Let the establishing events settle before counting.
         tokio::time::sleep(Duration::from_millis(300)).await;
         let before = generation.current();
@@ -602,7 +620,11 @@ mod tests {
     async fn a_stopped_watch_no_longer_vouches_for_its_workspaces() {
         let tmp = tempfile::tempdir().unwrap();
         let task = spawn_membership_watch(tmp.path());
-        let generation = attach(&tmp.path().join("workspaces/3")).unwrap();
+        let generation = attach(
+            &tmp.path()
+                .join(format!("workspaces/{}", WorkspaceId::from_u128(3))),
+        )
+        .unwrap();
         tilo_test_env::within("the watch to go live", async {
             while generation.current().is_none() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -612,6 +634,12 @@ mod tests {
         task.abort();
         let _ = task.await;
         assert_eq!(generation.current(), None);
-        assert!(attach(&tmp.path().join("workspaces/3")).is_none());
+        assert!(
+            attach(
+                &tmp.path()
+                    .join(format!("workspaces/{}", WorkspaceId::from_u128(3)))
+            )
+            .is_none()
+        );
     }
 }

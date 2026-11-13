@@ -23,6 +23,11 @@ use tilo_relay::{CoeditPayload, Envelope, RelayClient, RelayCoeditSession, Relay
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
+use tilo_relay::WorkspaceId;
+
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(9);
+const COEDIT_WORKSPACE: WorkspaceId = WorkspaceId::from_u128(19);
+const SECOND_WORKSPACE: WorkspaceId = WorkspaceId::from_u128(42);
 
 /// Upper bound for a frame the relay owes a client. Live fan-out waits for the
 /// delta's durable commit (pending file plus directory fsyncs) and the relay's
@@ -69,7 +74,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         )
         .await
         .unwrap();
-        let a_session = RelayCoeditSession::join(a_client, 19, a_key).unwrap();
+        let a_session = RelayCoeditSession::join(a_client, COEDIT_WORKSPACE, a_key).unwrap();
         assert!(matches!(
             tilo_test_env::within("a message on a_session", a_session.recv()).await,
             Some(tilo_relay::Inbound::Ready { pending: 0, .. })
@@ -102,7 +107,9 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .unwrap();
         b_client
-            .send(Envelope::Subscribe { workspace_id: 19 })
+            .send(Envelope::Subscribe {
+                workspace_id: COEDIT_WORKSPACE,
+            })
             .unwrap();
         let received = tilo_test_env::within("a message on b_client", b_client.recv())
             .await
@@ -117,7 +124,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         assert!(matches!(
             tilo_test_env::within("a message on b_client", b_client.recv()).await,
             Some(Envelope::Ready {
-                workspace_id: 19,
+                workspace_id: COEDIT_WORKSPACE,
                 pending_deltas: 1,
                 records_when_opened: false,
             })
@@ -168,14 +175,16 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .unwrap();
         for client in [&a_client, &b_client] {
             client
-                .send(Envelope::Subscribe { workspace_id: 9 })
+                .send(Envelope::Subscribe {
+                    workspace_id: WORKSPACE,
+                })
                 .unwrap();
             let _ = tilo_test_env::within("a message on client", client.recv()).await;
         }
         drop(b_client);
         let pending_dir = state
             .path()
-            .join("workspaces/9/pending")
+            .join(format!("workspaces/{}/pending", WorkspaceId::from_u128(9)))
             .join(hex::encode(b.device_pubkey()));
         publish_until_queued(&a_client, a_key, &pending_dir).await;
         assert!(
@@ -196,7 +205,9 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .unwrap();
         b_again
-            .send(Envelope::Subscribe { workspace_id: 9 })
+            .send(Envelope::Subscribe {
+                workspace_id: WORKSPACE,
+            })
             .unwrap();
         assert!(matches!(
         tilo_test_env::within("a message on b_again", b_again.recv()).await,
@@ -207,7 +218,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         // Both devices the host enrolled are members of the workspace's one
         // record, so a restart admits them without any second list.
         assert_eq!(
-            tilo_relay::store::WorkspaceStore::open(state.path(), 9, true)
+            tilo_relay::store::WorkspaceStore::open(state.path(), WORKSPACE, true)
                 .unwrap()
                 .load_membership()
                 .unwrap()
@@ -226,7 +237,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let relay = Box::pin(spawn_relay(
             &user,
             relay_dev,
-            &[42],
+            &[SECOND_WORKSPACE],
             &[a.device_pubkey(), b.device_pubkey()],
         ))
         .await;
@@ -257,10 +268,14 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .expect("B connect");
 
         a_client
-            .send(Envelope::Subscribe { workspace_id: 42 })
+            .send(Envelope::Subscribe {
+                workspace_id: SECOND_WORKSPACE,
+            })
             .unwrap();
         b_client
-            .send(Envelope::Subscribe { workspace_id: 42 })
+            .send(Envelope::Subscribe {
+                workspace_id: SECOND_WORKSPACE,
+            })
             .unwrap();
 
         // Drain the Ready acks so we don't confuse them for the delta
@@ -271,7 +286,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                 .expect("Ready channel closed");
             match env {
                 Envelope::Ready {
-                    workspace_id: 42,
+                    workspace_id: SECOND_WORKSPACE,
                     pending_deltas: 0,
                     records_when_opened: false,
                 } => {}
@@ -281,7 +296,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
 
         let payload = b"the-crdt-delta".to_vec();
         let delta_env = Envelope::Delta {
-            workspace_id: 42,
+            workspace_id: SECOND_WORKSPACE,
             author_device_public_key: a.device_pubkey(),
             authored_at_ns: 1000,
             delta: payload.clone(),
@@ -298,7 +313,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                 delta,
                 ..
             } => {
-                assert_eq!(workspace_id, 42);
+                assert_eq!(workspace_id, SECOND_WORKSPACE);
                 assert_eq!(delta, payload);
             }
             other => panic!("expected Delta, got {other:?}"),
@@ -326,7 +341,7 @@ async fn publish_until_queued(
         for authored_at_ns in 1.. {
             a_client
                 .send(Envelope::Delta {
-                    workspace_id: 9,
+                    workspace_id: WORKSPACE,
                     author_device_public_key: a_key,
                     authored_at_ns,
                     delta: b"offline-change".to_vec(),
@@ -354,7 +369,7 @@ async fn wait_for_ready_with_pending(
     loop {
         match tokio::time::timeout(tilo_test_env::hang_bound(), b_again.recv()).await {
             Ok(Some(Envelope::Ready {
-                workspace_id: 9,
+                workspace_id: WORKSPACE,
                 pending_deltas,
                 records_when_opened: false,
             })) => {

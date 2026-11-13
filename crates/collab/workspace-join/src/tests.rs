@@ -38,8 +38,7 @@ fn signed_invitation_and_join_proof_bind_the_exact_ticket_and_independent_identi
     let guest = certificate(&guest_root, &guest_device, "Guest", 1);
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let grant = InviteGrant {
-        workspace_id: 42,
-        room: workspace.into(),
+        workspace_id: crate::WorkspaceId::parse(workspace).unwrap(),
         issuer: authority.clone(),
         role: Role::Editor,
         nonce: [5; 16],
@@ -107,8 +106,7 @@ fn durable_membership_proof_is_independent_of_the_original_invitation_lifetime()
     let guest_device = SigningKey::from_bytes(&[14; 32]);
     let guest = certificate(&guest_root, &guest_device, "Guest", 1);
     let challenge = MembershipChallenge::new(
-        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        42,
+        crate::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap(),
         &authority,
         &guest,
         [15; 32],
@@ -120,7 +118,7 @@ fn durable_membership_proof_is_independent_of_the_original_invitation_lifetime()
     let proof = sign_membership_proof(challenge.clone(), &guest_device).unwrap();
     let verified =
         verify_membership_proof(&proof, &challenge, &guest, &RevocationList::new(), 3).unwrap();
-    assert_eq!(verified.workspace(), challenge.room);
+    assert_eq!(verified.workspace_id(), challenge.workspace_id);
     assert_eq!(verified.device_cert(), &guest);
     let mut wrong = challenge;
     wrong.nonce[0] ^= 1;
@@ -133,8 +131,7 @@ fn an_invitation_names_its_inviter_under_the_issuer_signature() {
     let device = SigningKey::from_bytes(&[2; 32]);
     let authority = certificate(&root, &device, "Node", 1);
     let grant = InviteGrant {
-        workspace_id: 42,
-        room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+        workspace_id: crate::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap(),
         issuer: authority,
         role: Role::Editor,
         nonce: [5; 16],
@@ -177,33 +174,4 @@ fn an_invitation_names_its_inviter_under_the_issuer_signature() {
         };
         assert!(issue_invitation_from(grant.clone(), inviter, &device).is_err());
     }
-}
-
-#[test]
-fn workspace_ids_are_stable() {
-    // Every peer must derive the same relay shard for a workspace, so the
-    // derivation is pinned to a literal.
-    assert_eq!(
-        crate::room_workspace_id("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap(),
-        3_029_697_355_180_468_570
-    );
-    // Parsing normalises the textual form before hashing.
-    assert_eq!(
-        crate::room_workspace_id("0B7E7DFA-3AD5-4B43-9D6C-5F0D7C1F6A11").unwrap(),
-        3_029_697_355_180_468_570
-    );
-    assert!(crate::room_workspace_id("not a workspace").is_err());
-}
-
-#[test]
-fn a_desk_that_shows_no_workspace_has_no_topic() {
-    assert_eq!(
-        crate::workspace_topic("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11"),
-        3_029_697_355_180_468_570
-    );
-    assert_eq!(
-        crate::workspace_topic("00000000-0000-0000-0000-000000000000"),
-        0
-    );
-    assert_eq!(crate::workspace_topic("not a workspace"), 0);
 }

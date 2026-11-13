@@ -246,7 +246,7 @@ impl Joined {
         let deadline = Instant::now()
             .checked_add(KEPT_WITHIN)
             .ok_or("the clock cannot count a write's wait")?;
-        let ws = super::workspace_topic(workspace)?;
+        let ws = workspace;
         let host = own_host
             .host
             .workspaces()
@@ -345,7 +345,7 @@ impl Joined {
         let host = self
             .room_host()
             .ok_or("this profile runs no workspace host")?;
-        let ws = super::workspace_topic(workspace)?;
+        let ws = workspace;
         let link = host
             .workspaces()
             .direct()

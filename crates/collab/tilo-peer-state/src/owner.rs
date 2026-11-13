@@ -92,13 +92,12 @@ pub fn hosted_by(hint: &crate::join::TransportHint, device: &[u8; 32]) -> bool {
     &hint.host.device_public_key == device
 }
 
-/// Check `hint` as the address of `device`'s own host of `room`, the
-/// workspace `workspace_id`: the host signed it, and it names the workspace it
-/// keeps and the device that signed it.
+/// Check `hint` as the address of `device`'s own host of `workspace_id`: the
+/// host signed it, and it names the workspace it keeps and the device that
+/// signed it.
 pub(crate) fn validate_host_hint(
     hint: &crate::join::TransportHint,
-    room: &str,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     device: &DeviceCert,
 ) -> Result<(), String> {
     if !hosted_by(hint, &device.device_public_key) {
@@ -107,7 +106,7 @@ pub(crate) fn validate_host_hint(
     let (payload, _) = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::
         authenticate_transport_hint(hint)
         .map_err(|error| error.to_string())?;
-    if payload.room != room || payload.workspace_id != workspace_id {
+    if payload.workspace_id != workspace_id {
         return Err("the workspace's host hint names another workspace".into());
     }
     if payload.host_device_certificate != *device {
@@ -379,11 +378,10 @@ impl NativeCommittedView {
     pub fn device(&self) -> &DeviceCert {
         &self.record.device
     }
-    /// The workspace's id in this device's record: the partition its changes
-    /// live in, as the relay names it.
+    /// The workspace this device's record holds.
     #[must_use]
-    pub fn workspace_id(&self) -> u64 {
-        self.record.workspace_id
+    pub fn workspace_id(&self) -> WorkspaceId {
+        self.record.workspace
     }
     #[must_use]
     pub fn generation(&self) -> u64 {

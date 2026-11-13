@@ -294,7 +294,7 @@ enum Command {
         principals: Vec<String>,
         /// Relay workspace shard backed by this filesystem workspace.
         #[arg(long = "relay-workspace-id")]
-        relay_workspace_ids: Vec<u64>,
+        relay_workspace_ids: Vec<collab_types::WorkspaceId>,
     },
     /// Register a direct filesystem endpoint obtained from authenticated relay
     /// discovery with the running local filesystem daemon.
@@ -868,7 +868,7 @@ fn export_home_peer(
     replica_cache_dir: &Path,
     status_file: PathBuf,
     principals: Vec<String>,
-    mut relay_workspace_ids: Vec<u64>,
+    mut relay_workspace_ids: Vec<collab_types::WorkspaceId>,
 ) -> Result<()> {
     let ticket_path = workspace_ticket_path(cache_dir);
     let ticket = std::fs::read_to_string(&ticket_path)

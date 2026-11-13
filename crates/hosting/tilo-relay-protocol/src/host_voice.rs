@@ -18,6 +18,7 @@
 //! preview of the text it wrote. [`HostSaid::admissible`] holds every frame
 //! to that, on the side that signs and on every side that reads.
 
+use collab_types::WorkspaceId;
 use collab_types::presence::{DESKTOP_APP, Payload, Presence, PresenceKey};
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +45,7 @@ pub struct HostSaid {
     /// [`HOST_VOICE_VERSION`].
     pub version: u16,
     /// The workspace it is said in, as the relay's room names it.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The host device that says it: the key the signature verifies under.
     pub host: [u8; 32],
     /// What it says.
@@ -175,7 +176,7 @@ impl HostSaid {
     pub fn open(
         said: &[u8],
         signature: &[u8; 64],
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         host: &[u8; 32],
     ) -> Result<Self, HostSaidError> {
         if said.len() > MAX_HOST_SAID_BYTES {
@@ -248,7 +249,7 @@ mod tests {
         presence.on_behalf = run.map(str::to_owned);
         HostSaid {
             version: HOST_VOICE_VERSION,
-            workspace_id: 7,
+            workspace_id: WorkspaceId::from_u128(7),
             host: host.verifying_key().to_bytes(),
             words: HostWords::Presence(presence),
         }
@@ -268,8 +269,13 @@ mod tests {
             Some("agent-run:abc"),
         );
         let (bytes, signature) = sign(&host, &frame);
-        let opened =
-            HostSaid::open(&bytes, &signature, 7, &host.verifying_key().to_bytes()).unwrap();
+        let opened = HostSaid::open(
+            &bytes,
+            &signature,
+            WorkspaceId::from_u128(7),
+            &host.verifying_key().to_bytes(),
+        )
+        .unwrap();
         assert_eq!(opened, frame);
     }
 
@@ -281,7 +287,12 @@ mod tests {
         let frame = said(&other, Payload::Arrived, Some("agent-run:abc"));
         let (bytes, signature) = sign(&other, &frame);
         assert_eq!(
-            HostSaid::open(&bytes, &signature, 7, &host.verifying_key().to_bytes()),
+            HostSaid::open(
+                &bytes,
+                &signature,
+                WorkspaceId::from_u128(7),
+                &host.verifying_key().to_bytes()
+            ),
             Err(HostSaidError::Signature)
         );
         // Signed by another device, under the host's name: not the host's.
@@ -289,7 +300,12 @@ mod tests {
         let (bytes, _) = sign(&host, &frame);
         let forged = other.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
         assert_eq!(
-            HostSaid::open(&bytes, &forged, 7, &host.verifying_key().to_bytes()),
+            HostSaid::open(
+                &bytes,
+                &forged,
+                WorkspaceId::from_u128(7),
+                &host.verifying_key().to_bytes()
+            ),
             Err(HostSaidError::Signature)
         );
     }
@@ -301,7 +317,7 @@ mod tests {
         let (bytes, signature) = sign(&host, &frame);
         let pinned = host.verifying_key().to_bytes();
         assert_eq!(
-            HostSaid::open(&bytes, &signature, 8, &pinned),
+            HostSaid::open(&bytes, &signature, WorkspaceId::from_u128(8), &pinned),
             Err(HostSaidError::Workspace)
         );
         let mut later = frame;
@@ -309,7 +325,7 @@ mod tests {
         let bytes = later.encode().unwrap();
         let signature = host.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
         assert_eq!(
-            HostSaid::open(&bytes, &signature, 7, &pinned),
+            HostSaid::open(&bytes, &signature, WorkspaceId::from_u128(7), &pinned),
             Err(HostSaidError::Version)
         );
     }
@@ -364,7 +380,12 @@ mod tests {
         let bytes = frame.encode().unwrap();
         let signature = host.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
         assert_eq!(
-            HostSaid::open(&bytes, &signature, 7, &host.verifying_key().to_bytes()),
+            HostSaid::open(
+                &bytes,
+                &signature,
+                WorkspaceId::from_u128(7),
+                &host.verifying_key().to_bytes()
+            ),
             Err(HostSaidError::NotARunsWord)
         );
     }

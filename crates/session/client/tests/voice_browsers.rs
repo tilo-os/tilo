@@ -19,6 +19,7 @@ use std::time::Duration;
 use tilo_session_client::{Cmd, Event, Link, Outbox, VoiceEvent};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
+use collab_types::WorkspaceId;
 use collab_types::scope::Scope;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use serde_json::{Value, json};
@@ -270,7 +271,7 @@ impl Native {
     fn step(
         &mut self,
         client: &tilo_relay::RelayClient,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         call: [u8; 32],
         participation: [u8; 32],
     ) {

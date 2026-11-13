@@ -18,6 +18,7 @@
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
 
+use collab_types::WorkspaceId;
 pub mod govern;
 
 use serde::{Deserialize, Serialize};
@@ -403,7 +404,7 @@ pub struct WorkspaceListing {
     /// The workspace's UUID.
     pub workspace: String,
     /// The relay workspace carrying the workspace.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The workspace's name.
     pub name: String,
     /// The workspace's committed governance generation.
@@ -496,7 +497,7 @@ pub struct WorkspaceSummary {
     /// The workspace's UUID.
     pub workspace: String,
     /// The relay workspace carrying the workspace.
-    pub workspace_id: u64,
+    pub workspace_id: WorkspaceId,
     /// The workspace's name.
     pub name: String,
     pub generation: u64,

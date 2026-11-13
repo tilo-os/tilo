@@ -20,6 +20,7 @@ use tilo_desktop_surface::page_code::{PAGE, PageHandle};
 use ui::widget::{TileContent, TileHost};
 
 use crate::peer_sync;
+use tilo_relay_protocol::WorkspaceId;
 
 /// Payloads one page keeps while the page view's code is on its way: the
 /// first whole frame and what follows it, not a page's history.
@@ -78,7 +79,7 @@ thread_local! {
 /// Ask the host — the session this page's peer `id` is with — for the pages of the windows this
 /// desk holds, `workspace`'s, and stop reading the devices left out. Whether what it asks changed.
 pub(crate) fn follow(id: u32, workspace: &str, desk: &DesktopHandle) -> bool {
-    let Ok(workspace) = crate::peer::workspace_number(workspace) else {
+    let Ok(workspace) = crate::peer::workspace_id(workspace) else {
         return false;
     };
     let Some(handle) = peer_sync::handle_of(id) else {
@@ -114,7 +115,7 @@ pub(crate) fn follow(id: u32, workspace: &str, desk: &DesktopHandle) -> bool {
 
 /// Take one object of `from`'s page for window `tab`, in `workspace_id`'s plane: it rebuilds the
 /// frame the tile draws, and the mounts drawing that workspace lay out again.
-pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
+pub(crate) fn heard(id: u32, workspace_id: WorkspaceId, tab: u64, body: &[u8]) {
     let changed = PAGES.with_borrow_mut(|pages| {
         pages
             .tiles

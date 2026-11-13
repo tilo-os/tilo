@@ -33,6 +33,7 @@ use tilo_relay::{Envelope, RelayClient, reconcile};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, pending_count, spawn_relay_on};
+use tilo_relay::WorkspaceId;
 
 /// A connects, subscribes, publishes `note = "recover-me"`, and waits
 /// until the host has queued it for the (still offline) B. Returns A's
@@ -42,7 +43,7 @@ async fn publish_offline_edit(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     a: &crate::common::TestDevice,
-    ws: u64,
+    ws: WorkspaceId,
     pending_dir: &std::path::Path,
 ) -> (RelayClient, AutoCommit) {
     let a_client = RelayClient::connect(
@@ -101,7 +102,7 @@ async fn drain_then_lose_session(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
-    ws: u64,
+    ws: WorkspaceId,
     pending_dir: &std::path::Path,
 ) {
     let b1 = RelayClient::connect(
@@ -137,7 +138,7 @@ async fn drain_then_lose_session(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn anti_entropy_recovers_delta_drained_then_lost() {
-    const WS: u64 = 31;
+    const WS: WorkspaceId = WorkspaceId::from_u128(31);
 
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());

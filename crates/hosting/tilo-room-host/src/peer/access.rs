@@ -6,6 +6,7 @@ use super::{
     AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, UnavailableReason,
     WorkspaceOperation, mpsc, unix_now_ns, workspace_access,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 /// Membership + revocation re-check for every workspace this peer is
 /// subscribed to, run when [`AccessAudit`] says. Reloads membership
@@ -18,7 +19,7 @@ use super::{
 pub(super) async fn audit_subscriber_access(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
+    subscribed: &[WorkspaceId],
 ) -> Result<bool, PeerError> {
     let mut watched = true;
     // Relay-wide first, so a revoked or untrusted device ends even with no

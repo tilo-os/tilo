@@ -248,7 +248,7 @@ impl Joined {
                 "this device takes part in that workspace through the desktop session".into(),
             );
         }
-        let topic = workspace_topic(workspace)?;
+        let topic = workspace;
         let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
             self.join_client(invitation)?,
             self.custody.clone(),
@@ -298,9 +298,7 @@ impl Joined {
     ) -> io::Result<tilo_fs::identity::PeerCredentials> {
         let workspace =
             WorkspaceId::parse(workspace).ok_or_else(|| io::Error::other("not a workspace id"))?;
-        let (cert, _) = self
-            .custody
-            .material_for(workspace_topic(workspace).map_err(io::Error::other)?);
+        let (cert, _) = self.custody.material_for(workspace);
         tilo_fs::identity::PeerCredentials::certified(
             cert,
             self.signer(),
@@ -330,7 +328,7 @@ impl Joined {
                 .person;
             let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
             let mut workspace = Workspace::in_workspace(
-                WorkspaceSlot(view.workspace_id()),
+                WorkspaceSlot::of_workspace(view.workspace_id()),
                 workspace,
                 String::new(),
             );
@@ -416,8 +414,11 @@ impl Joined {
             &tilo_user_identity::RevocationList::new(),
             now,
         )?;
-        WorkspaceId::parse(&join.grant().room)
-            .ok_or_else(|| "invitation names no valid workspace".into())
+        let workspace = join.grant().workspace_id;
+        if workspace.is_nil() {
+            return Err("invitation names no valid workspace".into());
+        }
+        Ok(workspace)
     }
 
     pub(super) fn hold_session(self: &Arc<Self>, workspace: WorkspaceId) {
@@ -817,10 +818,6 @@ pub(super) fn desktop_enrolled(profile: &Path) -> io::Result<BTreeSet<WorkspaceI
     tilo_peer_state::owner::read_file(&record)
         .map(|storage| storage.workspaces().collect())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-fn workspace_topic(workspace: WorkspaceId) -> Result<u64, String> {
-    tilo_relay_protocol::room_workspace_id(&workspace.to_string()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

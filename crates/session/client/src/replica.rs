@@ -123,7 +123,7 @@ pub(crate) struct Replicas {
     /// This device.
     device: DeviceCert,
     owner: NativeWorkspaceOwner,
-    workspaces: BTreeMap<u64, WorkspaceId>,
+    workspaces: BTreeSet<WorkspaceId>,
 }
 
 impl Replicas {
@@ -158,7 +158,7 @@ impl Replicas {
         let workspaces = owner
             .storage()
             .held()
-            .map(|(workspace, held)| (held.0, workspace))
+            .map(|(workspace, _)| workspace)
             .collect();
         Self {
             device,
@@ -169,11 +169,13 @@ impl Replicas {
 
     fn with_workspace<T>(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         read: impl FnOnce(&NativeCommittedView) -> Result<T, String>,
     ) -> Option<Result<T, String>> {
-        let workspace = self.workspaces.get(&workspace_id)?;
-        Some(self.owner.with_current(*workspace, read))
+        if !self.workspaces.contains(&workspace_id) {
+            return None;
+        }
+        Some(self.owner.with_current(workspace_id, read))
     }
 
     /// Hold `workspace_id`'s workspace on the bootstrap the host sent (`bytes`,
@@ -186,20 +188,20 @@ impl Replicas {
     /// or the workspace it names does not build.
     pub(crate) fn bootstrap(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         bytes: &[u8],
         now: SystemTime,
     ) -> Result<bool, String> {
         let installed = self
             .owner
             .install_vouched(workspace_id, bytes, &self.device, now)?;
-        if let Some((workspace, _)) = self
+        if self
             .owner
             .storage()
             .held()
-            .find(|(_, workspace)| workspace.0 == workspace_id)
+            .any(|(workspace, _)| workspace == workspace_id)
         {
-            self.workspaces.insert(workspace_id, workspace);
+            self.workspaces.insert(workspace_id);
         }
         Ok(installed)
     }
@@ -213,16 +215,16 @@ impl Replicas {
     /// message.
     pub(crate) fn admit(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         author: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<tilo_peer_state::AdmissionReport, String> {
-        let Some(workspace) = self.workspaces.get(&workspace_id) else {
+        if !self.workspaces.contains(&workspace_id) {
             return Err("the workspace has no governance".into());
-        };
+        }
         self.owner
-            .receive(*workspace, relayed(author), message, now)
+            .receive(workspace_id, relayed(author), message, now)
     }
 
     /// Keep `documents`, each a document its author wrote to `workspace_id` ([`relayed`]), in
@@ -234,18 +236,17 @@ impl Replicas {
     /// No replica of the workspace is held, or committing the replica failed.
     pub(crate) fn keep(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         documents: Vec<([u8; 32], NeighbourMsg)>,
         now: SystemTime,
     ) -> Result<Vec<Result<tilo_peer_state::AdmissionReport, String>>, String> {
-        let workspace = self
-            .workspace(workspace_id)
+        self.workspace(workspace_id)
             .ok_or("the workspace has no governance")?;
         let inputs = documents
             .into_iter()
             .map(|(author, message)| (relayed(author), message))
             .collect();
-        self.owner.receive_batch(workspace, inputs, now)
+        self.owner.receive_batch(workspace_id, inputs, now)
     }
 
     /// Whether `workspace_id`'s governance, as this replica holds it, admits
@@ -253,7 +254,7 @@ impl Replicas {
     /// replays a workspace's governance in parts, and its newest part — the
     /// change that admitted a device that just entered — can follow what the
     /// device was already sent.
-    pub(crate) fn admits_this_device(&self, workspace_id: u64) -> bool {
+    pub(crate) fn admits_this_device(&self, workspace_id: WorkspaceId) -> bool {
         let device = self.device.device_public_key;
         self.with_workspace(workspace_id, |view| {
             view.peer()
@@ -265,12 +266,17 @@ impl Replicas {
     }
 
     /// The workspace held as `workspace_id`, once its governance is.
-    pub(crate) fn workspace(&self, workspace_id: u64) -> Option<WorkspaceId> {
-        self.workspaces.get(&workspace_id).copied()
+    pub(crate) fn workspace(&self, workspace_id: WorkspaceId) -> Option<WorkspaceId> {
+        self.workspaces
+            .contains(&workspace_id)
+            .then_some(workspace_id)
     }
 
     /// `workspace_id`'s workspace and the members it lists by person id.
-    pub(crate) fn members(&self, workspace_id: u64) -> Option<(String, Option<BTreeSet<String>>)> {
+    pub(crate) fn members(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<(String, Option<BTreeSet<String>>)> {
         self.with_workspace(workspace_id, |view| {
             let peer = view.peer();
             let doc = peer.admitted_workspace();
@@ -285,7 +291,10 @@ impl Replicas {
     /// Whose each of `workspace_id`'s member devices is, as its governance admitted them: device
     /// (hex) to person (root key, hex), for every device a current member is here from. What
     /// shows a device by its person (who is here, a call's roster) reads it off this.
-    pub(crate) fn member_devices(&self, workspace_id: u64) -> Option<BTreeMap<String, String>> {
+    pub(crate) fn member_devices(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<BTreeMap<String, String>> {
         self.with_workspace(workspace_id, |view| {
             let members = view
                 .peer()
@@ -315,7 +324,7 @@ impl Replicas {
     /// workspace's own governance keeps for it: the address a peer dials the
     /// host at, and the relay it is reached through. `None` until the host's
     /// bootstrap or a governance message named it.
-    pub(crate) fn host(&self, workspace_id: u64) -> Option<tilo_relay_client::Host> {
+    pub(crate) fn host(&self, workspace_id: WorkspaceId) -> Option<tilo_relay_client::Host> {
         let hint = self
             .with_workspace(workspace_id, |view| {
                 let host = view.workspace_host().device_public_key;
@@ -359,7 +368,7 @@ impl Replicas {
     /// One line per workspace for diagnostics: the host it was joined through.
     pub(crate) fn describe(&self) -> String {
         self.workspaces
-            .keys()
+            .iter()
             .filter_map(|workspace_id| {
                 self.with_workspace(*workspace_id, |view| {
                     Ok(format!(

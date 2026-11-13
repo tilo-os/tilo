@@ -636,14 +636,10 @@ the model but instead of it:
   the separate governance document with its receipts, custody and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
-- **Per-person spaces.** The person's relay workspace
-  (`personal_continuity_workspace_id`), derived from the root key under its
-  own domain string. It is left only to the person's hosts: they keep the
-  person's records on it for devices that are away, and ush environment
-  sessions run on it. The person's devices already meet without it, on the
-  session between two of them (`tilo-relay-sibling/1`), and learn the
-  person's workspaces from the hosts holding them (`room.list`). The person's
-  own records in particular are in no workspace: their store is
+- **Per-person spaces.** The person's devices meet on the session between two
+  of them (`tilo-relay-sibling/1`) and learn the person's workspaces from the
+  hosts holding them. The person's own records are in no workspace: their
+  store is
   one cluster per person, derived from the root key, and the readers of its
   channels are the identity's certified devices that are not revoked — the
   identity decides, and no governor or workspace takes part. Any of those

@@ -39,6 +39,7 @@ use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{enrol, enter_page, start_workspace_host_relaying, wait_keyed, written};
+use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -147,7 +148,11 @@ async fn through_the_door(
 /// guest opens the chat's head and its newest part's route as it enters, as
 /// a Chat window on the desk does, and the chat must read whole by the
 /// landing after which nothing more arrives.
-async fn chat_read_by_guest(page: &Link, workspace_id: u64, chat: &DocumentRoute) -> Duration {
+async fn chat_read_by_guest(
+    page: &Link,
+    workspace_id: WorkspaceId,
+    chat: &DocumentRoute,
+) -> Duration {
     let head = DocumentRoute {
         record: neighbour_wire::chain_head(CHAT_CHAIN),
         ..chat.clone()

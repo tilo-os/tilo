@@ -34,7 +34,7 @@ impl DeviceSigner for Key {
 
 /// `message`, as the host relays a retained write of `author` to `workspace_id`.
 fn relayed(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     author: [u8; 32],
     message: &neighbour_wire::NeighbourMsg,
 ) -> Envelope {
@@ -71,7 +71,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
         governor,
     } = late_admission_at(web_time::SystemTime::now());
     let workspace_id = bootstrap.workspace_id;
-    let workspace = bootstrap.room.clone();
+    let workspace = bootstrap.workspace_id.to_string();
     let host = bootstrap.host.clone();
     let config = PeerConfig {
         host: tilo_relay_client::Host::through(

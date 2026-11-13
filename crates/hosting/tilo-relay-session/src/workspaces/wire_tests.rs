@@ -11,6 +11,7 @@
 //! and a desktop of different versions refuse each other's bytes.
 
 use super::IssuedInvitation;
+use collab_types::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use tilo_workspace_join::{
     JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinCompleteRequest, JoinProof,
@@ -71,8 +72,7 @@ fn join_challenge() -> JoinChallenge {
     JoinChallenge {
         version: 1,
         signed_invitation: vec![1, 2],
-        room: "00000000-0000-0000-0000-000000000001".into(),
-        workspace_id: 3,
+        workspace_id: WorkspaceId::from_u128(3),
         user_public_key: [13; 32],
         device_public_key: [14; 32],
         request_id: [15; 32],
@@ -84,8 +84,7 @@ fn join_challenge() -> JoinChallenge {
 fn membership_challenge() -> MembershipChallenge {
     MembershipChallenge {
         version: 1,
-        room: "00000000-0000-0000-0000-000000000001".into(),
-        workspace_id: 3,
+        workspace_id: WorkspaceId::from_u128(3),
         host_device_public_key: [12; 32],
         user_public_key: [13; 32],
         device_public_key: [14; 32],
@@ -123,8 +122,7 @@ fn join_requests() -> Vec<(&'static str, JoinTransportRequest)> {
         (
             "MembershipChallenge",
             JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
-                room: "00000000-0000-0000-0000-000000000001".into(),
-                workspace_id: 3,
+                workspace_id: WorkspaceId::from_u128(3),
                 device_cert: cert(),
                 request_id: [19; 32],
             }),

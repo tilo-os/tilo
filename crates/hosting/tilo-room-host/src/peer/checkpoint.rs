@@ -3,6 +3,7 @@
 //! catching-up sessions.
 
 use super::{Arc, Envelope, EnvelopeV2, Invariant, ReplayCatchup, Step, inbound_bytes, test_point};
+use tilo_relay_protocol::WorkspaceId;
 
 pub(super) const RETENTION_PREFIX_FRAME_CAP: usize = 32;
 pub(super) const RETENTION_PREFIX_BYTE_CAP: usize = 64 * 1024 * 1024;
@@ -94,7 +95,7 @@ pub(super) fn buffered_retention_prefix_with_limits<'a>(
     frame_cap: usize,
     byte_cap: usize,
 ) -> Option<BufferedRetentionPrefix> {
-    let mut group: Option<(u64, [u8; 32])> = None;
+    let mut group: Option<(WorkspaceId, [u8; 32])> = None;
     let mut channels = std::collections::HashSet::new();
     let mut inspected = false;
     let mut shape = BufferedRetentionPrefix {

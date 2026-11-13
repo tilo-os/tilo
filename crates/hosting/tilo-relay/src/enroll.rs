@@ -17,6 +17,7 @@ use tilo_identity_host::certification_ceremony::pairing_code;
 use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
 use tilo_identity_host::enrollment::{Certifier, DeviceRole, NonceStore, Redemption};
 use tilo_relay::HomePeerRegistration;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert,
     verify_device_cert_at, verify_enrollment_token,
@@ -135,7 +136,7 @@ enum Command {
         #[arg(long, default_value = "/var/lib/tilo/fs-capabilities.json")]
         acl: PathBuf,
         #[arg(long = "relay-workspace-id")]
-        relay_workspace_ids: Vec<u64>,
+        relay_workspace_ids: Vec<WorkspaceId>,
         #[arg(long)]
         expected_device: Option<String>,
         #[arg(long)]
@@ -1052,7 +1053,7 @@ fn register_home_peer(
     identity_root: &std::path::Path,
     cert: &DeviceCert,
     relay_service_node_id: [u8; 32],
-    relay_workspace_ids: &[u64],
+    relay_workspace_ids: &[WorkspaceId],
     relay_endpoint: Option<iroh_base::EndpointAddr>,
 ) -> anyhow::Result<()> {
     if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
@@ -1964,7 +1965,7 @@ struct ApprovalOptions<'a> {
     timeout: u64,
     workspace_cache: &'a std::path::Path,
     acl: &'a std::path::Path,
-    relay_workspace_ids: &'a [u64],
+    relay_workspace_ids: &'a [WorkspaceId],
     expected_device: Option<&'a str>,
     expected_service: Option<&'a str>,
     kind: EnrollmentKind,
@@ -1999,7 +2000,7 @@ struct ApprovalIdentity {
     /// This device's certificate, the issuer of the tokens it mints.
     issuer_cert: DeviceCert,
     user_public_key: [u8; 32],
-    relay_workspace_ids: Vec<u64>,
+    relay_workspace_ids: Vec<WorkspaceId>,
 }
 
 struct SelectedNearby {

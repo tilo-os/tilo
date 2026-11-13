@@ -1748,7 +1748,7 @@ fn take_up_feedback(
 fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -> Shared {
     let requests = crate::shell::HostRequests::default();
     let host = inputs.peer.and_then(|peer| {
-        let workspace = crate::peer::workspace_number(&inputs.workspace).ok()?;
+        let workspace = crate::peer::workspace_id(&inputs.workspace).ok()?;
         crate::peer_sync::actions_of(peer, workspace)
     });
     let record_actions = RecordActions::new(

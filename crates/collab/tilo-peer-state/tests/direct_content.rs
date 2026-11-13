@@ -78,7 +78,7 @@ async fn joins(
             key.verifying_key().to_bytes(),
         ),
         identity,
-        tilo_peer_state::join::room_workspace_id(&workspace.to_string())
+        tilo_peer_state::join::WorkspaceId::parse(&workspace.to_string())
             .expect("a workspace topic"),
         None,
         invitation,

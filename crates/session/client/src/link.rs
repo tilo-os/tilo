@@ -12,6 +12,7 @@ use tilo_session_core::remote::Heard;
 
 use crate::engine::Engine;
 use crate::plane::{Closed, Cmd, Event, Outbox};
+use tilo_relay_protocol::WorkspaceId;
 
 /// Failures kept at once; the oldest goes first.
 const MAX_FAILURES: usize = 16;
@@ -110,7 +111,7 @@ pub struct PeerStatus {
     /// Last envelope from the host (ms since the epoch).
     pub last_contact_at_ms: Option<u64>,
     /// Joined workspaces and whether the host answered `Ready`.
-    pub workspaces: BTreeMap<u64, bool>,
+    pub workspaces: BTreeMap<WorkspaceId, bool>,
     /// Each record's local store state, as reported with [`Link::set_local_state`].
     pub local: BTreeMap<DocumentRoute, LocalState>,
     /// Current failures, newest last.
@@ -169,7 +170,7 @@ pub enum Entry {
         /// The workspace's UUID.
         workspace: String,
         /// Its relay workspace.
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         /// Its name.
         name: String,
         /// What the person may do there.
@@ -619,7 +620,7 @@ struct Asking {
 impl tilo_session_core::remote::RemoteSession for Asking {
     fn send_remote_action(
         &self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         device: [u8; 32],
         frame: Vec<u8>,
     ) -> Result<(), String> {

@@ -23,7 +23,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     let b = user.enrol("browser-b", DeviceCapabilities::member());
     let tmp = tempfile::tempdir().unwrap();
     let workspace_id =
-        tilo_relay::room_workspace_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        tilo_relay::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let config = RelayConfig {
         state_root: tmp.path().to_owned(),
         identity_root: tmp.path().join("identity"),

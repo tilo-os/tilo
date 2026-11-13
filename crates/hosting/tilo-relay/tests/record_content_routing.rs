@@ -12,8 +12,9 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay};
+use tilo_relay::WorkspaceId;
 
-const WS: u64 = 12;
+const WS: WorkspaceId = WorkspaceId::from_u128(12);
 
 async fn subscribed(
     addr: iroh_base::EndpointAddr,

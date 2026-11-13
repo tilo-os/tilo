@@ -22,6 +22,7 @@ use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
 use super::{COMMIT_WAIT, Ledger, Needs, Outcome, Performed, Worker, is_part};
+use tilo_relay_protocol::WorkspaceId;
 
 /// The record at `route` as the session's replica holds it, and whether the
 /// replica holds it at all.
@@ -217,7 +218,7 @@ impl Worker {
     /// answered done only once the host holds it ([`Self::saving`]).
     pub(super) fn commit(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
@@ -236,7 +237,7 @@ impl Worker {
     /// channel keys, or holds it until a participant admits the member.
     fn hand_over(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
@@ -282,7 +283,7 @@ impl Worker {
     /// durably (the session's barrier): what the next write is made over.
     fn commit_durably(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
@@ -336,7 +337,7 @@ impl Worker {
     )]
     pub(super) fn saved(
         &mut self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         outcome: Performed,
     ) -> (Performed, Option<Unsaved>) {
         if outcome.is_err() {
@@ -360,7 +361,7 @@ impl Worker {
     /// stand: saved, refused, or still on their way after [`SAVE_GRACE`].
     /// Every write, whoever it was made for, is answered by this one rule:
     /// done only once the host holds it.
-    pub(super) fn saving(&mut self, workspace_id: u64) -> Saving {
+    pub(super) fn saving(&mut self, workspace_id: WorkspaceId) -> Saving {
         let written: Vec<Written> = std::mem::take(&mut self.handed)
             .into_values()
             .flatten()
@@ -423,7 +424,11 @@ impl Worker {
 
     /// What the record at `route` is called in its app's index of the
     /// workspace, when the index names it.
-    pub(super) fn record_name(&self, workspace_id: u64, route: &DocumentRoute) -> Option<String> {
+    pub(super) fn record_name(
+        &self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+    ) -> Option<String> {
         let workspace = self.workspaces.get(&workspace_id)?;
         let checkout = ui::record::identity(&document(&workspace.peer, route).0)?;
         let index = DocumentRoute {
@@ -437,7 +442,7 @@ impl Worker {
     /// under what its app calls it now, unless the index already does. A
     /// record of the workspace itself (its desk, its emoji), the index, and
     /// a part of a record's chain are no records of their own there.
-    pub(super) fn index_record(&mut self, workspace_id: u64, route: &DocumentRoute) {
+    pub(super) fn index_record(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
         if route.record.is_empty()
             || is_part(&route.record)
             || collab_types::workspace_record(&route.app_id, &route.record).is_some()
@@ -451,7 +456,11 @@ impl Worker {
         }
     }
 
-    fn name_in_index(&mut self, workspace_id: u64, route: &DocumentRoute) -> Result<(), String> {
+    fn name_in_index(
+        &mut self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+    ) -> Result<(), String> {
         let index_route = DocumentRoute {
             record: String::new(),
             ..route.clone()

@@ -11,6 +11,9 @@ async fn endpoint() -> (Endpoint, MemoryLookup) {
 /// write this big waits on a device that never reads.
 const STALLING_BYTES: usize = 4 << 20;
 
+/// The workspace two of a person's devices are on.
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(42);
+
 /// A device that takes every connection and stream and never reads one:
 /// counts the streams opened to it.
 #[derive(Debug, Clone, Default)]
@@ -86,13 +89,19 @@ async fn a_stalled_send_in_one_workspace_does_not_delay_another_workspaces_send(
     for _ in 0..3 {
         assert!(
             lanes
-                .queue_direct(1, direct(&to_stalled, vec![0; STALLING_BYTES]))
+                .queue_direct(
+                    WorkspaceId::from_u128(1),
+                    direct(&to_stalled, vec![0; STALLING_BYTES])
+                )
                 .is_ok()
         );
     }
     assert!(
         lanes
-            .queue_direct(2, direct(&to_healthy, b"workspace two".to_vec()))
+            .queue_direct(
+                WorkspaceId::from_u128(2),
+                direct(&to_healthy, b"workspace two".to_vec())
+            )
             .is_ok()
     );
 
@@ -102,7 +111,11 @@ async fn a_stalled_send_in_one_workspace_does_not_delay_another_workspaces_send(
     let InternalEvent::DirectSent { ws, outcome } = event else {
         panic!("only direct sends were queued");
     };
-    assert_eq!(ws, 2, "workspace one's stalled sends came back first");
+    assert_eq!(
+        ws,
+        WorkspaceId::from_u128(2),
+        "workspace one's stalled sends came back first"
+    );
     assert!(outcome.delivered);
     assert_eq!(
         tilo_test_env::within("workspace two's message", read.recv()).await,
@@ -128,17 +141,20 @@ async fn stall_workspace_7(
 ) -> mpsc::Receiver<NetEvent> {
     let (on_event, events) = mpsc::channel(64);
     cmd.send(NetCmd::SetWorkspaceRoster {
-        ws: 7,
+        ws: WorkspaceId::from_u128(7),
         devices: vec![(stalled, None)],
     })
     .await
     .unwrap();
-    cmd.send(NetCmd::JoinWorkspace { ws: 7, on_event })
-        .await
-        .unwrap();
+    cmd.send(NetCmd::JoinWorkspace {
+        ws: WorkspaceId::from_u128(7),
+        on_event,
+    })
+    .await
+    .unwrap();
     for _ in 0..sends {
         cmd.send(NetCmd::PublishRecordContent(RecordContentDelivery {
-            ws: 7,
+            ws: WorkspaceId::from_u128(7),
             target: Some(stalled),
             msg: NeighbourMsg::RecordContentPiece {
                 responder: 0,
@@ -167,7 +183,7 @@ async fn a_workspace_whose_device_stalls_holds_up_no_other_workspace() {
         .spawn();
 
     // Two of a person's devices, on topic 42.
-    let [a, mut b] = crate::tests::two(crate::tests::linked(42, 2).await);
+    let [a, mut b] = crate::tests::two(crate::tests::linked(WORKSPACE, 2).await);
     let (cmd_a, rx_b, a_id, b_id) = (&a.cmd, &mut b.rx, a.id, b.id);
     a.lookup.add_endpoint_info(stalled.addr());
 
@@ -192,7 +208,7 @@ async fn a_workspace_whose_device_stalls_holds_up_no_other_workspace() {
         .unwrap();
     cmd_a
         .send(NetCmd::PublishWorkspaceControl {
-            ws: 42,
+            ws: WORKSPACE,
             msg: NeighbourMsg::RemoteInput {
                 peer: crate::behaviour::peer_liveness_handle(&a_id),
                 surface: 7,
@@ -213,7 +229,7 @@ async fn a_workspace_whose_device_stalls_holds_up_no_other_workspace() {
                 ..
             } if bytes == vec![4, 2] => fabric = true,
             NetEvent::Msg {
-                ws: 42,
+                ws: WORKSPACE,
                 msg: NeighbourMsg::RemoteInput { surface: 7, .. },
                 ..
             } => input = true,

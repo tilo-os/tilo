@@ -11,6 +11,7 @@
 )]
 
 use crate::common::{addr, device, localhost_endpoint, workspace};
+use tilo_peer_state::join::WorkspaceId;
 
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::RecvStream;
@@ -489,8 +490,7 @@ fn guest(
 ) -> VerifiedRedemption {
     let issued = issue_invitation(
         InviteGrant {
-            workspace_id: 7,
-            room: WORKSPACE.into(),
+            workspace_id: WorkspaceId::parse(WORKSPACE).unwrap(),
             issuer: a.1.clone(),
             role: Role::Editor,
             nonce: [43; 16],
@@ -554,7 +554,7 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
         "Scribe",
         [10, 20, 30],
         DelegateScope {
-            rooms: vec![WORKSPACE.into()],
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: Vec::new(),
         },
         ns(now - Duration::from_secs(1)),

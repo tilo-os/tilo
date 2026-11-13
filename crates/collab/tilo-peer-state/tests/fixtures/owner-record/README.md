@@ -22,7 +22,7 @@ means re-checking that an old record still reads, not re-encoding it.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `single-file.owner.json.hex` | 16208 | `95783fe0985154a0313471061dc10b3f5178cbc61d9fbbbb590dbd3862ae3560` |
+| `single-file.owner.json.hex` | 18122 | `4f30990e5350dde42d7a79fd1bf720326679ec90e77ba2516d51419f727a73ec` |
 
 Persisted byte fixtures are stored as `.hex` files: two lowercase hexadecimal
 digits per byte, separated by spaces, with 16 bytes per LF line. The decoded

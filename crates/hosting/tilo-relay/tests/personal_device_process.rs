@@ -30,8 +30,9 @@ use tilo_user_identity::{
 };
 
 use crate::common::client_endpoint;
+use tilo_relay::WorkspaceId;
 
-const FILE_WORKSPACE: u64 = 42;
+const FILE_WORKSPACE: WorkspaceId = WorkspaceId::from_u128(42);
 
 /// How long each `tilo-enroll` side waits for the other, as `--timeout`.
 /// Both write durably between the exchanges, and on a loaded worker that

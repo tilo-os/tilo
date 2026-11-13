@@ -31,9 +31,7 @@
 //!   it gives it the workspace, and the address such a machine reaches it at;
 //! - [`metrics`] — the counter snapshot the daemon persists for status UIs;
 //! - [`process_lease`] — the PID + start-time pair carried across the
-//!   enrollment privilege boundary;
-//! - [`room_workspace_id`] / [`personal_continuity_workspace_id`] — the
-//!   stable relay shard ids every peer must derive identically.
+//!   enrollment privilege boundary.
 //!
 //! The serialized forms are persisted on disk and exchanged on the wire, so
 //! they are compatibility surfaces: `tests/formats.rs` pins an encoded
@@ -66,11 +64,11 @@ pub mod voice;
 pub mod web;
 pub mod workspaces;
 
+/// A workspace's id, defined beside [`delegation`].
+pub use tilo_workspace_join::WorkspaceId;
 /// Root-signed agent and bot delegations, defined in `tilo-workspace-join` so
 /// the admission core can verify them without linking the relay protocol.
 pub use tilo_workspace_join::delegation;
-/// The stable relay shard of a workspace UUID, defined beside [`delegation`].
-pub use tilo_workspace_join::{room_workspace_id, workspace_topic};
 
 pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, RelayConfig};
@@ -86,18 +84,6 @@ pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};
-
-/// Stable private relay workspace of one person: their devices reach their
-/// hosts' verbs and each other's sessions on it before they hold any workspace.
-/// This is not a user-visible workspace and is derived only from the root
-/// identity so every enrolled device/home peer agrees after restart.
-pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
-    let hash = blake3::derive_key("tilo-personal-continuity-v1\0", user_public_key);
-    let mut first8 = [0u8; 8];
-    first8.copy_from_slice(&hash[..8]);
-    let id = u64::from_le_bytes(first8);
-    if id == 0 { 1 } else { id }
-}
 
 /// Domain-separated secret the relay binds, derived from the device secret.
 ///
@@ -119,22 +105,4 @@ pub fn relay_service_node_id(device_secret: &[u8; 32]) -> [u8; 32] {
         .public()
         .as_bytes()
         .to_owned()
-}
-
-/// Match a retained or subscribed binding without aliasing arbitrary numeric IDs.
-pub fn room_workspace_id_matches(workspace: &str, shard: u64) -> bool {
-    room_workspace_id(workspace).is_ok_and(|id| id == shard)
-}
-
-#[cfg(test)]
-mod binding_tests {
-    #[test]
-    fn bindings_are_scoped_to_the_exact_room() {
-        let room = "11111111-1111-4111-8111-111111111111";
-        let other = "22222222-2222-4222-8222-222222222222";
-        let id = super::room_workspace_id(room).unwrap();
-        assert!(super::room_workspace_id_matches(room, id));
-        assert!(!super::room_workspace_id_matches(other, id));
-        assert!(!super::room_workspace_id_matches("invalid", id));
-    }
 }

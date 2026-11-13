@@ -37,8 +37,7 @@ fn redemption(
 ) {
     let signed = join::issue_invitation(
         join::InviteGrant {
-            workspace_id: tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap(),
-            room: WORKSPACE.into(),
+            workspace_id: tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
             issuer: governor.clone(),
             role: join::Role::Editor,
             nonce: [nonce; 16],
@@ -138,11 +137,10 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     let governor = certificate(&root, &governor_key, "Lounge host");
     let device_key = SigningKey::from_bytes(&[123; 32]);
     let device = certificate(&SigningKey::from_bytes(&[124; 32]), &device_key, "Joining");
-    let workspace_id = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
+    let workspace_id = tilo_relay_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: WORKSPACE.into(),
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
@@ -251,7 +249,6 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         invite_id: verified.invite_id(),
         device_cert: device.clone(),
         role: join::Role::Editor,
-        room: WORKSPACE.into(),
         workspace_id,
         host: governor.clone(),
         // The authors' certificates reach the device only through the

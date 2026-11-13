@@ -10,6 +10,7 @@ use tilo_relay_client::frame::FrameError;
 use tilo_relay_protocol::transport::MAX_FRAME_BYTES;
 
 use super::PRESENCE_BATCH_KIND;
+use collab_types::WorkspaceId;
 
 /// Slots a session's presence reader remembers what an older relay coded
 /// against; a higher slot index is refused.
@@ -80,12 +81,12 @@ impl PresenceSlots {
 /// Encode one [`super::EnvelopeV2::PresenceBatch`] frame, length prefix
 /// included, without copying the items.
 pub fn encode_presence_batch(
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     items: &[PresenceItem],
 ) -> Result<Vec<u8>, postcard::Error> {
     #[derive(Serialize)]
     struct Fields<'a> {
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         items: &'a [PresenceItem],
     }
     // Workspace for the length prefix, written once the length is known.

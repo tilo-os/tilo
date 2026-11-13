@@ -8,6 +8,7 @@
 //! a workspace is joined the same way whichever device answers.
 
 use crate::StatePeer;
+use crate::join::WorkspaceId;
 use crate::join::{
     JoinBootstrap, JoinChallengeResponse, JoinCompleteRequest, JoinInspection,
     JoinTransportRequest, JoinTransportResponse, MembershipChallengeResponse,
@@ -103,7 +104,10 @@ fn at(now: u64) -> SystemTime {
 
 /// The workspace a join request is about, read without trusting it: the
 /// ledger then verifies it against what that workspace issued.
-pub fn requested_workspace(request: &JoinTransportRequest, now: u64) -> Result<String, JoinError> {
+pub fn requested_workspace(
+    request: &JoinTransportRequest,
+    now: u64,
+) -> Result<WorkspaceId, JoinError> {
     Ok(match request {
         JoinTransportRequest::Inspect { signed_invitation } => {
             invitation_workspace(signed_invitation, now)?
@@ -111,9 +115,9 @@ pub fn requested_workspace(request: &JoinTransportRequest, now: u64) -> Result<S
         JoinTransportRequest::Challenge(request) => {
             invitation_workspace(&request.signed_invitation, now)?
         }
-        JoinTransportRequest::Complete(request) => request.proof.challenge.room.clone(),
-        JoinTransportRequest::MembershipChallenge(request) => request.room.clone(),
-        JoinTransportRequest::MembershipComplete(request) => request.proof.challenge.room.clone(),
+        JoinTransportRequest::Complete(request) => request.proof.challenge.workspace_id,
+        JoinTransportRequest::MembershipChallenge(request) => request.workspace_id,
+        JoinTransportRequest::MembershipComplete(request) => request.proof.challenge.workspace_id,
     })
 }
 
@@ -167,7 +171,7 @@ fn admit_signed(
     })?;
     for bootstrap in delivered.iter().flatten() {
         tracing::info!(
-            workspace = %bootstrap.room,
+            workspace = %bootstrap.workspace_id,
             invite_id = %hex::encode(bootstrap.invite_id),
             person = %hex::encode(bootstrap.device_cert.user_public_key),
             device = %hex::encode(bootstrap.device_cert.device_public_key),
@@ -204,7 +208,7 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
         request: JoinTransportRequest,
         now: u64,
     ) -> Result<JoinTransportResponse, JoinError> {
-        let workspace = requested_workspace(&request, now)?;
+        let workspace = requested_workspace(&request, now)?.to_string();
         let store = &self.0;
         Ok(match request {
             JoinTransportRequest::Inspect { signed_invitation } => {

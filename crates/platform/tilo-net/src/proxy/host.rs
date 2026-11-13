@@ -137,7 +137,7 @@ impl Default for Budgets {
 /// share one budget. Hosts outside this crate import the type under this
 /// name, so the name stays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Room(pub u64);
+pub struct Room(pub u128);
 
 /// The device a request is made for: the key the host authenticated its
 /// session with. A development host uses [`Caller::LOCAL`].
