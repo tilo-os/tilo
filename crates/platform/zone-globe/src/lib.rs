@@ -490,8 +490,8 @@ impl TimeZoneGlobe {
         let selected = selected.into();
         {
             let mut shared = state.borrow_mut();
-            /// Faces the chosen zone's city when it first shows and whenever the zone is
-            /// chosen elsewhere; a turn the person made by dragging stays until then.
+            // Faces the chosen zone's city when it first shows and whenever the zone is
+            // chosen elsewhere; a turn the person made by dragging stays until then.
             if (shared.view.is_none() || shared.faced.as_deref() != Some(selected.as_str()))
                 && let Some(point) = points.iter().find(|point| point.id == selected)
             {
@@ -710,8 +710,8 @@ impl TimeZoneGlobe {
             }
             let at = projection.project(p);
             if emphasis {
-                /// The chosen city, ringed in the ground so it stands off the land and the night.
-                /// ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
+                // The chosen city, ringed in the ground so it stands off the land and the night.
+                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -764,7 +764,7 @@ impl Widget for TimeZoneGlobe {
         self.hit_radius = f64::from(theme.tokens.metrics.min_pointer_target) / 2.0;
         let diameter = DIAMETER * theme.tokens.metrics.min_pointer_target
             / ui::tokens::Metrics::BASE.min_pointer_target;
-        /// As wide as the column allows, never wider than its diameter, and always round.
+        // As wide as the column allows, never wider than its diameter, and always round.
         let style = Style {
             size: Size {
                 width: Dimension::length(diameter),
@@ -802,8 +802,8 @@ impl Widget for TimeZoneGlobe {
         ui::outside_paint::note();
         let colors = &theme.tokens.colors;
         let palette = GlobePalette::of(colors);
-        /// Paths are built around the origin and moved into place, so scrolling the page
-        /// never projects the land again.
+        // Paths are built around the origin and moved into place, so scrolling the page
+        // never projects the land again.
         let transform = transform.pre_translate(self.rect.center().to_vec2());
         let projection = Projection::new(Point::ZERO, self.radius(), self.view());
         let disk = Circle::new(projection.centre, projection.radius);
