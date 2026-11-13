@@ -122,49 +122,55 @@ fn one_paragraph_pasted_past_a_mebibyte_is_kept_and_undoes() {
 
 /// A paragraph longer than one text may hold is refused: Ada hears what happened and what to do,
 /// in the words every window says, and the note keeps what she typed. A text is held to its
-/// bytes, so two bytes a character runs out at half the characters.
+/// bytes, so two bytes a character runs out at half the characters, and one byte more than the
+/// limit is already too many. Each paste is made in a notebook of its own.
 #[test]
 fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
-    let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
-    let mut host = TilolangHost::new(None, wake());
-    let (mut window, _sent, _inbox) = instance_on(
-        &mut host,
-        spec(1, "ada", &route),
-        notes(),
-        &route,
-        Rc::default(),
-        Rc::default(),
-        automerge::AutoCommit::new(),
-    );
-    settle(&mut host, &mut window);
-    press_new_note(&mut window);
-    settle(&mut host, &mut window);
-    let (field, note) = body_field(&window);
-    for text in [
-        "draft".to_owned(),
-        format!("words {}", "é".repeat(tilo_actions::MAX_TEXT_BYTES / 2)),
+    let notes = notes();
+    // Every character two bytes: half the limit in characters is the whole limit in bytes.
+    let whole = "é".repeat(tilo_actions::MAX_TEXT_BYTES / 2);
+    for (row, pasted) in [
+        ("six bytes past the limit", format!("words {whole}")),
+        ("one byte past the limit", format!("{whole}a")),
     ] {
-        window.send(&[ToApp::EditRich {
-            lane: Lane::Root,
-            target: note.clone(),
-            key: field.clone(),
-            rich: typed_rich(&text),
-        }]);
+        let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
+        let mut host = TilolangHost::new(None, wake());
+        let (mut window, _sent, _inbox) = instance_on(
+            &mut host,
+            spec(1, "ada", &route),
+            notes.clone(),
+            &route,
+            Rc::default(),
+            Rc::default(),
+            automerge::AutoCommit::new(),
+        );
         settle(&mut host, &mut window);
+        press_new_note(&mut window);
+        settle(&mut host, &mut window);
+        let (field, note) = body_field(&window);
+        for text in ["draft", pasted.as_str()] {
+            window.send(&[ToApp::EditRich {
+                lane: Lane::Root,
+                target: note.clone(),
+                key: field.clone(),
+                rich: typed_rich(text),
+            }]);
+            settle(&mut host, &mut window);
+        }
+        assert_eq!(
+            body_of(&host, &note),
+            "draft",
+            "{row}: the note keeps what was typed"
+        );
+        assert_eq!(
+            window.notices,
+            [patch::Words::Phrase {
+                id: "rich-text-too-long".to_owned(),
+                args: vec![("limit".to_owned(), "8 MB".to_owned())],
+            }],
+            "{row}: Ada hears why the paste was not kept, and what to do"
+        );
     }
-    assert_eq!(
-        body_of(&host, &note),
-        "draft",
-        "the note keeps what was typed"
-    );
-    assert_eq!(
-        window.notices,
-        [patch::Words::Phrase {
-            id: "rich-text-too-long".to_owned(),
-            args: vec![("limit".to_owned(), "8 MB".to_owned())],
-        }],
-        "Ada hears why the paste was not kept, and what to do"
-    );
 }
 
 /// A paragraph of the whole limit is one the window can carry: it is kept, and nothing is said.
