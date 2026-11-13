@@ -344,6 +344,9 @@ struct SharedGpu {
     /// The overflows of `renderer`'s bump buffers collected so far: every
     /// mount repaints whole once after its scratch changes.
     overflows: ui::render_bump_recovery::Overflows,
+    /// When the device was made: one lost soon after could not draw the
+    /// page on its GPU at all ([`crate::gpu_recovery::power_after_loss`]).
+    made: ui::time::Instant,
 }
 
 impl SharedGpu {
@@ -1802,6 +1805,7 @@ pub fn prepare_gpu() {
 }
 
 async fn open_device() -> Result<ui::gpu::RenderContext, String> {
+    crate::gpu_recovery::ask_for_power();
     let mut cx = ui::gpu::RenderContext::new();
     GPU_STEP.set(GpuStep::Device);
     cx.device(None).await.ok_or("no WebGPU device")?;
@@ -1942,6 +1946,7 @@ async fn shared_gpu(
     }
     // A preparation that failed is tried again here, so its error is this
     // surface's.
+    crate::gpu_recovery::ask_for_power();
     let (mut cx, prepared) = match take_prepared_gpu().await {
         Some(Ok(cx)) => (cx, true),
         Some(Err(_)) | None => (ui::gpu::RenderContext::new(), false),
@@ -2002,6 +2007,7 @@ async fn shared_gpu(
         video_pictures: crate::video_pictures::VideoPictures::default(),
         device: surface.dev_id,
         overflows: ui::render_bump_recovery::Overflows::default(),
+        made: ui::time::now(),
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
     // Apps that composite on the GPU themselves (the video editor) borrow
@@ -2907,11 +2913,30 @@ impl Mount {
     fn frame_failed(&mut self, id: u64, error: String) {
         let gpu_failed = self.gpu.as_ref().and_then(Gpu::failure).is_some();
         if gpu_failed && self.gpu_remakes.admit(ui::time::now()) {
+            let lived = self
+                .gpu
+                .as_ref()
+                .and_then(|gpu| gpu.shared.try_borrow().ok().map(|shared| shared.made))
+                .map_or(ui::time::Duration::ZERO, |made| {
+                    ui::time::now().saturating_duration_since(made)
+                });
+            let other = crate::gpu_recovery::device_lost(lived);
+            let on = if other {
+                "on the other GPU"
+            } else {
+                "on the same GPU"
+            };
             web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "Browser runtime: the GPU failed ({error}); making it again and drawing on"
+                "Browser runtime: the GPU failed ({error}); making it again {on} and drawing on"
             )));
             self.remake_gpu(id);
             return;
+        }
+        if gpu_failed {
+            // The canvas would keep showing the last frame the lost device
+            // presented, which may be half drawn: the page says the desktop
+            // stopped over an empty one instead.
+            unconfigure(&self.canvas);
         }
         self.error = Some(error);
         self.publish(id);
