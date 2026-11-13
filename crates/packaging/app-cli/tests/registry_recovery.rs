@@ -1,12 +1,5 @@
-//! What a registry is to a device that has already read it: a catalogue whose
-//! identities and sequences are agreed on, not a page that can change freely.
-//!
-//! A registry is a service with a disk, and a disk can be lost. A host rebuilt
-//! from a backup serves a catalogue signed by the right owner and genuinely
-//! complete — just from before this device last visited. Accepting it would
-//! walk the catalogue backwards, so a device refuses it, says so, and keeps
-//! what it already accepted; when the restored registry publishes past that,
-//! the device takes its catalogue again.
+//! What a registry is to a device that has already read it: a catalogue that cannot go backwards, and
+//! a regression the list reports.
 
 #![allow(
     clippy::unwrap_used,
@@ -32,14 +25,11 @@ use crate::registry_to_installed::{
 
 const PACKAGE_ID: &str = "so.tilo.catalogue-recovery";
 
-/// One published release: the entry naming the bytes `Registry` serves from
-/// `url`, and those bytes.
 fn release(version: &str, publisher: &SigningIdentity, url: &str) -> (RegistryEntry, Vec<u8>) {
     let tapp = author_tapp_version(PACKAGE_ID, version, publisher);
     (signed_entry_version(PACKAGE_ID, version, url, &tapp), tapp)
 }
 
-/// The signed catalogue that names `entry`, at the sequence after `previous`.
 fn catalogue(
     entry: RegistryEntry,
     owner: &SigningKey,
@@ -76,7 +66,6 @@ fn a_registry_rebuilt_from_a_backup_cannot_walk_the_catalogue_backwards() {
     let publisher = test_publisher();
     let owner = SigningKey::from_bytes(&[12; 32]);
 
-    // A loopback port the releases will name, checked free first.
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
@@ -94,7 +83,6 @@ fn a_registry_rebuilt_from_a_backup_cannot_walk_the_catalogue_backwards() {
         &[],
     );
 
-    // The device reads the newest catalogue, checkpointing sequence 2.
     let listing = app_cli::available();
     assert!(listing.unreachable.is_empty(), "{listing:?}");
     assert!(
@@ -110,8 +98,6 @@ fn a_registry_rebuilt_from_a_backup_cannot_walk_the_catalogue_backwards() {
     let restored = Registry::start(serde_json::to_string(&first).unwrap(), tapp_1_4);
     device.point_at(registry_config("local", &restored.base_url(), &owner));
 
-    // Asking the restored registry directly names the regression, rather
-    // than reading a catalogue that goes backwards.
     let refused =
         app_cli::client::fetch_entries(&registry_config("local", &restored.base_url(), &owner))
             .expect_err("a catalogue behind the accepted one must be refused");
@@ -157,8 +143,6 @@ fn a_registry_rebuilt_from_a_backup_cannot_walk_the_catalogue_backwards() {
         "the kept catalogue is the one this device accepted, not the recovered one"
     );
 
-    // The restored registry publishes again, past what the device holds, and
-    // its catalogue is taken normally: nothing stays stuck behind a recovery.
     let (onward, tapp_1_6) = release("1.6.0", &publisher, &tapp_url);
     let third = catalogue(onward, &owner, Some(&second));
     let moved_on = Registry::start(serde_json::to_string(&third).unwrap(), tapp_1_6);

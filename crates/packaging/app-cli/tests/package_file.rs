@@ -1,8 +1,5 @@
-//! `app install <file>` and `app update <app> --from <file>`: a package
-//! that came from no repository follows the app host's rule. A publisher
-//! this person trusts installs; a self-signed one is named as unverified
-//! and, with no terminal to ask on, refused unless `--yes` is given. A
-//! revoked publisher is refused whatever is given.
+//! `app install <file>` and `app update <app> --from <file>`: a package file from an unverified
+//! publisher asks first, and is refused when there is nobody to ask.
 
 #![allow(
     clippy::unwrap_used,
@@ -78,7 +75,6 @@ fn a_package_file_installs_by_the_app_hosts_rule() {
     assert!(said.contains("--yes"), "and says how to go ahead: {said}");
     assert_eq!(app_cli::installed_version(ID).unwrap(), None);
 
-    // --yes accepts it.
     let accepted = app(&["install", &first, "--yes"]);
     assert!(accepted.status.success(), "{}", text(&accepted));
     assert_eq!(
@@ -86,7 +82,6 @@ fn a_package_file_installs_by_the_app_hosts_rule() {
         Some("1.4.0")
     );
 
-    // Naming the publisher makes it trusted: no question, no --yes.
     let removed = app(&["remove", ID]);
     assert!(removed.status.success(), "{}", text(&removed));
     let expected = app(&["install", &first, "--require-publisher", &publisher]);
@@ -106,7 +101,6 @@ fn a_package_file_installs_by_the_app_hosts_rule() {
         Some("1.5.0")
     );
 
-    // The old flag still means --yes.
     let reinstalled = app(&["install", &second, "--allow-self-signed"]);
     assert!(reinstalled.status.success(), "{}", text(&reinstalled));
 

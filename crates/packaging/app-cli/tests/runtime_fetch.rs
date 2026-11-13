@@ -1,15 +1,5 @@
-//! End to end: a registry build linked against a runtime build this device
-//! does not have.
-//!
-//! The device holds one runtime build (as an image holds the one it was
-//! built with); the registry offers an app linked against another. Without
-//! that build on offer, `app install` refuses and changes nothing. Once the
-//! registry offers the build as `so.tilo.runtime` — a thin runtime package
-//! whose libraries arrive as content-addressed, chunked payload objects —
-//! the install fetches the runtime first, verifies it as the launcher does,
-//! and then installs the app. The served objects are produced by the same
-//! `split` the release pipeline runs, and the registry stand-in serves them
-//! the way the registry does (`/blobs/<hex>` and `/blobs/<hex>.chunks`).
+//! A registry build linked against a runtime build this device lacks: the app installs once its
+//! runtime does, and both are verified.
 
 #![allow(
     clippy::unwrap_used,
@@ -35,7 +25,6 @@ use crate::registry_to_installed::{Device, native_target, registry_config};
 
 const APP_ID: &str = "so.tilo.linked-e2e";
 
-/// What the stand-in registry serves, by request path.
 #[derive(Clone, Default)]
 struct Served(
     Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
@@ -43,7 +32,6 @@ struct Served(
 );
 
 impl Served {
-    /// How many requests have asked for `path` so far.
     fn hits(&self, path: &str) -> usize {
         self.1
             .lock()
@@ -313,14 +301,12 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     let root = root.path();
     let owner = SigningKey::from_bytes(&[22_u8; 32]);
 
-    // The runtime publisher the device trusts, as an image does.
     let runtime_identity = runtime_bundle::Identity::generate();
     let identity_path = root.join("runtime-publisher.json");
     std::fs::write(&identity_path, runtime_identity.to_json_bytes()).unwrap();
     let trust = root.join("trusted-runtime-publishers.txt");
     std::fs::write(&trust, format!("{}\n", runtime_identity.public_key_hex())).unwrap();
 
-    // The device's runtime: the build its system apps were linked with.
     let (device_version, device_bundle) = runtime_bundle(
         root,
         "device",
@@ -337,7 +323,6 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .pin(&device_version)
         .unwrap();
 
-    // The registry's runtime: another build, large enough to travel chunked.
     let mut toolkit =
         vec![0_u8; usize::try_from(tilo_app_package::chunks::CHUNK_BYTES).unwrap() + 4096];
     for (index, byte) in toolkit.iter_mut().enumerate() {
@@ -497,8 +482,6 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .into_iter()
         .find(|app| app.package_id == APP_ID)
         .unwrap();
-    // Finding the runtime's offer verifies one snapshot, however many runtime
-    // packages it lists; it is not downloaded again per package.
     let entries_before = served.hits("/entries");
     let found = app_cli::runtime_offer(&needed, "local")
         .expect("the offer is found")
@@ -584,7 +567,6 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     );
     assert!(!app_cli::runtime_installed(&engine));
 
-    // The registry offers the engine: installing the Browser fetches it first.
     let engine_full = runtime_package_tapp(&engine_bundle, engine_id, &engine, "0.1.7");
     let engine_objects = root.join("engine-objects");
     std::fs::create_dir_all(&engine_objects).unwrap();
@@ -630,8 +612,6 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
             .any(|row| row.id == browser_id)
     );
 
-    // A subsequent runtime package update must materialize its provided bundle,
-    // not merely replace the package row while leaving its libraries absent.
     let (new_version, new_bundle) = runtime_bundle(root, "newer", b"new toolkit", &identity_path);
     let new_needed = format!("tilo-runtime/{new_version}");
     let new_tapp = runtime_tapp(&new_bundle, &new_needed, "0.1.8");
@@ -679,8 +659,6 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         b"new toolkit"
     );
 
-    // A catalogued package plus a damaged retained bundle is not installed
-    // successfully: the real same-version update must refuse, not trust presence.
     std::fs::write(
         runtimes.join(&new_version).join("lib/libruntime_dylib.so"),
         b"tampered",
@@ -794,12 +772,8 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
         assert!(app_cli::runtime_installed(&device_ref));
     };
 
-    // Missing pinned engines refuse both replacement paths without changing
-    // the working app, even though its replacement archive is available.
     let without_engine = snapshot(vec![entries[0].clone()], &owner, Some(&first));
     served.put("/entries", serde_json::to_vec(&without_engine).unwrap());
-    // Update an installed app using the complete catalogue, not the listing
-    // that deliberately excludes already-installed apps.
     let offer = app_cli::all_offers()
         .apps
         .into_iter()
@@ -829,7 +803,6 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
     assert!(app_cli::install::rollback_app_reporting(&offer, &mut |_| {}).is_err());
     assert_working();
 
-    // The runtime's signer is checked independently of the registry publisher.
     std::fs::write(
         &trust,
         format!(
@@ -846,9 +819,6 @@ fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
     let mut progress = Vec::new();
     let mut engine_ready_before_replacement = false;
     app_cli::install::install_app_reporting(&offer, &mut |event| {
-        // Progress is delivered before each installer invocation. Observing
-        // the verified engine while the old app is intact proves ordering,
-        // rather than only checking that both exist after the operation.
         if !app_cli::runtime_installed(&engine_ref) {
             assert_working();
         } else if matches!(
