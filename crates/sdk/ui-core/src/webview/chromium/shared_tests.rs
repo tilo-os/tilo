@@ -8,10 +8,8 @@ use super::tests::{
 use super::*;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-/// A host that records its launch before it reports ready and keeps running
-/// after the Browser process that started it is gone, as one flushing its
-/// profile does. It ends only when the test lets it (`release-host`), however
-/// soon its owner died.
+/// A host that records its launch before it reports ready and keeps running after the
+/// Browser process that started it is gone, as one flushing its profile does.
 #[cfg(unix)]
 fn lingering_fixture() -> (tempfile::TempDir, PathBuf) {
     helper_fixture_after(
@@ -283,7 +281,6 @@ fn owners_serve_until_idle_and_replace_dead_owners_sockets() {
         let owner = ChromiumEngine::with_host(&host, &deep).unwrap();
         assert!(owner.runtime.link.is_none());
         assert_host_spawns(&deep, 1);
-        // The starter serves once the host is spawned, not before.
         tilo_test_env::wait_until("the owner to serve beside the deep profile", || {
             socket.exists()
         });
@@ -384,10 +381,10 @@ fn a_second_process_browses_through_the_first_processs_host() {
     }
 }
 
-/// The profile's lock belongs to its host, not to the Browser process that
-/// started it: a process that dies leaves its host shutting down with the
-/// profile open, and the next process to open that profile waits for that
-/// host to exit rather than starting a second one on the same directory.
+/// The profile's lock belongs to its host, not to the Browser process that started it: a
+/// process that dies leaves its host shutting down with the profile open, and the next
+/// process to open that profile waits for that host to exit rather than starting a second
+/// one on the same directory.
 #[test]
 #[cfg(unix)]
 fn a_dead_owners_lingering_host_keeps_the_profile_until_it_exits() {

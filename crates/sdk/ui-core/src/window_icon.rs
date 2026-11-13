@@ -1,16 +1,14 @@
-//! Resolves the raster icon named by the launcher's `TILO_APP_ICON`, falling
-//! back to a generated Tilo icon when it is missing or invalid.
-//!
-//! On Wayland, most compositors ignore a client-set toplevel icon (sourced
-//! from the `app_id` and a `.desktop` file instead).
+//! Resolves the raster icon named by the launcher's `TILO_APP_ICON`, falling back to a
+//! generated Tilo icon when it is missing or invalid. On Wayland, most compositors ignore
+//! a client-set toplevel icon (sourced from the `app_id` and a `.desktop` file instead).
 
 use winit::window::Icon;
 
 pub const ICON_ENV: &str = "TILO_APP_ICON";
 
-/// The app's own icon when [`ICON_ENV`] names a decodable raster image,
-/// otherwise the generated Tilo default. `None` only if even the default
-/// fails to build (it never should).
+/// The app's own icon when [`ICON_ENV`] names a decodable raster image, otherwise the
+/// generated Tilo default. `None` only if even the default fails to build (it never
+/// should).
 pub fn resolve() -> Option<Icon> {
     from_env().or_else(default_icon)
 }
@@ -42,7 +40,6 @@ pub(crate) fn default_icon() -> Option<Icon> {
 }
 
 /// Anti-aliased rounded square filled with a vertical accent gradient.
-/// Pure CPU raster — no GPU, no asset — so it works headless too.
 #[allow(
     clippy::many_single_char_names,
     reason = "s is the pixel scale, x/y are pixel coordinates, and r/g/b are colour \
@@ -51,9 +48,9 @@ pub(crate) fn default_icon() -> Option<Icon> {
 fn render_default(size: u32) -> Vec<u8> {
     let top = [0x4Cu8, 0x6Eu8, 0xF5u8];
     let bottom = [0x8Bu8, 0x5Cu8, 0xF6u8];
-    // `size` is a pixel dimension (the only caller passes a constant 128);
-    // f32 represents every integer up to 2^24 exactly, far past any
-    // realistic icon size, so this loses nothing.
+    // `size` is a pixel dimension (the only caller passes a constant 128); f32 represents
+    // every integer up to 2^24 exactly, far past any realistic icon size, so this loses
+    // nothing.
     #[allow(
         clippy::cast_precision_loss,
         reason = "size is a pixel dimension, always far below f32's 2^24 exact-integer range"
@@ -70,8 +67,6 @@ fn render_default(size: u32) -> Vec<u8> {
             )]
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             // Signed distance to a rounded square centred in the tile.
-            // Positive outside, negative inside; the |d| < 1px band is
-            // the antialiased edge.
             let dx = (px - half).abs() - (half - radius);
             let dy = (py - half).abs() - (half - radius);
             let outside = dx.max(0.0).hypot(dy.max(0.0));
@@ -82,8 +77,8 @@ fn render_default(size: u32) -> Vec<u8> {
             let r = lerp(top[0], bottom[0], t);
             let g = lerp(top[1], bottom[1], t);
             let b = lerp(top[2], bottom[2], t);
-            // `cover` is clamped to 0.0..=1.0 just above, so this product,
-            // rounded, always lands in 0.0..=255.0.
+            // `cover` is clamped to 0.0..=1.0 just above, so this product, rounded,
+            // always lands in 0.0..=255.0.
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,

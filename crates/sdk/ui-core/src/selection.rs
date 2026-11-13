@@ -1,11 +1,10 @@
-//! Shared collection selection models: [`SelectionModel`], the compact index-based form for
-//! immutable local lists, and [`KeySelection`], which keeps selection attached to stable model
-//! keys and represents select-all as a complement, for mutable, virtualized and partially
-//! resident collections.
-//!
-//! Several toolkit widgets surface a list of homogeneous items to select — `DataTable` list
-//! mode, the file picker, the file explorer's views — and they all need the *same* selection
-//! semantics, so that logic lives here once instead of being re-derived in each widget.
+//! Shared collection selection models: [`SelectionModel`], the compact index-based form
+//! for immutable local lists, and [`KeySelection`], which keeps selection attached to
+//! stable model keys and represents select-all as a complement, for mutable, virtualized
+//! and partially resident collections. Several toolkit widgets surface a list of
+//! homogeneous items to select — `DataTable` list mode, the file picker, the file
+//! explorer's views — and they all need the *same* selection semantics, so that logic
+//! lives here once instead of being re-derived in each widget.
 
 use std::collections::{BTreeSet, HashSet};
 use std::hash::Hash;
@@ -17,10 +16,6 @@ enum KeySelectionMode<K: Eq + Hash> {
 }
 
 /// Stable-key multi-selection for virtualized and mutable collections.
-///
-/// Explicit selections store selected keys. `select_all` switches to a
-/// complement representation and stores only later deselections, so selecting
-/// a collection with millions of non-resident rows remains constant-space.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeySelection<K: Eq + Hash> {
     mode: KeySelectionMode<K>,
@@ -84,8 +79,8 @@ where
         self.primary.as_ref()
     }
 
-    /// The finite stored set: selected keys in explicit mode, deselected keys
-    /// in select-all mode.
+    /// The finite stored set: selected keys in explicit mode, deselected keys in
+    /// select-all mode.
     pub fn stored_keys(&self) -> impl Iterator<Item = &K> {
         match &self.mode {
             KeySelectionMode::Explicit(keys) | KeySelectionMode::AllExcept(keys) => keys.iter(),
@@ -124,7 +119,6 @@ where
     }
 
     /// Apply an inclusive key range already resolved by the owning model.
-    /// The stable anchor is preserved while the primary key moves to `target`.
     pub fn select_range<I>(&mut self, target: K, keys: I, additive: bool)
     where
         I: IntoIterator<Item = K>,
@@ -154,8 +148,7 @@ where
         self.primary = None;
     }
 
-    /// Drop keys no longer present after a model change. In select-all mode
-    /// only the finite exception set needs visiting.
+    /// Drop keys no longer present after a model change.
     pub fn reconcile<F>(&mut self, mut contains: F)
     where
         F: FnMut(&K) -> bool,
@@ -174,23 +167,15 @@ where
     }
 }
 
-/// Index-based multi-selection state. Indices are opaque `usize`s the
-/// owning widget assigns to its items (typically the row/cell order).
+/// Index-based multi-selection state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SelectionModel {
-    /// The set of currently-selected indices, kept sorted by `BTreeSet`.
     selected: BTreeSet<usize>,
-    /// Range origin for Shift-extension. Set by every non-extending
-    /// gesture; left untouched while a Shift gesture extends from it.
     anchor: Option<usize>,
-    /// The "cursor" — the most recently touched index. Drives keyboard
-    /// navigation and the focus ring. Distinct from the selected set
-    /// (a Ctrl-click that *deselects* `i` still leaves `i` primary).
     primary: Option<usize>,
 }
 
 impl SelectionModel {
-    /// An empty selection.
     pub fn new() -> Self {
         Self::default()
     }
@@ -229,10 +214,7 @@ impl SelectionModel {
         self.anchor
     }
 
-    /// Follow items when their owning collection changes row order. Map each
-    /// old position to its new position, or `None` if the item disappeared.
-    /// The cursor and range anchor remain independent of the selected set,
-    /// including a cursor left on an item deselected by Ctrl-click.
+    /// Follow items when their owning collection changes row order.
     pub fn remap_indices(&mut self, map: impl Fn(usize) -> Option<usize>) {
         self.selected = self.selected.iter().copied().filter_map(&map).collect();
         self.primary = self.primary.and_then(&map);
@@ -246,9 +228,9 @@ impl SelectionModel {
         self.primary = None;
     }
 
-    /// Replace the selection after a model refresh while preserving the
-    /// logical primary item. Callers map stable item identities to their new
-    /// indices first; indices absent from `selected` cannot become primary.
+    /// Replace the selection after a model refresh while preserving the logical primary
+    /// item. Callers map stable item identities to their new indices first; indices
+    /// absent from `selected` cannot become primary.
     pub fn replace_indices(
         &mut self,
         selected: impl IntoIterator<Item = usize>,
@@ -262,9 +244,7 @@ impl SelectionModel {
         self.anchor = self.primary;
     }
 
-    /// Replace the selection with the single index `i`. Resets the
-    /// anchor and cursor to `i`. This is the plain-click / plain-arrow
-    /// behaviour and the public primitive other code can call directly.
+    /// Replace the selection with the single index `i`.
     pub fn select_only(&mut self, i: usize) {
         self.selected.clear();
         self.selected.insert(i);
@@ -272,11 +252,7 @@ impl SelectionModel {
         self.primary = Some(i);
     }
 
-    /// Toggle `i` in/out of the selection (Ctrl-click). The cursor moves
-    /// to `i`; the anchor stays where the choice began, so a subsequent
-    /// Shift gesture extends what the person gathered rather than
-    /// replacing it with a range from `i`. A toggle on an empty anchor
-    /// sets it.
+    /// Toggle `i` in/out of the selection (Ctrl-click).
     pub fn toggle(&mut self, i: usize) {
         if self.selected.contains(&i) {
             self.selected.remove(&i);
@@ -289,13 +265,8 @@ impl SelectionModel {
         self.primary = Some(i);
     }
 
-    /// Select the inclusive range from the anchor to `i`: unioned with the
-    /// existing selection when `additive` (Ctrl+Shift), else replacing it
-    /// (Shift). The anchor is preserved so repeated Shift gestures pivot
-    /// around the same origin. Falls back to [`select_only`] when there is
-    /// no anchor to extend from.
-    ///
-    /// [`select_only`]: SelectionModel::select_only
+    /// Select the inclusive range from the anchor to `i`: unioned with the existing
+    /// selection when `additive` (Ctrl+Shift), else replacing it (Shift).
     pub fn select_range_to(&mut self, i: usize, additive: bool) {
         let Some(anchor) = self.anchor else {
             self.select_only(i);
@@ -316,7 +287,6 @@ impl SelectionModel {
     }
 
     /// Apply a pointer click at `index` with the given modifier state.
-    /// This is the one call most widgets need from a mouse handler.
     pub fn apply_click(&mut self, index: usize, ctrl: bool, shift: bool) {
         match (ctrl, shift) {
             (_, true) => self.select_range_to(index, ctrl),
@@ -325,10 +295,7 @@ impl SelectionModel {
         }
     }
 
-    /// Move the keyboard cursor to `index`. With `extend` (Shift held)
-    /// it grows the contiguous range from the anchor; otherwise it
-    /// becomes a single selection. This is the one call most widgets
-    /// need from a key handler after computing the target index.
+    /// Move the keyboard cursor to `index`.
     pub fn move_to(&mut self, index: usize, extend: bool) {
         if extend {
             self.select_range_to(index, false);
@@ -337,8 +304,7 @@ impl SelectionModel {
         }
     }
 
-    /// Select every index in `0..count`. Anchor at `0`, cursor at the
-    /// last index. No-op for an empty range.
+    /// Select every index in `0..count`.
     pub fn select_all(&mut self, count: usize) {
         self.selected.clear();
         if count == 0 {
@@ -353,10 +319,9 @@ impl SelectionModel {
         self.primary = Some(count.saturating_sub(1));
     }
 
-    /// Drop any selected/anchor/primary index that is `>= count`. Call
-    /// this after the underlying item list shrinks (e.g. a directory
-    /// change) so the model never points past the end. Returns `true`
-    /// if anything was pruned.
+    /// Drop any selected/anchor/primary index that is `>= count`. Call this after the
+    /// underlying item list shrinks (e.g. a directory change) so the model never points
+    /// past the end.
     pub fn clamp_to(&mut self, count: usize) -> bool {
         let before = self.selected.len();
         self.selected.retain(|&i| i < count);
@@ -452,7 +417,6 @@ mod tests {
         Primary(Option<usize>),
     }
 
-    /// One click in a scripted sequence and the facets checked after it.
     struct Click {
         index: usize,
         ctrl: bool,
@@ -506,8 +470,6 @@ mod tests {
                 ],
             ),
             (
-                // Ctrl-click an already-selected index removes just it; the
-                // toggled index is still the cursor even though deselected.
                 "ctrl click toggles and keeps others",
                 vec![
                     click(1, false, false),
@@ -626,9 +588,6 @@ mod tests {
         }
     }
 
-    /// The way a person gathers a few rows: click one, add the next with Control, then walk
-    /// with Shift and the arrow. The walk extends what they gathered; it does not drop the
-    /// rows they clicked before it, which used to leave the choice the same size.
     #[test]
     fn the_walk_extends_the_choice_modified_clicks_gathered() {
         {
@@ -640,7 +599,6 @@ mod tests {
             assert_eq!(m.selected(), vec![0, 1, 2]);
             assert_eq!(m.anchor(), Some(0));
             assert_eq!(m.primary(), Some(2));
-            // Back up the same way: the range narrows to the rows between.
             m.move_to(1, true);
             assert_eq!(m.selected(), vec![0, 1]);
         }
@@ -658,7 +616,6 @@ mod tests {
         }
 
         {
-            // A modified click with no choice before it begins the one the walk grows.
             let mut m = SelectionModel::new();
             m.apply_click(4, true, false);
             assert_eq!(m.anchor(), Some(4));

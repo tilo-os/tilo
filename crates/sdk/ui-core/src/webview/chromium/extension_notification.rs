@@ -5,9 +5,8 @@ use serde_json::Value;
 
 use crate::webview::WebViewEvent;
 
-/// An extension's notification as the host tells of it
-/// (`extension_notifications.h`): what it shows, or that it is gone. Its text
-/// is bounded as the host bounds it.
+/// An extension's notification as the host tells of it (`extension_notifications.h`):
+/// what it shows, or that it is gone.
 pub(super) fn decode(id: &str, value: &Value) -> Option<WebViewEvent> {
     const TEXT: usize = 4096;
     let notification = value["notification"]

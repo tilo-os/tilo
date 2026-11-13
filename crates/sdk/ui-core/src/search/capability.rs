@@ -11,12 +11,8 @@ pub trait SearchSource: Widget {
         Vec::new()
     }
 
-    /// Who each of [`search_providers`](Self::search_providers) is, as the
-    /// action directory's witness reads them. A source whose providers are
-    /// costly to make (one that builds an index to answer from) overrides
-    /// this to describe them without making them: the witness is read on
-    /// every frame that publishes the action surface, a search only when
-    /// someone searches.
+    /// Who each of [`search_providers`](Self::search_providers) is, as the action
+    /// directory's witness reads them.
     fn search_provider_descriptors(&self) -> Vec<SearchProviderDescriptor> {
         self.search_providers()
             .iter()
@@ -24,24 +20,23 @@ pub trait SearchSource: Widget {
             .collect()
     }
 
-    /// What this source's entries for the system's persistent search index
-    /// are of now; `None` for a source that publishes none. Read every
-    /// frame that publishes, so it must not build anything:
-    /// [`search_index_entries`](Self::search_index_entries) is asked only
-    /// when this changes.
+    /// What this source's entries for the system's persistent search index are of now;
+    /// `None` for a source that publishes none. Read every frame that publishes, so it
+    /// must not build anything: [`search_index_entries`](Self::search_index_entries) is
+    /// asked only when this changes.
     fn search_index_state(&self) -> Option<super::index_publication::IndexState> {
         None
     }
 
-    /// The entries the system's persistent search index keeps for this
-    /// source: short metadata keyed by the stable resource id a hit opens,
-    /// found after the app closes too.
+    /// The entries the system's persistent search index keeps for this source: short
+    /// metadata keyed by the stable resource id a hit opens, found after the app closes
+    /// too.
     fn search_index_entries(&self) -> Vec<super::index_publication::IndexEntry> {
         Vec::new()
     }
 
-    /// Activate a hit: presentation (navigation), not a document action;
-    /// mutate the model only if selecting changes shared state.
+    /// Activate a hit: presentation (navigation), not a document action; mutate the model
+    /// only if selecting changes shared state.
     fn activate_search_result(
         &mut self,
         _action_id: &str,
@@ -55,8 +50,8 @@ pub fn search_providers(widget: &(impl Widget + ?Sized)) -> Vec<Box<dyn super::S
     capability::<dyn SearchSource>(widget).map_or_else(Vec::new, SearchSource::search_providers)
 }
 
-/// `widget`'s search providers as the action directory's witness reads them,
-/// without querying them.
+/// `widget`'s search providers as the action directory's witness reads them, without
+/// querying them.
 pub fn search_provider_descriptors(
     widget: &(impl Widget + ?Sized),
 ) -> Vec<SearchProviderDescriptor> {
@@ -64,26 +59,20 @@ pub fn search_provider_descriptors(
         .map_or_else(Vec::new, SearchSource::search_provider_descriptors)
 }
 
-/// What the action directory's witness reads of a search provider: who it
-/// is and which build of its content answers for it. Two descriptors differ
-/// whenever a directory page from one provider could differ from the other's.
+/// What the action directory's witness reads of a search provider: who it is and which
+/// build of its content answers for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchProviderDescriptor {
     pub(crate) name: String,
-    /// The component lifetime the provider is a proxy into, if any.
     pub(crate) owner: Option<uuid::Uuid>,
     pub(crate) generation: Option<u64>,
     pub(crate) invocation_domain: crate::widget::ActionDirectoryInvocationDomain,
 }
 
 impl SearchProviderDescriptor {
-    /// A provider listed as `name` whose content is the build `generation`
-    /// names (as [`SearchProvider::action_directory_generation`]), over
-    /// `invocation_domain` (as
+    /// A provider listed as `name` whose content is the build `generation` names (as
+    /// [`SearchProvider::action_directory_generation`]), over `invocation_domain` (as
     /// [`SearchProvider::action_directory_invocation_domain`]).
-    ///
-    /// [`SearchProvider::action_directory_generation`]: super::SearchProvider::action_directory_generation
-    /// [`SearchProvider::action_directory_invocation_domain`]: super::SearchProvider::action_directory_invocation_domain
     pub fn new(
         name: impl Into<String>,
         generation: Option<u64>,
@@ -118,8 +107,8 @@ impl SearchProviderDescriptor {
     }
 }
 
-/// What `widget`'s entries for the system's persistent search index are of
-/// now, if it publishes any.
+/// What `widget`'s entries for the system's persistent search index are of now, if it
+/// publishes any.
 pub fn search_index_state(
     widget: &(impl Widget + ?Sized),
 ) -> Option<super::index_publication::IndexState> {

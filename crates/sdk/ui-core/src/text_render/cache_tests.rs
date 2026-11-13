@@ -640,15 +640,11 @@ fn text_widget_retained_input_actual_oversize_and_local_change_remain_current() 
     assert_eq!(after, actual_text_measure(&mut cold, &mut renderer));
 }
 
-// Main already exposes the original full structural comparator. Retain every
-// stream and late resource comparison; no count/hash-only replacement.
+// Main already exposes the original full structural comparator.
 fn exact_scene_encoding_eq(left: &vello::Scene, right: &vello::Scene) -> bool {
     left.encoding_eq(right)
 }
 
-// Main exposes role changes instead of arbitrary Text spacing modifiers. Keep
-// the original low-level spacing/tracking values covered through the renderer,
-// together with each newer role/style field, under deliberately colliding hashes.
 #[test]
 fn current_style_fields_with_colliding_prepared_hashes_match_cold_rendering() {
     use super::super::{TextGround, TextKind, TextScaling};
@@ -696,8 +692,6 @@ fn current_style_fields_with_colliding_prepared_hashes_match_cold_rendering() {
             vello::kurbo::Affine::IDENTITY,
             None,
         );
-        // Compare a cold geometry lookup on the same immutable font resources;
-        // independent fixture renderers intentionally own distinct resource ids.
         hot.measure_cache.clear();
         hot.shape_cache.clear();
         hot.draw_prepared(

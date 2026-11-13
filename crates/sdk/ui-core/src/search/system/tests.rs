@@ -51,7 +51,6 @@ fn strongest_group_precedes_kind_order_and_ties_preserve_provider_order() {
 }
 #[test]
 fn a_store_offer_follows_every_hit_the_person_has_however_strong() {
-    // ((kind, availability, name), merged strength)
     let mut merged = vec![
         (
             (
@@ -115,8 +114,8 @@ fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
         [(1, 1), (3, 20), (2, 10)],
         "the groups keep their totals; the rows they leave room for are the ones offering the rest"
     );
-    // The rows shown plus the row offering each cut group's rest fill the
-    // budget: six rows and two "Show all" rows, never a row cut away.
+    // The rows shown plus the row offering each cut group's rest fill the budget: six
+    // rows and two "Show all" rows, never a row cut away.
     let entries = command_entries(&groups);
     let offered: usize = groups
         .iter()
@@ -178,7 +177,6 @@ fn application_identity_and_metadata_share_native_match_bands() {
         score("hex-editor", "hex editor", "so.tilo.hex-editor", None),
         Some(100)
     );
-    // The kind an app is of names it too, below its own name.
     assert_eq!(
         score("office", "notes", "so.tilo.notes", Some("office")),
         Some(34)
@@ -386,9 +384,6 @@ fn perfect_application_match_beats_an_exact_note_of_the_same_word() {
     );
 }
 
-/// "power off" names Shut down as well as "shut" does: an action's word
-/// typed whole, which its provider scores as its title begun, counts at the
-/// merge as its title begun, though the title says neither word.
 #[test]
 fn an_actions_word_typed_whole_counts_as_its_title_begun() {
     let action = merged_strength(
@@ -433,8 +428,6 @@ fn an_actions_word_typed_whole_counts_as_its_title_begun() {
     assert!(partial < begun);
 }
 
-/// Every built-in kind answers to a catalogue entry in every language the
-/// toolkit ships, so a German desk's group headers and chips read German.
 #[test]
 fn every_builtin_kind_is_named_in_the_desktops_language() {
     const SOURCE: &str = include_str!("../../../locales/en-US.ftl");
@@ -489,7 +482,6 @@ fn every_builtin_kind_is_named_in_the_desktops_language() {
             "Fenstergruppen",
         ]
     );
-    // A kind a provider minted carries the provider's own words.
     assert_eq!(
         ResourceKind::Custom("Antworten".into()).display_label(),
         "Antworten"

@@ -8,22 +8,14 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// Lay `widget` out in a space `width` by `height` points, as a window of
-/// that size would, and give it that layout. The rows of a list, the parts
-/// of a card and the text a widget measures exist only once it is laid out:
-/// a test that asks such a widget what assistive technology hears, or where
-/// its parts stand, lays it out first.
-///
-/// # Errors
-/// When the widget's own layout cannot be solved.
+/// Lay `widget` out in a space `width` by `height` points, as a window of that size
+/// would, and give it that layout. When the widget's own layout cannot be solved.
 pub fn lay_out(widget: &mut dyn Widget, width: f32, height: f32) -> Result<(), taffy::TaffyError> {
     lay_out_in(widget, width, height, &Theme::dark())
 }
 
-/// [`lay_out`] for a test that states the theme it draws with.
-///
-/// # Errors
-/// When the widget's own layout cannot be solved.
+/// [`lay_out`] for a test that states the theme it draws with. When the widget's own
+/// layout cannot be solved.
 pub fn lay_out_in(
     widget: &mut dyn Widget,
     width: f32,

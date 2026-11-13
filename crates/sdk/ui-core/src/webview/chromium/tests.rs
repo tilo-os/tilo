@@ -235,7 +235,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
         let root = private_root();
 
         let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
-        // The engine is handed back while its host starts.
         let launched = tilo_test_env::wait_for("the helper's arguments", || {
             std::fs::read_to_string(&arguments)
                 .ok()
@@ -270,8 +269,8 @@ fn private_engines_own_and_remove_their_disposable_roots() {
         let fixture = tempfile::tempdir().unwrap();
         let host = fixture.path().join("not-ready");
         crate::testing::write_executable(&host, "#!/bin/sh\nexit 7\n");
-        // A host that exits before it is ready fails the page once it is
-        // reaped; the window never waited for it.
+        // A host that exits before it is ready fails the page once it is reaped; the
+        // window never waited for it.
         let readiness_root = private_root();
         let engine = ChromiumEngine::with_private_host(&host, &readiness_root).unwrap();
         wait_until_removed(&readiness_root);
@@ -316,9 +315,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
     }
     // phase: private_process_exit_waits_for_helper_and_root_cleanup
     {
-        // Keep the protocol output open while stdin is consumed. Redirecting
-        // stdout alone sends EOF to the production frame reader, which can
-        // reap this supposedly-live helper before the child checks its root.
         let (_fixture, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let root = private_root();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
@@ -464,7 +460,6 @@ fn protocol_frames_reject_malformed_and_oversized_input() {
     // A malformed known event ends the engine and every tab with it, so what
     // the host really sends must pass: a page can cause each of these.
     {
-        // The request filter's own trouble names no page.
         let filter =
             json!({"event":"error","message":"Native request matcher failed to check a resource"});
         assert!(validate_event(&filter).is_ok());
@@ -473,7 +468,6 @@ fn protocol_frames_reject_malformed_and_oversized_input() {
             None,
             "a diagnostic, not a failed page"
         );
-        // A page's export: its whole file is the download's address.
         let export = json!({"event":"download", "id":1, "state":"progress",
         "path":"", "name":"export.csv", "url":format!("data:text/csv,{}", "a".repeat(20_000)),
         "retryable":true, "received":0.0, "total":20_000.0, "error":""});
@@ -549,9 +543,9 @@ fn protocol_frames_reject_malformed_and_oversized_input() {
     }
 }
 
-/// Sets `$profile` in a helper script from its `--profile=` argument,
-/// wherever the engine put it: a governed process, as any test process is
-/// once one of its tests governs audio, passes its audio switch first.
+/// Sets `$profile` in a helper script from its `--profile=` argument, wherever the engine
+/// put it: a governed process, as any test process is once one of its tests governs
+/// audio, passes its audio switch first.
 #[cfg(unix)]
 pub(super) const PROFILE_FROM_ARGUMENTS: &str =
     "for argument; do case $argument in --profile=*) profile=${argument#--profile=};; esac; done\n";
@@ -561,9 +555,9 @@ pub(super) fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::P
     helper_fixture_after("", trailing)
 }
 
-/// [`helper_fixture`] for a host that has to do something before it says it is
-/// ready: `prologue` runs first, so a host that dies before it reports ready
-/// still leaves its mark.
+/// [`helper_fixture`] for a host that has to do something before it says it is ready:
+/// `prologue` runs first, so a host that dies before it reports ready still leaves its
+/// mark.
 #[cfg(unix)]
 pub(super) fn helper_fixture_after(
     prologue: &str,
@@ -622,7 +616,6 @@ fn helper_failures_are_reported_once_and_reaped() {
         let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         *engine.shared.uri.lock().unwrap() = "https://old.example".into();
-        // Model the helper reporting failure before this new navigation attempt.
         engine.shared.failed.store(true, Ordering::Release);
         engine.tx.close();
         engine.send(WebViewCommand::Navigate("https://new.example".into()));
@@ -631,10 +624,9 @@ fn helper_failures_are_reported_once_and_reaped() {
     }
 }
 
-/// A Browser window left open costs the CPU nothing: the engine host's
-/// supervisor sleeps until the host exits, fails or is asked to stop,
-/// rather than waking on a timer to look. Its exit is still seen at once,
-/// even when a process the host started keeps its output open.
+/// A Browser window left open costs the CPU nothing: the engine host's supervisor sleeps
+/// until the host exits, fails or is asked to stop, rather than waking on a timer to
+/// look.
 #[test]
 #[cfg(target_os = "linux")]
 fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
@@ -662,8 +654,8 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
         wait_for("the supervisor to wait on the ready host", || {
             untimed_waits(&engine) >= 1
         });
-        // This engine's own supervisor: in a test process shared with other
-        // engines, a thread found by name may be another's, gone by now.
+        // This engine's own supervisor: in a test process shared with other engines, a
+        // thread found by name may be another's, gone by now.
         let supervisor = engine
             .shared
             .supervisor_thread
@@ -677,8 +669,6 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
     }
     // phase: an_exit_wakes_the_supervisor_though_the_output_stays_open
     {
-        // A process the host started holds its output until `released`,
-        // and the host exits on `go`.
         let (dir, host) = helper_fixture(&format!(
             "{PROFILE_FROM_ARGUMENTS}\
              (while [ -d \"$profile\" ] && [ ! -e \"$profile/released\" ]; do sleep 0.05; done) &\n\
@@ -691,13 +681,11 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
             untimed_waits(&engine) >= 1
         });
         std::fs::write(profile.join("go"), b"").unwrap();
-        // The failed flag is set before its report is queued, and the
-        // report is read straight after: wait for the report itself.
         wait_for("the host's exit is reported", || {
             engine.shared.failure_reported()
         });
-        // The output is still held open: only the exit itself can have
-        // woken the supervisor.
+        // The output is still held open: only the exit itself can have woken the
+        // supervisor.
         assert!(!profile.join("released").exists());
         assert_eq!(
             checks(&engine),
@@ -711,10 +699,10 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
     }
 }
 
-/// Opening a Browser window, the first of its profile, starts the engine
-/// host, which takes a second or more to say it is ready. The window must not
-/// wait for it: the engine is handed back while the host is still starting,
-/// and what the page asks for meanwhile reaches the host once it reads.
+/// Opening a Browser window, the first of its profile, starts the engine host, which
+/// takes a second or more to say it is ready. The window must not wait for it: the engine
+/// is handed back while the host is still starting, and what the page asks for meanwhile
+/// reaches the host once it reads.
 #[test]
 #[cfg(unix)]
 fn an_engine_is_ready_to_use_before_its_host_is() {
@@ -727,7 +715,6 @@ fn an_engine_is_ready_to_use_before_its_host_is() {
     let encoded: String = ready.iter().map(|byte| format!("\\{:03o}", byte)).collect();
     let dir = tempfile::tempdir().unwrap();
     let host = dir.path().join("host");
-    // Reads nothing and says nothing until the test lets it start.
     crate::testing::write_executable(
         &host,
         &format!(
@@ -740,8 +727,8 @@ fn an_engine_is_ready_to_use_before_its_host_is() {
         ),
     );
     let profile = dir.path().join("profile");
-    // Returns while the host waits: a constructor that waited for `ready`
-    // would give up after its 20 s and fail here.
+    // Returns while the host waits: a constructor that waited for `ready` would give up
+    // after its 20 s and fail here.
     let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
     let profile = profile.canonicalize().unwrap();
     assert!(engine.supports_text_input());
@@ -1065,8 +1052,6 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             .iter()
             .map(|byte| format!("\\{:03o}", byte))
             .collect();
-        // Detach frees the route before Drop. Create the replacement while the
-        // owner Arc still lives so a Drop reservation cannot hide a leak.
         let (dir, host) = helper_fixture(&format!(
             "{PROFILE_FROM_ARGUMENTS}while [ ! -f \"$profile/detach-ready\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec 3>&1; exec cat >/dev/null"
         ));
@@ -1085,8 +1070,8 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             !routes.lock().unwrap().contains_key(&2),
             "route is retired before detach is observable"
         );
-        // Capacity is released by the detach acknowledgment, while the owner
-        // Arc is still alive — Drop must not be what frees the visible slot.
+        // Capacity is released by the detach acknowledgment, while the owner Arc is still
+        // alive — Drop must not be what frees the visible slot.
         assert_eq!(routes.lock().unwrap().len(), 1);
         first
             .create_tab()
@@ -1497,15 +1482,9 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
     }
 }
 
-/// A host that records its launch as soon as it runs, records every command
-/// it receives in the profile, writes `packets` once the test creates `emit`
-/// there, and records that it stopped however it stops.
-///
-/// A host outlives the owner that started it only to serve that owner's
-/// clients, so it is the owner's death that ends it: its input reaches its
-/// end, and a frame it would write has nowhere to go. The last line of a
-/// script is therefore not where a stopped host can be recorded: the exit
-/// trap is, for a host that dies before it ever reports ready included.
+/// A host that records its launch as soon as it runs, records every command it receives
+/// in the profile, writes `packets` once the test creates `emit` there, and records that
+/// it stopped however it stops.
 #[cfg(unix)]
 pub(super) fn shared_fixture(packets: &[u8]) -> (tempfile::TempDir, PathBuf) {
     let encoded: String = packets
@@ -1538,9 +1517,8 @@ pub(super) fn host_spawns(profile: &Path) -> usize {
         .count()
 }
 
-/// Wait until the hosts started for `profile` have all recorded their start,
-/// expecting `expected` of them. A spawned host records itself once it runs,
-/// which can be after the engine that started it has returned.
+/// Wait until the hosts started for `profile` have all recorded their start, expecting
+/// `expected` of them.
 #[cfg(unix)]
 pub(super) fn assert_host_spawns(profile: &Path, expected: usize) {
     tilo_test_env::wait_until(format!("{expected} host start(s)"), || {
@@ -1686,7 +1664,6 @@ fn owned_navigation_first_terminal_survives_unknown_duplicate_and_state_floods()
     for id in 1..=32 {
         shared.admit_navigation(id, "requested".into()).unwrap();
     }
-    // Real decoder/router: failure is first and a late success cannot overwrite it.
     route_native_event(&json!({"event":"navigation_outcome","request_id":1,"url":"failed","error":"fixture failure"}), &routes, &downloads, &ready).unwrap();
     for _ in 0..2000 {
         route_native_event(
@@ -1778,8 +1755,6 @@ fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() 
             .iter()
             .any(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
     );
-    // The helper's input recorder and event emitter run independently.
-    // Observe the real command before permitting its canned terminal events.
     wait_for_command(
         &profile,
         "owned navigation recorded on helper wire",
@@ -1804,8 +1779,6 @@ fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() 
     assert!(events.iter().any(
         |event| matches!(event, WebViewEvent::LoadFinishedAt { uri } if uri == "about:blank")
     ));
-    // Event output and the command reader run independently in the host
-    // fixture. Observe a complete command before opening its recording.
     wait_for_command(&profile, "owned navigation command", |command| {
         command["op"] == "scoped_navigation"
     });
@@ -1828,13 +1801,6 @@ fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() 
 #[test]
 #[cfg(unix)]
 fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
-    // Every helper here keeps reading its stdin after the engine closes the
-    // command queue, so a hangup cannot win the race and turn a refusal into
-    // "Chromium is unavailable". The last route is owned and closed inside the
-    // case: its engine joins the supervisor on drop, which kills and reaps the
-    // helper that recorded the refusal. Closing that queue on a shared host
-    // left the helper running past the case, and Nextest reported the passing
-    // test as a LEAK.
     let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
     let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     assert!(engine.navigate_owned(0, NavigationCommand::Back).is_err());
@@ -1899,9 +1865,9 @@ fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
     assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 9, error: Some(error), .. } if error == "fixture helper disconnected")));
     assert!(engine.navigate_owned(10, NavigationCommand::Back).is_err());
     let (_fixture, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
-    // A disposable root of this process's own, marked as one the browser may
-    // remove: the owned host needs it, and the engine removes it only after
-    // its supervisor reaped the helper.
+    // A disposable root of this process's own, marked as one the browser may remove: the
+    // owned host needs it, and the engine removes it only after its supervisor reaped the
+    // helper.
     let root = std::env::temp_dir().join(format!("tilo-browser-private-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::write(
@@ -1925,8 +1891,6 @@ fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
         unavailable.navigate_owned(1, NavigationCommand::Back),
         Err("runtime unavailable".into())
     );
-    // The dropped engine joined its supervisor, which reaped the refused
-    // navigation's helper before the root went: nothing outlives the case.
     drop(engine);
     assert!(
         !root.exists(),
@@ -1940,7 +1904,6 @@ fn owned_navigation_concurrent_cancel_cannot_overtake_admitted_command() {
     let (dir, host) = shared_fixture(&[]);
     let profile = dir.path().join("profile");
     let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
-    // Stop the production enqueue at its mutex, after owner registration.
     let queue_barrier = engine.tx.state.lock().unwrap();
     let navigating = engine.clone();
     let navigation =
@@ -1962,8 +1925,6 @@ fn owned_navigation_concurrent_cancel_cannot_overtake_admitted_command() {
         cancelling.send(WebViewCommand::CancelScopedNavigation { request_id: 1 });
     });
     entered.recv().unwrap();
-    // The held queue barrier makes both scheduling orders deterministic: the
-    // cancel either blocks now or begins after the admitted command was queued.
     drop(queue_barrier);
     navigation.join().unwrap().unwrap();
     cancel.join().unwrap();
@@ -2483,8 +2444,8 @@ fn devtools_extension_calls_round_trip_bounded_and_validated() {
 
 #[test]
 fn a_governed_app_routes_page_audio_through_the_host_bridge() {
-    // The sandbox withholds the audio sockets and devices, so the engine must
-    // not try to open any; its sound reaches the app over the host protocol.
+    // The sandbox withholds the audio sockets and devices, so the engine must not try to
+    // open any; its sound reaches the app over the host protocol.
     assert_eq!(host_audio_switches(true), ["--tilo-audio-bridge"]);
     assert!(host_audio_switches(false).is_empty());
 }
@@ -2627,12 +2588,8 @@ fn page_questions_reach_only_a_tab_that_answers_them() {
 #[test]
 #[cfg(unix)]
 fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
-    // Closing the command queue hangs up helper stdin. Keep stdout owned by
-    // the supervised helper until cancellation fails it; otherwise an unrelated
-    // EOF can win the first-error latch before the refusal under test.
+    // Closing the command queue hangs up helper stdin.
     let (_fixture, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
-    // This route joins the supervisor on drop, so a fast test process cannot
-    // exit before its deliberately live helper has been killed and reaped.
     let root = private_root();
     let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
     let enabled = Arc::new(AtomicBool::new(false));

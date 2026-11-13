@@ -1,10 +1,6 @@
-//! What one search reaches: the one scope vocabulary, from the narrowest to
-//! the widest.
-//!
-//! Everything that opens search names one [`Scope`] and nothing else: a chord,
-//! a window group's new-tab control, an app's own search button, a launcher.
-//! The palette over it, the sources it asks and the place a hit opens all read
-//! that one value.
+//! What one search reaches: the one scope vocabulary, from the narrowest to the widest.
+//! Everything that opens search names one [`Scope`] and nothing else: a chord, a window
+//! group's new-tab control, an app's own search button, a launcher.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,14 +13,8 @@ pub type WindowGroupId = u64;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppScope {
-    /// The app searched, by the package id its windows carry
-    /// (`so.tilo.notes`). Absent while the asker shows one app and leaves
-    /// naming it to the host: an app's own search button, a launcher asking
-    /// for the app in front.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
-    /// The part of the app searched — one mailbox, one folder — and what the
-    /// field calls it; the whole app when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part: Option<ScopeDecl>,
 }
@@ -62,21 +52,16 @@ impl AppScope {
     }
 }
 
-/// How far one search reaches, from narrowest to widest: the one vocabulary
-/// every control that opens search asks in.
+/// How far one search reaches, from narrowest to widest: the one vocabulary every control
+/// that opens search asks in.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Scope {
-    /// One app's own: what it publishes, everything or the part of it a
-    /// control named. The app's own search, which is never the workspace's.
+    /// One app's own: what it publishes, everything or the part of it a control named.
+    /// The app's own search, which is never the workspace's.
     InApp(AppScope),
-    /// The apps one window group can show: what its new-tab control asks for,
-    /// and a chosen app opens as a new tab there. `None` when no group asks —
-    /// the empty desk's launchpad — and an app opens as a window of its own.
     WindowGroup(Option<WindowGroupId>),
-    /// Everything in the workspace in front.
     #[default]
     Workspace,
-    /// Every workspace, each row saying which one holds it.
     Everywhere,
 }
 
@@ -96,9 +81,9 @@ impl Scope {
         matches!(self, Self::Everywhere)
     }
 
-    /// Whether the search answers a query that is not a name — a sum, a unit
-    /// conversion, an address — as one over a whole workspace does: a search
-    /// of one app or of the apps a group can show never does.
+    /// Whether the search answers a query that is not a name — a sum, a unit conversion,
+    /// an address — as one over a whole workspace does: a search of one app or of the
+    /// apps a group can show never does.
     #[must_use]
     pub fn answers(&self) -> bool {
         matches!(self, Self::Workspace | Self::Everywhere)

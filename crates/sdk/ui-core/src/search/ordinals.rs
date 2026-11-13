@@ -1,24 +1,12 @@
-//! Browse ordinals for a catalogue synchronised to an ordered snapshot.
-//!
-//! A [`SearchCatalog`](super::SearchCatalog) orders equally relevant hits,
-//! and empty-query browsing, by each record's browse ordinal. A bulk
-//! replacement numbers its records in snapshot order, [`GAP`] apart from
-//! [`GAP`] on, leaving room before the first as after the last. When a
-//! later snapshot changes a few records, [`plan`] keeps the ordinal of every
-//! record it can and places the rest between their neighbours, so the order
-//! is the snapshot's, as a bulk replacement would have made it, while only
-//! the placed records are indexed again.
+//! Browse ordinals for a catalogue synchronised to an ordered snapshot. A
+//! [`SearchCatalog`](super::SearchCatalog) orders equally relevant hits, and empty-query
+//! browsing, by each record's browse ordinal.
 
 /// Ordinals a bulk replacement leaves between neighbours.
 pub(super) const GAP: u64 = 1 << 20;
 
-/// The ordinal each snapshot record takes, given the ordinal it holds now
-/// (`None` for a record new to the catalogue). Ordinals strictly increase
-/// in snapshot order. A record keeps its ordinal when that is possible
-/// within the longest run of held ordinals already in order; the others
-/// are spread between their neighbours, which give up theirs too when
-/// there is no room left between them. `None` when the snapshot would need
-/// ordinals beyond `u64`.
+/// The ordinal each snapshot record takes, given the ordinal it holds now (`None` for a
+/// record new to the catalogue).
 pub(super) fn plan(held: &[Option<u64>]) -> Option<Vec<u64>> {
     let mut keep = longest_increasing(held);
     loop {
@@ -39,8 +27,6 @@ pub(super) fn plan(held: &[Option<u64>]) -> Option<Vec<u64>> {
     }
 }
 
-/// Which records keep their held ordinal: a longest strictly increasing
-/// subsequence of the held ordinals, in snapshot order.
 fn longest_increasing(held: &[Option<u64>]) -> Vec<bool> {
     // `tails[len]`: the index ending the best increasing run of `len + 1`.
     let mut tails: Vec<usize> = Vec::new();
@@ -73,7 +59,6 @@ fn longest_increasing(held: &[Option<u64>]) -> Vec<bool> {
 
 enum Placement {
     Done(Vec<u64>),
-    /// The run between these kept records has too few ordinals between them.
     Crowded {
         before: Option<usize>,
         after: Option<usize>,
@@ -105,10 +90,6 @@ fn place(held: &[Option<u64>], keep: &[bool]) -> Placement {
     Placement::Done(ordinals)
 }
 
-/// `count` increasing ordinals strictly between `low` and `high`, evenly
-/// spaced. Past the last neighbour they follow [`GAP`] apart, and with no
-/// neighbour at all they start at [`GAP`], as a bulk replacement numbers;
-/// before the first they start from zero. `None` when they do not fit.
 fn spread(low: Option<u64>, high: Option<u64>, count: usize) -> Option<Vec<u64>> {
     let count = u64::try_from(count).ok()?;
     let slots = 1..=count;
@@ -130,7 +111,6 @@ fn spread(low: Option<u64>, high: Option<u64>, count: usize) -> Option<Vec<u64>>
                 })
                 .collect()
         }
-        // As if `low` were one below zero.
         (None, Some(high)) => {
             let step = high.checked_add(1)?.checked_div(count.checked_add(1)?)?;
             (step > 0).then_some(())?;
@@ -198,7 +178,6 @@ mod tests {
             plan(&held).unwrap(),
             [(GAP >> 1).checked_sub(1).unwrap(), GAP, gap(2)]
         );
-        // Below ordinal zero nothing fits: the first record moves up.
         let held = [None, None, Some(0), Some(GAP)];
         let planned = plan(&held).unwrap();
         assert!(increasing(&planned));

@@ -6,24 +6,15 @@ use super::provider::{SearchProvider, SearchResult};
 use super::rank::result_relevance;
 use std::collections::HashSet;
 
-/// Weight applied to a provider's own [`SearchResult::score`] bias relative
-/// to the registry's query-match bonus: high enough that a pinned result
-/// leads for a weak query, low enough that an exact title match still wins.
 const PROVIDER_BIAS_WEIGHT: i32 = 4;
 const MAX_PROVIDER_MERGE_RESULTS: usize = 256;
 
-/// A ranked bucket of results that share a [`SearchResult::kind`]. The results
-/// overlay renders one section per group, headed by `kind`.
+/// A ranked bucket of results that share a [`SearchResult::kind`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchGroup {
-    /// The group's header; empty for rows that run on under no header.
     pub kind: String,
     pub results: Vec<SearchResult>,
-    /// The section the group is in: a header of its own above the group
-    /// where it begins, the group's own header then a caption under it.
     pub section: Option<String>,
-    /// How many results the group holds before any cap, the count its
-    /// header shows. `None`: the results listed.
     pub total: Option<usize>,
 }
 
@@ -38,9 +29,8 @@ impl SearchGroup {
     }
 }
 
-/// A [`SearchProvider`] built from a closure plus its kind label — the
-/// convenient way to register a source without declaring a struct. Created via
-/// [`SearchRegistry::register_fn`].
+/// A [`SearchProvider`] built from a closure plus its kind label — the convenient way to
+/// register a source without declaring a struct.
 pub struct FnProvider<F> {
     name: String,
     f: F,
@@ -67,9 +57,7 @@ where
     }
 }
 
-/// The set of providers a search surface draws from. One registry can back a
-/// single app (its own providers) or, in the shell, every app's providers at
-/// once for a global Ctrl+K.
+/// The set of providers a search surface draws from.
 #[derive(Default)]
 pub struct SearchRegistry {
     providers: Vec<Box<dyn SearchProvider>>,
@@ -99,12 +87,10 @@ impl SearchRegistry {
         self.providers.len()
     }
 
-    /// In registration order.
     pub fn provider_names(&self) -> Vec<&str> {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
-    /// The provider's bias plus the shared ranker's query relevance.
     fn rank_key(query: &str, r: &SearchResult) -> i32 {
         r.score
             .saturating_mul(PROVIDER_BIAS_WEIGHT)
@@ -130,8 +116,8 @@ impl SearchRegistry {
         results
     }
 
-    /// Sorted by descending `rank_key`; ties keep provider
-    /// registration order (a stable sort), so ranking is deterministic.
+    /// Sorted by descending `rank_key`; ties keep provider registration order (a stable
+    /// sort), so ranking is deterministic.
     pub fn query(&self, query: &str) -> Vec<SearchResult> {
         let mut all: Vec<SearchResult> = Vec::new();
         for provider in &self.providers {
@@ -140,9 +126,7 @@ impl SearchRegistry {
         Self::rank_and_dedupe(query, all, usize::MAX)
     }
 
-    /// Bounded cross-provider merge for interactive global search. Providers
-    /// stop materialising once their share is full, canonical action aliases
-    /// collapse to one row, and only the best `limit` hits survive.
+    /// Bounded cross-provider merge for interactive global search.
     pub fn query_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         if limit == 0 {
             return Vec::new();
@@ -158,8 +142,8 @@ impl SearchRegistry {
         Self::rank_and_dedupe(query, all, limit)
     }
 
-    /// Groups appear in the order their **best** result ranks; within a
-    /// group, results stay in ranked order.
+    /// Groups appear in the order their **best** result ranks; within a group, results
+    /// stay in ranked order.
     pub fn query_grouped(&self, query: &str) -> Vec<SearchGroup> {
         let ranked = self.query(query);
         let mut groups: Vec<SearchGroup> = Vec::new();
@@ -173,8 +157,8 @@ impl SearchRegistry {
         groups
     }
 
-    /// Caps each group to `per_group_cap` results, so no single busy provider
-    /// floods the overlay. `0` means uncapped.
+    /// Caps each group to `per_group_cap` results, so no single busy provider floods the
+    /// overlay.
     pub fn query_grouped_capped(&self, query: &str, per_group_cap: usize) -> Vec<SearchGroup> {
         let merge_limit = if per_group_cap == 0 {
             usize::MAX
@@ -240,7 +224,8 @@ mod tests {
         // phase: ranks_stronger_title_match_first_across_providers
         {
             let mut reg = SearchRegistry::new();
-            // A weak match from the first-registered provider, an exact-prefix match from the second.
+            // A weak match from the first-registered provider, an exact-prefix match from
+            // the second.
             reg.register_fn("Files", |_q| vec![r("Files", "critical-log.txt", "f:1")]);
             reg.register_fn("Apps", |_q| vec![r("Apps", "Calculator", "a:1")]);
             let out = reg.query("cal");
@@ -340,8 +325,8 @@ mod tests {
         // phase: grouping_orders_groups_by_best_result
         {
             let mut reg = SearchRegistry::new();
-            // Files only weakly matches ("cal" scattered through the name); Apps
-            // has the strong prefix hit.
+            // Files only weakly matches ("cal" scattered through the name); Apps has the
+            // strong prefix hit.
             reg.register_fn("Files", |_q| vec![r("Files", "technical-notes.md", "f:1")]);
             reg.register_fn("Apps", |_q| vec![r("Apps", "Calculator", "a:1")]);
             let groups = reg.query_grouped("cal");

@@ -1,10 +1,5 @@
-//! Full-text bodies for [`SearchCatalog`](super::SearchCatalog).
-//!
-//! A body is prose the catalogue must find but must not keep: an EPUB
-//! chapter, a long note, a message. Its owner keeps the text and exposes it
-//! through a [`SearchBodySource`]; the catalogue reads it once while
-//! indexing. A source that names locations reports the segment a match is
-//! in as its own hit.
+//! Full-text bodies for [`SearchCatalog`](super::SearchCatalog). A body is prose the
+//! catalogue must find but must not keep: an EPUB chapter, a long note, a message.
 
 use std::fmt;
 use std::sync::Arc;
@@ -13,12 +8,8 @@ pub use tilo_search::BodyPiece;
 
 use super::provider::SearchResult;
 
-/// Prose a catalogue record can be found by, owned by the app.
-///
-/// A body is a sequence of *segments* (the unit a hit points at: a paragraph,
-/// a block, a line) and each segment a sequence of [`BodyPiece`]s (runs of
-/// styled text, say). The source must be immutable: the catalogue indexes it
-/// as it is when the record is added.
+/// Prose a catalogue record can be found by, owned by the app. The source must be
+/// immutable: the catalogue indexes it as it is when the record is added.
 pub trait SearchBodySource: Send + Sync {
     fn segment_count(&self) -> usize;
 
@@ -26,8 +17,7 @@ pub trait SearchBodySource: Send + Sync {
 
     fn piece(&self, segment: usize, piece: usize) -> Option<BodyPiece<'_>>;
 
-    /// The hit to report for a match in `segment`. `None` reports the
-    /// record's own result instead, once.
+    /// The hit to report for a match in `segment`.
     fn location(&self, _segment: usize) -> Option<SearchResult> {
         None
     }
@@ -71,10 +61,6 @@ impl SearchBodySource for Vec<String> {
 }
 
 /// A body attached to a [`SearchRecord`](super::SearchRecord).
-///
-/// Cloning one is O(1). A record whose body is the same source as before
-/// is unchanged, so apps that rebuild records over mostly unchanged content
-/// keep their `SearchBody` values and hand the same ones back.
 #[derive(Clone)]
 pub struct SearchBody {
     source: Arc<dyn SearchBodySource>,

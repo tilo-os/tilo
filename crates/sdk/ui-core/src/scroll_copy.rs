@@ -1,29 +1,6 @@
-//! Scrolling by copying the pixels that stay on screen.
-//!
-//! A scroll moves every pixel of a scroller's content, so damage alone repaints its whole
-//! viewport on every frame of a scroll. When the content moved by a pure translation since the
-//! frame the host last presented, most of those pixels are already in the host's retained
-//! target, one delta away.
-//!
-//! A scroller says so from its `collect_damage` ([`offer`]) instead of damaging its viewport:
-//! where its content paints, how far it moved, and what it paints over its content that does
-//! not move with it (a scroll bar, an edge fade). A host that keeps the last frame's pixels
-//! collects damage inside [`accepting`]; any other host gets the viewport damage as before,
-//! because [`offer`] answers `false` there.
-//!
-//! The host plans each offer ([`plan`]) against the tree it just drew: the copy is clipped by
-//! every ancestor's child clip and kept to whole device pixels; a delta that is not a whole
-//! number of them, or a scroller drawn under another transform than the window's, is refused.
-//! What may paint over or under the content without moving with it is damage (the scroller's
-//! overlays, every other widget whose box reaches into the viewport, the edges of every
-//! ancestor and of every frame holding the viewport); damage a copy reads is carried to where
-//! the copy lands ([`carry`]) and what the copy exposed is repainted. The renderer copies first
-//! ([`encode_copies`], or [`copy_pixels`] on a CPU canvas), then rasterizes the damage.
-//!
-//! A relayout's moves are checked against the offers (`moves_besides`): content that moved by
-//! its scroller's delta is the copy's; content that came, went or stayed put (a long list
-//! mounting rows, a pinned title) is damage; anything else that moved makes the host repaint as
-//! it would without copies.
+//! Scrolling by copying the pixels that stay on screen. A scroll moves every pixel of a
+//! scroller's content, so damage alone repaints its whole viewport on every frame of a
+//! scroll.
 
 use std::cell::RefCell;
 
@@ -38,43 +15,37 @@ pub use shown::{
     Around, Painted, PaintedFrames, Piece, Showing, Shown, ShownFrames, Since, piece_key,
 };
 
-/// How far outside its layout box a widget may paint: anti-aliasing, a
-/// shadow, a hover lift. The native window grows every widget's damage by
-/// as much, in logical pixels.
+/// How far outside its layout box a widget may paint: anti-aliasing, a shadow, a hover
+/// lift.
 pub const EFFECT_REACH: f64 = 16.0;
 
-/// The largest gap, in device pixels, between a delta and a whole number of
-/// device pixels that still counts as whole.
+/// The largest gap, in device pixels, between a delta and a whole number of device pixels
+/// that still counts as whole.
 const WHOLE_PIXEL: f64 = 1e-3;
 
-/// How far, in logical pixels, a box inside an offering scroller may be from
-/// its old box plus the delta and still count as moved by it: layout adds
-/// the same origin to both, so only rounding separates them.
+/// How far, in logical pixels, a box inside an offering scroller may be from its old box
+/// plus the delta and still count as moved by it: layout adds the same origin to both, so
+/// only rounding separates them.
 const SAME_PLACE: f64 = 1e-6;
 
-/// A scroller's claim that, since the frame its host last presented, its
-/// content moved by a pure translation within an unchanged viewport.
+/// A scroller's claim that, since the frame its host last presented, its content moved by
+/// a pure translation within an unchanged viewport.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScrollOffer {
-    /// The scroller, by address, to find it in the widget tree.
     owner: *const (),
     /// Where its content paints, in logical pixels.
     viewport: Rect,
-    /// How far its content moved on screen since that frame, in logical
-    /// pixels.
+    /// How far its content moved on screen since that frame, in logical pixels.
     delta: Vec2,
-    /// What it paints over its content inside `viewport` that does not move
-    /// with it, in logical pixels.
+    /// What it paints over its content inside `viewport` that does not move with it, in
+    /// logical pixels.
     overlays: Vec<Rect>,
-    /// The transform its content lands on screen with ([`on_screen`]): the
-    /// window's, unless an ancestor draws it scaled or moved, and then the
-    /// viewport is not where the window shows it.
     transform: Affine,
 }
 
 impl ScrollOffer {
-    /// Where the content paints, in logical pixels: what to damage when the
-    /// copy is not made.
+    /// Where the content paints, in logical pixels: what to damage when the copy is not
+    /// made.
     pub fn viewport(&self) -> Rect {
         self.viewport
     }
@@ -87,24 +58,19 @@ impl ScrollOffer {
 
 thread_local! {
     static OFFERS: RefCell<Option<Vec<ScrollOffer>>> = const { RefCell::new(None) };
-    /// The transform the cache being recorded will be appended with
-    /// ([`drawing_into_cache`]).
     static OUTER: std::cell::Cell<Affine> = const { std::cell::Cell::new(Affine::IDENTITY) };
 }
 
 thread_local! {
-    /// Embedded apps drawn now are drawn for a host that copies, and how
-    /// many of its target's pixels one unit of its scene is
-    /// ([`HostCopies`]).
+    /// Embedded apps drawn now are drawn for a host that copies, and how many of its
+    /// target's pixels one unit of its scene is ([`HostCopies`]).
     static HOST_COPIES: std::cell::Cell<(bool, f64)> = const { std::cell::Cell::new((false, 1.0)) };
 }
 
-/// While held, every [`crate::app::EmbeddedApp`] drawn on this thread is
-/// drawn for a host that presents each frame over the pixels it last
-/// presented and can move them, as
-/// [`crate::app::EmbeddedApp::set_accepts_scroll_copies`] says; an app that
-/// learned so keeps handing out copies, which a host that cannot make them
-/// repaints where they land.
+/// While held, every [`crate::app::EmbeddedApp`] drawn on this thread is drawn for a host
+/// that presents each frame over the pixels it last presented and can move them, as
+/// [`crate::app::EmbeddedApp::set_accepts_scroll_copies`] says; an app that learned so
+/// keeps handing out copies, which a host that cannot make them repaints where they land.
 pub struct HostCopies((bool, f64));
 
 impl HostCopies {
@@ -113,10 +79,9 @@ impl HostCopies {
         Self::begin_scaled(copies, 1.0)
     }
 
-    /// For a host whose target has `device_per_unit` pixels per unit of
-    /// its scene (a display at 200 % has 2): an app plans its copies in
-    /// those pixels, so a step of half a unit there is a whole pixel and
-    /// copies.
+    /// For a host whose target has `device_per_unit` pixels per unit of its scene (a
+    /// display at 200 % has 2): an app plans its copies in those pixels, so a step of
+    /// half a unit there is a whole pixel and copies.
     pub fn begin_scaled(copies: bool, device_per_unit: f64) -> Self {
         let scale = if device_per_unit.is_finite() && device_per_unit > 0.0 {
             device_per_unit
@@ -138,13 +103,12 @@ pub fn host_copies() -> bool {
     HOST_COPIES.get().0
 }
 
-/// How many pixels of the target of the host drawing now one unit of its
-/// scene is ([`HostCopies::begin_scaled`]); 1 outside any.
+/// How many pixels of the target of the host drawing now one unit of its scene is
+/// ([`HostCopies::begin_scaled`]); 1 outside any.
 pub fn host_device_scale() -> f64 {
     HOST_COPIES.get().1
 }
 
-/// Puts back the enclosing cache's transform even when drawing unwinds.
 struct Outer(Affine);
 
 impl Drop for Outer {
@@ -153,10 +117,9 @@ impl Drop for Outer {
     }
 }
 
-/// Record `draw` into a cache its caller then appends with `transform`
-/// (a container that draws its children at the identity into a retained
-/// scene): a scroller drawn inside learns where its content lands on screen
-/// ([`on_screen`]).
+/// Record `draw` into a cache its caller then appends with `transform` (a container that
+/// draws its children at the identity into a retained scene): a scroller drawn inside
+/// learns where its content lands on screen ([`on_screen`]).
 pub fn drawing_into_cache<R>(transform: Affine, draw: impl FnOnce() -> R) -> R {
     let outer = OUTER.get();
     let _restore = Outer(outer);
@@ -164,13 +127,12 @@ pub fn drawing_into_cache<R>(transform: Affine, draw: impl FnOnce() -> R) -> R {
     draw()
 }
 
-/// Where `transform`, the one a widget draws with, lands on screen: through
-/// every cache being recorded around it.
+/// Where `transform`, the one a widget draws with, lands on screen: through every cache
+/// being recorded around it.
 pub fn on_screen(transform: Affine) -> Affine {
     OUTER.get() * transform
 }
 
-/// Puts back the enclosing collection even when `collect` unwinds.
 struct Collecting(Option<Vec<ScrollOffer>>);
 
 impl Drop for Collecting {
@@ -179,10 +141,8 @@ impl Drop for Collecting {
     }
 }
 
-/// Run `collect` (a widget tree's `collect_damage`) with scroll copies
-/// accepted, and return what the scrollers in it offered instead of damaging
-/// their viewports. Only a host that presents over its last frame's pixels
-/// and copies each planned offer ([`plan`], [`encode_copies`]) may call it.
+/// Run `collect` (a widget tree's `collect_damage`) with scroll copies accepted, and
+/// return what the scrollers in it offered instead of damaging their viewports.
 pub fn accepting(collect: impl FnOnce()) -> Vec<ScrollOffer> {
     let previous = Collecting(OFFERS.replace(Some(Vec::new())));
     collect();
@@ -191,16 +151,9 @@ pub fn accepting(collect: impl FnOnce()) -> Vec<ScrollOffer> {
     offers.unwrap_or_default()
 }
 
-/// From a scroller's `collect_damage`: offer to have its host copy what of
-/// its content stays on screen. `viewport` is where the content paints,
-/// `delta` how far it moved on screen since the frame the host last
-/// presented, and `overlays` what the scroller paints over its content that
-/// does not move with it, all in logical pixels; `transform` is the one its
-/// content landed on screen with this frame ([`on_screen`]). The scroller
-/// must still damage whatever inside its content changed besides moving.
-///
-/// Returns `false` when the host does not copy: the scroller then damages
-/// its viewport as it would without copies.
+/// From a scroller's `collect_damage`: offer to have its host copy what of its content
+/// stays on screen. The scroller must still damage whatever inside its content changed
+/// besides moving.
 pub fn offer<T: ?Sized>(
     owner: &T,
     viewport: Rect,
@@ -233,19 +186,13 @@ fn moved_by(old: Rect, new: Rect, delta: Vec2) -> bool {
         && (new.y1 - old.y1 - delta.y).abs() <= SAME_PLACE
 }
 
-/// Where one widget of a tree walk stands with respect to the offers: the
-/// offering scroller whose content holds it (the innermost), and whether it
-/// is an offering scroller itself.
 #[derive(Clone, Copy)]
 struct Standing<'a> {
     content_of: Option<&'a ScrollOffer>,
     scroller: bool,
 }
 
-/// Each widget of `list` (a tree walk) as it stands to `offers`.
 fn standings<'a>(list: &[Placed], offers: &'a [ScrollOffer]) -> Vec<Standing<'a>> {
-    // The offering scrollers the walk is inside, innermost last: the depth
-    // of each and its offer.
     let mut open: Vec<(usize, &ScrollOffer)> = Vec::new();
     list.iter()
         .map(|&((widget, depth), _)| {
@@ -265,27 +212,22 @@ fn standings<'a>(list: &[Placed], offers: &'a [ScrollOffer]) -> Vec<Standing<'a>
         .collect()
 }
 
-/// What a relayout (and a rebuild a widget described) changed besides what
-/// scroll copies move.
+/// What a relayout (and a rebuild a widget described) changed besides what scroll copies
+/// move.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Moves {
-    /// The old and new box of every widget that moved or resized otherwise,
-    /// and the box of every widget that came or went outside a scrolled
-    /// content: a frame with any repaints as it would without copies.
+    /// The old and new box of every widget that moved or resized otherwise, and the box
+    /// of every widget that came or went outside a scrolled content: a frame with any
+    /// repaints as it would without copies.
     pub(crate) besides: Vec<Rect>,
-    /// What changed in place inside a scrolled content besides moving with
-    /// it: where a widget came or went (a long list mounting the rows a
-    /// scroll brought near), and where one that stayed put paints over the
-    /// viewport. Damage, which the copies carry ([`carry`]) like the rest.
     pub(crate) carried: Vec<Rect>,
 }
 
-/// What moved between `before` and `after` (two walks of one tree, matched
-/// by identity) besides what `offers` copy: a widget inside an offering
-/// scroller's content that moved by exactly that scroller's delta is the
-/// copy's, and one that stayed put (a pinned title above a scrolled body, a
-/// sticky header over it) is damage where it is and where the copy took its
-/// pixels. The scroller itself must not move.
+/// What moved between `before` and `after` (two walks of one tree, matched by identity)
+/// besides what `offers` copy: a widget inside an offering scroller's content that moved
+/// by exactly that scroller's delta is the copy's, and one that stayed put (a pinned
+/// title above a scrolled body, a sticky header over it) is damage where it is and where
+/// the copy took its pixels. The scroller itself must not move.
 pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[ScrollOffer]) -> Moves {
     let old_standings = standings(before, offers);
     let new_standings = standings(after, offers);
@@ -299,10 +241,9 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
     for (&(widget, new), &standing) in after.iter().zip(&new_standings) {
         let Some(&(was, was_standing)) = old.get(&widget) else {
             match standing.content_of {
-                // One the walk of the content near its view reached only now
-                // stood out of the view before (`for_each_child_in_clip`):
-                // where it is, the copy brought nothing, and what it exposed
-                // is repainted. One that stood in view is damage.
+                // One the walk of the content near its view reached only now stood out of
+                // the view before (`for_each_child_in_clip`): where it is, the copy
+                // brought nothing, and what it exposed is repainted.
                 Some(offer) if !standing.scroller => {
                     let stood = (new - offer.delta).intersect(offer.viewport);
                     if !empty(stood) {
@@ -328,10 +269,10 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
                     ..
                 },
             ) if std::ptr::eq(offer, was_offer) => {
-                // One that stayed put (a pinned title above the body, a
-                // sticky header over it) paints over the content without
-                // moving with it: repainted where it reaches into the
-                // viewport, and, carried, where the copy took those pixels.
+                // One that stayed put (a pinned title above the body, a sticky header
+                // over it) paints over the content without moving with it: repainted
+                // where it reaches into the viewport, and, carried, where the copy took
+                // those pixels.
                 if was == new && !moved_by(was, new, offer.delta) {
                     let reach = was
                         .inflate(EFFECT_REACH, EFFECT_REACH)
@@ -363,8 +304,6 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
             continue;
         }
         match standing.content_of {
-            // One the walk no longer reaches the copy took out of the view
-            // with the rest; one it left in view went from there.
             Some(offer) if !standing.scroller => {
                 let landed = (was + offer.delta).intersect(offer.viewport);
                 if !empty(landed) {
@@ -377,8 +316,8 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
     moves
 }
 
-/// One planned copy within a host's retained target, in device pixels: the
-/// source rectangle, and how far it moves.
+/// One planned copy within a host's retained target, in device pixels: the source
+/// rectangle, and how far it moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceCopy {
     pub x: u32,
@@ -390,8 +329,7 @@ pub struct DeviceCopy {
 }
 
 impl DeviceCopy {
-    /// Where the copy lands, or `None` when it would leave a `width` ×
-    /// `height` target.
+    /// Where the copy lands, or `None` when it would leave a `width` × `height` target.
     pub fn destination(&self, width: u32, height: u32) -> Option<(u32, u32)> {
         let x = self.x.checked_add_signed(self.dx)?;
         let y = self.y.checked_add_signed(self.dy)?;
@@ -415,10 +353,9 @@ impl DeviceCopy {
     }
 }
 
-/// A copy as a host that composites the target elsewhere sees it: the
-/// rectangle it reads and how far it moves it, in the coordinates of the
-/// scene the target is drawn into (an embedded app's region in a desktop
-/// section), before that scene is rasterised.
+/// A copy as a host that composites the target elsewhere sees it: the rectangle it reads
+/// and how far it moves it, in the coordinates of the scene the target is drawn into (an
+/// embedded app's region in a desktop section), before that scene is rasterised.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovedRegion {
     pub source: Rect,
@@ -426,8 +363,8 @@ pub struct MovedRegion {
 }
 
 impl MovedRegion {
-    /// `copy`, made in a target of `scale` device pixels per unit of the
-    /// scene it is drawn with.
+    /// `copy`, made in a target of `scale` device pixels per unit of the scene it is
+    /// drawn with.
     pub fn of(copy: &DeviceCopy, scale: f64) -> Self {
         let source = Rect::new(
             f64::from(copy.x),
@@ -446,7 +383,6 @@ impl MovedRegion {
         }
     }
 
-    /// Where the copy lands.
     pub fn destination(&self) -> Rect {
         self.source + self.delta
     }
@@ -456,8 +392,8 @@ impl MovedRegion {
         self.source.union(self.destination())
     }
 
-    /// The same copy in the coordinates `transform` maps into, or `None`
-    /// when it rotates or skews (a copy moves rows and columns as they are).
+    /// The same copy in the coordinates `transform` maps into, or `None` when it rotates
+    /// or skews (a copy moves rows and columns as they are).
     pub fn transformed(&self, transform: Affine) -> Option<Self> {
         let [a, b, c, d, _, _] = transform.as_coeffs();
         if b != 0.0 || c != 0.0 || a <= 0.0 || d <= 0.0 {
@@ -469,12 +405,10 @@ impl MovedRegion {
         })
     }
 
-    /// The copy in a `width` × `height` target that `to_device` maps this
-    /// region's coordinates into: the whole device pixels of the source
-    /// that land inside the target, and where the destination is not
-    /// covered by them (its antialiased edges, what would land outside),
-    /// to repaint. `None` when the delta is not a whole number of device
-    /// pixels, `to_device` rotates or skews, or nothing lands.
+    /// The copy in a `width` × `height` target that `to_device` maps this region's
+    /// coordinates into: the whole device pixels of the source that land inside the
+    /// target, and where the destination is not covered by them (its antialiased edges,
+    /// what would land outside), to repaint.
     pub fn device(
         &self,
         to_device: Affine,
@@ -521,11 +455,10 @@ impl MovedRegion {
     }
 }
 
-/// What a host does with a frame's offers, in device pixels: the copies, in
-/// order; the damage they add where something does not move with the
-/// content (each copy's overlays, a refused offer's viewport), which the
-/// host carries along with the rest of its damage ([`carry`]); and what the
-/// copies exposed, repainted as it is.
+/// What a host does with a frame's offers, in device pixels: the copies, in order; the
+/// damage they add where something does not move with the content (each copy's overlays,
+/// a refused offer's viewport), which the host carries along with the rest of its damage
+/// ([`carry`]); and what the copies exposed, repainted as it is.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CopyPlan {
     pub copies: Vec<DeviceCopy>,
@@ -533,15 +466,8 @@ pub struct CopyPlan {
     pub exposed: Vec<Rect>,
 }
 
-/// One widget as the planner sees it: its identity, box and the clip it
-/// applies to its children, and whether it is the root of a tree the window
-/// draws beside the app's that encloses it (History, which lays the live
-/// app out in its body): an ancestor in all but the walk.
 struct Node {
     widget: *const (),
-    /// The offering scrollers it stands for besides itself
-    /// ([`Widget::stands_for`]): a decorator stands in the tree for the
-    /// widget it wraps.
     stands_for: Vec<*const ()>,
     depth: usize,
     rect: Rect,
@@ -563,8 +489,8 @@ fn nodes(roots: &[&dyn Widget], owners: &[*const ()]) -> Vec<Node> {
             clip: widget.child_clip_rect(),
             encloses: false,
         });
-        // What a scroll view keeps out of sight paints nothing a copy
-        // could take or reach: a long column visits only what is near.
+        // What a scroll view keeps out of sight paints nothing a copy could take or
+        // reach: a long column visits only what is near.
         widget.for_each_child_in_clip(&mut |child| {
             walk(child, depth.saturating_add(1), owners, out);
         });
@@ -606,7 +532,6 @@ fn empty(rect: Rect) -> bool {
     !(rect.width() > 0.0 && rect.height() > 0.0)
 }
 
-/// `outer` without `hole` (which it contains), as up to four rectangles.
 fn without(outer: Rect, hole: Rect) -> Vec<Rect> {
     [
         Rect::new(outer.x0, outer.y0, outer.x1, hole.y0),
@@ -619,7 +544,6 @@ fn without(outer: Rect, hole: Rect) -> Vec<Rect> {
     .collect()
 }
 
-/// The band within `reach` of `rect`'s edges, as four rectangles.
 fn edges(rect: Rect, reach: f64) -> [Rect; 4] {
     let outer = rect.inflate(reach, reach);
     [
@@ -640,8 +564,6 @@ fn whole(value: f64, extent: f64) -> Option<i32> {
     ((value - rounded).abs() <= WHOLE_PIXEL && rounded.abs() < extent).then_some(rounded as i32)
 }
 
-/// One offer planned against the tree, or `Err` with the damage that
-/// replaces it.
 fn plan_one(
     offer: &ScrollOffer,
     tree: &[Node],
@@ -650,13 +572,9 @@ fn plan_one(
     window: Rect,
 ) -> Result<(DeviceCopy, Vec<Rect>, Vec<Rect>), Rect> {
     let refused = device(offer.viewport, scale).expand().intersect(window);
-    // Drawn under another transform than the window's (an ancestor that
-    // scales or moves it), the viewport is not where the window shows it.
     if offer.transform != drawn {
         return Err(window);
     }
-    // The scroller: the deepest of the widgets at its address (a decorator
-    // holding it first shares it).
     let Some(index) = tree
         .iter()
         .enumerate()
@@ -667,8 +585,6 @@ fn plan_one(
         return Err(refused);
     };
     let owner_depth = tree.get(index).map_or(0, |node| node.depth);
-    // Its ancestors, walking back: each widget shallower than every one
-    // after it up to the scroller.
     let mut ancestors = Vec::new();
     let mut shallowest = owner_depth;
     for node in tree.get(..index).unwrap_or_default().iter().rev() {
@@ -710,8 +626,8 @@ fn plan_one(
     if empty(landed) {
         return Err(outer);
     }
-    // Everything that does not move with the content is damage where it
-    // paints; the host carries it to where the copy takes those pixels.
+    // Everything that does not move with the content is damage where it paints; the host
+    // carries it to where the copy takes those pixels.
     let mut fixed: Vec<Rect> = offer.overlays.clone();
     let enclosing = tree.iter().filter(|node| node.encloses);
     for ancestor in ancestors.iter().copied().chain(enclosing) {
@@ -729,10 +645,6 @@ fn plan_one(
         {
             continue;
         }
-        // A widget beside the scroller whose box holds the whole viewport is
-        // the frame it sits in (a shell, a window's chrome): like an
-        // ancestor, it may paint at its edges. Any other that reaches in
-        // paints over or under part of the content.
         if node.rect.contains_rect(clip) {
             fixed.extend(edges(node.rect, EFFECT_REACH));
         } else {
@@ -766,11 +678,10 @@ fn plan_one(
     Ok((copy, overlays, without(outer, landed)))
 }
 
-/// Plan `offers` against the trees under `roots` just drawn (the app's,
-/// then any the window draws beside it, such as History's toolbar), at
-/// `scale` device pixels per logical pixel, for a `width` × `height`
-/// target: each becomes a copy and the damage around it, or, when it cannot
-/// be copied exactly, damage over its whole viewport.
+/// Plan `offers` against the trees under `roots` just drawn (the app's, then any the
+/// window draws beside it, such as History's toolbar), at `scale` device pixels per
+/// logical pixel, for a `width` × `height` target: each becomes a copy and the damage
+/// around it, or, when it cannot be copied exactly, damage over its whole viewport.
 pub fn plan(
     offers: &[ScrollOffer],
     roots: &[&dyn Widget],
@@ -780,10 +691,10 @@ pub fn plan(
     plan_scaled(offers, roots, (scale, 1.0), size)
 }
 
-/// [`plan`] for a window drawn at `drawn_scale` scene pixels per logical
-/// pixel into a host target of `device_per_scene` pixels per scene pixel
-/// (an app drawn into a desktop's logical scene, shown at 200 %): the plan
-/// is in those device pixels, for a `width` × `height` target of them.
+/// [`plan`] for a window drawn at `drawn_scale` scene pixels per logical pixel into a
+/// host target of `device_per_scene` pixels per scene pixel (an app drawn into a
+/// desktop's logical scene, shown at 200 %): the plan is in those device pixels, for a
+/// `width` × `height` target of them.
 pub fn plan_scaled(
     offers: &[ScrollOffer],
     roots: &[&dyn Widget],
@@ -799,14 +710,12 @@ pub fn plan_scaled(
     )
 }
 
-/// [`plan`] for widgets drawn with `placement` into a host's scene (an app
-/// in a desktop's window, drawn where the window stands) and clipped there
-/// to `clip` (in the widgets' own coordinates, as the window clips its
-/// app), whose target has `device_per_unit` pixels per unit of the widgets'
-/// coordinates: the plan is in those coordinates' device pixels, for a
-/// `width` × `height` target of them; a host moves it by `placement`
-/// ([`MovedRegion::of`], [`MovedRegion::transformed`]). An offer drawn under
-/// another transform is refused.
+/// [`plan`] for widgets drawn with `placement` into a host's scene (an app in a desktop's
+/// window, drawn where the window stands) and clipped there to `clip` (in the widgets'
+/// own coordinates, as the window clips its app), whose target has `device_per_unit`
+/// pixels per unit of the widgets' coordinates: the plan is in those coordinates' device
+/// pixels, for a `width` × `height` target of them; a host moves it by `placement`
+/// ([`MovedRegion::of`], [`MovedRegion::transformed`]).
 pub fn plan_placed(
     offers: &[ScrollOffer],
     roots: &[&dyn Widget],
@@ -814,8 +723,8 @@ pub fn plan_placed(
     device_per_unit: f64,
     size: (u32, u32),
 ) -> CopyPlan {
-    // What the window shows of each scroller: past its clip, the pixels on
-    // screen are the host's, which do not move with the content.
+    // What the window shows of each scroller: past its clip, the pixels on screen are the
+    // host's, which do not move with the content.
     let clipped: Vec<ScrollOffer> = offers
         .iter()
         .map(|offer| ScrollOffer {
@@ -840,8 +749,8 @@ fn plan_drawn(
     let owners: Vec<*const ()> = offers.iter().map(|offer| offer.owner).collect();
     let tree = nodes(roots, &owners);
     let window = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-    // Where accepted copies read and write: a later copy that overlaps them
-    // would read pixels an earlier one moved.
+    // Where accepted copies read and write: a later copy that overlaps them would read
+    // pixels an earlier one moved.
     let mut claimed: Vec<Rect> = Vec::new();
     for offer in offers {
         let reach = device(offer.viewport, scale).expand().intersect(window);
@@ -864,18 +773,16 @@ fn plan_drawn(
     planned
 }
 
-/// Add to `damage` (device pixels, where a frame differs from the last in
-/// place) where `copies` take what it covers: a pixel that changed in place
-/// and that a copy moves lands, stale, one delta away. Everything but what
-/// the copies exposed goes through here, the overlays the plan found
-/// included.
+/// Add to `damage` (device pixels, where a frame differs from the last in place) where
+/// `copies` take what it covers: a pixel that changed in place and that a copy moves
+/// lands, stale, one delta away.
 pub fn carry(copies: &[DeviceCopy], damage: &mut Vec<Rect>) {
     let taken = carried(copies, damage);
     damage.extend(taken);
 }
 
-/// Where `copies` take the pixels `rects` cover (device pixels): each piece
-/// of a rect a copy reads, one delta away.
+/// Where `copies` take the pixels `rects` cover (device pixels): each piece of a rect a
+/// copy reads, one delta away.
 pub fn carried(copies: &[DeviceCopy], rects: &[Rect]) -> Vec<Rect> {
     let mut taken = Vec::new();
     for copy in copies {
@@ -896,14 +803,11 @@ pub fn carried(copies: &[DeviceCopy], rects: &[Rect]) -> Vec<Rect> {
     taken
 }
 
-/// Add to `damage` what marks painted over a window's content without
-/// moving with it, and unseen by the planner (collaborators' pointers and
-/// names), cost its `copies` (device pixels, as each would be repainted):
-/// the target holds the marks of the frame on screen (`shown`), which a
-/// copy moves with the content, stale, one delta away; and this frame's
-/// marks (`painted`) must be repainted wherever a copy wrote under them.
-/// Where a mark changed in place is the frame's other damage, carried
-/// with it ([`carry`]).
+/// Add to `damage` what marks painted over a window's content without moving with it, and
+/// unseen by the planner (collaborators' pointers and names), cost its `copies` (device
+/// pixels, as each would be repainted): the target holds the marks of the frame on screen
+/// (`shown`), which a copy moves with the content, stale, one delta away; and this
+/// frame's marks (`painted`) must be repainted wherever a copy wrote under them.
 pub fn marks_over_copies(
     copies: &[DeviceCopy],
     shown: &[Rect],
@@ -923,14 +827,10 @@ pub fn marks_over_copies(
     );
 }
 
-/// The most rows (or, for a sideways copy, columns) one piece of a copy
-/// moves through the scratch texture, which bounds its size.
 const BAND: u32 = 128;
 
-/// A target's scratch space for copies within it, which a copy cannot do in
-/// place: WebGPU refuses a copy whose source and destination are the same
-/// texture's same subresource. Each copy moves through it in bands of at
-/// most `BAND` rows, so it holds a band, not a viewport.
+/// A target's scratch space for copies within it, which a copy cannot do in place: WebGPU
+/// refuses a copy whose source and destination are the same texture's same subresource.
 #[derive(Default)]
 pub struct CopyScratch {
     texture: Option<wgpu::Texture>,
@@ -943,9 +843,9 @@ impl CopyScratch {
     }
 }
 
-/// `copy` in pieces of at most [`BAND`] rows across the direction it moves,
-/// ordered so that no piece reads pixels an earlier one wrote: the piece
-/// nearest where the content moves goes first.
+/// `copy` in pieces of at most [`BAND`] rows across the direction it moves, ordered so
+/// that no piece reads pixels an earlier one wrote: the piece nearest where the content
+/// moves goes first.
 pub(crate) fn bands(copy: DeviceCopy) -> Vec<DeviceCopy> {
     let vertical = copy.dy != 0;
     let extent = if vertical { copy.height } else { copy.width };
@@ -974,9 +874,9 @@ pub(crate) fn bands(copy: DeviceCopy) -> Vec<DeviceCopy> {
     pieces
 }
 
-/// Record `copies` within `texture`, in order, each through `scratch`.
-/// Returns `false`, recording nothing, when a copy would leave the texture:
-/// the caller must then repaint the target whole.
+/// Record `copies` within `texture`, in order, each through `scratch`. Returns `false`,
+/// recording nothing, when a copy would leave the texture: the caller must then repaint
+/// the target whole.
 pub fn encode_copies(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -1043,9 +943,8 @@ pub fn encode_copies(
     true
 }
 
-/// Apply `copies` to `pixels`, a `width`-pixel-wide RGBA8 image whose rows
-/// are `stride` bytes apart, in order. Returns `false`, changing nothing,
-/// when a copy would leave the image.
+/// Apply `copies` to `pixels`, a `width`-pixel-wide RGBA8 image whose rows are `stride`
+/// bytes apart, in order.
 pub fn copy_pixels(
     pixels: &mut [u8],
     (width, height, stride): (u32, u32, usize),

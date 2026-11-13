@@ -1,19 +1,12 @@
-//! Density as a token mode (`docs/design-language.md`, "Space and
-//! density").
-//!
-//! A window, or one region of it (a sidebar, a table, a list of files),
-//! runs at [`Density::Comfortable`] or [`Density::Compact`]. Compact scales
-//! the spacing rhythm by [`Density::COMPACT_RHYTHM`] and shortens rows to
-//! 28 / 44 / 52; control heights and the text size stay, so a compact
-//! region still has the same pointer targets and reads at the same size.
-//! An app chooses compact for a data-heavy region (Monitor's process list,
-//! the Files list view, a table) with [`crate::Theme::with_density`]; it
-//! never crams by hand.
+//! Density as a token mode (`docs/design-language.md`, "Space and density"). A window, or
+//! one region of it (a sidebar, a table, a list of files), runs at
+//! [`Density::Comfortable`] or [`Density::Compact`]. An app chooses compact for a
+//! data-heavy region (Monitor's process list, the Files list view, a table) with
+//! [`crate::Theme::with_density`]; it never crams by hand.
 
 /// How tightly a window or region packs its rows and gaps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Density {
-    /// The stock density.
     #[default]
     Comfortable,
     /// Data-heavy content: rhythm × 0.75, rows 28 / 44 / 52.
@@ -23,9 +16,7 @@ pub enum Density {
 /// The heights of the three kinds of list row, in logical pixels at 1×.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowHeights {
-    /// One line: a title, maybe a trailing value or control.
     pub single: f32,
-    /// A title and a secondary line.
     pub double: f32,
     /// A row led by a 40 px avatar or icon.
     pub avatar: f32,
@@ -93,8 +84,8 @@ mod tests {
             compact.text(crate::tokens::TextRole::Body),
             comfy.text(crate::tokens::TextRole::Body)
         );
-        // Going back restores the comfortable tokens exactly, and applying a
-        // density twice is applying it once.
+        // Going back restores the comfortable tokens exactly, and applying a density
+        // twice is applying it once.
         let back = compact.clone().with_density(Density::Comfortable);
         assert_eq!(m(&back), m(&comfy));
         assert_eq!(r(&back), r(&comfy));

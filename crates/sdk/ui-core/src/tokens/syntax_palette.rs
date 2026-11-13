@@ -1,78 +1,52 @@
-//! The one colour scheme every syntax-highlighting surface paints with: the
-//! code editor widget, block-editor code fences, highlighted text inputs and
-//! any app that renders source (a code editor, a diff, a snippet preview).
-//!
-//! Like [`super::TerminalPalette`] it is derived from the active
-//! [`Colors`], never hand-authored per theme, so a theme swap recolours every
-//! code surface coherently. Two properties hold on every preset:
-//!
-//! - **Polarity-aware steps.** Keywords and type names are the presence
-//!   palette's blue moved a quarter and a half of the way toward the body
-//!   text colour — *away from the ground*: lighter on a dark theme, darker on
-//!   a light one.
-//! - **A contrast floor.** Each role is walked toward the body text colour
-//!   until it clears WCAG AA against both code grounds (`surfaces.base` and
-//!   `surfaces.raised`); a preset whose body text sits at maximum contrast
-//!   (high contrast) asks for AAA instead.
+//! The one colour scheme every syntax-highlighting surface paints with: the code editor
+//! widget, block-editor code fences, highlighted text inputs and any app that renders
+//! source (a code editor, a diff, a snippet preview). Like [`super::TerminalPalette`] it
+//! is derived from the active [`Colors`], never hand-authored per theme, so a theme swap
+//! recolours every code surface coherently.
 
 use super::colors::{Colors, mix8};
 use crate::color::contrast_ratio;
 use crate::widget::code_editor::TokenKind;
 use vello::peniko::Color;
 
-/// WCAG AA for body text; the floor every syntax role clears.
 const AA: f64 = 4.5;
-/// WCAG AAA; the floor on a preset that already runs its text at AAA.
 const AAA: f64 = 7.0;
-/// Body text at or above this ratio marks a maximum-contrast preset, whose
-/// syntax colours then clear [`AAA`] too.
+/// Body text at or above this ratio marks a maximum-contrast preset, whose syntax colours
+/// then clear [`AAA`] too.
 const MAX_CONTRAST_TEXT: f64 = 19.0;
 /// The presence slot keywords and markup start from: the blue at 265°.
 const KEYWORD_SLOT: usize = 8;
-/// The presence slot attributes and macros take: the magenta at 325°. Not
-/// the danger hue: an attribute is not an error.
+/// The presence slot attributes and macros take: the magenta at 325°.
 const ATTRIBUTE_SLOT: usize = 10;
 /// The presence slot markup tags take: the cyan at 205°.
 const TAG_SLOT: usize = 6;
 
-/// Theme-derived colour for every syntax role. Read it from
-/// `theme.tokens.syntax` and resolve a token with [`SyntaxPalette::color`].
+/// Theme-derived colour for every syntax role.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SyntaxPalette {
     pub keyword: Color,
-    /// Type names (`String`, `u32`, a capitalised identifier).
     pub type_name: Color,
     pub function: Color,
-    /// String and character literals.
     pub string: Color,
-    /// Numbers and named constants (`true`, `None`).
     pub number: Color,
     pub comment: Color,
-    /// Operators and punctuation.
     pub operator: Color,
-    /// Attributes, macros and preprocessor lines.
     pub attribute: Color,
-    /// Markup tags (`<div>`, an XML element name).
     pub tag: Color,
-    /// Markup headings; also the role snippet placeholders borrow.
     pub markup: Color,
-    /// Raw / inline-code markup runs.
     pub raw: Color,
     pub math: Color,
-    /// Identifiers, variables and uncategorised text.
     pub text: Color,
 }
 
 impl SyntaxPalette {
-    /// Derive the palette from a theme's colour tokens (see the module docs
-    /// for the two rules it guarantees).
+    /// Derive the palette from a theme's colour tokens (see the module docs for the two
+    /// rules it guarantees).
     #[must_use]
     pub fn from_colors(c: &Colors) -> Self {
         let base = c.surfaces.base;
         let raised = c.surfaces.raised;
         let blue = c.presence.get(KEYWORD_SLOT);
-        // The blue moved toward the body text, i.e. away from the ground,
-        // so each step gains contrast on either polarity.
         let step = |toward_text: f32| mix8(blue, c.text_primary, toward_text);
         let floor = if contrast_ratio(c.text_primary, base) >= MAX_CONTRAST_TEXT {
             AAA
@@ -128,9 +102,6 @@ impl SyntaxPalette {
     }
 }
 
-/// Walk `color` toward `ink` in tenths until it clears `floor` against every
-/// ground; `ink` (the body text colour, legible by construction) is the
-/// fallback.
 fn legible_on(color: Color, ink: Color, grounds: [Color; 2], floor: f64) -> Color {
     let worst = |candidate: Color| {
         grounds

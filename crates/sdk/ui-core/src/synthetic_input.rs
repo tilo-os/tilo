@@ -9,9 +9,6 @@ use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, RawKeyEvent, W
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
 
 /// Supported named keys for deterministic native input scenarios.
-///
-/// Character input is supplied separately, so unknown key names are rejected
-/// rather than silently becoming typed text.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeKey {
@@ -58,8 +55,8 @@ pub fn key_input(key: &Key, state: ElementState) -> WindowEvent {
     keyboard_input(key_event(key.clone(), text, state))
 }
 
-/// A key event for `logical_key` from no particular physical key: standard
-/// location, not a repeat. Adjust the public fields for anything else.
+/// A key event for `logical_key` from no particular physical key: standard location, not
+/// a repeat.
 #[must_use]
 pub fn key_event(logical_key: Key, text: Option<SmolStr>, state: ElementState) -> KeyEvent {
     KeyEvent::synthetic(
@@ -125,8 +122,7 @@ pub fn mouse_input(state: ElementState, button: MouseButton) -> WindowEvent {
     }
 }
 
-/// A wheel turn of `x` and `y` lines (positive `y` is up, away from the
-/// person).
+/// A wheel turn of `x` and `y` lines (positive `y` is up, away from the person).
 #[must_use]
 pub fn mouse_wheel(x: f32, y: f32) -> WindowEvent {
     WindowEvent::MouseWheel {
@@ -136,8 +132,8 @@ pub fn mouse_wheel(x: f32, y: f32) -> WindowEvent {
     }
 }
 
-/// A stylus sample at `pressure`, upright, tip end: the platform sends one
-/// immediately before each pointer event a pen makes.
+/// A stylus sample at `pressure`, upright, tip end: the platform sends one immediately
+/// before each pointer event a pen makes.
 #[must_use]
 pub fn pen_sample(pressure: f64) -> WindowEvent {
     WindowEvent::PenSample {

@@ -1,21 +1,5 @@
-//! What a desktop does for windows shared live ([`super`]), the same in the
-//! browser desktop and the session's shell.
-//!
-//! - **The windows' menus.** Every window on a record gets "Share to
-//!   channel…" in its menu, or "Stop sharing in #x" once the sharing app
-//!   shares it ([`offer`]); what the person chose becomes an ask for the
-//!   sharing app ([`asks`]). A share ask brings the sharing app forward.
-//! - **The live views.** Each resource a window embeds runs as its own app on
-//!   the desktop's own copy of the record, started once, tried again every
-//!   [`RETRY`] while it cannot show, and dropped once nothing embeds it
-//!   ([`Views`]). Each is laid out at about a window's size ([`VIEW`]) and
-//!   drawn scaled into the place its window gave it ([`view_transform`]),
-//!   clipped to what of it may show ([`placed`]). It takes no input: opening
-//!   the resource is the embedding app's own action.
-//!
-//! What runs a view differs: the browser runs the app in its own page
-//! ([`crate::widget::TileHost`]), the shell runs the app's own process on a
-//! window of its own that it never shows as one. Both are a [`LiveView`].
+//! What a desktop does for windows shared live ([`super`]), the same in the browser
+//! desktop and the session's shell.
 
 use std::collections::{HashMap, HashSet};
 
@@ -26,11 +10,10 @@ use crate::time::{Duration, Instant};
 use crate::window_slots::{TabId, WindowSlots};
 use crate::window_toolbar::ToolbarAction;
 
-/// The size an embedded view is laid out at before it is scaled into its
-/// place: about a window's, so the app lays it out as its sharer sees it.
+/// The size an embedded view is laid out at before it is scaled into its place: about a
+/// window's, so the app lays it out as its sharer sees it.
 pub const VIEW: (f64, f64) = (1000.0, 625.0);
-/// How soon a view that could not show yet (its record still on its way)
-/// is tried again.
+/// How soon a view that could not show yet (its record still on its way) is tried again.
 pub const RETRY: Duration = Duration::from_secs(2);
 
 /// The window menu's item that asks the sharing app to share the window.
@@ -38,15 +21,14 @@ pub const SHARE_ITEM: &str = "tilo.desktop.share-to-channel";
 /// The window menu's item that asks the sharing app to stop sharing it.
 pub const STOP_ITEM: &str = "tilo.desktop.stop-sharing";
 
-/// The share the sharing app keeps of `window`, if it shares it.
 fn share_of<'a>(window: &OpenWindow, shared: &'a [SharedWindow]) -> Option<&'a SharedWindow> {
     shared
         .iter()
         .find(|share| share.app == window.app && share.record == window.record)
 }
 
-/// The item `window`'s menu offers: "Stop sharing in #x" while `shared`
-/// holds it, else "Share to channel…".
+/// The item `window`'s menu offers: "Stop sharing in #x" while `shared` holds it, else
+/// "Share to channel…".
 #[must_use]
 pub fn menu_item(window: &OpenWindow, shared: &[SharedWindow]) -> ToolbarAction {
     match share_of(window, shared) {
@@ -66,9 +48,8 @@ pub fn menu_item(window: &OpenWindow, shared: &[SharedWindow]) -> ToolbarAction 
     }
 }
 
-/// Put each of `windows`' share item in its menu, and take it out of the
-/// menus of the windows in `offered` (the ones it stood in) that are no
-/// longer among them. `offered` becomes the windows it stands in now.
+/// Put each of `windows`' share item in its menu, and take it out of the menus of the
+/// windows in `offered` (the ones it replaced) that are no longer among them.
 pub fn offer<S: std::hash::BuildHasher + Default>(
     slots: &mut WindowSlots,
     windows: &[OpenWindow],
@@ -86,9 +67,7 @@ pub fn offer<S: std::hash::BuildHasher + Default>(
 }
 
 /// What the person's `chosen` items of the desktop's own (by tab, as
-/// [`WindowSlots::take_host_actions`] hands them) ask of the sharing app,
-/// oldest first. A [`Ask::Share`] brings the sharing app forward, to ask
-/// where.
+/// [`WindowSlots::take_host_actions`] hands them) ask of the sharing app, oldest first.
 #[must_use]
 pub fn asks(
     chosen: Vec<(TabId, String)>,
@@ -116,9 +95,9 @@ pub fn asks(
     asks
 }
 
-/// Where `embed`, declared in its window's layout coordinates, is drawn on
-/// a desktop that shows the window's content at `origin` within `content`:
-/// its place, and what of it may show.
+/// Where `embed`, declared in its window's layout coordinates, is drawn on a desktop that
+/// shows the window's content at `origin` within `content`: its place, and what of it may
+/// show.
 #[must_use]
 pub fn placed(embed: &Embed, origin: Vec2, content: Rect) -> (Rect, Rect) {
     (
@@ -127,9 +106,9 @@ pub fn placed(embed: &Embed, origin: Vec2, content: Rect) -> (Rect, Rect) {
     )
 }
 
-/// The transform that draws a view laid out at [`VIEW`]'s size from the
-/// origin into `rect`, through `transform`: as large as fits, keeping its
-/// proportions, from `rect`'s corner.
+/// The transform that draws a view laid out at [`VIEW`]'s size from the origin into
+/// `rect`, through `transform`: as large as fits, keeping its proportions, from `rect`'s
+/// corner.
 #[must_use]
 pub fn view_transform(transform: Affine, rect: Rect) -> Affine {
     let scale = (rect.width() / VIEW.0).min(rect.height() / VIEW.1);
@@ -140,12 +119,10 @@ pub fn view_transform(transform: Affine, rect: Rect) -> Affine {
 
 /// What runs one embedded view.
 pub trait LiveView {
-    /// How it is coming along.
     fn state(&self) -> EmbedState;
 
-    /// Whether it is started again once [`RETRY`] passed while it does not
-    /// show: a view whose record or code was still on its way shows once it
-    /// is started again.
+    /// Whether it is started again once [`RETRY`] passed while it does not show: a view
+    /// whose record or code was still on its way shows once it is started again.
     fn retries(&self) -> bool {
         !matches!(self.state(), EmbedState::Showing)
     }
@@ -163,7 +140,6 @@ impl LiveView for crate::widget::TileHost {
     }
 }
 
-/// One embedded view: what runs it, or why it cannot show.
 struct View<H> {
     host: Result<H, String>,
     tried: Instant,
@@ -177,8 +153,6 @@ impl<H: LiveView> View<H> {
         }
     }
 
-    /// Whether it waits for nothing: it shows, or what runs it says it is
-    /// not started again.
     fn settled(&self) -> bool {
         match &self.host {
             Err(_) => false,
@@ -186,7 +160,6 @@ impl<H: LiveView> View<H> {
         }
     }
 
-    /// When it is tried again, while it does not show.
     fn retry_at(&self) -> Option<Instant> {
         self.tried.checked_add(RETRY)
     }
@@ -207,17 +180,14 @@ impl<H> Default for Views<H> {
 
 /// What [`Views::follow`] changed.
 pub struct Followed<H> {
-    /// A view started, was tried again or was dropped.
     pub changed: bool,
-    /// What ran the views that were dropped or tried again, for the desktop
-    /// to end.
     pub dropped: Vec<H>,
 }
 
 impl<H: LiveView> Views<H> {
-    /// Run exactly the `wanted` views at `now`: drop the ones no longer
-    /// wanted, start the ones newly wanted with `start`, and start again
-    /// each one that has not shown for [`RETRY`].
+    /// Run exactly the `wanted` views at `now`: drop the ones no longer wanted, start the
+    /// ones newly wanted with `start`, and start again each one that has not shown for
+    /// [`RETRY`].
     pub fn follow<'a>(
         &mut self,
         wanted: impl IntoIterator<Item = &'a ResourceView>,
@@ -278,7 +248,6 @@ impl<H: LiveView> Views<H> {
             .and_then(|view| view.host.as_mut().ok())
     }
 
-    /// Every running view.
     pub fn running(&self) -> impl Iterator<Item = (&ResourceView, &H)> {
         self.views
             .iter()

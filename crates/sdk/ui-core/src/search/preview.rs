@@ -1,23 +1,15 @@
-//! What the shared result surface shows of the row a person is on.
-//!
-//! A provider says what is worth knowing about a hit before opening it — a
-//! feed's site, unread count and latest entries; an article's source, date
-//! and first lines; what a folder holds — and the platform lays it out in
-//! the preview band under the list, the same way in every palette. Data,
-//! never drawing code. A hit with nothing worth previewing carries none, and
-//! the band is not drawn for it.
+//! What the shared result surface shows of the row a person is on. A provider says what
+//! is worth knowing about a hit before opening it — a feed's site, unread count and
+//! latest entries; an article's source, date and first lines; what a folder holds — and
+//! the platform lays it out in the preview band under the list, the same way in every
+//! palette. Data, never drawing code.
 
 /// The preview of one search hit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchPreview {
-    /// What the preview is of, as its heading.
     pub title: Option<String>,
-    /// Short facts shown side by side in columns: a site, a count, a date.
     pub facts: Vec<String>,
-    /// Items it holds or lists, one per line: a feed's latest entries, a
-    /// folder's feeds.
     pub lines: Vec<String>,
-    /// The start of its text, wrapped over a few lines.
     pub body: Option<String>,
 }
 
@@ -74,9 +66,8 @@ impl SearchPreview {
             && self.body.is_none()
     }
 
-    /// Whether it says no more than `title` already does: it has no heading of its own and
-    /// every part it shows is that same text. A band under a row that repeats the row's own
-    /// line says nothing, so the platform draws none.
+    /// Whether it says no more than `title` already does: it has no heading of its own
+    /// and every part it shows is that same text.
     #[must_use]
     pub fn restates(&self, title: &str) -> bool {
         let said = title.split_whitespace().collect::<Vec<_>>().join(" ");

@@ -1,22 +1,16 @@
-//! Merging hits from different sources.
-//!
-//! Each source finds and ranks its own hits (through a [`SearchCatalog`]
-//! or a [`ListIndex`]); a surface that shows several sources in one list
-//! merges them by their provider bias and how the query meets the title
-//! each hit shows, so an exact visible title beats a weak match from
-//! another source.
-//!
-//! [`SearchCatalog`]: super::SearchCatalog
-//! [`ListIndex`]: tilo_search::ListIndex
+//! Merging hits from different sources. Each source finds and ranks its own hits (through
+//! a [`SearchCatalog`] or a [`ListIndex`]); a surface that shows several sources in one
+//! list merges them by their provider bias and how the query meets the title each hit
+//! shows, so an exact visible title beats a weak match from another source.
 
 use super::provider::SearchResult;
 use tilo_search::fold;
 
 pub use tilo_search::{FieldWeight, MatchTier};
 
-/// The tier at which folded `query` meets folded `text`, if it occurs:
-/// exact, prefix, a later word start, or (once the query is long enough to
-/// be a remembered fragment) anywhere.
+/// The tier at which folded `query` meets folded `text`, if it occurs: exact, prefix, a
+/// later word start, or (once the query is long enough to be a remembered fragment)
+/// anywhere.
 #[must_use]
 pub fn match_tier(query: &str, text: &str) -> Option<MatchTier> {
     if query.is_empty() {
@@ -42,12 +36,10 @@ pub fn match_tier(query: &str, text: &str) -> Option<MatchTier> {
     (found && tilo_search::matches_inside_words(query)).then_some(MatchTier::Contains)
 }
 
-/// Points one rank step is worth when merging, so a tier outweighs a
-/// provider bias notch.
 const RANK_POINTS: i32 = 20;
 
-/// How the query meets one displayed hit, for merging sources: the tier in
-/// its title, else in its subtitle at subtitle weight.
+/// How the query meets one displayed hit, for merging sources: the tier in its title,
+/// else in its subtitle at subtitle weight.
 #[must_use]
 pub fn result_relevance(query: &str, result: &SearchResult) -> i32 {
     let query = fold(query.trim());

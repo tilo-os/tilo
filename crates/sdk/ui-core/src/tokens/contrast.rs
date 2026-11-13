@@ -1,12 +1,6 @@
-//! The legibility half of the colour tokens.
-//!
-//! [`FLOORS`] is the one table of contrast promises a theme makes to every
-//! app: which foreground role must clear which ratio on which ground.
-//! [`audit`] measures a colour set against it, Theme Studio refuses to save
-//! a document with findings, and [`repair`] steps any foreground that still
-//! misses (a hand-edited file) out until it holds, so a theme that reaches
-//! the screen always keeps every floor. A high-contrast palette holds every
-//! text floor at WCAG AAA ([`HIGH_CONTRAST_TEXT_MIN_CONTRAST`]).
+//! The legibility half of the colour tokens. [`FLOORS`] is the one table of contrast
+//! promises a theme makes to every app: which foreground role must clear which ratio on
+//! which ground.
 
 use super::colors::{Colors, NON_TEXT_MIN_CONTRAST, PRESENCE_LEN, mix8};
 use crate::color::{Oklch, contrast_ratio, oklch};
@@ -15,12 +9,10 @@ use vello::peniko::Color;
 /// WCAG 2.x AA for body text.
 pub const BODY_TEXT_MIN_CONTRAST: f64 = 4.5;
 
-/// WCAG 2.x AAA for body text: what every text floor becomes on a
-/// high-contrast palette.
+/// WCAG 2.x AAA for body text: what every text floor becomes on a high-contrast palette.
 pub const HIGH_CONTRAST_TEXT_MIN_CONTRAST: f64 = 7.0;
 
-/// A colour role a contrast floor is stated in. Grounds are surfaces and
-/// the selection lift; everything else is a foreground drawn on them.
+/// A colour role a contrast floor is stated in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Role {
     Base,
@@ -34,27 +26,18 @@ pub enum Role {
     TextPrimary,
     TextDim,
     TextTertiary,
-    /// A primary action's fill at rest, under the pointer and pressed.
     Accent,
     AccentHover,
     AccentPressed,
-    /// The label on an accent fill.
     OnAccent,
-    /// The accent as ink and mark: a link, the focus ring, the caret.
     Focus,
-    /// What is switched on: a switch's track, a checked box.
     OnState,
     OnStateMark,
-    /// Each of the twelve presence colours: a collaborator's caret, cursor
-    /// and pill. A floor on it holds for every slot.
     Presence,
     Success,
     Warning,
     Danger,
     Info,
-    /// A translucent surface of a role over the worst backdrop it can show
-    /// ([`super::finish::worst_grounds`]). [`Role::of`] names the role's
-    /// opaque ground; the material findings measure both band ends.
     Material(super::finish::SurfaceRole),
 }
 
@@ -101,8 +84,7 @@ impl Role {
         }
     }
 
-    /// The colour this role names in `colors`. [`Role::Presence`] names its
-    /// least legible slot against `ground`.
+    /// The colour this role names in `colors`.
     #[must_use]
     pub fn of(self, colors: &Colors) -> Color {
         match self {
@@ -133,8 +115,6 @@ impl Role {
         }
     }
 
-    /// Whether this foreground is read as text, so a high-contrast palette
-    /// holds it to AAA.
     const fn is_text(self) -> bool {
         matches!(
             self,
@@ -184,19 +164,6 @@ const SECONDARY: [ContrastFloor; 6] = on_every_surface(Role::TextDim, BODY_TEXT_
 const TERTIARY: [ContrastFloor; 6] = on_every_surface(Role::TextTertiary, NON_TEXT_MIN_CONTRAST);
 
 /// Every promise, in the order findings are reported.
-///
-/// - Primary and secondary ink are body text on every surface and on a
-///   selected or hovered row; tertiary ink is large-text quiet on every
-///   surface and body text on content, where it is defined.
-/// - A primary action's label reads on its fill at rest, under the pointer
-///   and pressed, and the fill stands off the window (WCAG 1.4.11).
-/// - The on state stands off the window and its knob stands on it.
-/// - A selected row is a visible step off the window.
-/// - The accent ink reads as a link on the window and is a focus indicator
-///   (WCAG 2.4.11) on every surface of a window and on floating chrome;
-///   every presence colour reads as a caret or pill on the window, its
-///   fields and floating chrome.
-/// - Status is ink on a neutral control and a dot on the desktop.
 pub const FLOORS: &[ContrastFloor] = &[
     PRIMARY[0],
     PRIMARY[1],
@@ -250,13 +217,13 @@ pub const FLOORS: &[ContrastFloor] = &[
     floor(Role::Info, Role::Base, NON_TEXT_MIN_CONTRAST),
 ];
 
-/// How far a selected row must stand off the window: no hue does the work,
-/// so the lightness step has to be visible on its own.
+/// How far a selected row must stand off the window: no hue does the work, so the
+/// lightness step has to be visible on its own.
 pub const SELECTION_STEP: f64 = 1.15;
 
 impl ContrastFloor {
-    /// The ratio this floor asks of `colors`: text floors rise to AAA on a
-    /// high-contrast palette.
+    /// The ratio this floor asks of `colors`: text floors rise to AAA on a high-contrast
+    /// palette.
     #[must_use]
     pub fn min_ratio_on(&self, colors: &Colors) -> f64 {
         if colors.palette.high_contrast && self.foreground.is_text() {
@@ -266,8 +233,6 @@ impl ContrastFloor {
         }
     }
 
-    /// The foreground as measured: for [`Role::Presence`], the slot that
-    /// reads worst on this ground.
     fn measured(&self, colors: &Colors) -> (Color, f64) {
         let ground = self.ground.of(colors);
         if self.foreground == Role::Presence {
@@ -306,9 +271,7 @@ impl std::fmt::Display for ContrastFinding {
     }
 }
 
-/// Every floor `colors` misses, in [`FLOORS`] order. Empty means the palette
-/// keeps every promise an app relies on. Alpha is ignored: every role in the
-/// table is opaque.
+/// Every floor `colors` misses, in [`FLOORS`] order.
 #[must_use]
 pub fn audit(colors: &Colors) -> Vec<ContrastFinding> {
     FLOORS
@@ -326,11 +289,10 @@ pub fn audit(colors: &Colors) -> Vec<ContrastFinding> {
         .collect()
 }
 
-/// Every floor ink misses on a translucent surface under `finishes`, over
-/// the worst backdrop that surface can show ([`super::finish::worst_grounds`]):
-/// primary and secondary ink are body text there and tertiary ink large
-/// text, as on the opaque surfaces (AAA text on a high-contrast palette).
-/// Opaque roles add nothing: [`audit`] measures their grounds.
+/// Every floor ink misses on a translucent surface under `finishes`, over the worst
+/// backdrop that surface can show ([`super::finish::worst_grounds`]): primary and
+/// secondary ink are body text there and tertiary ink large text, as on the opaque
+/// surfaces (AAA text on a high-contrast palette).
 #[must_use]
 pub fn audit_materials(
     colors: &Colors,
@@ -383,12 +345,11 @@ pub fn audit_materials(
     findings
 }
 
-/// Step every foreground that misses a floor out, in OKLCH lightness at its
-/// own hue and chroma, until it holds. Grounds never move: the ladder is the
-/// theme's, and a foreground that cannot reach its floor on one ground
-/// without losing another (an ink tier on a ladder that straddles it) ends
-/// at the extreme that serves the hardest ground. Returns what was missed
-/// before the repair.
+/// Step every foreground that misses a floor out, in OKLCH lightness at its own hue and
+/// chroma, until it holds. Grounds never move: the ladder is the theme's, and a
+/// foreground that cannot reach its floor on one ground without losing another (an ink
+/// tier on a ladder that straddles it) ends at the extreme that serves the hardest
+/// ground.
 pub fn repair(colors: &mut Colors) -> Vec<ContrastFinding> {
     let before = audit(colors);
     if before.is_empty() {
@@ -408,7 +369,6 @@ pub fn repair(colors: &mut Colors) -> Vec<ContrastFinding> {
     before
 }
 
-/// Every floor naming `foreground`, with the ratio each asks on `colors`.
 fn grounds_of(colors: &Colors, foreground: Role) -> Vec<(Color, f64)> {
     FLOORS
         .iter()
@@ -417,9 +377,6 @@ fn grounds_of(colors: &Colors, foreground: Role) -> Vec<(Color, f64)> {
         .collect()
 }
 
-/// `colour` moved in lightness, keeping hue and chroma, until it clears
-/// every `(ground, ratio)` pair, or as far as it can go toward the extreme
-/// that serves the hardest ground.
 fn lightness_until_legible(colour: Color, grounds: &[(Color, f64)]) -> Color {
     let holds = |c: Color| grounds.iter().all(|(g, r)| contrast_ratio(c, *g) >= *r);
     if holds(colour) {
@@ -454,8 +411,6 @@ fn repair_one(colors: &mut Colors, finding: ContrastFinding) {
         repair_presence(colors);
         return;
     }
-    // A ground that misses its floor against the window (the selection
-    // step) moves itself; everything else is a foreground on fixed grounds.
     if finding.foreground == Role::Selection {
         let content = colors.surfaces.content;
         let step = if colors.palette.dark { 0.02 } else { -0.02 };
@@ -491,8 +446,6 @@ fn repair_one(colors: &mut Colors, finding: ContrastFinding) {
     *slot = lightness_until_legible(*slot, &grounds);
 }
 
-/// Presence colours share one lightness, so a slot that misses moves the
-/// whole palette: every participant stays equally loud.
 fn repair_presence(colors: &mut Colors) {
     let grounds = grounds_of(colors, Role::Presence);
     let holds = |p: &super::colors::PresencePalette| {

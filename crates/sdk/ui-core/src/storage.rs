@@ -8,15 +8,9 @@
 //! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the desktop settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
 //! | Secrets | [`secrets`], [`HostContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |
 //!
-//! [`AppStorage`] bundles the three for one app; framework views and
-//! surfaces get it from their context instead of building paths.
-//!
-//! Code with a [`HostContext`] uses its methods, which are scoped to the app
-//! the host prepared. Code without one (a model loading its preferences
-//! before the first frame) names the app or section itself. The older
-//! entry points (`settings_store`, `tilo-paths`, `tilo_files::native::atomic`, `app-state`
-//! from an app) are internals of these; apps other than Settings, which owns
-//! the settings document, have no use for them.
+//! [`AppStorage`] bundles the three for one app; framework views and surfaces get it from
+//! their context instead of building paths. Code with a [`HostContext`] uses its methods,
+//! which are scoped to the app the host prepared.
 //!
 //! [`HostContext`]: crate::application::HostContext
 //! [`HostContext::files`]: crate::application::HostContext::files
@@ -30,9 +24,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-/// Whether this thread may wait on storage. The compositor's frame loop,
-/// where an in-process app runs, may not: there an app reads and lists on a
-/// worker and shows the result on a later frame.
+/// Whether this thread may wait on storage.
 pub use durable_store::waiting;
 pub use settings_store::{ChangeOrigin, DeviceClass, InvokingAction, made_by};
 pub use tilo_files::{Dir, FsError};
@@ -65,61 +57,38 @@ impl AppFiles {
         &self.paths
     }
 
-    /// Durable files the app owns: imports, databases, downloads it manages.
-    ///
-    /// # Errors
-    ///
-    /// When the area cannot be opened or created.
+    /// Durable files the app owns: imports, databases, downloads it manages. When the
+    /// area cannot be opened or created.
     pub fn data(&self) -> Result<Dir, FsError> {
         Dir::open(self.paths.data())
     }
 
-    /// Configuration files. Preferences belong in [`Settings`].
-    ///
-    /// # Errors
-    ///
-    /// When the area cannot be opened or created.
+    /// Configuration files. When the area cannot be opened or created.
     pub fn config(&self) -> Result<Dir, FsError> {
         Dir::open(self.paths.config())
     }
 
-    /// Files the app can rebuild, which the system may delete.
-    ///
-    /// # Errors
-    ///
-    /// When the area cannot be opened or created.
+    /// Files the app can rebuild, which the system may delete. When the area cannot be
+    /// opened or created.
     pub fn cache(&self) -> Result<Dir, FsError> {
         Dir::open(self.paths.cache())
     }
 
-    /// State worth keeping across restarts but not worth backing up.
-    ///
-    /// # Errors
-    ///
-    /// When the area cannot be opened or created.
+    /// State worth keeping across restarts but not worth backing up. When the area cannot
+    /// be opened or created.
     pub fn state(&self) -> Result<Dir, FsError> {
         Dir::open(self.paths.state())
     }
 }
 
-/// Where an app's typed settings live and how far they travel. Settings
-/// follow a person or a device, never a workspace's members; they are never
-/// visible to collaborators. Content shared with a workspace is a record instead.
+/// Where an app's typed settings live and how far they travel. Settings follow a person
+/// or a device, never a workspace's members; they are never visible to collaborators.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
-    /// Follows the person to every device they sign in on: the device fabric
-    /// carries the app's whole personal section between the person's own
-    /// devices, the most recent write winning. Keep it small (at most
-    /// [`settings_store::placement::MAX_PERSONAL_VALUE_BYTES`] serialized):
-    /// a confirmation preference, a refresh interval, a default sort.
     Personal,
-    /// Kept on this device and never sent anywhere: a hardware choice, a
-    /// path, a window placement.
+    /// Kept on this device and never sent anywhere: a hardware choice, a path, a window
+    /// placement.
     DeviceLocal,
-    /// A per-user section shared across apps that another owner declares
-    /// (`locale`, `text_assistance`). Whether it follows the person or
-    /// stays on the device is that section's ([`settings_store::placement`]).
-    /// Only its owner writes it: a sandboxed app reads it and nothing more.
     Shared(&'static str),
 }
 
@@ -153,48 +122,33 @@ impl Scope {
 pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
     const SCOPE: Scope;
 
-    /// The app whose own settings these are when another app keeps them
-    /// for it, as Settings keeps the on-screen keyboard's layouts: a
-    /// [`Scope::Personal`] or [`Scope::DeviceLocal`] value is that app's,
-    /// whichever app reads or writes it. `None`: the app that holds them.
     const APP: Option<&'static str> = None;
 
-    /// What a person who changed nothing has on a `device`: [`Default`]
-    /// everywhere, unless the setting costs what one class of device should
-    /// not spend unasked (a copy kept on the device, work in the
-    /// background).
+    /// What a person who changed nothing has on a `device`: [`Default`] everywhere,
+    /// unless the setting costs what one class of device should not spend unasked (a copy
+    /// kept on the device, work in the background).
     #[must_use]
     fn defaults_on(device: DeviceClass) -> Self {
         let _ = device;
         Self::default()
     }
 
-    /// Whether the setting means anything on a `device`: one whose effect a
-    /// class of device cannot have (a copy kept on a device that keeps
-    /// none) is not offered there, neither shown nor published.
+    /// Whether the setting means anything on a `device`: one whose effect a class of
+    /// device cannot have (a copy kept on a device that keeps none) is not offered there,
+    /// neither shown nor published.
     #[must_use]
     fn available_on(device: DeviceClass) -> bool {
         let _ = device;
         true
     }
 
-    /// The setting `value` holds, as JSON stores it. Generic code reading
-    /// a setting compiles this, and serde's whole decoder for the type,
-    /// into each crate that names the type; a large type's own crate can
-    /// compile it once instead with [`settings_codec!`](crate::settings_codec).
-    ///
-    /// # Errors
-    ///
-    /// When `value` is not one.
+    /// The setting `value` holds, as JSON stores it. When `value` is not one.
     fn from_settings_value(value: Value) -> serde_json::Result<Self> {
         serde_json::from_value(value)
     }
 
-    /// The setting as JSON stores it; see [`Self::from_settings_value`].
-    ///
-    /// # Errors
-    ///
-    /// When it does not serialize.
+    /// The setting as JSON stores it; see [`Self::from_settings_value`]. When it does not
+    /// serialize.
     fn to_settings_value(&self) -> serde_json::Result<Value> {
         serde_json::to_value(self)
     }
@@ -203,12 +157,10 @@ pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
 #[doc(hidden)]
 pub use serde_json as __serde_json;
 
-/// [`SettingsSchema::from_settings_value`] and
-/// [`SettingsSchema::to_settings_value`] compiled where the impl is, never in
-/// the crates that read the setting: for a large settings type whose crate
-/// is in the shared runtime or an engine, every app or pane reading it
-/// otherwise carries its own copy of serde's decoder. Use it inside the
-/// `impl SettingsSchema`.
+/// [`SettingsSchema::from_settings_value`] and [`SettingsSchema::to_settings_value`]
+/// compiled where the impl is, never in the crates that read the setting: for a large
+/// settings type whose crate is in the shared runtime or an engine, every app or pane
+/// reading it otherwise carries its own copy of serde's decoder.
 #[macro_export]
 macro_rules! settings_codec {
     () => {
@@ -231,12 +183,8 @@ macro_rules! settings_codec {
 /// Which settings document a host gives its apps.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SettingsDocument {
-    /// The person's session settings: the source the host installed
-    /// (`settings_store::install_source`), else the local profile.
     #[default]
     Session,
-    /// The settings of a profile of the host's own, by its root directory:
-    /// a test or capture profile.
     Profile(PathBuf),
 }
 
@@ -245,9 +193,6 @@ pub enum SettingsDocument {
 pub struct SettingsRevision(Option<u64>);
 
 impl SettingsDocument {
-    /// Where the document is kept. A component's pass that reads the
-    /// document reads it again once its version moved
-    /// ([`crate::component_inputs`]).
     fn source(&self) -> Option<std::sync::Arc<dyn settings_store::SettingsSource>> {
         let source = self.located();
         let document = self.clone();
@@ -265,11 +210,11 @@ impl SettingsDocument {
         }
     }
 
-    /// The configuration directory of the profile this document belongs to:
-    /// the person's config root for the session document, else the
-    /// profile's own root. Per-profile stores beside the settings
-    /// (accounts, their credentials and sync health) live here, so a test,
-    /// capture or `--data-dir` profile never reads or writes the person's.
+    /// The configuration directory of the profile this document belongs to: the person's
+    /// config root for the session document, else the profile's own root. Per-profile
+    /// stores beside the settings (accounts, their credentials and sync health) live
+    /// here, so a test, capture or `--data-dir` profile never reads or writes the
+    /// person's.
     #[must_use]
     pub fn config_root(&self) -> Option<PathBuf> {
         match self {
@@ -278,7 +223,6 @@ impl SettingsDocument {
         }
     }
 
-    /// The whole document.
     #[must_use]
     pub fn load(&self) -> Map<String, Value> {
         self.source()
@@ -286,7 +230,6 @@ impl SettingsDocument {
             .unwrap_or_default()
     }
 
-    /// One section's keys.
     #[must_use]
     pub fn section(&self, name: &str) -> Map<String, Value> {
         self.source()
@@ -294,22 +237,14 @@ impl SettingsDocument {
             .unwrap_or_default()
     }
 
-    /// Merge `values` into section `name`, keeping every other section and
-    /// key.
-    ///
-    /// # Errors
-    ///
-    /// When there is no document to write or the write fails.
+    /// Merge `values` into section `name`, keeping every other section and key. When
+    /// there is no document to write or the write fails.
     pub fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
         self.update_section_by(name, values, None)
     }
 
-    /// [`Self::update_section`], recording who and what made the change
-    /// with every key it changes.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::update_section`].
+    /// [`Self::update_section`], recording who and what made the change with every key it
+    /// changes. As [`Self::update_section`].
     pub fn update_section_by(
         &self,
         name: &str,
@@ -331,14 +266,10 @@ impl SettingsDocument {
         SettingsRevision(self.source().map(|source| source.revision()))
     }
 
-    /// Change the document holding section `name` itself through `edit`,
-    /// as one change made by `origin`: what a change reading the document's
-    /// history makes (a section's undo). See `settings_store::Store::edit_document`.
-    ///
-    /// # Errors
-    /// `edit` refused, the write failed, or this process holds only the
-    /// values of the settings (an app's channel to the session's), not the
-    /// document.
+    /// Change the document holding section `name` itself through `edit`, as one change
+    /// made by `origin`: what a change reading the document's history makes (a section's
+    /// undo). `edit` refused, the write failed, or this process holds only the values of
+    /// the settings (an app's channel to the session's), not the document.
     pub fn edit_document(
         &self,
         name: &str,
@@ -358,22 +289,17 @@ impl SettingsDocument {
     }
 }
 
-/// Make every settings change stored before going on, which the native
-/// runner does before the process ends. No change waits for the disk when
-/// it is made.
+/// Make every settings change stored before going on, which the native runner does before
+/// the process ends.
 pub fn flush_settings_writes() {
     settings_store::flush_pending_writes();
 }
 
-/// An app's typed settings of one [`SettingsSchema`] type, in the settings
-/// document its host gave it. Get one from
-/// [`HostContext::settings`](crate::application::HostContext::settings),
-/// [`AppStorage::settings`], or a framework view's `cx.settings::<T>()`.
+/// An app's typed settings of one [`SettingsSchema`] type, in the settings document its
+/// host gave it.
 pub struct Settings<T> {
     app_id: String,
     document: SettingsDocument,
-    /// The class of device whose defaults unset keys read as; the
-    /// installed one ([`DeviceClass::current`]) unless pinned.
     device: Option<DeviceClass>,
     schema: PhantomData<fn() -> T>,
 }
@@ -413,8 +339,8 @@ impl<T: SettingsSchema> Settings<T> {
         }
     }
 
-    /// A [`Scope::Shared`] section, for code that serves every app (the
-    /// toolkit's text fields reading `text_assistance`).
+    /// A [`Scope::Shared`] section, for code that serves every app (the toolkit's text
+    /// fields reading `text_assistance`).
     #[must_use]
     pub fn shared() -> Self {
         debug_assert!(
@@ -437,8 +363,8 @@ impl<T: SettingsSchema> Settings<T> {
         self.in_document(SettingsDocument::Profile(root.into()))
     }
 
-    /// The same settings read with `device`'s defaults, whatever device
-    /// the process runs on.
+    /// The same settings read with `device`'s defaults, whatever device the process runs
+    /// on.
     #[must_use]
     pub fn on_device(mut self, device: DeviceClass) -> Self {
         self.device = Some(device);
@@ -470,12 +396,10 @@ impl<T: SettingsSchema> Settings<T> {
         &self.app_id
     }
 
-    /// The stored keys of this scope's object for the app.
     fn stored(&self) -> Map<String, Value> {
         stored_in(&self.document, &self.app_id, T::SCOPE)
     }
 
-    /// The current value.
     #[must_use]
     pub fn get(&self) -> T {
         decode(
@@ -484,23 +408,15 @@ impl<T: SettingsSchema> Settings<T> {
         )
     }
 
-    /// Store `value`. Keys of the section that `T` does not name are kept.
-    ///
-    /// # Errors
-    ///
-    /// When `value` does not serialize to an object, a personal section
-    /// would outgrow what the device fabric carries, there is no document to
-    /// write, or the write fails.
+    /// Store `value`. When `value` does not serialize to an object, a personal section
+    /// would outgrow what the device fabric carries, there is no document to write, or
+    /// the write fails.
     pub fn set(&self, value: &T) -> std::io::Result<()> {
         self.set_by(value, None)
     }
 
-    /// [`Self::set`], recording `origin` — the action and who invoked it —
-    /// in the document's history of who changed which setting.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::set`].
+    /// [`Self::set`], recording `origin` — the action and who invoked it — in the
+    /// document's history of who changed which setting. As [`Self::set`].
     pub fn set_by(
         &self,
         value: &T,
@@ -518,12 +434,8 @@ impl<T: SettingsSchema> Settings<T> {
         )
     }
 
-    /// Change the current value with `change` and store it, returning what
-    /// was stored.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::set`].
+    /// Change the current value with `change` and store it, returning what was stored. As
+    /// [`Self::set`].
     pub fn update(&self, change: impl FnOnce(&mut T)) -> std::io::Result<T> {
         let mut value = self.get();
         change(&mut value);
@@ -531,17 +443,17 @@ impl<T: SettingsSchema> Settings<T> {
         Ok(value)
     }
 
-    /// The document's current version: when it changes, [`Self::get`] may
-    /// answer differently.
+    /// The document's current version: when it changes, [`Self::get`] may answer
+    /// differently.
     #[must_use]
     pub fn revision(&self) -> SettingsRevision {
         self.document.revision()
     }
 }
 
-/// Settings `T` as last read, read again only when their document changed
-/// since: a reader that looks at them often (on every frame, on every
-/// publication of an app's rows) without decoding them each time.
+/// Settings `T` as last read, read again only when their document changed since: a reader
+/// that looks at them often (on every frame, on every publication of an app's rows)
+/// without decoding them each time.
 pub struct SettingsCache<T> {
     settings: Settings<T>,
     seen: SettingsRevision,
@@ -561,14 +473,13 @@ impl<T: SettingsSchema + PartialEq> SettingsCache<T> {
         }
     }
 
-    /// The value as last read.
     #[must_use]
     pub fn get(&self) -> &T {
         &self.value
     }
 
-    /// Read the value again if the document changed since it was last
-    /// read; whether the value changed.
+    /// Read the value again if the document changed since it was last read; whether the
+    /// value changed.
     pub fn refresh(&mut self) -> bool {
         let revision = self.settings.revision();
         if revision == self.seen {
@@ -589,16 +500,12 @@ impl<T: SettingsSchema + PartialEq> SettingsCache<T> {
         self.seen
     }
 
-    /// The settings read.
     #[must_use]
     pub fn settings(&self) -> &Settings<T> {
         &self.settings
     }
 }
 
-/// Store the keys of `value` that differ from `current`, what is read now:
-/// [`Settings::set_by`] once both are JSON. Not generic, so the toolkit
-/// compiles it once rather than every app once per settings type.
 fn store_changed(
     document: &SettingsDocument,
     app_id: &str,
@@ -607,11 +514,10 @@ fn store_changed(
     current: Option<Value>,
     origin: Option<&settings_store::ChangeOrigin>,
 ) -> std::io::Result<()> {
-    // Only what differs from what is read now is written. A key the
-    // person never set reads as `T`'s default; writing the whole value
-    // would store that default as their choice, and a field edit in one
-    // place (a text size) would pin every other field of the section to
-    // whatever default this build has (the theme mode among them),
+    // Only what differs from what is read now is written. A key the person never set
+    // reads as `T`'s default; writing the whole value would store that default as their
+    // choice, and a field edit in one place (a text size) would pin every other field of
+    // the section to whatever default this build has (the theme mode among them),
     // replacing what another writer meant by leaving it unset.
     let value = match (value, current) {
         (Value::Object(values), Some(Value::Object(current))) => Value::Object(
@@ -628,9 +534,6 @@ fn store_changed(
     store_in(document, app_id, scope, value, origin)
 }
 
-/// Decode `stored` over `T`'s defaults on `device` one key at a time, so a key that
-/// does not decode (an older shape, a hand edit) reads as its default
-/// instead of discarding every other key.
 fn decode<T: SettingsSchema>(stored: Map<String, Value>, device: DeviceClass) -> T {
     let defaults = T::defaults_on(device).to_settings_value();
     let decodes = |value: &Value| T::from_settings_value(value.clone()).is_ok();
@@ -638,9 +541,8 @@ fn decode<T: SettingsSchema>(stored: Map<String, Value>, device: DeviceClass) ->
         .unwrap_or_else(|_| T::defaults_on(device))
 }
 
-/// The object [`decode`] reads: `stored` over `defaults`, keeping each
-/// stored key only where the result still `decodes`. Without defaults, the
-/// stored object as it is.
+/// The object [`decode`] reads: `stored` over `defaults`, keeping each stored key only
+/// where the result still `decodes`.
 fn decoded(
     defaults: Option<Value>,
     stored: Map<String, Value>,
@@ -663,7 +565,6 @@ fn decoded(
     Value::Object(current)
 }
 
-/// The stored keys of `scope`'s object for the app `app_id` in `document`.
 fn stored_in(document: &SettingsDocument, app_id: &str, scope: Scope) -> Map<String, Value> {
     let section = document.section(scope.section());
     match scope {
@@ -675,8 +576,6 @@ fn stored_in(document: &SettingsDocument, app_id: &str, scope: Scope) -> Map<Str
     }
 }
 
-/// Store `value`, a section's value as JSON, in `scope`'s object for the app
-/// `app_id` in `document`, recording `origin`: [`Settings::set_by`].
 fn store_in(
     document: &SettingsDocument,
     app_id: &str,
@@ -722,9 +621,8 @@ fn merged(base: &Map<String, Value>, over: &Map<String, Value>) -> Map<String, V
     out
 }
 
-/// What an app keeps outside its documents, scoped to the app and the
-/// settings document its host gave it: its files, its secrets and its typed
-/// settings. Framework views and surfaces reach it through their context.
+/// What an app keeps outside its documents, scoped to the app and the settings document
+/// its host gave it: its files, its secrets and its typed settings.
 #[derive(Clone, Debug)]
 pub struct AppStorage {
     app_id: String,
@@ -749,22 +647,21 @@ impl AppStorage {
         }
     }
 
-    /// The same storage with the app's file areas at `files`: a test or
-    /// capture profile's own instead of the person's.
+    /// The same storage with the app's file areas at `files`: a test or capture profile's
+    /// own instead of the person's.
     #[must_use]
     pub fn with_files(mut self, files: AppFiles) -> Self {
         self.files = files;
         self
     }
 
-    /// Storage of the app `app_id` in the current host's secret store and
-    /// the session settings document.
+    /// Storage of the app `app_id` in the current host's secret store and the session
+    /// settings document.
     #[must_use]
     pub fn for_app(app_id: &str) -> Self {
         Self::new(app_id, secrets(app_id), SettingsDocument::Session)
     }
 
-    /// The app's id.
     #[must_use]
     pub fn app_id(&self) -> &str {
         &self.app_id
@@ -776,8 +673,6 @@ impl AppStorage {
         self.files.clone()
     }
 
-    /// The app's secrets. A secret that belongs to one document item is
-    /// [`SecretStore::item`](crate::secrets::SecretStore::item).
     #[must_use]
     pub fn secrets(&self) -> crate::secrets::SecretStore {
         self.secrets.clone()
@@ -803,12 +698,10 @@ impl AppStorage {
     }
 }
 
-/// One untyped section of the desktop settings document, for the owner of a
-/// shared section (Settings, the theme store) and readers of one that has
-/// no [`SettingsSchema`] type yet. Apps keep their own preferences in a
-/// typed [`Settings`]. Reads never fail; a missing, unreadable or malformed
-/// document reads as empty. Writes merge the given keys into the section and
-/// keep every other section and key.
+/// One untyped section of the desktop settings document, for the owner of a shared
+/// section (Settings, the theme store) and readers of one that has no [`SettingsSchema`]
+/// type yet. Reads never fail; a missing, unreadable or malformed document reads as
+/// empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsSection {
     section: String,
@@ -825,8 +718,8 @@ impl SettingsSection {
         }
     }
 
-    /// The same section in the profile at `root` instead of the user's
-    /// (tests, tools that edit another profile).
+    /// The same section in the profile at `root` instead of the user's (tests, tools that
+    /// edit another profile).
     #[must_use]
     pub fn in_profile(self, root: impl Into<PathBuf>) -> Self {
         self.in_document(SettingsDocument::Profile(root.into()))
@@ -840,7 +733,6 @@ impl SettingsSection {
         self
     }
 
-    /// The section's name.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.section
@@ -852,7 +744,6 @@ impl SettingsSection {
         self.document.load()
     }
 
-    /// The section's keys.
     #[must_use]
     pub fn load(&self) -> Map<String, Value> {
         self.document.section(&self.section)
@@ -873,25 +764,21 @@ impl SettingsSection {
             .map(str::to_owned)
     }
 
-    /// Merge `values` into the section.
-    ///
-    /// # Errors
-    ///
-    /// When there is no document to write or the write fails.
+    /// Merge `values` into the section. When there is no document to write or the write
+    /// fails.
     pub fn update(&self, values: Map<String, Value>) -> std::io::Result<()> {
         self.document.update_section(&self.section, values)
     }
 }
 
-/// Parse settings-document text the way every reader does: anything
-/// malformed reads as an empty document.
+/// Parse settings-document text the way every reader does: anything malformed reads as an
+/// empty document.
 #[must_use]
 pub fn parse_settings(text: &str) -> Map<String, Value> {
     settings_store::parse(text)
 }
 
-/// The settings of the profile at `root`, for code that compares two
-/// profiles.
+/// The settings of the profile at `root`, for code that compares two profiles.
 #[must_use]
 pub fn settings_at(root: &Path) -> Map<String, Value> {
     settings_store::SettingsSource::load(&*settings_store::profile(root))
@@ -998,8 +885,6 @@ mod tests {
             .unwrap();
 
         let document = settings_at(&file);
-        // Only what was changed is stored: the interval nobody chose stays
-        // unset and keeps following the app's default.
         assert_eq!(
             Value::Object(document.clone()),
             serde_json::json!({
@@ -1010,7 +895,6 @@ mod tests {
                 "app_device_local": {"so.tilo.example": {"x": 40}}
             })
         );
-        // The device fabric carries the person's section and not the device's.
         assert_eq!(
             settings_store::placement::holder("app_personal"),
             settings_store::placement::Holder::Person
@@ -1067,8 +951,8 @@ mod tests {
             "a setting is available everywhere unless it says otherwise"
         );
 
-        // Choosing the default stores nothing, so the choice keeps following
-        // the device; choosing otherwise is the person's on every device.
+        // Choosing the default stores nothing, so the choice keeps following the device;
+        // choosing otherwise is the person's on every device.
         on(DeviceClass::Native).set(&Copies { keep: true }).unwrap();
         assert!(!settings_at(&file).contains_key("app_device_local"));
         on(DeviceClass::Native)
@@ -1093,8 +977,6 @@ mod tests {
                 .cloned()
         };
         assert_eq!(stored(), Some(serde_json::json!({"confirm": false})));
-        // Another writer sets the interval; a later change of `confirm` here
-        // leaves it as that writer left it.
         Settings::<Prefs>::for_app("so.tilo.example")
             .in_profile(&file)
             .update(|prefs| prefs.interval_ms = 900)
@@ -1104,8 +986,6 @@ mod tests {
             stored(),
             Some(serde_json::json!({"confirm": true, "interval_ms": 900}))
         );
-        // Setting what is already there writes nothing, and a write to
-        // another document is not a change of this one.
         let revision = prefs.revision();
         prefs.set(&prefs.get()).unwrap();
         let elsewhere = dir.path().join("other");
@@ -1137,7 +1017,6 @@ mod tests {
                 interval_ms: 1500
             }
         );
-        // A write keeps keys this type does not name.
         prefs.update(|prefs| prefs.interval_ms = 2000).unwrap();
         assert_eq!(
             SettingsSection::named("app_personal")
@@ -1193,10 +1072,8 @@ mod tests {
     }
 }
 
-/// One open window of an app, as its other windows can tell, in every
-/// process: each holds a shared lock on one file. An app whose windows are
-/// processes of their own (each Browser tab) learns from it when its last
-/// window closes, the moment "the app closes" means.
+/// One open window of an app, as its other windows can tell, in every process: each holds
+/// a shared lock on one file.
 #[derive(Debug)]
 pub struct OpenWindow {
     lock: advisory_lock::FileLock,
@@ -1204,18 +1081,15 @@ pub struct OpenWindow {
 }
 
 impl OpenWindow {
-    /// Count this window among those counted in `dir`, which exists.
-    ///
-    /// # Errors
-    /// Returns an error when the lock file cannot be opened or locked.
+    /// Count this window among those counted in `dir`, which exists. Returns an error
+    /// when the lock file cannot be opened or locked.
     pub fn open(dir: &Path) -> std::io::Result<Self> {
         let path = dir.join("open-windows.lock");
         let lock = advisory_lock::FileLock::open(&path, advisory_lock::LockMode::Shared)?;
         Ok(Self { lock, path })
     }
 
-    /// Stop counting this window. Returns whether it was the last: no other
-    /// window holds the lock once this one lets go of it.
+    /// Stop counting this window.
     #[must_use]
     pub fn close(self) -> bool {
         let Self { lock, path } = self;

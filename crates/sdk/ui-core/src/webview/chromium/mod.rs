@@ -38,11 +38,8 @@ use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 
 const MAX_OWNED_NAVIGATIONS: usize = 32;
-/// The host numbers a page's popups from here, apart from the tabs the app
-/// opens.
 const FIRST_POPUP: u32 = 1 << 30;
-/// Longest address a page can have: Chromium's own limit
-/// (`url::kMaxURLChars`), in bytes.
+/// Longest address a page can have: Chromium's own limit (`url::kMaxURLChars`), in bytes.
 const MAX_PAGE_URL: usize = 2 * 1024 * 1024;
 /// Longest download address kept with its download, in bytes.
 const MAX_DOWNLOAD_URL: usize = 8192;
@@ -53,9 +50,8 @@ struct NavigationRequests {
     pending: HashMap<u32, String>,
 }
 
-/// Whether the host reports the document's size, and what this tab asked
-/// and told it: told once the host said it can, so an older host never sees
-/// the command.
+/// Whether the host reports the document's size, and what this tab asked and told it:
+/// told once the host said it can, so an older host never sees the command.
 #[derive(Default)]
 struct DocumentSizeReports {
     can: AtomicBool,
@@ -68,42 +64,28 @@ struct DocumentSizeReports {
 struct Shared {
     audio: audio::PageAudio,
     document_size: DocumentSizeReports,
-    /// Whether the host opens page popups as popups, whether this tab asked
-    /// for them, and whether the host was told.
     popups_can: AtomicBool,
     popups_asked: AtomicBool,
     popups_told: AtomicBool,
-    /// Whether the host sends the page's own questions, whether this tab
-    /// asked for them, and whether the host was told.
     dialogs_can: AtomicBool,
     dialogs_asked: AtomicBool,
     dialogs_told: AtomicBool,
-    /// Whether this tab holds what its page sends, and whether the host was
-    /// told: a window an agent operates holds every departure.
     holds_asked: AtomicBool,
     holds_told: AtomicBool,
     clipboard: page_clipboard::Sharing,
-    /// Popups the page opened, not yet taken.
     popups: Mutex<VecDeque<super::Popup>>,
-    /// The endpoints of popups the page opened, not yet adopted: each is
-    /// routed from the moment it opens, so its first frames reach it.
     unadopted: Mutex<HashMap<u32, Arc<Shared>>>,
-    /// The host reads a page's selection as text (`selection_text`).
     selection_text: AtomicBool,
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
     native_caret_text_input: AtomicBool,
-    /// The host takes compositions and reports the focused field.
     composition: AtomicBool,
     text_field: Mutex<Option<super::TextField>>,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
-    /// The pointer shape the page last asked for.
     cursor: Mutex<Option<winit::window::CursorIcon>>,
     frames: FrameSlot,
-    /// The tab's frame whole, which the host's damage packets change.
     frame_store: Mutex<damage::FrameStore>,
-    /// The host was asked to send the tab's frame whole and has not yet.
     frame_asked: AtomicBool,
     events: Mutex<VecDeque<WebViewEvent>>,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -112,26 +94,17 @@ struct Shared {
     navigation_commands: Mutex<()>,
     stopping: AtomicBool,
     failed: AtomicBool,
-    /// Set once the failure `failed` marks has queued its
-    /// [`WebViewEvent::LoadFailed`]. The supervisor waits for it before it
-    /// reaps a failed host, so once the host is reaped its failure is there
-    /// for whoever drains the events.
     failure_reported: (Mutex<bool>, std::sync::Condvar),
-    /// Wakes the host's supervisor when `failed` or `stopping` is set.
     supervisor_bell: SupervisorBell,
-    /// How often the host's supervisor has looked at it: once at start and
-    /// once per change, never on a timer while the host runs.
+    /// How often the host's supervisor has looked at it: once at start and once per
+    /// change, never on a timer while the host runs.
     supervisor_checks: AtomicU32,
-    /// How often the supervisor has blocked with no deadline, until the host
-    /// exits or its bell rings.
     #[cfg(test)]
     supervisor_untimed_waits: AtomicU32,
-    /// The kernel's id for the supervisor's thread, so a test watches this
-    /// host's supervisor and not another engine's of the same name.
+    /// The kernel's id for the supervisor's thread, so a test watches this host's
+    /// supervisor and not another engine's of the same name.
     #[cfg(test)]
     supervisor_thread: std::sync::OnceLock<u32>,
-    /// Set on the owner for another process's tab: its host events and
-    /// frames go to that process instead of this endpoint.
     remote: Option<Arc<shared::Outbox>>,
 }
 
@@ -200,8 +173,6 @@ impl Shared {
         let WebViewEvent::NavigationOutcome { request_id, .. } = &event else {
             return;
         };
-        // Reserve the queue slot before send; hold ownership through enqueue
-        // so an admission cannot race a completing request's reservation.
         let mut owners = self.navigations.lock_recover();
         if owners.pending.remove(request_id).is_none() {
             return;
@@ -240,9 +211,6 @@ impl Shared {
         ) {
             self.text_input.lock_recover().unavailable();
         }
-        // Renderer termination is visual: the host names each affected owner
-        // explicitly. Its delayed generic event cannot invalidate a recovery
-        // command admitted after the corresponding owned failure.
         if matches!(event, WebViewEvent::TabClosed | WebViewEvent::TabDetached) {
             self.fail_navigations("The native browser document became unavailable");
         }
@@ -253,7 +221,6 @@ impl Shared {
             current.clone_from(uri);
         }
         if let Ok(mut events) = self.events.lock() {
-            // State updates supersede older values without evicting load outcomes.
             let state = |value: &WebViewEvent| {
                 matches!(
                     value,
@@ -323,12 +290,11 @@ impl Shared {
         }
     }
 
-    /// Whether the host failed, waiting for the failure's report to be
-    /// queued when another thread is still making it: the reader (at EOF or
-    /// bad output) and the supervisor (at the exit) can both see the same
-    /// failure, and the supervisor must not reap the host before its
-    /// failure is reported. The report never waits on the supervisor, so
-    /// this wait is bounded by the reporting thread's own work.
+    /// Whether the host failed, waiting for the failure's report to be queued when
+    /// another thread is still making it: the reader (at EOF or bad output) and the
+    /// supervisor (at the exit) can both see the same failure, and the supervisor must
+    /// not reap the host before its failure is reported. The report never waits on the
+    /// supervisor, so this wait is bounded by the reporting thread's own work.
     fn failure_reported(&self) -> bool {
         if !self.failed.load(Ordering::Acquire) {
             return false;
@@ -344,8 +310,8 @@ impl Shared {
     }
 }
 
-/// A real Chromium process. Initialization errors are returned to the caller;
-/// this type never creates a simulated engine or weakens Chromium's sandbox.
+/// A real Chromium process. Initialization errors are returned to the caller; this type
+/// never creates a simulated engine or weakens Chromium's sandbox.
 pub struct ChromiumEngine {
     tx: Arc<CommandQueue>,
     shared: Arc<Shared>,
@@ -354,9 +320,9 @@ pub struct ChromiumEngine {
 }
 
 type Routes = Arc<Mutex<HashMap<u32, Weak<Shared>>>>;
-/// A private window's disposable root is a temp directory named with this
-/// prefix that holds [`PRIVATE_ROOT_MARKER`] reading
-/// [`PRIVATE_ROOT_MARKER_CONTENT`]; only such a root is ever removed.
+/// A private window's disposable root is a temp directory named with this prefix that
+/// holds [`PRIVATE_ROOT_MARKER`] reading [`PRIVATE_ROOT_MARKER_CONTENT`]; only such a
+/// root is ever removed.
 pub const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
 pub const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
 pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
@@ -379,8 +345,8 @@ impl Drop for PrivateRootCleanup {
     }
 }
 
-/// Whether `root` is a private window root Browser allocated: a real
-/// directory with the prefix and an intact marker, never a symlink.
+/// Whether `root` is a private window root Browser allocated: a real directory with the
+/// prefix and an intact marker, never a symlink.
 pub fn is_owned_private_root(root: &Path) -> bool {
     std::fs::symlink_metadata(root)
         .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
@@ -395,8 +361,8 @@ pub fn is_owned_private_root(root: &Path) -> bool {
             .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
 }
 
-/// Remove a private window's disposable root that no engine will use, if it
-/// is one Browser owns.
+/// Remove a private window's disposable root that no engine will use, if it is one
+/// Browser owns.
 pub fn release_private_root(root: &Path) {
     if is_owned_private_root(root) {
         cleanup_private_root(root);
@@ -454,20 +420,12 @@ struct Runtime {
     routes: Routes,
     next_tab: AtomicU32,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
-    /// The profile socket this process serves its host on. Shared with the
-    /// host's supervisor, which publishes it without holding the runtime:
-    /// a strong reference on the supervisor could be the last one, and the
-    /// supervisor cannot wait for itself.
     server: Arc<std::sync::OnceLock<Arc<shared::Server>>>,
-    /// Set when another process's host runs this profile.
     link: Option<shared::ClientLink>,
     service_session: Option<String>,
     exited: Arc<AtomicBool>,
 }
 impl Runtime {
-    /// Reserves a tab within the host's shared capacity and asks the host to
-    /// create it. `announce` runs before any host event for the tab can be
-    /// routed.
     fn admit_tab(&self, shared: &Arc<Shared>, announce: impl FnOnce(u32)) -> Result<u32, String> {
         let mut routes = self.routes.lock().map_err(|_| "Tab routes unavailable")?;
         if routes.len() >= 32 {
@@ -491,8 +449,6 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         self.process.stop();
         if self.link.is_some() {
-            // The command writer sends what is queued, then hangs up; the
-            // owner closes whatever this process left open.
             self.tx.close();
             return;
         }
@@ -536,8 +492,8 @@ fn fail_routes(routes: &Routes, message: &str) {
 fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
     routes.lock().ok()?.get(&id)?.upgrade()
 }
-/// A client tab's frame goes on to its process as the host sent it; only a
-/// frame drawn here is converted.
+/// A client tab's frame goes on to its process as the host sent it; only a frame drawn
+/// here is converted.
 fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     if let Some(shared) = route(routes, tab) {
         shared.frame_asked.store(false, Ordering::Relaxed);
@@ -549,9 +505,8 @@ fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     }
 }
 
-/// What changed of a tab's frame goes on to a client tab's process as the
-/// host sent it, and is applied to the tab's frame here otherwise. Where the
-/// frame it changes is missing, the host is asked, once, for it whole.
+/// What changed of a tab's frame goes on to a client tab's process as the host sent it,
+/// and is applied to the tab's frame here otherwise.
 fn deliver_damage(routes: &Routes, tab: u32, damage: damage::WireDamage, tx: &CommandQueue) {
     let Some(shared) = route(routes, tab) else {
         return;
@@ -565,27 +520,22 @@ fn deliver_damage(routes: &Routes, tab: u32, damage: damage::WireDamage, tx: &Co
     }
 }
 
-/// Makes `frame` the tab's newest and wakes the view, unless it shows exactly
-/// what the tab already has.
+/// Makes `frame` the tab's newest and wakes the view, unless it shows exactly what the
+/// tab already has.
 fn present_frame(shared: &Shared, tab: u32, mut frame: super::Frame) {
-    // Comparing a full-resolution frame may scan tens of megabytes. The UI
-    // takes the slot's lock while handling input and drawing; the store's
-    // is this thread's alone.
+    // Comparing a full-resolution frame may scan tens of megabytes. The UI takes the
+    // slot's lock while handling input and drawing; the store's is this thread's alone.
     let changed = shared.frame_store.lock_recover().replace(&mut frame);
     if let Ok(mut slot) = shared.frames.lock() {
         if !changed && let Some(current) = slot.as_ref() {
             super::frame_trace::unchanged(tab, frame.trace_id, current.trace_id);
             return;
         }
-        // A view whose frame was cleared needs this one, even unchanged.
         *slot = Some(frame);
     }
     shared.wake();
 }
 
-/// Applies `damage` to the tab's frame and shows the result, as
-/// [`present_frame`] shows a whole frame. Returns `false` when there is no
-/// frame for it to change.
 fn present_damage(shared: &Shared, tab: u32, damage: damage::WireDamage) -> bool {
     let mut store = shared.frame_store.lock_recover();
     let frame = match store.apply(tab, damage) {
@@ -607,9 +557,9 @@ fn present_damage(shared: &Shared, tab: u32, damage: damage::WireDamage) -> bool
     true
 }
 
-/// Error-only surface used when the engine is not installed or cannot start.
-/// It never renders a page and answers navigation with its message, which is
-/// written for the person using the app.
+/// Error-only surface used when the engine is not installed or cannot start. It never
+/// renders a page and answers navigation with its message, which is written for the
+/// person using the app.
 pub struct UnavailableEngine {
     message: String,
     shared: Shared,
@@ -728,8 +678,8 @@ fn spawn_named(
     std::thread::Builder::new().name(name.into()).spawn(work)
 }
 
-/// The profile directory, created and canonicalized: the host requires an
-/// absolute profile, and every process must name one profile identically.
+/// The profile directory, created and canonicalized: the host requires an absolute
+/// profile, and every process must name one profile identically.
 fn prepare_profile(profile: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
     profile.canonicalize().map_err(|error| error.to_string())
@@ -758,7 +708,6 @@ fn spawn_command_writer(
     })
 }
 
-/// The host's output: its events, and its frames, piped or in `memory`.
 struct HostOutput {
     stdout: std::process::ChildStdout,
     memory: Option<frame_memory::FrameMemory>,
@@ -849,7 +798,6 @@ fn supervise_child(
     if let Ok(tid) = tilo_test_env::idle::current_thread_id() {
         let _ = supervisor_shared.supervisor_thread.set(tid);
     }
-    // The bell hangs before the first look, so a change after it rings.
     let (watch, bell) = tilo_process::child::ExitWatch::new(&child);
     supervisor_shared.supervisor_bell.hang(bell);
     let mut shutdown_started = None;
@@ -899,13 +847,8 @@ fn supervise_child(
     exited
 }
 
-/// How long a host asked to shut down has to exit before it is killed.
 const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(35);
 
-/// Wakes a host's supervisor when what it acts on changes: the host failing
-/// or a shutdown starting. With the host's own exit, which the supervisor's
-/// [`ExitWatch`](tilo_process::child::ExitWatch) sees, that is everything it
-/// waits for, so a running Browser costs no timer wakeups.
 #[derive(Default)]
 struct SupervisorBell(Mutex<Option<tilo_process::child::Bell>>);
 
@@ -938,28 +881,11 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
         .collect::<Result<Vec<String>, String>>()
 }
 
-/// The engine host process. It is not one of the toolkit's thin binaries: it
-/// loads CEF from beside itself and the rest from the system, so the library
-/// path the launcher points at the app's own runtime bundle does not apply to
-/// it. Nor does the hardened allocator the launcher preloads into the app:
-/// Chromium brings its own (PartitionAlloc) and frees through glibc's
-/// internals, so a preloaded allocator aborts the host at start.
 use browser_continuity_core::engine_host::command as host_command;
 
 #[cfg(all(test, target_os = "linux"))]
 mod engine_exclusion_tests;
 
-/// Engine audio switches.
-///
-/// A governed (sandboxed) app is given no PipeWire/Pulse socket and no
-/// `/dev/snd`; its sound goes through the host's output service, which
-/// Chromium cannot speak. `--tilo-audio-bridge` makes the host take every
-/// page's PCM itself (CEF's audio handler) and send it here, to play through
-/// that service (see `audio`). Chromium then opens no device, so it does not
-/// probe the PulseAudio and ALSA endpoints the sandbox withholds; while the
-/// service is unavailable the PCM is dropped, which keeps media
-/// playing silently as the fake audio manager would. An app that is not
-/// governed keeps Chromium's own audio.
 fn host_audio_switches(governed: bool) -> &'static [&'static str] {
     if governed {
         &["--tilo-audio-bridge"]
@@ -968,20 +894,16 @@ fn host_audio_switches(governed: bool) -> &'static [&'static str] {
     }
 }
 
-/// What a host is started for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HostMode<'a> {
-    /// Browsing: the Browser's profile, shared by its windows.
     Browsing,
-    /// One consented service session's dedicated profile.
     ServiceSession(&'a str),
-    /// Sealed documents (a mail): pages never navigate; a followed link is
-    /// a new-tab request for the embedder.
+    /// Sealed documents (a mail): pages never navigate; a followed link is a new-tab
+    /// request for the embedder.
     SealedDocuments,
 }
 
 impl HostMode<'_> {
-    /// The host runs its profile alone: no other process joins it.
     fn alone(self) -> bool {
         !matches!(self, Self::Browsing)
     }
@@ -1004,12 +926,9 @@ fn launch_host(
 ) -> Result<(std::process::Child, Option<frame_memory::FrameMemory>), String> {
     let mut command =
         host_command(host).map_err(|error| format!("Could not confine Chromium: {error}"))?;
-    // The host keeps the profile owned for as long as it runs, past the
-    // Browser process that starts it.
     if let Some(claim) = claim {
         claim.hold_with(&mut command);
     }
-    // Without frame memory the host pipes its frames: slower, still whole.
     let mut memory = frame_memory::FrameMemory::create()
         .inspect_err(|error| tracing::warn!(%error, "Chromium frame memory unavailable"))
         .ok();
@@ -1017,7 +936,6 @@ fn launch_host(
         memory.hand_to(&mut command);
     }
     command.args(host_audio_switches(media::audio_output::is_governed()));
-    // A frame's changed rects, not the frame again (`damage`).
     command.arg("--tilo-frame-damage");
     if private_root.is_some() {
         command.arg("--private");
@@ -1062,9 +980,6 @@ fn launch_host(
     Ok((child, memory))
 }
 
-/// What a starting host's supervisor needs: it serves the profile to other
-/// Browser processes, waits for the host to report ready and watches it until
-/// it exits.
 struct Starter {
     child: Arc<Mutex<Option<std::process::Child>>>,
     ready: std::sync::mpsc::Receiver<()>,
@@ -1086,8 +1001,6 @@ impl Starter {
             self.queue.close();
             return;
         };
-        // Other Browser windows of the profile join at once rather than
-        // waiting for the host: their tabs queue behind this one's.
         let served = self
             .claim
             .as_ref()
@@ -1100,7 +1013,6 @@ impl Starter {
                 .map_err(|error| format!("Chromium did not initialize: {error}"))
         });
         if let Err(error) = started {
-            // A host that exited first has already said why.
             self.shared.fail(error);
             self.queue.close();
             let _ = child.kill();
@@ -1124,8 +1036,6 @@ impl Starter {
         if self.exited.load(Ordering::Acquire) {
             claim.release_after_exit(server.as_ref());
         } else {
-            // The host was killed and its exit could not be confirmed: it may
-            // still run on the profile, so this process keeps it claimed.
             claim.keep_while_host_may_run();
         }
     }
@@ -1143,21 +1053,16 @@ fn valid_context_menu(value: &Value) -> bool {
 }
 
 impl ChromiumEngine {
-    /// Start the packaged runtime and persistent local profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the runtime/profile cannot be located or prepared,
-    /// or the host cannot be started. A host that starts but never becomes
-    /// ready fails the page later, as a [`WebViewEvent::LoadFailed`].
+    /// Start the packaged runtime and persistent local profile. Returns an error if the
+    /// runtime/profile cannot be located or prepared, or the host cannot be started. A
+    /// host that starts but never becomes ready fails the page later, as a
+    /// [`WebViewEvent::LoadFailed`].
     pub fn new() -> Result<Arc<Self>, String> {
         Self::new_with_extensions(&[])
     }
 
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid extensions, unavailable runtime/profile, or a helper that cannot be started.
+    /// Returns an error for invalid extensions, unavailable runtime/profile, or a helper
+    /// that cannot be started.
     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
         let profile = std::env::var_os("TILO_CHROMIUM_PROFILE")
             .map(PathBuf::from)
@@ -1172,10 +1077,8 @@ impl ChromiumEngine {
         )
     }
 
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the private root is not owned, the runtime is missing, or the helper cannot be started.
+    /// Returns an error if the private root is not owned, the runtime is missing, or the
+    /// helper cannot be started.
     pub fn new_private(root: &Path) -> Result<Arc<Self>, String> {
         match host_path() {
             Ok(host) => Self::with_private_host(&host, root),
@@ -1194,21 +1097,16 @@ impl ChromiumEngine {
         Self::with_host_extensions(&host_path()?, profile, extensions, None, HostMode::Browsing)
     }
 
-    /// Explicit runtime/profile paths for packaging and isolated live tests.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the profile cannot be prepared or the helper cannot start.
+    /// Explicit runtime/profile paths for packaging and isolated live tests. Returns an
+    /// error if the profile cannot be prepared or the helper cannot start.
     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
         Self::with_host_extensions(host, profile, &[], None, HostMode::Browsing)
     }
 
-    /// Start an incognito helper whose complete installation root is removed
-    /// by the process supervisor only after the native child has exited.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot start.
+    /// Start an incognito helper whose complete installation root is removed by the
+    /// process supervisor only after the native child has exited. Returns an error if the
+    /// private root is not owned, the profile cannot be prepared, or the helper cannot
+    /// start.
     pub fn with_private_host(host: &Path, root: &Path) -> Result<Arc<Self>, String> {
         if !is_owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
@@ -1222,9 +1120,9 @@ impl ChromiumEngine {
         )
     }
 
-    /// A dedicated persistent profile for one explicitly consented service session.
-    /// The caller owns a private, identity-bound profile directory; this never
-    /// changes the normal Browser profile or accepts an unbound import.
+    /// A dedicated persistent profile for one explicitly consented service session. The
+    /// caller owns a private, identity-bound profile directory; this never changes the
+    /// normal Browser profile or accepts an unbound import.
     pub fn with_service_session(profile: &Path, session_id: &str) -> Result<Arc<Self>, String> {
         if !browser_continuity_core::sessions::valid_id(session_id) {
             return Err("Selected website session is unavailable".into());
@@ -1238,15 +1136,11 @@ impl ChromiumEngine {
         )
     }
 
-    /// A host for sealed documents over `profile`, its own: a page never
-    /// navigates, a followed link comes back as a new-tab request
-    /// ([`super::WebViewEngine::take_new_tab_requests`]), and the address
-    /// under the pointer as [`super::WebViewEvent::LinkHovered`]. For a mail.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the runtime is missing, the profile cannot be
-    /// prepared, or the host cannot start.
+    /// A host for sealed documents over `profile`, its own: a page never navigates, a
+    /// followed link comes back as a new-tab request
+    /// ([`super::WebViewEngine::take_new_tab_requests`]), and the address under the
+    /// pointer as [`super::WebViewEvent::LinkHovered`]. Returns an error if the runtime
+    /// is missing, the profile cannot be prepared, or the host cannot start.
     pub fn sealed_documents(profile: &Path) -> Result<Arc<Self>, String> {
         Self::with_host_extensions(&host_path()?, profile, &[], None, HostMode::SealedDocuments)
     }
@@ -1305,8 +1199,6 @@ impl ChromiumEngine {
     ) -> Result<Arc<Self>, String> {
         let extensions = validated_extension_paths(extensions)?;
         let mut cleanup_on_error = PrivateRootCleanup(private_root.clone());
-        // A host needs its profile to itself: join the host already running
-        // it, or become the process that runs it.
         let profile = &prepare_profile(profile)?;
         let claim = if mode.alone() {
             None
@@ -1319,7 +1211,6 @@ impl ChromiumEngine {
                     return shared::connect(stream);
                 }
                 shared::Role::Busy(error) => {
-                    // Another process may still be using the private root.
                     cleanup_on_error.disarm();
                     return Err(error);
                 }
@@ -1386,11 +1277,10 @@ impl ChromiumEngine {
             let _ = child.wait();
             return Err(error.to_string());
         }
-        // The host takes a second or more to initialize, longer on a loaded
-        // machine. Its window does not wait for it: commands queue until the
-        // host reads them, and the profile socket, the host's readiness and
-        // its supervision follow on a thread of their own. A host that never
-        // becomes ready fails the page as one that dies later does.
+        // The host takes a second or more to initialize, longer on a loaded machine. Its
+        // window does not wait for it: commands queue until the host reads them, and the
+        // profile socket, the host's readiness and its supervision follow on a thread of
+        // their own.
         let child = Arc::new(Mutex::new(Some(child)));
         let wait_for_private_cleanup =
             private_root.is_some() || matches!(mode, HostMode::ServiceSession(_));
@@ -1431,10 +1321,6 @@ impl ChromiumEngine {
 }
 
 impl ChromiumEngine {
-    /// Tell the host what this tab last asked of document size reports,
-    /// once the host said it can measure.
-    /// Tell the host this tab takes its popups, once it asked and the host
-    /// said it can.
     fn tell_popups(&self) {
         let shared = &self.shared;
         if !shared.popups_asked.load(Ordering::Acquire)
@@ -1452,8 +1338,6 @@ impl ChromiumEngine {
         }
     }
 
-    /// Tell the host this tab answers the page's questions, once it asked
-    /// and the host said it can.
     fn tell_dialogs(&self) {
         let shared = &self.shared;
         if !shared.dialogs_asked.load(Ordering::Acquire)
@@ -1471,7 +1355,6 @@ impl ChromiumEngine {
         }
     }
 
-    /// Tell the host this tab holds what its page sends, once it asked.
     fn tell_holds(&self) {
         let shared = &self.shared;
         if !shared.holds_asked.load(Ordering::Acquire)
@@ -1578,8 +1461,8 @@ impl WebViewEngine for ChromiumEngine {
         if !super::navigation_request_id(request_id) || !command.valid() {
             return Err("Invalid owned navigation request".into());
         }
-        // Serialize reservation+enqueue with cancellation; neither waits for
-        // CEF work, only the bounded command queue insertion.
+        // Serialize reservation+enqueue with cancellation; neither waits for CEF work,
+        // only the bounded command queue insertion.
         let _ordering = self
             .shared
             .navigation_commands
@@ -1639,8 +1522,6 @@ impl WebViewEngine for ChromiumEngine {
             .tx
             .push(json!({"op":"visibility","tab":self.tab,"visible":visible}));
         // A newly composed WebView needs the retained page pixels immediately.
-        // Keep this one frame until CEF asynchronously repaints on activation.
-        // The old composition already retained the same Arc-backed pixels.
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         self.shared.open_tabs.lock_recover().drain(..).collect()
@@ -1715,7 +1596,6 @@ impl WebViewEngine for ChromiumEngine {
                 return;
             }
             WebViewCommand::CopySelection { request_id } => {
-                // An older host cannot read the selection: nothing is copied.
                 if self.shared.selection_text.load(Ordering::Acquire) {
                     let _ = self.tx.push(
                         json!({"op":"selection_text","tab":self.tab,"request_id":request_id}),
@@ -1739,8 +1619,7 @@ impl WebViewEngine for ChromiumEngine {
                 } else {
                     None
                 };
-                // Failure wakes arbitrary callers, which may enqueue another
-                // command. Preserve ordering without running callbacks under it.
+                // Failure wakes arbitrary callers, which may enqueue another command.
                 drop(_ordering);
                 if let Some(error) = error {
                     self.shared
@@ -1802,8 +1681,7 @@ impl WebViewEngine for ChromiumEngine {
                     });
                     return;
                 }
-                // A prior helper error describes its previous URL. Each new
-                // rejected navigation still needs an error for the requested URL.
+                // A prior helper error describes its previous URL.
                 if navigation.is_none() && self.shared.failed.load(Ordering::Acquire) {
                     return;
                 }
@@ -1867,8 +1745,6 @@ impl WebViewEngine for ChromiumEngine {
 
 impl Drop for ChromiumEngine {
     fn drop(&mut self) {
-        // Reserve native capacity until OnBeforeClose acknowledges destruction.
-        // A dead route cannot receive events, but still counts against the bound.
         let retire = {
             let mut routes = self.runtime.routes.lock_recover();
             if let Some(route) = routes.get_mut(&self.tab) {
@@ -1969,8 +1845,6 @@ fn route_native_event(
                 .and_then(|id| u32::try_from(id).ok())
         {
             if shared.remote.is_some() {
-                // A popup of another process's tab is that process's: its
-                // traffic goes where the tab's goes, until it closes.
                 routes
                     .lock()
                     .map_err(|_| "Tab routes unavailable")?
@@ -2013,7 +1887,6 @@ fn route_native_event(
             return Ok(());
         }
         if event_name == "cursor" {
-            // A shape this toolkit has no name for is the arrow.
             *shared.cursor.lock_recover() = value["cursor"]
                 .as_str()
                 .and_then(|name| name.parse().ok())
@@ -2036,8 +1909,7 @@ fn route_native_event(
     Ok(())
 }
 
-// CEF emits byte counts and document counters as JSON doubles. Accept only
-// whole, nonnegative values that fit, while preserving exact integer JSON.
+// CEF emits byte counts and document counters as JSON doubles.
 fn wire_u64(value: &Value) -> Option<u64> {
     if let Some(integer) = value.as_u64() {
         return Some(integer);
@@ -2080,9 +1952,8 @@ fn decode_favicon(value: &Value) -> Option<WebViewEvent> {
     })
 }
 
-/// A popup `opener`'s page opened: routed to an endpoint of its own at
-/// once, which waits to be adopted. One the app never adopts closes with
-/// its opener.
+/// A popup `opener`'s page opened: routed to an endpoint of its own at once, which waits
+/// to be adopted. One the app never adopts closes with its opener.
 fn open_popup(
     opener: &Arc<Shared>,
     popup: u32,
@@ -2091,7 +1962,6 @@ fn open_popup(
 ) -> Result<(), &'static str> {
     let mut routes = routes.lock().map_err(|_| "Tab routes unavailable")?;
     let mut unadopted = opener.unadopted.lock_recover();
-    // Popups closed before they were adopted no longer count.
     unadopted.retain(|id, shared| {
         routes
             .get(id)
@@ -2283,7 +2153,6 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::Key { .. }
         | WebViewCommand::ImeComposition { .. }
         | WebViewCommand::ImeCommit(_) => text_field::within_limits(command),
-        // A shortcut's key is one character, or a named key.
         WebViewCommand::ExtensionCommandKey {
             key: KeyInput::Character(text),
             ..
@@ -2340,8 +2209,6 @@ impl CommandQueue {
             return Err("command channel closed");
         }
         let op = value.get("op").and_then(Value::as_str).unwrap_or("");
-        // These operations are explicitly replaceable. Keep ordering barriers:
-        // mouse motion before a click and resize before navigation stay ordered.
         if matches!(op, "mouse_move" | "resize" | "focus")
             && state.0.back().is_some_and(|(last, _)| {
                 last.get("op").and_then(Value::as_str) == Some(op)
@@ -2364,8 +2231,8 @@ impl CommandQueue {
             (4160, 96 * 1024 * 1024)
         };
         if state.0.len() >= items || state.1.saturating_add(encoded) > bytes {
-            // Input saturation is not a navigation failure. The caller logs the
-            // rejected operation; protocol/lifecycle errors have their own path.
+            // Input saturation is not a navigation failure. The caller logs the rejected
+            // operation; protocol/lifecycle errors have their own path.
             return Err("command queue capacity reached");
         }
         state.1 = state
@@ -2516,8 +2383,6 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             state: value["state"].as_str()?.into(),
             path: value["path"].as_str()?.into(),
             name: value["name"].as_str()?.into(),
-            // Too long to keep (a page's `data:` export): kept as no address,
-            // so it cannot be fetched again.
             url: value["url"]
                 .as_str()
                 .filter(|url| url.len() <= MAX_DOWNLOAD_URL)
@@ -2807,7 +2672,6 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::PermissionDecision { id, allow } => {
             json!({"op":"permission_decision","id":id,"allow":allow})
         }
-        // A no to a host that knows no dismissal; a dismissal to one that does.
         WebViewCommand::PermissionDismissed { id } => {
             json!({"op":"permission_decision","id":id,"allow":false,"dismiss":true})
         }

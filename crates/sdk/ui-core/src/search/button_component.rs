@@ -6,8 +6,8 @@ use crate::widget::{Button, Decorator};
 use super::{SearchRequest, search_button};
 
 /// The one search affordance an app puts in its chrome: an icon button that opens the
-/// platform search over the whole app. It never draws a field, and a window bar that searches
-/// for the window takes its place.
+/// platform search over the whole app. It never draws a field, and a window bar that
+/// searches for the window takes its place.
 #[derive(Component, Default)]
 #[component(name = "SearchButton", role = "Button")]
 pub struct SearchButtonProps {}
@@ -38,7 +38,6 @@ impl Described for SearchButton {
         Self(search_button(SearchRequest::this_app()))
     }
 
-    /// It takes nothing: the one it is stays.
     fn set_props(&mut self, _props: SearchButtonProps) -> bool {
         true
     }

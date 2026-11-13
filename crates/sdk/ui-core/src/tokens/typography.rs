@@ -1,21 +1,11 @@
-//! The semantic type system.
-//!
-//! Apps say what a piece of text *is* — a [`TextRole`] — and the theme
-//! decides its face, size, weight and leading. Every role size is a ratio of
-//! one body size, so a theme author retunes the whole scale with
-//! [`Typography::with_base_size`] and the accessibility text scale grows every
-//! role at once. [`Typography::style`] (and its shorthand
-//! [`crate::theme::Theme::text`]) returns a style whose size already includes
-//! the theme's UI and text scale ([`TextScaling::Resolved`]), so the renderer
-//! paints it exactly once at that size.
+//! The semantic type system. Apps say what a piece of text *is* — a [`TextRole`] — and
+//! the theme decides its face, size, weight and leading.
 
 use crate::text_render::{
     FontChoice, NumericStyle, TextGround, TextKind, TextScaling, TextStyle, TextWeight,
 };
 
-/// The body size, in logical pixels at 1×, that every role is designed
-/// against. Role sizes are `body × role_px / REFERENCE_BODY_PX`, so they land
-/// on whole pixels at the stock size.
+/// The body size, in logical pixels at 1×, that every role is designed against.
 pub const REFERENCE_BODY_PX: f32 = 14.0;
 
 /// What a piece of text is. Pick the role; never a pixel size.
@@ -51,7 +41,6 @@ pub enum TextRole {
     Code,
 }
 
-/// Which of the theme's three families a role is set in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Face {
     Sans,
@@ -59,7 +48,6 @@ enum Face {
     Mono,
 }
 
-/// One row of the role table.
 #[derive(Clone, Copy, Debug)]
 struct RoleSpec {
     px: f32,
@@ -122,9 +110,8 @@ impl TextRole {
         self.spec().weight
     }
 
-    /// The screen-reader heading level a role implies: `LargeTitle` and
-    /// `Title` are level 1, `Heading` level 2 and `Subheading` level 3.
-    /// `Display` is a hero value, not a heading.
+    /// The screen-reader heading level a role implies: `LargeTitle` and `Title` are level
+    /// 1, `Heading` level 2 and `Subheading` level 3.
     #[must_use]
     pub const fn heading_level(self) -> Option<u8> {
         match self {
@@ -136,15 +123,13 @@ impl TextRole {
     }
 }
 
-/// The one size every role derives from: the body size, already multiplied
-/// by the theme's UI and text scale. Private so nothing outside the toolkit
-/// can pick a pixel size; read a role through [`Typography::style`].
+/// The one size every role derives from: the body size, already multiplied by the theme's
+/// UI and text scale.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeScale {
     body: f32,
-    /// How far role sizes stand from the body size: each role's stock ratio
-    /// to the body raised to this power (`1` the stock scale), from the
-    /// theme's type role.
+    /// How far role sizes stand from the body size: each role's stock ratio to the body
+    /// raised to this power (`1` the stock scale), from the theme's type role.
     contrast: f32,
 }
 
@@ -205,16 +190,12 @@ impl FontFamily {
     }
 }
 
-/// A UI face the system ships, chosen by name in a theme's type role or by
-/// the accessibility layer. Reading ([`ReadingFace`]) and code keep their
-/// own faces.
+/// A UI face the system ships, chosen by name in a theme's type role or by the
+/// accessibility layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum UiFace {
-    /// The system UI face.
     #[default]
     Default,
-    /// Atkinson Hyperlegible Next: letterforms designed to be told apart
-    /// at low vision, with the same matched script fallbacks.
     Hyperlegible,
 }
 
@@ -262,7 +243,6 @@ impl UiFace {
 /// | `SourceSerif`, Source Serif 4 | `opsz` axis |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ReadingFace {
-    /// New Computer Modern, Computer Modern as TeX sets it.
     #[default]
     Default,
     Libertinus,
@@ -292,8 +272,7 @@ impl ReadingFace {
         }
     }
 
-    /// The font family the face is set in. Pass it as the family of a
-    /// Reading style; the toolkit picks the face's optical cut per size.
+    /// The font family the face is set in.
     #[must_use]
     pub const fn family(self) -> &'static str {
         match self {
@@ -305,8 +284,8 @@ impl ReadingFace {
         }
     }
 
-    /// The face a theme document or a reader's setting names: by face name,
-    /// family name, or `Default`.
+    /// The face a theme document or a reader's setting names: by face name, family name,
+    /// or `Default`.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         let name = name.trim();
@@ -326,21 +305,13 @@ pub struct Typography {
     pub serif_family: String,
     pub mono_family: String,
     pub(crate) scale: TypeScale,
-    /// The ground the theme's content is set on, carried by every role.
     pub(crate) ground: TextGround,
-    /// "Always distinguish similar letters", resolved: every look-alike (I,
-    /// l, 1 and 0, O) set apart in all text, not only in identifiers, codes
-    /// and links. From the theme's type role
-    /// ([`crate::theme::ThemeType::distinguishes_letters`]) and the
-    /// accessibility layer; the renderer applies it
-    /// ([`crate::text_render::TextRenderer::set_distinct_letters`]).
+    /// "Always distinguish similar letters", resolved: every look-alike (I, l, 1 and 0,
+    /// O) set apart in all text, not only in identifiers, codes and links.
     pub distinct_letters: bool,
-    /// The weight of body text, labels and headings, from the theme's type
-    /// role (`crate::theme::ThemeWeights`).
     pub(crate) weights: [TextWeight; 3],
 }
 
-/// The design language's weights of body text, labels and headings.
 const STOCK_WEIGHTS: [TextWeight; 3] = [
     TextWeight::Regular,
     TextWeight::Medium,
@@ -361,8 +332,8 @@ impl Default for Typography {
     }
 }
 
-/// The stock typography, built once: what a retained widget resolves its
-/// role against before it has seen the active theme.
+/// The stock typography, built once: what a retained widget resolves its role against
+/// before it has seen the active theme.
 pub(crate) fn stock() -> &'static Typography {
     static STOCK: std::sync::LazyLock<Typography> =
         std::sync::LazyLock::new(|| crate::theme::Theme::default().tokens.typography);
@@ -370,8 +341,8 @@ pub(crate) fn stock() -> &'static Typography {
 }
 
 impl Typography {
-    /// Set the UI face from a theme document's type role: a built-in face
-    /// by name ([`UiFace::name`]) or any installed family by its name.
+    /// Set the UI face from a theme document's type role: a built-in face by name
+    /// ([`UiFace::name`]) or any installed family by its name.
     pub fn set_face(&mut self, face: &str) {
         self.sans_family = UiFace::from_name(face)
             .map_or_else(|| face.trim().to_owned(), |face| face.family().to_owned());
@@ -384,32 +355,30 @@ impl Typography {
         self
     }
 
-    /// The UI face as a theme document names it: a built-in face's name, or
-    /// the family name of any other face.
+    /// The UI face as a theme document names it: a built-in face's name, or the family
+    /// name of any other face.
     #[must_use]
     pub fn face_name(&self) -> String {
         UiFace::from_name(&self.sans_family)
             .map_or_else(|| self.sans_family.clone(), |face| face.name().to_owned())
     }
 
-    /// Set the reading face from a theme document's type role: a built-in
-    /// face by name ([`ReadingFace::name`]) or any installed family by its
-    /// name.
+    /// Set the reading face from a theme document's type role: a built-in face by name
+    /// ([`ReadingFace::name`]) or any installed family by its name.
     pub fn set_reading_face(&mut self, face: &str) {
         self.serif_family = ReadingFace::from_name(face)
             .map_or_else(|| face.trim().to_owned(), |face| face.family().to_owned());
     }
 
-    /// This typography with the reading face `face`
-    /// ([`Self::set_reading_face`]).
+    /// This typography with the reading face `face` ([`Self::set_reading_face`]).
     #[must_use]
     pub fn with_reading_face(mut self, face: &str) -> Self {
         self.set_reading_face(face);
         self
     }
 
-    /// The reading face as a theme document names it: a built-in face's
-    /// name, or the family name of any other face.
+    /// The reading face as a theme document names it: a built-in face's name, or the
+    /// family name of any other face.
     #[must_use]
     pub fn reading_face_name(&self) -> String {
         ReadingFace::from_name(&self.serif_family)
@@ -422,30 +391,28 @@ impl Typography {
         self.ground
     }
 
-    /// Set the ground the theme's roles are set on: the theme's content
-    /// ground, or the ground a widget's container hands it.
+    /// Set the ground the theme's roles are set on: the theme's content ground, or the
+    /// ground a widget's container hands it.
     pub fn set_ground(&mut self, ground: TextGround) {
         self.ground = ground;
     }
 
-    /// Set the 1× body size every role derives from. Theme authors call this
-    /// on a fresh theme, before the text or UI scale is applied.
+    /// Set the 1× body size every role derives from.
     #[must_use]
     pub fn with_base_size(mut self, body_px: f32) -> Self {
         self.scale = TypeScale::new(body_px.max(1.0)).with_contrast(self.scale.contrast);
         self
     }
 
-    /// Set how far the role sizes stand apart and the weight of each tier,
-    /// from a theme document's type role.
+    /// Set how far the role sizes stand apart and the weight of each tier, from a theme
+    /// document's type role.
     pub(crate) fn set_hierarchy(&mut self, contrast: f32, weights: [TextWeight; 3]) {
         self.scale = self.scale.with_contrast(contrast);
         self.weights = weights;
     }
 
-    /// Resolve a role into the complete style consumed by both text
-    /// measurement and painting. The size already carries the theme's UI and
-    /// text scale, so the style is [`TextScaling::Resolved`].
+    /// Resolve a role into the complete style consumed by both text measurement and
+    /// painting.
     #[must_use]
     pub fn style(&self, role: TextRole) -> TextStyle {
         let spec = role.spec();
@@ -466,17 +433,14 @@ impl Typography {
             .with_family(FontChoice::Named(family.clone()))
             .with_ground(self.ground);
         if role == TextRole::Reading {
-            // Figures in running text are old-style and proportional, as a
-            // book sets them; `.numeric()` makes them tabular lining again.
             style = style.with_numeric_style(NumericStyle::ProportionalOldstyle);
         }
         style.scaling = TextScaling::Resolved;
         style
     }
 
-    /// The resolved size of `role`, for a custom painter that has to size
-    /// geometry (an icon, a swatch) against a line of that role. Paint the
-    /// text itself with [`Self::style`].
+    /// The resolved size of `role`, for a custom painter that has to size geometry (an
+    /// icon, a swatch) against a line of that role.
     #[must_use]
     pub fn size(&self, role: TextRole) -> f32 {
         self.scale.size(role)
@@ -484,11 +448,8 @@ impl Typography {
 }
 
 impl crate::theme::Theme {
-    /// The resolved style of `role` in this theme: face, size, weight and
-    /// leading, with the UI and text scale already applied. Measure and draw
-    /// with the same value through [`crate::text_render::TextRenderer::measure_style`]
-    /// and [`crate::text_render::TextRenderer::draw_style`] (or the
-    /// [`crate::paint::PaintCtx`] role helpers).
+    /// The resolved style of `role` in this theme: face, size, weight and leading, with
+    /// the UI and text scale already applied.
     #[must_use]
     pub fn text(&self, role: TextRole) -> TextStyle {
         self.tokens.typography.style(role)
@@ -496,9 +457,8 @@ impl crate::theme::Theme {
 }
 
 impl TextStyle {
-    /// The next emphasis weight: regular and medium text become semibold,
-    /// semibold becomes bold. Use it for emphasis inside a role
-    /// (`Body.strong()` for a name in a row) instead of picking a weight.
+    /// The next emphasis weight: regular and medium text become semibold, semibold
+    /// becomes bold.
     #[must_use]
     pub fn strong(mut self) -> Self {
         self.weight = match self.weight {
@@ -508,17 +468,17 @@ impl TextStyle {
         self
     }
 
-    /// Numbers that line up in a column or change in place
-    /// ([`TextKind::Numeric`]): tabular figures where the face has them.
+    /// Numbers that line up in a column or change in place ([`TextKind::Numeric`]):
+    /// tabular figures where the face has them.
     #[must_use]
     pub fn numeric(self) -> Self {
         self.with_kind(TextKind::Numeric)
     }
 
     /// This style's face, weight and leading at exactly `px`, as content
-    /// ([`TextScaling::Content`]): type sized by the thing it sits in — the
-    /// initials in an avatar disc, a label on a zoomed canvas — rather than
-    /// by the reader's text scale.
+    /// ([`TextScaling::Content`]): type sized by the thing it sits in — the initials in
+    /// an avatar disc, a label on a zoomed canvas — rather than by the reader's text
+    /// scale.
     #[must_use]
     pub fn with_content_size(mut self, px: f32) -> Self {
         self.size = px;
@@ -598,7 +558,6 @@ mod tests {
                 pair[1]
             );
         }
-        // Subheading and Body share a size; weight carries the step.
         let (sub, body) = (
             typography.style(TextRole::Subheading),
             typography.style(TextRole::Body),

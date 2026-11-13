@@ -1,6 +1,5 @@
-//! What a provider is asked: the typed text, the facet filters the platform
-//! parsed out of it or the user picked as chips, and the scope it is narrowed
-//! to.
+//! What a provider is asked: the typed text, the facet filters the platform parsed out of
+//! it or the user picked as chips, and the scope it is narrowed to.
 
 /// One value a [`Facet`] can take: `rust` with the label "Rust".
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -18,17 +17,12 @@ impl FacetValue {
     }
 }
 
-/// A dimension a provider can filter by: a snippet's language, a store item's
-/// category, a message's sender. The palette shows its values as filter chips
-/// beside the kind chips, and typed `key:value` tokens for a declared `key`
-/// become the same structured filter.
+/// A dimension a provider can filter by: a snippet's language, a store item's category, a
+/// message's sender.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Facet {
-    /// The token key typed before the colon (`language` in `language:rust`).
     pub key: String,
-    /// What the chip group is called ("Language").
     pub label: String,
-    /// The values offered as chips. A typed value need not be listed.
     pub values: Vec<FacetValue>,
 }
 
@@ -97,10 +91,8 @@ impl SearchQuery {
         }
     }
 
-    /// Split typed `input` into free text and `key:value` filters for the
-    /// declared `facets`. A token whose key no facet declares stays text, so
-    /// `http://example.org` or `12:30` are searched for as typed. Keys match
-    /// case-insensitively; a quoted value (`tag:"two words"`) may hold spaces.
+    /// Split typed `input` into free text and `key:value` filters for the declared
+    /// `facets`.
     #[must_use]
     pub fn parse(input: &str, facets: &[Facet]) -> Self {
         let mut text = Vec::new();
@@ -155,7 +147,7 @@ impl SearchQuery {
         &self.filters
     }
 
-    /// The values applied for `key`. Values of one key combine as "any of".
+    /// The values applied for `key`.
     pub fn filter_values<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
         self.filters
             .iter()
@@ -163,8 +155,8 @@ impl SearchQuery {
             .map(|filter| filter.value.as_str())
     }
 
-    /// Whether a hit with `values` for `key` passes this query's filters on
-    /// that key: always when no value of `key` is applied.
+    /// Whether a hit with `values` for `key` passes this query's filters on that key:
+    /// always when no value of `key` is applied.
     #[must_use]
     pub fn admits(&self, key: &str, values: &[&str]) -> bool {
         let mut wanted = self.filter_values(key).peekable();
@@ -178,8 +170,8 @@ impl SearchQuery {
         self.scope.as_deref()
     }
 
-    /// Whether the hit anchored at `anchor` lies inside the query's scope:
-    /// always when the query has none.
+    /// Whether the hit anchored at `anchor` lies inside the query's scope: always when
+    /// the query has none.
     #[must_use]
     pub fn in_scope(&self, anchor: &str) -> bool {
         self.scope
@@ -194,7 +186,6 @@ impl From<&str> for SearchQuery {
     }
 }
 
-/// Whitespace-separated tokens; a double-quoted run stays one token.
 fn tokens(input: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();

@@ -8,14 +8,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// Immutable text and logical style for repeated measurement and drawing.
-/// Retain this value (or a cheap clone) while content/style is unchanged, then
-/// construct a new one when either changes. Its hash is computed at construction;
-/// a warm renderer lookup of that retained handle does not scan its payload.
-/// Share clones of one handle between layout and paint; independently constructed
-/// equal handles can require exact comparison when replacing each other's cache
-/// identity. Promotion from a borrowed entry also respects the payload budget.
-/// Width, renderer text scale, font generation and custom hyphenator versions are
-/// still checked on every call. Colour and transform remain paint-time inputs.
 #[derive(Clone)]
 pub struct PreparedText(Arc<TextIdentity>);
 
@@ -88,7 +80,6 @@ fn fingerprint(text: &str, style: &TextStyle) -> u64 {
     style.italic.hash(&mut hash);
     style.family.cache_hash().hash(&mut hash);
     style.advanced_hash().hash(&mut hash);
-    // The live version is captured separately, including for PreparedText.
     match &style.hyphenation {
         Hyphenation::None | Hyphenation::Auto(_) => style.hyphenation.cache_hash().hash(&mut hash),
         Hyphenation::Custom(_) => 2_u8.hash(&mut hash),
@@ -100,8 +91,6 @@ fn same_style(a: &TextStyle, b: &TextStyle) -> bool {
     let hyphenation = match (&a.hyphenation, &b.hyphenation) {
         (Hyphenation::None, Hyphenation::None) => true,
         (Hyphenation::Auto(a), Hyphenation::Auto(b)) => a == b,
-        // Different implementations may choose the same numeric cache_key.
-        // Owning both Arcs prevents allocator address reuse from aliasing them.
         (Hyphenation::Custom(a), Hyphenation::Custom(b)) => Arc::ptr_eq(a, b),
         _ => false,
     };
@@ -136,9 +125,7 @@ fn same_style(a: &TextStyle, b: &TextStyle) -> bool {
         && a.distinguish == b.distinguish
 }
 
-/// One public operation hashes borrowed input once. On its first exact match it
-/// adopts the resident Arc, so subsequent width/measure/shape probes use identity.
-/// No borrowed pointer is ever retained after the operation.
+/// One public operation hashes borrowed input once.
 pub(super) struct CacheQuery<'a> {
     pub text: &'a str,
     pub style: &'a TextStyle,
@@ -146,8 +133,8 @@ pub(super) struct CacheQuery<'a> {
     retained: Option<&'a Arc<TextIdentity>>,
     resolved: OnceCell<Arc<TextIdentity>>,
     hyphenator_version: Option<u64>,
-    // One rejected shape may be needed again by the same width/measure/draw
-    // operation. It dies with this query, never with the long-lived renderer.
+    // One rejected shape may be needed again by the same width/measure/draw operation. It
+    // dies with this query, never with the long-lived renderer.
     uncached_shape: OnceCell<(BucketKey, super::ShapedText)>,
 }
 
@@ -249,9 +236,8 @@ struct BucketKey {
 
 impl Hash for BucketKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Keep every equality bit, including Some(0) versus None, but feed the
-        // keyed map hasher once rather than restarting its write path per field.
-        // Explicit words avoid padding, allocation and assumptions about layout.
+        // Keep every equality bit, including Some(0) versus None, but feed the keyed map
+        // hasher once rather than restarting its write path per field.
         let flags = u64::from(self.width.is_some())
             | (u64::from(self.distinguish_everywhere) << 1)
             | (u64::from(self.hyphenator_version.is_some()) << 2);
@@ -297,14 +283,9 @@ struct Bucket<V> {
     referenced: bool,
 }
 
-/// A second-chance clock with one queue record per bucket, never per hit. New
-/// entries start cold; a lookup gives them a second chance, protecting repeatedly
-/// used labels from streams of one-off probes. Colliding siblings share recency
-/// and evict together. This is intentionally approximate recency, not strict LRU.
-/// Payload bytes (owned identity + value buffers) and entry count are both bounded;
-/// table/queue/bucket metadata is bounded by the entry limit. Shared identities are
-/// charged per entry, conservatively. External Arc owners and custom hyphenator
-/// internals belong to their callers, and cannot be bounded by cache eviction.
+/// A second-chance clock with one queue record per bucket, never per hit. External Arc
+/// owners and custom hyphenator internals belong to their callers, and cannot be bounded
+/// by cache eviction.
 pub(super) struct TextCache<V> {
     buckets: HashMap<BucketKey, Bucket<V>>,
     clock: VecDeque<BucketKey>,
@@ -333,10 +314,8 @@ impl<V> TextCache<V> {
             .iter_mut()
             .find(|entry| key.input.matches(&entry.identity))?;
         // A legacy borrowed call may have populated this entry first. After exact
-        // equality, retain the caller's immutable handle so future prepared calls
-        // skip payload comparisons too. Keep both identities in the current query
-        // (resolved + retained) for the paired measure/shape lookup. Extra spare
-        // capacity in a caller's style must not defeat the payload budget.
+        // equality, retain the caller's immutable handle so future prepared calls skip
+        // payload comparisons too.
         if let Some(retained) = key.input.retained
             && !Arc::ptr_eq(retained, &entry.identity)
         {

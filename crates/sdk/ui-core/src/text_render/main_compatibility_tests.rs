@@ -1,8 +1,5 @@
-//! Additive differential controls for d3f933ec's baseline and outline APIs.
-//! Original API bodies below are copied from the immutable target. Only their
-//! cache-dependent helpers are substituted with the SAME production shaper's
-//! fresh, uncached width probe and glyph flattening. Neither oracle calls the
-//! candidate CacheQuery, cache key, public baseline or public outline method.
+//! Additive differential controls for d3f933ec's baseline and outline APIs. Original API
+//! bodies below are copied from the immutable target.
 use super::*;
 
 impl TextRenderer {

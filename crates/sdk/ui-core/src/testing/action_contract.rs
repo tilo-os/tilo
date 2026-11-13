@@ -1,24 +1,6 @@
-//! The contract every application action must honour, as reusable assertions.
-//!
-//! An app's actions are its public surface: the palette, automation, agents
-//! and collaborators all reach it through them. Three guarantees hold for any
-//! document action, whichever app it belongs to:
-//!
-//! * **Replay.** Applied on one replica and replayed from its envelope on
-//!   another at the same base, it produces byte-identical changes — the same
-//!   change hashes, not merely equal values.
-//! * **Undo.** Dispatched through the host path, it records exactly one undo
-//!   entry; undo returns the whole document to what it was before, and redo
-//!   puts the action back.
-//! * **One source of truth.** The [`ActionSpec`] the palette fires encodes the
-//!   same action as the builder the on-screen affordance calls.
-//!
-//! [`assert_every_immediate_action_honours_contract`] sweeps every immediate
-//! document action an app publishes for a seed document, so an action added
-//! later is covered without anyone writing a test for it. The
-//! [`action_contract_tests!`](crate::action_contract_tests) macro generates the
-//! test functions from a seed, a registry, the app's resource provider and the
-//! builders worth naming individually.
+//! The contract every application action must honour, as reusable assertions. An app's
+//! actions are its public surface: the palette, automation, agents and collaborators all
+//! reach it through them.
 
 #![allow(
     clippy::panic,
@@ -35,9 +17,6 @@ use tilo_actions::{
 use crate::action_palette::ActionPalette;
 use crate::state::State;
 
-/// Actor ids the two replicas write their own (non-action) changes under.
-/// Distinct from each other and from any action's pinned actor, so a replay
-/// that fell back to the replica's actor could not accidentally agree.
 const PEER_A: &[u8] = b"action-contract-peer-a";
 const PEER_B: &[u8] = b"action-contract-peer-b";
 
@@ -62,13 +41,11 @@ fn raw_changes(doc: &mut AutoCommit, since: &[ChangeHash]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The whole document as a value tree, for comparing content across replicas
-/// and across an undo.
+/// The whole document as a value tree, for comparing content across replicas and across
+/// an undo.
 pub fn hydrated(doc: &mut AutoCommit) -> automerge::hydrate::Value {
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
-    // History's own bookkeeping (what is undone, named versions) is not
-    // content.
     let mut content = doc.fork();
     let bookkeeping: Vec<String> = content
         .keys(automerge::ROOT)
@@ -84,23 +61,12 @@ pub fn hydrated(doc: &mut AutoCommit) -> automerge::hydrate::Value {
 /// What applying one action to a seed did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Applied {
-    /// The action wrote at least one op.
     Changed,
-    /// The action wrote nothing: its effect already held on the seed.
     Unchanged,
 }
 
-/// Apply `encoded` on one replica of `seed` and replay its envelope on a
-/// second, asserting both land on byte-identical changes and content.
-///
-/// Returns whether the action changed the document, so a sweep can tell a
-/// genuine no-op from a mutation. Use [`assert_replays_byte_identical`] when
-/// the action is expected to mutate.
-///
-/// # Panics
-///
-/// If `registry` cannot decode `encoded`, if either apply fails, or if the
-/// replicas diverge in heads, change bytes or content.
+/// Apply `encoded` on one replica of `seed` and replay its envelope on a second,
+/// asserting both land on byte-identical changes and content.
 pub fn replay_on_two_peers(
     seed: &AutoCommit,
     registry: &ActionRegistry,
@@ -153,12 +119,10 @@ pub fn replay_on_two_peers(
     }
 }
 
-/// The author every action the contract applies is invoked by, as a
-/// window's dispatcher signs what its person does.
+/// The author every action the contract applies is invoked by, as a window's dispatcher
+/// signs what its person does.
 pub const CONTRACT_AUTHOR: &str = "contract-author";
 
-/// Apply `encoded` as [`CONTRACT_AUTHOR`] invoked it: an action that signs
-/// what it writes with its author reads one, as it does in an app.
 fn apply_signed(
     doc: &mut AutoCommit,
     action: &dyn tilo_actions::Action,
@@ -169,15 +133,8 @@ fn apply_signed(
     tilo_actions::apply_local_with_context(doc, action, encoded.clone(), None, context)
 }
 
-/// Assert `encoded`, applied on one replica of `seed` and replayed on another
-/// from its envelope, mutates the document and produces byte-identical
-/// changes on both.
-///
-/// # Panics
-///
-/// See [`replay_on_two_peers`]; also when the action changes nothing on the
-/// seed, since a no-op replays identically by construction and proves
-/// nothing — seed a document the action actually changes.
+/// Assert `encoded`, applied on one replica of `seed` and replayed on another from its
+/// envelope, mutates the document and produces byte-identical changes on both.
 pub fn assert_replays_byte_identical(
     seed: &AutoCommit,
     registry: &ActionRegistry,
@@ -191,16 +148,10 @@ pub fn assert_replays_byte_identical(
     );
 }
 
-/// Dispatch `encoded` against a host [`State`] holding `seed`, record it the
-/// way the host records a dispatched action, and check the undo covenant:
-/// exactly one undo entry when it changed the document (none when it did
-/// not), undo restores the whole pre-action document, redo restores the
-/// post-action one.
-///
-/// # Panics
-///
-/// If `registry` cannot decode `encoded`, the action fails, or any of the
-/// above does not hold.
+/// Dispatch `encoded` against a host [`State`] holding `seed`, record it the way the host
+/// records a dispatched action, and check the undo covenant: exactly one undo entry when
+/// it changed the document (none when it did not), undo restores the whole pre-action
+/// document, redo restores the post-action one.
 pub fn undo_round_trip(
     seed: &AutoCommit,
     registry: &ActionRegistry,
@@ -223,7 +174,6 @@ pub fn undo_round_trip(
     if after_doc == before_doc && state.undo_depth() == depth {
         return Applied::Unchanged;
     }
-    // Housekeeping and content from outside are nobody's undo step.
     if !action.change_kind().is_step() {
         assert_eq!(
             state.undo_depth(),
@@ -263,13 +213,8 @@ pub fn undo_round_trip(
     Applied::Changed
 }
 
-/// Assert `encoded` records exactly one undo boundary on a host [`State`]
-/// holding `seed`, undo restores the whole pre-action document and redo the
-/// post-action one.
-///
-/// # Panics
-///
-/// See [`undo_round_trip`]; also when the action changes nothing on the seed.
+/// Assert `encoded` records exactly one undo boundary on a host [`State`] holding `seed`,
+/// undo restores the whole pre-action document and redo the post-action one.
 pub fn assert_one_undo_boundary_reverts(
     seed: &AutoCommit,
     registry: &ActionRegistry,
@@ -283,8 +228,8 @@ pub fn assert_one_undo_boundary_reverts(
     );
 }
 
-/// The first resource, depth-first, whose id is `resource`, or failing that
-/// whose kind is `resource`.
+/// The first resource, depth-first, whose id is `resource`, or failing that whose kind is
+/// `resource`.
 pub fn find_resource<'a>(resources: &'a [ResourceSpec], resource: &str) -> &'a ResourceSpec {
     fn walk<'a>(
         resources: &'a [ResourceSpec],
@@ -324,9 +269,6 @@ pub fn find_spec<'a>(
     (owner, spec)
 }
 
-/// The argument the palette binds when a prompted `spec` collects `text`:
-/// the first required parameter (else the first), parsed into its declared
-/// type. `None` when the text does not parse, as the palette binds nothing.
 fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)> {
     let Some(primary) = spec
         .params()
@@ -354,10 +296,9 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
     value.map(|value| (primary.name.to_string(), value))
 }
 
-/// What choosing `spec` in the palette dispatches: the pre-encoded action of
-/// an immediate spec, or a prompted spec's build of `arg`. The external
-/// invocation path (binding arguments against the spec's parameters) must
-/// agree, and is checked here too.
+/// What choosing `spec` in the palette dispatches: the pre-encoded action of an immediate
+/// spec, or a prompted spec's build of `arg`. The external invocation path (binding
+/// arguments against the spec's parameters) must agree, and is checked here too.
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
     let built = |encoded: Option<EncodedAction>| {
         encoded.unwrap_or_else(|| panic!("`{}` builds nothing from its input", spec.id))
@@ -392,13 +333,9 @@ pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
     palette
 }
 
-/// Assert choosing `spec` (with `arg`, for a prompted spec) dispatches
-/// exactly `expected` — type and payload — so the palette and the on-screen
-/// affordance's builder are one source of truth.
-///
-/// # Panics
-///
-/// See [`spec_encoding`]; also when the encodings differ.
+/// Assert choosing `spec` (with `arg`, for a prompted spec) dispatches exactly `expected`
+/// — type and payload — so the palette and the on-screen affordance's builder are one
+/// source of truth.
 pub fn assert_spec_encodes_as(spec: &ActionSpec, arg: Option<&str>, expected: &EncodedAction) {
     let actual = spec_encoding(spec, arg);
     assert_eq!(
@@ -409,19 +346,14 @@ pub fn assert_spec_encodes_as(spec: &ActionSpec, arg: Option<&str>, expected: &E
     );
 }
 
-/// Sweep the surface published in `resources` (derived from `seed`): it
-/// publishes something, passes the protocol validator (unique addresses,
-/// registered document types, coherent contracts), and every immediate,
-/// available document action replays byte-identically on a second replica
-/// and, when it changes the document, records exactly one undo boundary that
-/// undo reverts completely.
-///
-/// Returns how many immediate document actions were swept. An app whose
-/// registry decodes anything must publish at least one document action for
-/// its seed, so a seed that exercises none of them is refused rather than
-/// passing vacuously; an app that publishes only effect and view operations
-/// passes an empty registry. Prompted document actions need an argument, so
-/// their replay and undo belong in named `replay`/`undo` entries.
+/// Sweep the surface published in `resources` (derived from `seed`): it publishes
+/// something, passes the protocol validator (unique addresses, registered document types,
+/// coherent contracts), and every immediate, available document action replays
+/// byte-identically on a second replica and, when it changes the document, records
+/// exactly one undo boundary that undo reverts completely. An app whose registry decodes
+/// anything must publish at least one document action for its seed, so a seed that
+/// exercises none of them is refused rather than passing vacuously; an app that publishes
+/// only effect and view operations passes an empty registry.
 pub fn assert_every_immediate_action_honours_contract(
     seed: &AutoCommit,
     registry: &ActionRegistry,
@@ -475,8 +407,8 @@ pub fn assert_every_immediate_action_honours_contract(
     swept
 }
 
-/// Assert the Ctrl+K palette, loaded with `resources`, offers a row for each
-/// of `labels` when the user types it.
+/// Assert the Ctrl+K palette, loaded with `resources`, offers a row for each of `labels`
+/// when the user types it.
 pub fn assert_ctrl_k_publishes(resources: &[ResourceSpec], labels: &[&str]) {
     let mut palette = ActionPalette::new();
     palette.load_open_resources(resources);
@@ -679,12 +611,9 @@ mod tests {
 
     #[derive(Debug, Serialize, Deserialize)]
     enum Probe {
-        /// Deterministic: honours the whole contract.
         Set(String),
-        /// Writes a fresh random value: diverges on replay.
         Random,
         Nothing,
-        /// Writes a key and deletes it again: ops, but no visible change.
         Churn,
     }
 
@@ -811,7 +740,7 @@ mod tests {
             resources.extend(published(&Probe::Nothing));
             assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources);
         };
-        // (case, expected panic message fragment, check)
+        // (case, expected panic message fragment, check).
         let cases: Vec<(&str, &str, Box<dyn Fn()>)> = vec![
             (
                 "a nondeterministic action fails replay",
@@ -872,7 +801,6 @@ mod tests {
                 }),
             ),
         ];
-        // A change with no visible effect is no undo step at all.
         assert_eq!(
             undo_round_trip(&seed(), &registry(), &encode(&Probe::Churn)),
             Applied::Unchanged

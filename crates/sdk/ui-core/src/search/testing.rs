@@ -1,35 +1,21 @@
-//! Shared assertions for [`SearchProvider`] implementations.
-//!
-//! Every app provider owes the shell the same promise: a record that entered
-//! the catalogue last is still found, and finding it costs work proportional
-//! to the matches rather than to the corpus. [`assert_late_hit_reachable`]
-//! checks that promise through the app's own provider, so an app test only
-//! says how a row of text becomes one of its records.
-//!
-//! The toolkit's own catalogue test proves the index at 100,000 records. An
-//! app's provider sits on that index, so a few thousand records are enough
-//! to show it builds and queries it rather than scanning.
+//! Shared assertions for [`SearchProvider`] implementations. Every app provider owes the
+//! shell the same promise: a record that entered the catalogue last is still found, and
+//! finding it costs work proportional to the matches rather than to the corpus.
 
 use super::{SearchProvider, SearchResult};
 
 /// Text that only the corpus's last row contains.
 pub const LATE_HIT_NEEDLE: &str = "cobalt-orchid-needle";
 
-/// Work budget per page. A provider that scans instead of using the index
-/// inspects ordinary rows and exceeds [`MAX_INSPECTED`] long before it
-/// reaches the last one.
 const PAGE_BUDGET: usize = 8;
 
-/// Most candidates the whole search may inspect across all its pages.
 const MAX_INSPECTED: usize = 64;
 
 /// One row of the synthetic corpus handed to the provider builder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CorpusRow {
-    /// Position in the corpus, `0..n`. Unique, so it can seed record ids.
+    /// Position in the corpus, `0..n`.
     pub index: usize,
-    /// Searchable text for the record. Ordinary rows share their words with
-    /// every other row; the last row alone adds [`LATE_HIT_NEEDLE`].
     pub text: String,
     /// Whether this is the last row, the one the search must find.
     pub is_target: bool,
@@ -72,15 +58,11 @@ impl Iterator for Corpus {
 
 impl ExactSizeIterator for Corpus {}
 
-/// Build a provider over `n` records with `rows_fn`, then assert that a
-/// search for [`LATE_HIT_NEEDLE`] returns the last record and nothing else,
-/// inspecting at most a few dozen candidates across all pages.
-///
-/// `rows_fn` turns each [`CorpusRow`] into one of the app's records (put
-/// `text` wherever the app indexes it, such as a subject or title) and
-/// returns the provider. The provider and the hit are handed back so the
-/// caller can check app-specific behaviour, such as resolving the hit's
-/// action address to a resource.
+/// Build a provider over `n` records with `rows_fn`, then assert that a search for
+/// [`LATE_HIT_NEEDLE`] returns the last record and nothing else, inspecting at most a few
+/// dozen candidates across all pages. The provider and the hit are handed back so the
+/// caller can check app-specific behaviour, such as resolving the hit's action address to
+/// a resource.
 pub fn assert_late_hit_reachable<P, F>(rows_fn: F, n: usize) -> (P, SearchResult)
 where
     P: SearchProvider,
@@ -170,7 +152,6 @@ mod tests {
 
     #[test]
     fn the_late_hit_check_fails_a_provider_that_matches_or_scans_ordinary_rows() {
-        /// Finds the right record, but by reading every one of them.
         struct Scanning(SearchCatalog);
         impl SearchProvider for Scanning {
             fn name(&self) -> &str {

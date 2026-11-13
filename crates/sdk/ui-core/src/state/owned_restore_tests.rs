@@ -365,8 +365,8 @@ pub(crate) fn refuse_restored_result(refuse: bool) {
     VALIDATION_MODE.set(u8::from(refuse));
 }
 
-/// An entry as its caller gave it: without the undo step the history joined
-/// it to, which it must have.
+/// An entry as its caller gave it: without the undo step the history joined it to, which
+/// it must have.
 pub(crate) fn unstamped(mut context: tilo_actions::ActionContext) -> tilo_actions::ActionContext {
     assert!(context.gesture.is_some(), "the change joined an undo step");
     context.gesture = None;

@@ -49,28 +49,12 @@ pub use tilo_resource::{ScopeDecl, scope_contains};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchRequest {
-    /// The part of the app to search (see [`ScopeDecl`]); the whole app when
-    /// absent.
     pub part: Option<ScopeDecl>,
-    /// Text the search field starts with, selected so typing replaces it:
-    /// the argument an asked action starts from ([`SearchRequest::asking`]).
     pub query: Option<String>,
-    /// One of the system's own actions the app prepares for the person:
-    /// search opens on it with these arguments, and nothing runs until the
-    /// person confirms it there. A host that offers no such action opens a
-    /// plain search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offer: Option<SearchOffer>,
-    /// One of the app's own published actions, on the resource the scope
-    /// names: search opens on it, asking for its arguments, a parameter
-    /// picked from the workspace on its picker. Nothing runs until the
-    /// person has answered them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
-    /// A resource of the app's to open on, selected: the row that shows it is
-    /// the one under the cursor, so pressing Enter opens it (see
-    /// [`SearchRequest::on`]). A host that does not know the resource opens a
-    /// plain search of the app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<Anchor>,
 }
@@ -78,16 +62,12 @@ pub struct SearchRequest {
 /// The resource a search is opened on, and the text that finds its row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Anchor {
-    /// Resource id of what to open on.
     pub resource: String,
-    /// The text the app searches to find it.
     pub query: String,
 }
 
-/// A system action an app prepares for the person ([`SearchRequest::offer`]):
-/// the action's id and the text arguments the app fills in. The host decides
-/// which of its actions an app may prepare, and asks the person for every
-/// other argument, the confirmation among them.
+/// A system action an app prepares for the person ([`SearchRequest::offer`]): the
+/// action's id and the text arguments the app fills in.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchOffer {
     pub action: String,
@@ -113,10 +93,8 @@ impl SearchRequest {
         }
     }
 
-    /// Open search on `resource`, a resource of this app's, with `query` the
-    /// text that finds its row: that row is under the cursor, so one Enter
-    /// opens it. How an app shows the person something it has instead of
-    /// describing it.
+    /// Open search on `resource`, a resource of this app's, with `query` the text that
+    /// finds its row: that row is under the cursor, so one Enter opens it.
     #[must_use]
     pub fn on(resource: impl Into<String>, query: impl Into<String>) -> Self {
         Self {
@@ -128,10 +106,9 @@ impl SearchRequest {
         }
     }
 
-    /// Open search on `action`, a published action of the resource `scope`
-    /// names, asking for its arguments (see [`SearchRequest::action`]): a
-    /// button whose action needs what the person picks ("Link a note")
-    /// opens straight on the picker.
+    /// Open search on `action`, a published action of the resource `scope` names, asking
+    /// for its arguments (see [`SearchRequest::action`]): a button whose action needs
+    /// what the person picks ("Link a note") opens straight on the picker.
     #[must_use]
     pub fn asking(scope: ScopeDecl, action: impl Into<String>) -> Self {
         Self {
@@ -152,8 +129,8 @@ impl SearchRequest {
         ))
     }
 
-    /// Open search on the system's action `action`, with `arguments` filled
-    /// in for the person to confirm (see [`SearchRequest::offer`]).
+    /// Open search on the system's action `action`, with `arguments` filled in for the
+    /// person to confirm (see [`SearchRequest::offer`]).
     #[must_use]
     pub fn offering<K: Into<String>, V: Into<String>>(
         action: impl Into<String>,
@@ -179,8 +156,8 @@ impl SearchRequest {
         self
     }
 
-    /// The resource this search opens on ([`SearchRequest::on`]), when the
-    /// host should select it: a resource and a query both named.
+    /// The resource this search opens on ([`SearchRequest::on`]), when the host should
+    /// select it: a resource and a query both named.
     #[must_use]
     pub fn anchored(&self) -> Option<&Anchor> {
         let anchor = self.anchor.as_ref()?;
@@ -223,8 +200,7 @@ impl SearchRequest {
         arguments
     }
 
-    /// The request the `open` action's arguments describe. Unknown or
-    /// mistyped arguments read as absent.
+    /// The request the `open` action's arguments describe.
     #[must_use]
     pub fn from_arguments(arguments: &serde_json::Map<String, serde_json::Value>) -> Self {
         let text = |name: &str| {
@@ -244,15 +220,11 @@ impl SearchRequest {
         .with_anchor(text(ANCHOR_PARAM).as_deref())
     }
 
-    /// The offer the `offer` argument carries, as its JSON text; a malformed
-    /// one reads as none.
     fn with_offer(mut self, offer: Option<&str>) -> Self {
         self.offer = offer.and_then(|offer| serde_json::from_str(offer).ok());
         self
     }
 
-    /// The anchor the `anchor` argument carries, as its JSON text; a
-    /// malformed one reads as none.
     fn with_anchor(mut self, anchor: Option<&str>) -> Self {
         self.anchor = anchor.and_then(|anchor| serde_json::from_str(anchor).ok());
         self
@@ -293,8 +265,7 @@ impl SearchRequest {
         }
     }
 
-    /// Decode the `open` operation's payload. An empty or unit payload is a
-    /// plain search of the app.
+    /// Decode the `open` operation's payload.
     pub(crate) fn decode(payload: &[u8]) -> Result<Self, serde_json::Error> {
         match serde_json::from_slice::<Option<Self>>(payload) {
             Ok(request) => Ok(request.unwrap_or_default()),
@@ -310,33 +281,26 @@ impl SearchRequest {
         })
     }
 
-    /// The request a control invocation carries, when it is addressed to the
-    /// host search resource.
+    /// The request a control invocation carries, when it is addressed to the host search
+    /// resource.
     pub(crate) fn from_invocation(invocation: &ControlInvocation) -> Option<Self> {
         is_search_address(&invocation.address).then(|| Self::from_arguments(&invocation.arguments))
     }
 }
 
 /// Whether `address` names the host search door.
-///
-/// A host that keeps one search for the whole desktop (the desk under the
-/// windows) answers this door with that search rather than opening a palette
-/// over its own tree: the request says "search the platform", and the
-/// platform's search is the one that knows the person's apps.
 #[must_use]
 pub fn is_search_address(address: &tilo_actions::ActionAddress) -> bool {
     address.resource == SEARCH_RESOURCE && address.action == SEARCH_ACTION
 }
 
-/// The host search door's address. Every host answers it — a window with its
-/// own palette, or the shell — so a control bound to it is always available.
+/// The host search door's address.
 pub(crate) fn search_address() -> tilo_actions::ActionAddress {
     tilo_actions::ActionAddress::new(SEARCH_RESOURCE, SEARCH_ACTION)
 }
 
-/// The host search resource: one `open` action that opens search, plainly from
-/// a menu or the keyboard, or narrowed and pre-filled by its optional
-/// arguments.
+/// The host search resource: one `open` action that opens search, plainly from a menu or
+/// the keyboard, or narrowed and pre-filled by its optional arguments.
 pub(crate) fn search_resource() -> ResourceSpec {
     let label = I18nManager::lookup_plain("standalone-search-title");
     let open = ActionSpec::typed_operation(
@@ -375,19 +339,12 @@ pub(crate) fn search_resource() -> ResourceSpec {
         ],
         |args| SearchRequest::from_args(args).encode(),
     )
-    // Opening search asks nothing first: a menu item, the shortcut and the
-    // palette run it at once; a control or an agent passes the arguments.
     .with_immediate(SearchRequest::default().encode());
     ResourceSpec::new(SEARCH_RESOURCE, "tilo.host.search", label).with_action(open)
 }
 
-/// Bind a control to open the platform search with `request`
-/// ([`search_button`] is the launcher built on it).
-///
-/// # Panics
-///
-/// Never: a request's arguments are exactly the search action's optional
-/// text parameters, so binding them cannot fail.
+/// Bind a control to open the platform search with `request` ([`search_button`] is the
+/// launcher built on it).
 #[must_use]
 #[expect(
     clippy::expect_used,
@@ -398,14 +355,12 @@ pub fn open_search_binding(request: &SearchRequest) -> ActionBinding<()> {
         .expect("search request arguments match the host search action")
 }
 
-/// The id of the button [`search_button`] makes for the whole app. A
-/// window bar that presents search for the window replaces it: a header that
-/// holds the window's bar controls ([`crate::widget::WindowHeader`]) drops it.
+/// The id of the button [`search_button`] makes for the whole app.
 pub const APP_SEARCH_BUTTON_ID: &str = "search-open";
 
-/// The search launcher: an icon-only magnifier button that opens the
-/// platform search with `request`. This is the only search affordance an app
-/// puts in its chrome; it never draws a field.
+/// The search launcher: an icon-only magnifier button that opens the platform search with
+/// `request`. This is the only search affordance an app puts in its chrome; it never
+/// draws a field.
 #[must_use]
 pub fn search_button(request: SearchRequest) -> crate::widget::Button {
     let label = I18nManager::lookup_plain("standalone-search-title");
@@ -422,8 +377,8 @@ pub fn search_button(request: SearchRequest) -> crate::widget::Button {
 }
 
 /// The invocation a painted widget queues (through
-/// [`ActionControls`](crate::widget::controls::ActionControls)) to open the
-/// platform search with `request`; [`SearchOpener`] keeps one for it.
+/// [`ActionControls`](crate::widget::controls::ActionControls)) to open the platform
+/// search with `request`; [`SearchOpener`] keeps one for it.
 #[must_use]
 pub fn open_search_invocation(request: &SearchRequest) -> ControlInvocation {
     ControlInvocation {
@@ -432,9 +387,9 @@ pub fn open_search_invocation(request: &SearchRequest) -> ControlInvocation {
     }
 }
 
-/// A latch a painted widget keeps to open search from its own input handling:
-/// call [`open`](Self::open) from the handler and return
-/// [`take`](Self::take) from `ActionControls::take_control_invocation`.
+/// A latch a painted widget keeps to open search from its own input handling: call
+/// [`open`](Self::open) from the handler and return [`take`](Self::take) from
+/// `ActionControls::take_control_invocation`.
 #[derive(Debug, Default)]
 pub struct SearchOpener {
     pending: Option<SearchRequest>,
@@ -572,8 +527,6 @@ mod tests {
             request.anchor
         );
 
-        // An anchor missing either half cannot pick a row, so a host that
-        // reads one searches the app plainly rather than guessing.
         assert!(
             SearchRequest {
                 anchor: Some(Anchor {

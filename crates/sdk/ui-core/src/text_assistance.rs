@@ -1,10 +1,6 @@
-//! Process-local view of the shared spelling preferences: the per-user
-//! `text_assistance` section every app's text fields follow.
-//!
-//! Reading the JSON document on every keypress would turn a UX feature into an
-//! I/O hot path. We stat the settings file at most once every two seconds and
-//! reload it when its modification stamp changes, so Settings changes propagate
-//! to running apps without filesystem I/O on every draw or keypress.
+//! Process-local view of the shared spelling preferences: the per-user `text_assistance`
+//! section every app's text fields follow. Reading the JSON document on every keypress
+//! would turn a UX feature into an I/O hot path.
 
 use crate::time::{Duration, Instant};
 use std::sync::{Mutex, OnceLock};
@@ -16,12 +12,8 @@ pub const SETTINGS_SECTION: &str = "text_assistance";
 )]
 #[model(defaults)]
 pub struct TextAssistancePrefs {
-    /// Underline words the spelling dictionary does not know.
     pub check_spelling: bool,
-    /// Correct a misspelt word as the next one starts.
     pub auto_correct: bool,
-    /// The language words are checked in (`en_US`, `de_DE`); empty for the
-    /// session's own language.
     #[serde(default)]
     pub spelling_language: String,
 }

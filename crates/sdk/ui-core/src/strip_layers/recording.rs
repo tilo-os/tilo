@@ -1,13 +1,8 @@
-//! Drawing an app's frame as layers: a pannable view drawn while a
-//! [`LayerRecording`] is open draws its content on its own, in canvas
-//! coordinates ([`draw_strip`]), so a presenter keeping the layers pans it
-//! by copying ([`super::LayerPresenter`]) instead of rasterising it again.
-//!
-//! What was drawn before the view is the backdrop, what is drawn after it
-//! (its scroll bars, the window's chrome, popups) the chrome. A view is cut
-//! out only where that split keeps the frame's picture: no clip or layer is
-//! open around it, it is shown on whole device pixels and panned by whole
-//! device pixels. Anywhere else it draws as it would without a recording.
+//! Drawing an app's frame as layers: a pannable view drawn while a [`LayerRecording`] is
+//! open draws its content on its own, in canvas coordinates ([`draw_strip`]), so a
+//! presenter keeping the layers pans it by copying ([`super::LayerPresenter`]) instead of
+//! rasterising it again. What was drawn before the view is the backdrop, what is drawn
+//! after it (its scroll bars, the window's chrome, popups) the chrome.
 
 use std::cell::RefCell;
 
@@ -16,23 +11,19 @@ use vello::{FineDamageRect, Scene};
 
 use super::{ChromeDamage, FrameCache, FrameLayers, StripBlit, compose};
 
-/// The frame being drawn as layers.
 struct Drawing {
-    /// What the frame drew before its strip.
     backdrop: Scene,
     strip: Option<(StripBlit, Scene)>,
 }
 
 thread_local! {
     static DRAWING: RefCell<Option<Drawing>> = const { RefCell::new(None) };
-    /// Where the last view that can be a strip showed, and how far it was
-    /// panned; and whether a view panned since [`take_panned`].
     static LAST_VIEW: std::cell::Cell<(Rect, Vec2, bool)> =
         const { std::cell::Cell::new((Rect::ZERO, Vec2::ZERO, false)) };
 }
 
-/// Whether a view that can be drawn as a strip ([`draw_strip`]) panned in a
-/// frame drawn since the last call: a host draws the next frame as layers.
+/// Whether a view that can be drawn as a strip ([`draw_strip`]) panned in a frame drawn
+/// since the last call: a host draws the next frame as layers.
 pub fn take_panned() -> bool {
     LAST_VIEW.with(|last| {
         let (viewport, scroll, panned) = last.get();
@@ -50,8 +41,8 @@ fn whole(value: f64) -> Option<u32> {
         .then(|| crate::num::u32_of_f64(rounded))
 }
 
-/// One frame drawn as layers, on this thread, from [`Self::begin`] until
-/// [`Self::finish`] (or the guard's drop, which discards it).
+/// One frame drawn as layers, on this thread, from [`Self::begin`] until [`Self::finish`]
+/// (or the guard's drop, which discards it).
 pub struct LayerRecording {
     previous: Option<Drawing>,
 }
@@ -68,12 +59,9 @@ impl LayerRecording {
         Self { previous }
     }
 
-    /// The frame `scene` ends: the layers it was drawn as, its `generation`
-    /// telling them apart from others, on an output `width` pixels wide;
-    /// `chrome_damage` says where the chrome changed since an earlier
-    /// drawing when that is known. `scene` is then the frame's whole
-    /// picture again ([`compose`]), for a host that does not present layers.
-    /// `None`, `scene` untouched, when no view was drawn as a strip.
+    /// The frame `scene` ends: the layers it was drawn as, its `generation` telling them
+    /// apart from others, on an output `width` pixels wide; `chrome_damage` says where
+    /// the chrome changed since an earlier drawing when that is known.
     pub fn finish(
         mut self,
         scene: &mut Scene,
@@ -116,14 +104,11 @@ pub fn recording() -> bool {
     DRAWING.with_borrow(|drawing| drawing.as_ref().is_some_and(|d| d.strip.is_none()))
 }
 
-/// Draw a pannable view's content as the frame's strip, when a
-/// [`LayerRecording`] is open: `viewport` (where the content shows) and
-/// `scroll` (how far it is panned, `transform` mapping both to device
-/// pixels) are whole device pixels, nothing is open around the view in
-/// `scene`, and no other view is the frame's strip. `draw` then draws the
-/// content where it would show with no pan, `scroll` right of and below
-/// where it shows: the strip's canvas. Returns `false`, having drawn
-/// nothing, otherwise: the caller draws its content as usual.
+/// Draw a pannable view's content as the frame's strip, when a [`LayerRecording`] is
+/// open: `viewport` (where the content shows) and `scroll` (how far it is panned,
+/// `transform` mapping both to device pixels) are whole device pixels, nothing is open
+/// around the view in `scene`, and no other view is the frame's strip. Returns `false`,
+/// having drawn nothing, otherwise: the caller draws its content as usual.
 pub fn draw_strip(
     scene: &mut Scene,
     transform: Affine,
@@ -180,8 +165,8 @@ pub fn draw_strip(
     true
 }
 
-/// `damage` (device pixels) on an output of `size` in whole 16-pixel
-/// tiles, as [`ChromeDamage::rects`] names where a chrome changed.
+/// `damage` (device pixels) on an output of `size` in whole 16-pixel tiles, as
+/// [`ChromeDamage::rects`] names where a chrome changed.
 #[must_use]
 pub fn tiles(damage: &[Rect], (width, height): (u32, u32)) -> Vec<FineDamageRect> {
     let edge = f64::from(TILE);
@@ -212,9 +197,9 @@ pub fn tiles(damage: &[Rect], (width, height): (u32, u32)) -> Vec<FineDamageRect
 /// Vello's tile edge in device pixels.
 const TILE: u32 = 16;
 
-/// Put what `cache` draws under its chrome below every surface of
-/// `backdrop`: a floating surface drawn in the chrome recorded only the
-/// chrome drawn before it as what is behind it.
+/// Put what `cache` draws under its chrome below every surface of `backdrop`: a floating
+/// surface drawn in the chrome recorded only the chrome drawn before it as what is behind
+/// it.
 pub fn put_under(cache: &FrameCache, backdrop: &mut crate::backdrop::BackdropFrame) {
     if backdrop.is_empty() {
         return;

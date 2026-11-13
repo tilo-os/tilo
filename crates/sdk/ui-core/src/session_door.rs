@@ -1,13 +1,7 @@
-//! Opening another app, the one way every host does it.
-//!
-//! An app offers to open another installed app as an action of its own
-//! ([`ApplicationLaunch`]). Run, that action becomes the workspace's `open`
-//! of the app ([`ApplicationLaunch::target`]), asked of the session's action
-//! door: the window never starts anything itself. `start_application_launch`
-//! is that step for every host; a host supplies only its door
-//! ([`SessionDoor`]). A native window's door is its session broker; a page's
-//! is the page's own session, served to it as a [`RemoteActions`] client
-//! ([`ClientDoor`]).
+//! Opening another app, the one way every host does it. An app offers to open another
+//! installed app as an action of its own ([`ApplicationLaunch`]). Run, that action
+//! becomes the workspace's `open` of the app ([`ApplicationLaunch::target`]), asked of
+//! the session's action door: the window never starts anything itself.
 
 use tilo_actions::remote::{ActionHostError, ApplicationLaunch, InvokeRequest};
 use tilo_actions::{ActionOutput, DoorError, InvocationId, InvocationUpdate};
@@ -18,16 +12,12 @@ use crate::widget::ResourceOperationStart;
 
 /// Where a host sends what an action asks of the session beyond its app.
 pub trait SessionDoor {
-    /// The workspace this window was admitted to, which a request addresses
-    /// when the action's own route names none.
+    /// The workspace this window was admitted to, which a request addresses when the
+    /// action's own route names none.
     fn workspace(&self) -> Option<String>;
 
-    /// Hand `request` to the session for the operation `operation`, which
-    /// the session's broker admitted when `admitted`. The answer is the
-    /// operation's start: done, or accepted and finished later by the host.
-    ///
-    /// # Errors
-    /// Why the session did not take it.
+    /// Hand `request` to the session for the operation `operation`, which the session's
+    /// broker admitted when `admitted`. Why the session did not take it.
     fn invoke(
         &mut self,
         operation: InvocationId,
@@ -36,10 +26,8 @@ pub trait SessionDoor {
     ) -> Result<ResourceOperationStart, DoorError>;
 }
 
-/// The launch `payload` encodes, checked.
-///
-/// # Errors
-/// A payload that is not a launch, or names an app or content out of bounds.
+/// The launch `payload` encodes, checked. A payload that is not a launch, or names an app
+/// or content out of bounds.
 pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLaunch, DoorError> {
     let launch: ApplicationLaunch = serde_json::from_slice(payload)
         .map_err(|_| DoorError::Failed("invalid application launch payload".into()))?;
@@ -51,17 +39,12 @@ pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLau
     Ok(launch)
 }
 
-/// Open the app `payload` names, through `door`, in the workspace of the
-/// action's `route` (else the door's own).
-///
-/// The request continues the invocation the broker delivered for it
-/// (`operation`, when `admitted`; else the one being handled here), so the
-/// session decides it as that invocation's caller; without one, only the
-/// person's own press in this app is behind it.
-///
-/// # Errors
-/// An invalid launch, no door or workspace to open it in, or the door's
-/// refusal.
+/// Open the app `payload` names, through `door`, in the workspace of the action's `route`
+/// (else the door's own). The request continues the invocation the broker delivered for
+/// it (`operation`, when `admitted`; else the one being handled here), so the session
+/// decides it as that invocation's caller; without one, only the person's own press in
+/// this app is behind it. An invalid launch, no door or workspace to open it in, or the
+/// door's refusal.
 pub(crate) fn start_application_launch(
     door: Option<&mut dyn SessionDoor>,
     route: Option<&crate::collaboration::RouteSpec>,
@@ -130,7 +113,6 @@ pub fn door_error(error: &ActionHostError) -> DoorError {
     }
 }
 
-/// How a finished call ended for the operation that made it.
 fn finished(
     call: &Arrival<InvocationUpdate, ActionHostError>,
 ) -> Option<Result<ActionOutput, DoorError>> {
@@ -143,13 +125,12 @@ fn finished(
         Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => Some(Err(
             DoorError::Failed(message.clone().unwrap_or_else(|| "It was cancelled".into())),
         )),
-        // Still running: its end arrives later.
         Arrival::Pending { .. } | Arrival::Ready(_) => None,
     }
 }
 
-/// A [`SessionDoor`] served by a [`RemoteActions`] client: the session of a
-/// host that serves its windows in process, such as a page.
+/// A [`SessionDoor`] served by a [`RemoteActions`] client: the session of a host that
+/// serves its windows in process, such as a page.
 pub struct ClientDoor {
     client: RemoteActions,
     workspace: Option<String>,
@@ -157,8 +138,8 @@ pub struct ClientDoor {
 }
 
 impl ClientDoor {
-    /// Requests go to `client`, addressed to `workspace` unless an action's
-    /// route names its own.
+    /// Requests go to `client`, addressed to `workspace` unless an action's route names
+    /// its own.
     #[must_use]
     pub fn new(client: RemoteActions, workspace: Option<String>) -> Self {
         Self {
@@ -174,8 +155,7 @@ impl ClientDoor {
         !self.running.is_empty()
     }
 
-    /// The operations whose calls finished since this was last asked, and
-    /// how each ended.
+    /// The operations whose calls finished since this was last asked, and how each ended.
     pub fn take_finished(&mut self) -> Vec<(InvocationId, Result<ActionOutput, DoorError>)> {
         let mut done = Vec::new();
         self.running
@@ -208,7 +188,6 @@ impl SessionDoor for ClientDoor {
             request.argument,
             request.confirmation,
         );
-        // A session served in process often answers at once.
         match call.with(finished) {
             Some(Ok(output)) => Ok(ResourceOperationStart::Completed(output)),
             Some(Err(error)) => Err(error),

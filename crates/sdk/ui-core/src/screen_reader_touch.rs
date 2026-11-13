@@ -1,24 +1,5 @@
-//! Explore by touch: what a finger means while the built-in screen reader is
-//! on, as TalkBack and VoiceOver read it.
-//!
-//! - A finger resting or dragging on the screen explores: the item under it
-//!   is spoken and the reading cursor moves there, and nothing is pressed.
-//!   Lifting the finger leaves the cursor where it is.
-//! - A quick tap explores the item under it too, once it is clear no second
-//!   tap follows.
-//! - A double tap anywhere activates the item the cursor is on.
-//! - A quick one-finger swipe right or left moves to the next or previous
-//!   item.
-//!
-//! A second finger ends the gesture: nothing more is read from the contacts
-//! until every finger has lifted.
-//!
-//! One recognizer for every host. It is pure: the host passes each contact
-//! in the window's logical pixels with its time, arms a timer for
-//! [`TouchExplorer::deadline`] and calls [`TouchExplorer::poll`] when it
-//! fires. A finger that has not yet moved past [`TAP_SLOP`] is not read
-//! until [`EXPLORE_DELAY`] has passed, so the start of a swipe or the first
-//! tap of a double tap never moves the cursor.
+//! Explore by touch: what a finger means while the built-in screen reader is on, as
+//! TalkBack and VoiceOver read it.
 
 use std::collections::HashSet;
 
@@ -27,11 +8,10 @@ use winit::event::TouchPhase;
 
 use crate::time::{Duration, Instant};
 
-/// How far, in logical pixels, a finger travels before it is moving rather
-/// than resting.
+/// How far, in logical pixels, a finger travels before it is moving rather than resting.
 pub const TAP_SLOP: f64 = 12.0;
-/// How long a resting finger waits before it explores, so a tap or the
-/// start of a swipe reads nothing.
+/// How long a resting finger waits before it explores, so a tap or the start of a swipe
+/// reads nothing.
 pub const EXPLORE_DELAY: Duration = Duration::from_millis(200);
 /// The longest a swipe takes from touch to lift; a slower movement explores.
 pub const SWIPE_MAX: Duration = Duration::from_millis(500);
@@ -39,32 +19,22 @@ pub const SWIPE_MAX: Duration = Duration::from_millis(500);
 pub const SWIPE_MIN: f64 = 48.0;
 /// The longest wait between a tap's lift and the second tap's touch.
 pub const DOUBLE_TAP_TIMEOUT: Duration = Duration::from_millis(300);
-/// How far, in logical pixels, the second tap of a double tap may land from
-/// the first.
+/// How far, in logical pixels, the second tap of a double tap may land from the first.
 pub const DOUBLE_TAP_SLOP: f64 = 96.0;
 
 /// What a finger asked the screen reader for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExploreGesture {
-    /// Speak the item under this point and move the cursor there.
     Explore(Point),
-    /// Activate the item the cursor is on.
     Activate,
-    /// Move to the next item in reading order.
     Next,
-    /// Move to the previous item in reading order.
     Previous,
 }
 
-/// What the finger on the screen is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Contact {
-    /// Down and still within [`TAP_SLOP`], before [`EXPLORE_DELAY`].
     Resting,
-    /// Moved past the slop before exploring began: a swipe, if it lifts in
-    /// time.
     Swiping,
-    /// Reading what is under it.
     Exploring,
 }
 
@@ -75,7 +45,6 @@ struct Finger {
     at: Point,
     down: Instant,
     contact: Contact,
-    /// Touched soon after, and close to, a tap: a lift in place activates.
     second_tap: bool,
 }
 
@@ -85,7 +54,6 @@ pub struct TouchExplorer {
     finger: Option<Finger>,
     /// A tap that lifted, waiting to see whether a second one follows.
     tap: Option<(Point, Instant)>,
-    /// Every contact on the screen.
     down: HashSet<u64>,
     /// A second finger touched: nothing is read until all have lifted.
     ignoring: bool,
@@ -188,9 +156,8 @@ impl TouchExplorer {
         self.tap = None;
     }
 
-    /// When [`Self::poll`] next has something to say: a resting finger
-    /// begins to explore, a slow swipe becomes exploring, or a lone tap is
-    /// read.
+    /// When [`Self::poll`] next has something to say: a resting finger begins to explore,
+    /// a slow swipe becomes exploring, or a lone tap is read.
     #[must_use]
     pub fn deadline(&self) -> Option<Instant> {
         let finger = self.finger.and_then(|finger| match finger.contact {
@@ -235,8 +202,6 @@ impl TouchExplorer {
     }
 }
 
-/// The swipe a quick movement from `start` to `end` makes, if any: mostly
-/// horizontal and at least [`SWIPE_MIN`] long.
 fn swipe(start: Point, end: Point) -> Option<ExploreGesture> {
     let (dx, dy) = (end.x - start.x, end.y - start.y);
     if dx.abs() < SWIPE_MIN || dx.abs() < dy.abs() * 2.0 {
@@ -300,7 +265,6 @@ mod tests {
             [ExploreGesture::Explore(Point::new(10.0, 10.0))]
         );
         assert_eq!(run.explorer.deadline(), None);
-        // Every movement explores now, however small.
         assert_eq!(
             run.touch(1, TouchPhase::Moved, 12.0, 10.0, 220),
             [ExploreGesture::Explore(Point::new(12.0, 10.0))]
@@ -309,7 +273,6 @@ mod tests {
             run.touch(1, TouchPhase::Moved, 200.0, 300.0, 400),
             [ExploreGesture::Explore(Point::new(200.0, 300.0))]
         );
-        // Lifting reads nothing and leaves nothing pending.
         assert!(
             run.touch(1, TouchPhase::Ended, 200.0, 300.0, 900)
                 .is_empty()
@@ -323,9 +286,7 @@ mod tests {
         let mut run = Run::new();
         run.touch(1, TouchPhase::Started, 0.0, 0.0, 0);
         assert!(run.touch(1, TouchPhase::Moved, 5.0, 0.0, 100).is_empty());
-        // Past the slop only after the delay: exploring, not a swipe. The
-        // delay ran out before this movement, so where the finger rested is
-        // read first.
+        // Past the slop only after the delay: exploring, not a swipe.
         assert_eq!(
             run.touch(1, TouchPhase::Moved, 30.0, 0.0, 250),
             [
@@ -424,13 +385,11 @@ mod tests {
 
     #[test]
     fn short_vertical_or_slow_movements_are_not_swipes() {
-        // Too short.
         let mut run = Run::new();
         run.touch(1, TouchPhase::Started, 100.0, 100.0, 0);
         run.touch(1, TouchPhase::Moved, 120.0, 100.0, 40);
         assert!(run.touch(1, TouchPhase::Ended, 140.0, 100.0, 80).is_empty());
 
-        // Mostly vertical.
         run.touch(1, TouchPhase::Started, 100.0, 100.0, 1_000);
         run.touch(1, TouchPhase::Moved, 120.0, 150.0, 1_040);
         assert!(
@@ -438,8 +397,6 @@ mod tests {
                 .is_empty()
         );
 
-        // Too slow: it explores where the finger is once the swipe's time
-        // is up, and the lift moves nothing.
         run.touch(1, TouchPhase::Started, 100.0, 100.0, 2_000);
         run.touch(1, TouchPhase::Moved, 130.0, 100.0, 2_050);
         assert_eq!(
@@ -469,7 +426,6 @@ mod tests {
         assert_eq!(run.explorer.deadline(), None);
         assert!(run.poll(5_000).is_empty());
 
-        // A swipe cancelled midway moves nothing.
         run.touch(3, TouchPhase::Started, 100.0, 100.0, 6_000);
         run.touch(3, TouchPhase::Moved, 200.0, 100.0, 6_050);
         assert!(
@@ -487,7 +443,6 @@ mod tests {
         assert_eq!(run.explorer.deadline(), None);
         assert!(run.touch(1, TouchPhase::Moved, 300.0, 100.0, 60).is_empty());
         assert!(run.touch(1, TouchPhase::Ended, 300.0, 100.0, 90).is_empty());
-        // The remaining finger is still part of the two-finger touch.
         assert!(
             run.touch(2, TouchPhase::Moved, 260.0, 100.0, 120)
                 .is_empty()
@@ -497,7 +452,6 @@ mod tests {
                 .is_empty()
         );
         assert!(run.poll(5_000).is_empty());
-        // Then one finger is read again.
         run.touch(3, TouchPhase::Started, 10.0, 10.0, 6_000);
         assert_eq!(
             run.poll(6_200),

@@ -1,24 +1,8 @@
-//! Whether the workspace an app's window is in has synced with its host, as
-//! the shell tells the app ([`crate::floating_surface::FloatingSurfaceHostMessage::Appearance`]).
-//!
-//! An empty workspace and a workspace this device has not reached yet look
-//! the same to an app: no content. Saying "Nothing has been said here yet"
-//! about a workspace that never synced is a lie the person acts on. So until
-//! the workspace's first sync completes, every empty state the framework
-//! paints ([`crate::widget::EmptyState`]) says what is really going on
-//! instead: "Connecting to {workspace}…" with a spinner while this device is
-//! reaching the workspace's host; that the host cannot be reached, once a try
-//! failed; or that the workspace's host (or this device) has to update before
-//! anything syncs. While the host cannot be reached the person works on what
-//! this device has, and the empty state keeps the app's own action: their
-//! changes stay here and sync once the host is reached. An app's own empty
-//! state shows only once the workspace has synced, or in a window whose
-//! workspace syncs with no host at all (the shell says nothing then).
-//!
-//! What the workspace holds is also a read ([`holdings`]): a view over a
-//! record this device has not got yet shows it arriving from the workspace's
-//! host until the workspace's first sync, and the record (or that there is
-//! none) once it completed.
+//! Whether the workspace an app's window is in has synced with its host, as the shell
+//! tells the app ([`crate::floating_surface::FloatingSurfaceHostMessage::Appearance`]).
+//! An empty workspace and a workspace this device has not reached yet look the same to an
+//! app: no content. Saying "Nothing has been said here yet" about a workspace that never
+//! synced is a lie the person acts on.
 
 use std::cell::{Cell, RefCell};
 
@@ -31,46 +15,29 @@ use crate::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceSyncState {
-    /// Reaching the workspace's host; no sync with it has completed yet.
     Connecting,
-    /// This device's last try to reach the workspace's host failed, and no
-    /// sync with it has completed since this device started. It keeps
-    /// trying; meanwhile the workspace holds what this device has.
     Unreachable,
-    /// The host speaks an older peer protocol than this device: nothing
-    /// syncs until the host updates.
     HostNeedsUpdate,
-    /// The host speaks a newer peer protocol: this device updates.
     DeviceNeedsUpdate,
-    /// A sync with the workspace's host completed: what the workspace held
-    /// then is here.
     Synced,
 }
 
 /// The workspace a window is in, and where it stands with its host.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSync {
-    /// Where the workspace stands.
     pub state: WorkspaceSyncState,
-    /// The workspace's name, as the person knows it.
     #[serde(default)]
     pub workspace: String,
-    /// Whether this app may write the workspace now: the workspace's grants
-    /// let the person change it and make the app one of its authors, the same
-    /// decision that opened it writable or read-only. It follows the
-    /// workspace's grants as they change, so an app opened read-only becomes
-    /// writable the moment its authorship arrives, and the other way round.
-    /// Absent when the shell has no answer; the launch's stands then.
+    /// Whether this app may write the workspace now: the workspace's grants let the
+    /// person change it and make the app one of its authors, the same decision that
+    /// opened it writable or read-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writable: Option<bool>,
-    /// This device's writes to the workspace that are not yet synced: held
-    /// on this device because no host of the workspace carries them now, or
-    /// because the host did not keep them. They sync once a host keeps them.
+    /// This device's writes to the workspace that are not yet synced: held on this device
+    /// because no host of the workspace carries them now, or because the host did not
+    /// keep them.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unsynced_writes: u32,
-    /// This device cannot keep its writes to the workspace on disk now (its
-    /// disk is full, say): it holds them in memory, and cannot sync them
-    /// until it can keep them again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cannot_keep_writes: bool,
 }
@@ -91,23 +58,16 @@ impl WorkspaceSync {
     }
 }
 
-/// What the shell last said, and since when the workspace has been waiting.
 struct Told {
     sync: WorkspaceSync,
-    /// When the workspace began waiting for its first sync: the spinner's phase.
     since: Instant,
 }
 
-/// Why what the workspace holds cannot arrive: nothing syncs until one side
-/// updates.
+/// Why what the workspace holds cannot arrive: nothing syncs until one side updates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceUnreachable {
-    /// The workspace's host speaks an older peer protocol.
     HostNeedsUpdate,
-    /// This device speaks an older peer protocol.
     DeviceNeedsUpdate,
-    /// The shell hosting the window went away before it said where the
-    /// workspace stands, and nothing reconnects the window to a shell.
     ShellGone,
 }
 
@@ -123,59 +83,45 @@ impl std::fmt::Display for WorkspaceUnreachable {
 
 thread_local! {
     static TOLD: RefCell<Option<Told>> = const { RefCell::new(None) };
-    /// Whether a shell hosts this window ([`hosted_by_shell`]): it says
-    /// where the window's workspace stands.
     static SHELL: Cell<bool> = const { Cell::new(false) };
-    /// Whether the shell has said where the window's workspace stands.
     static HEARD: Cell<bool> = const { Cell::new(false) };
-    /// Whether the shell went away before it said ([`shell_lost`]).
     static LOST: Cell<bool> = const { Cell::new(false) };
-    /// What the workspace holds, as a read ([`holdings`]).
     static HOLDINGS: RefCell<Option<Arriving<(), WorkspaceUnreachable>>> =
         const { RefCell::new(None) };
-    /// The permissions of the components a workspace launch hosts, which
-    /// follow [`WorkspaceSync::writable`] (`follow_participation`).
     static FOLLOWERS: RefCell<Vec<crate::permissions::WeakPermissions>> =
         const { RefCell::new(Vec::new()) };
-    /// The spinner step an empty state painted last, and where (scene
-    /// pixels) a new pose was painted that no presented frame has damaged
-    /// yet.
+    /// The spinner step an empty state painted last, and where (scene pixels) a new pose
+    /// was painted that no presented frame has damaged yet.
     static SPINNER: Cell<(Option<u64>, Option<vello::kurbo::Rect>)> =
         const { Cell::new((None, None)) };
-    /// When the turning spinner the last drawn frame painted takes its next
-    /// pose: the window redraws then, and only then.
+    /// When the turning spinner the last drawn frame painted takes its next pose: the
+    /// window redraws then, and only then.
     static NEXT_POSE: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
-/// What the shell says now about the workspace this app's window is in;
-/// `None`: the window's workspace syncs with no host (or the shell said
-/// nothing). Answers whether that changed what the app shows.
+/// What the shell says now about the workspace this app's window is in; `None`: the
+/// window's workspace syncs with no host (or the shell said nothing).
 pub fn set(sync: Option<WorkspaceSync>) -> bool {
     LOST.with(|lost| lost.set(false));
     let first = !HEARD.with(|heard| heard.replace(true));
     let changed = tell(sync);
-    // The first word settles what the workspace holds even when it says what
-    // was assumed (no workspace): a view waiting on it shows now.
     let settled = (first || changed) && settle_holdings();
     changed || settled
 }
 
-/// A shell hosts this window: what its workspace holds waits for the shell to
-/// say where the workspace stands. A window no shell hosts holds what this
-/// device has.
+/// A shell hosts this window: what its workspace holds waits for the shell to say where
+/// the workspace stands.
 pub fn hosted_by_shell() {
     if !SHELL.with(|shell| shell.replace(true)) {
         let _ = settle_holdings();
     }
 }
 
-/// The shell hosting this window went away. A shell says where the
-/// workspace stands in its first message to a window (every shell does: the
-/// app and the shell speak one shell-ui version, or do not connect), so a
-/// window still waiting for that word never gets it: what the workspace
-/// holds cannot arrive, and the window says so
-/// ([`WorkspaceUnreachable::ShellGone`]). Whether that changed what the
-/// window shows.
+/// The shell hosting this window went away. A shell says where the workspace stands in
+/// its first message to a window (every shell does: the app and the shell speak one
+/// shell-ui version, or do not connect), so a window still waiting for that word never
+/// gets it: what the workspace holds cannot arrive, and the window says so
+/// ([`WorkspaceUnreachable::ShellGone`]).
 pub fn shell_lost() -> bool {
     if !SHELL.with(Cell::get) || HEARD.with(Cell::get) {
         return false;
@@ -184,14 +130,11 @@ pub fn shell_lost() -> bool {
     settle_holdings()
 }
 
-/// What the workspace this window is in holds, as a read: pending (from
-/// this device, briefly) until the shell hosting the window said where the
-/// workspace stands, then from the workspace's host until the workspace's
-/// first sync completed; failed while one side has to update first; ready
-/// once it synced, in a workspace with no host, or while its host cannot be
-/// reached (the person works on what this device has). A record this device
-/// lacks once it is ready is one the workspace does not have. Every call
-/// shares one read.
+/// What the workspace this window is in holds, as a read: pending (from this device,
+/// briefly) until the shell hosting the window said where the workspace stands, then from
+/// the workspace's host until the workspace's first sync completed; failed while one side
+/// has to update first; ready once it synced, in a workspace with no host, or while its
+/// host cannot be reached (the person works on what this device has).
 #[must_use]
 pub fn holdings() -> Arriving<(), WorkspaceUnreachable> {
     HOLDINGS.with(|holdings| {
@@ -206,7 +149,6 @@ pub fn holdings() -> Arriving<(), WorkspaceUnreachable> {
     })
 }
 
-/// Where what the workspace holds stands now.
 fn standing() -> Arrival<(), WorkspaceUnreachable> {
     if SHELL.with(Cell::get) && !HEARD.with(Cell::get) {
         if LOST.with(Cell::get) {
@@ -222,8 +164,6 @@ fn standing() -> Arrival<(), WorkspaceUnreachable> {
             WorkspaceSyncState::Connecting => Arrival::Pending {
                 from: Source::host(sync.workspace.trim()),
             },
-            // Unreachable: the person works on what this device has: it is
-            // what the workspace holds until the host is reached again.
             WorkspaceSyncState::Unreachable | WorkspaceSyncState::Synced => Arrival::Ready(()),
             WorkspaceSyncState::HostNeedsUpdate => {
                 Arrival::Failed(WorkspaceUnreachable::HostNeedsUpdate)
@@ -235,10 +175,6 @@ fn standing() -> Arrival<(), WorkspaceUnreachable> {
     }
 }
 
-/// Bring the shared read of what the workspace holds to where the workspace
-/// stands. A read still pending keeps when it was asked, now waiting on
-/// where the workspace said; one that settled and waits again was asked
-/// now. Whether it moved.
 fn settle_holdings() -> bool {
     let Some(holdings) = HOLDINGS.with(|holdings| holdings.borrow().clone()) else {
         return false;
@@ -251,10 +187,9 @@ fn settle_holdings() -> bool {
     moved
 }
 
-/// Where what this window's workspace holds and this device lacks comes
-/// from: the workspace's host, by the workspace's name, when the workspace
-/// has one; otherwise the workspace's other devices, which no one names
-/// here.
+/// Where what this window's workspace holds and this device lacks comes from: the
+/// workspace's host, by the workspace's name, when the workspace has one; otherwise the
+/// workspace's other devices, which no one names here.
 #[must_use]
 pub fn source() -> Source {
     match current() {
@@ -263,7 +198,6 @@ pub fn source() -> Source {
     }
 }
 
-/// Keep what the shell says; answers whether it changed.
 fn tell(sync: Option<WorkspaceSync>) -> bool {
     TOLD.with(|told| {
         let mut told = told.borrow_mut();
@@ -280,16 +214,14 @@ fn tell(sync: Option<WorkspaceSync>) -> bool {
         if let Some(writable) = writable {
             follow(writable);
         }
-        // What the window shows changes with it: it is laid out again.
         SPINNER.with(|spinner| spinner.set((None, None)));
         true
     })
 }
 
-/// Let `permissions`, a workspace launch's, follow the workspace's grants:
-/// when the shell says the app may write the workspace now, or may not any
-/// more, they become an author's or a viewer's at once
-/// ([`WorkspaceSync::writable`]).
+/// Let `permissions`, a workspace launch's, follow the workspace's grants: when the shell
+/// says the app may write the workspace now, or may not any more, they become an author's
+/// or a viewer's at once ([`WorkspaceSync::writable`]).
 pub fn follow_participation(permissions: &crate::permissions::SharedPermissions) {
     FOLLOWERS.with(|followers| {
         let mut followers = followers.borrow_mut();
@@ -301,7 +233,6 @@ pub fn follow_participation(permissions: &crate::permissions::SharedPermissions)
     }
 }
 
-/// Make every following launch an author's (`writable`) or a viewer's.
 fn follow(writable: bool) {
     let live: Vec<_> = FOLLOWERS.with(|followers| {
         let mut followers = followers.borrow_mut();
@@ -329,10 +260,9 @@ pub fn current() -> Option<WorkspaceSync> {
     TOLD.with(|told| told.borrow().as_ref().map(|told| told.sync.clone()))
 }
 
-/// What the window says while this device holds writes to its workspace
-/// that are not yet synced ([`WorkspaceSync::unsynced_writes`]), or cannot
-/// keep them on disk ([`WorkspaceSync::cannot_keep_writes`]); `None` while
-/// neither.
+/// What the window says while this device holds writes to its workspace that are not yet
+/// synced ([`WorkspaceSync::unsynced_writes`]), or cannot keep them on disk
+/// ([`WorkspaceSync::cannot_keep_writes`]); `None` while neither.
 #[must_use]
 pub fn unsynced_status() -> Option<String> {
     let sync = current().filter(|sync| sync.unsynced_writes > 0 || sync.cannot_keep_writes)?;
@@ -356,27 +286,21 @@ pub fn unsynced_status() -> Option<String> {
     Some(crate::i18n::I18nManager::lookup(key, Some(&args)))
 }
 
-/// Whether the window's workspace has not synced yet: its content may be
-/// missing, not absent.
+/// Whether the window's workspace has not synced yet: its content may be missing, not
+/// absent.
 #[must_use]
 pub fn before_first_sync() -> bool {
     current().is_some_and(|sync| sync.before_first_sync())
 }
 
-/// What an empty state shows in place of the app's own while the workspace
-/// has not synced.
+/// What an empty state shows in place of the app's own while the workspace has not
+/// synced.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Waiting {
     pub title: String,
     pub message: Option<String>,
-    /// Since when the spinner turns, when the workspace is on its way.
     pub spinner_since: Option<Instant>,
-    /// The hero icon when no spinner takes its slot.
     pub icon: crate::icons::Icon,
-    /// Whether the app's own action stays: while the host cannot be
-    /// reached the person works on what this device has, and their changes
-    /// sync once it is back. While the workspace is on its way, what it
-    /// holds may yet arrive, so the app's action waits for it.
     pub keeps_action: bool,
 }
 
@@ -386,8 +310,8 @@ impl Waiting {
     }
 }
 
-/// What an empty state shows instead of the app's own, while the workspace
-/// has not synced; `None` once it has (or outside a workspace that syncs).
+/// What an empty state shows instead of the app's own, while the workspace has not
+/// synced; `None` once it has (or outside a workspace that syncs).
 pub(crate) fn waiting() -> Option<Waiting> {
     TOLD.with(|told| {
         let told = told.borrow();
@@ -445,12 +369,11 @@ pub(crate) fn waiting() -> Option<Waiting> {
     })
 }
 
-/// An empty state painted the waiting spinner at `step` (its pose since the
-/// workspace began waiting) over `scene_rect`, its slot in scene (physical)
-/// pixels, and it takes its next pose at `next` while it turns: the window
-/// redraws then ([`next_pose`]), and the new pose damages that slot alone.
-/// A turning spinner costs one small frame per pose, never a frame per
-/// refresh, a sync or a layout.
+/// An empty state painted the waiting spinner at `step` (its pose since the workspace
+/// began waiting) over `scene_rect`, its slot in scene (physical) pixels, and it takes
+/// its next pose at `next` while it turns: the window redraws then ([`next_pose`]), and
+/// the new pose damages that slot alone. A turning spinner costs one small frame per
+/// pose, never a frame per refresh, a sync or a layout.
 pub(crate) fn spinner_painted(step: u64, next: Option<Instant>, scene_rect: vello::kurbo::Rect) {
     SPINNER.with(|spinner| {
         let (last, pending) = spinner.get();
@@ -466,24 +389,22 @@ pub(crate) fn spinner_painted(step: u64, next: Option<Instant>, scene_rect: vell
     }
 }
 
-/// A frame starts drawing: what it paints says again whether a spinner
-/// turns ([`spinner_painted`]).
+/// A frame starts drawing: what it paints says again whether a spinner turns
+/// ([`spinner_painted`]).
 #[cfg(any(test, feature = "native"))]
 pub(crate) fn frame_drawing() {
     NEXT_POSE.with(|pose| pose.set(None));
 }
 
-/// When the turning spinner the last drawn frame painted takes its next
-/// pose; `None` when no spinner turns.
+/// When the turning spinner the last drawn frame painted takes its next pose; `None` when
+/// no spinner turns.
 #[cfg(any(test, feature = "native"))]
 pub(crate) fn next_pose() -> Option<Instant> {
     NEXT_POSE.with(Cell::get)
 }
 
-/// Where the waiting spinner painted a new pose since the last frame, in
-/// scene (physical) pixels: it paints outside any widget's box, so the
-/// frame damages that slot. `None` when its pose did not move. Only the
-/// native runner presents frames with damage.
+/// Where the waiting spinner painted a new pose since the last frame, in scene (physical)
+/// pixels: it paints outside any widget's box, so the frame damages that slot.
 #[cfg(any(test, feature = "native"))]
 pub(crate) fn take_spinner_damage() -> Option<vello::kurbo::Rect> {
     SPINNER.with(|spinner| {
@@ -710,7 +631,6 @@ mod tests {
             writes(&own),
             "an owner's own launch is no participation to follow"
         );
-        // No answer from the shell leaves the launch as it is.
         set(told(Some(true)));
         set(told(None));
         assert!(writes(&launch));

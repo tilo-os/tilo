@@ -1,11 +1,6 @@
-//! Retirement synchronization, never Source, caller or disclosure authority.
-//!
-//! The embedding owner must separately bind its live Source/worker. No
-//! constructor here installs a semantic reader or changes its availability.
-//! There is no public guard, positive probe, raw Arc, callback or payload slot.
-//!
-//! Construction initializes the platform mutex before any handle is shared, so
-//! retirement and drop never allocate.
+//! Retirement synchronization, never Source, caller or disclosure authority. The
+//! embedding owner must separately bind its live Source/worker. Construction initializes
+//! the platform mutex before any handle is shared, so retirement and drop never allocate.
 mod lifecycle;
 pub use lifecycle::MountRetirement;
 pub(crate) use lifecycle::{MountConstructionRetirement, RootRetirementPrelude};
@@ -34,8 +29,8 @@ struct MarkerCore {
     retired: AtomicBool,
 }
 
-// There are no Weak refs: every strong ref keeps the backing alive until its
-// own drop, never the owner's logical life.
+// There are no Weak refs: every strong ref keeps the backing alive until its own drop,
+// never the owner's logical life.
 struct DomainRef {
     core: Arc<DomainCore>,
 }
@@ -45,17 +40,13 @@ struct MarkerRef {
     marker: Arc<MarkerCore>,
 }
 
-/// Domain owner. Drop retires every marker, even with observers.
-/// This is deliberately non-Clone and has no public positive validation method.
 pub struct RetirementDomain {
     value: DomainRef,
 }
-/// Marker owner. Drop retires this marker, not its siblings.
 pub struct RetirementOwner {
     value: MarkerRef,
 }
 /// A negative reference. It cannot keep its owner logically live.
-/// Cloning is permitted even after retirement; explicit retirement is irreversible.
 #[derive(Clone)]
 pub struct RetirementHandle {
     value: MarkerRef,
@@ -67,8 +58,8 @@ impl DomainCore {
     }
     fn finish_retirement(&self) {
         self.request_retirement();
-        // Poison is permanent. Recover only to complete negative retirement;
-        // never clear poison, invoke a callback, or drop custody under the guard.
+        // Poison is permanent. Recover only to complete negative retirement; never clear
+        // poison, invoke a callback, or drop custody under the guard.
         let guard = self.gate.lock_recover();
         self.retired.store(true, Ordering::Release);
         drop(guard);
@@ -102,8 +93,6 @@ impl MarkerRef {
 }
 
 impl RetirementDomain {
-    /// # Errors
-    ///
     /// [`RetirementError::Poisoned`] if the fresh gate cannot be initialized.
     pub fn new() -> Result<Self, RetirementError> {
         let core = Arc::new(DomainCore {
@@ -111,8 +100,6 @@ impl RetirementDomain {
             requested: AtomicBool::new(false),
             retired: AtomicBool::new(false),
         });
-        // Unique, unshared first initialization prevents OnceBox allocation
-        // races. No later lock/try_lock/retirement may initialize heap backing.
         {
             let guard = core.gate.lock().map_err(|_| RetirementError::Poisoned)?;
             drop(guard);
@@ -121,16 +108,10 @@ impl RetirementDomain {
             value: DomainRef { core },
         })
     }
-    /// Create an inert marker. A successful check orders creation before a
-    /// concurrent domain retirement; that retirement still denies this marker.
-    ///
-    /// # Errors
-    ///
-    /// [`RetirementError::Retired`], [`RetirementError::Busy`] or [`RetirementError::Poisoned`]
-    /// when the domain no longer accepts markers.
+    /// Create an inert marker. [`RetirementError::Retired`], [`RetirementError::Busy`] or
+    /// [`RetirementError::Poisoned`] when the domain no longer accepts markers.
     pub fn marker(&self) -> Result<RetirementOwner, RetirementError> {
         self.value.core.accepts_new_marker()?;
-        // The gate is released before allocation.
         Ok(RetirementOwner {
             value: MarkerRef {
                 domain: Arc::clone(&self.value.core),
@@ -141,12 +122,10 @@ impl RetirementDomain {
             },
         })
     }
-    /// Early denial only. Finish outside registry locks before cleanup callbacks.
     pub fn request_retirement(&self) {
         self.value.core.request_retirement();
     }
     /// Request denial and synchronize it, waiting only for an entered critical section.
-    /// No callback or allocation runs; do not call while holding this domain's guard.
     pub fn finish_retirement(&self) {
         self.value.core.finish_retirement();
     }
@@ -161,7 +140,6 @@ impl Drop for RetirementDomain {
     }
 }
 impl RetirementOwner {
-    /// A negative observer. This does not allocate another marker.
     pub fn handle(&self) -> RetirementHandle {
         RetirementHandle {
             value: self.value.clone(),

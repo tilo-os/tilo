@@ -22,21 +22,12 @@ mod row_ink;
 use cache::{CacheKey, CacheQuery, TextCache};
 use tilo_lock::RwLockRecover as _;
 
-/// Product-wide primary font families. Tilo ships these exact faces, and the
-/// renderer also assigns them to the CSS-like generic families below. Keeping
-/// the names here makes plain text, rich text, and theme tokens agree instead
-/// of depending on each machine's fontconfig defaults.
-///
-/// The UI face covers Latin, Vietnamese and Greek. Cyrillic falls back to a
-/// face matched to it, sized to its x-height (see [`crate::font_catalog`]);
-/// every other script falls back to Noto.
+/// Product-wide primary font families.
 pub const UI_SANS_FAMILY: &str = "Tilo Sans";
-/// The built-in "Hyperlegible" UI face a theme or the accessibility layer
-/// can choose instead of [`UI_SANS_FAMILY`].
+/// The built-in "Hyperlegible" UI face a theme or the accessibility layer can choose
+/// instead of [`UI_SANS_FAMILY`].
 pub const UI_HYPERLEGIBLE_FAMILY: &str = "Atkinson Hyperlegible Next";
-/// The default reading face, New Computer Modern. Set in this family, text
-/// takes the cut its size calls for: the 8 pt design for footnotes, Book for
-/// body text and Regular for titles ([`crate::tokens::ReadingFace`]).
+/// The default reading face, New Computer Modern.
 pub const UI_SERIF_FAMILY: &str = "New Computer Modern";
 pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
 /// Dedicated OpenType MATH face used by the shared formula compositor.
@@ -75,18 +66,11 @@ fn browser_assets_for_missing(character: char) -> &'static [&'static str] {
                 code,
                 0x02B0..=0x036F | 0x1DC0..=0x1DFF | 0x2070..=0x209F | 0x2100..=0x218F
             ) {
-                // Modifier letters, the combining marks Latin, Greek and
-                // Cyrillic take, super- and subscripts, letterlike symbols
-                // and number forms.
                 &["NotoSans[wght].ttf"]
             } else {
                 &[]
             }
         }
-        // The UI faces cover the Latin, Greek and Cyrillic text people
-        // write; Noto Sans, fetched the first time text needs it, has the
-        // rest of those scripts (phonetic letters, archaic Greek and
-        // Cyrillic, spacing modifiers).
         Script::Latin | Script::Greek | Script::Cyrillic => &["NotoSans[wght].ttf"],
         _ => &[],
     }
@@ -96,9 +80,9 @@ pub(crate) fn browser_text_demands_emoji(text: &str) -> bool {
     crate::text_break::graphemes(text).any(browser_grapheme_demands_emoji)
 }
 
-/// Whether one grapheme is an emoji (drawn from the colour emoji font),
-/// the way the browser build decides it: an emoji presentation, a joined or
-/// keycap sequence, or a variation selector asking for one.
+/// Whether one grapheme is an emoji (drawn from the colour emoji font), the way the
+/// browser build decides it: an emoji presentation, a joined or keycap sequence, or a
+/// variation selector asking for one.
 pub(crate) fn grapheme_is_emoji(grapheme: &str) -> bool {
     browser_grapheme_demands_emoji(grapheme)
 }
@@ -166,9 +150,9 @@ thread_local! {
     pub(crate) static FONT_SYSTEM_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// This crate's unit tests get the checked-in controlled catalog instead of
-/// the host's fonts, so their shaping and pixels never depend on which fonts
-/// the machine running them has installed.
+/// This crate's unit tests get the checked-in controlled catalog instead of the host's
+/// fonts, so their shaping and pixels never depend on which fonts the machine running
+/// them has installed.
 #[cfg(test)]
 pub fn configured_font_system() -> FontSystem {
     FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
@@ -180,14 +164,13 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Run `f` with a layout-only renderer set in `theme`'s type, for widgets
-/// that must measure in `apply_layout`, which is handed no renderer: the
-/// renderer the layout measured them with is as tall and as wide as the one
-/// they are drawn with, so a box placed here lands on the text painted there.
-/// Building one loads every installed font (tens of milliseconds) and layout
-/// runs every frame an animation is live, so renderers are pooled per thread;
-/// a nested call takes its own from the pool rather than borrowing the outer
-/// one.
+/// Run `f` with a layout-only renderer set in `theme`'s type, for widgets that must
+/// measure in `apply_layout`, which is handed no renderer: the renderer the layout
+/// measured them with is as tall and as wide as the one they are drawn with, so a box
+/// placed here lands on the text painted there. Building one loads every installed font
+/// (tens of milliseconds) and layout runs every frame an animation is live, so renderers
+/// are pooled per thread; a nested call takes its own from the pool rather than borrowing
+/// the outer one.
 pub fn with_layout_renderer<R>(
     theme: &crate::theme::Theme,
     f: impl FnOnce(&mut TextRenderer) -> R,
@@ -202,11 +185,6 @@ pub fn with_layout_renderer<R>(
     out
 }
 
-/// The font database a host built for this process, when its fonts do not
-/// come from the system: a browser page has no system fonts, so a renderer
-/// made without one would shape with none. Set by
-/// [`TextRenderer::with_browser_font_system`] and each optional font it
-/// installs.
 static HOST_FONT_DATABASE: std::sync::RwLock<Option<(String, cosmic_text::fontdb::Database)>> =
     std::sync::RwLock::new(None);
 
@@ -215,21 +193,12 @@ fn share_host_font_database(font_system: &FontSystem) {
         Some((font_system.locale().to_owned(), font_system.db().clone()));
 }
 
-/// Build the process's font system: the database a host built for it when
-/// there is one, otherwise the product font catalog with the system's fonts
-/// behind it and Tilo's script fallback (Android copies its catalog out of
-/// the APK first). A binary run from a checkout, a screenshot and the Tilo
-/// image therefore all set text in the same faces, whether or not the
-/// machine has them installed. Only when no catalog loads does it fall back
-/// to the system's fonts alone with the generic families pinned to the
-/// product names.
-/// Why a capture in this process would set text in the host's faces instead of
-/// the product's, when it would: no root holds this build's catalog. `None`
-/// when the catalog is there, when a host supplied its own database (the
-/// compositor's renderers), and under test. A capture that cannot set text in
-/// the product's faces must fail rather than produce frames that look almost
-/// right: every overflow, truncation and hinting judgement made from them is
-/// about a font the product does not ship.
+/// Build the process's font system: the database a host built for it when there is one,
+/// otherwise the product font catalog with the system's fonts behind it and Tilo's script
+/// fallback (Android copies its catalog out of the APK first). A capture that cannot set
+/// text in the product's faces must fail rather than produce frames that look almost
+/// right: every overflow, truncation and hinting judgement made from them is about a font
+/// the product does not ship.
 #[cfg(all(feature = "native", not(test)))]
 pub fn font_catalog_problem() -> Option<String> {
     if HOST_FONT_DATABASE.read_recover().is_some() {
@@ -272,10 +241,9 @@ pub fn configured_font_system() -> FontSystem {
     FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
 
-/// Read the product font catalog into memory and set every renderer this
-/// process makes in it from now on: for a process about to lose the
-/// filesystem (a confined app worker) whose views still lay out text.
-/// Returns whether a catalog loaded.
+/// Read the product font catalog into memory and set every renderer this process makes in
+/// it from now on: for a process about to lose the filesystem (a confined app worker)
+/// whose views still lay out text.
 #[cfg(not(test))]
 pub fn hold_catalog_fonts_in_memory() -> bool {
     let Some(font_system) =
@@ -293,19 +261,17 @@ pub fn hold_catalog_fonts_in_memory() -> bool {
     true
 }
 
-/// Build the font database [`configured_font_system`] copies into every
-/// renderer now, and throw the font system away: a native launch runs this
-/// in the background from process start, so the main thread's first
-/// renderer finds the catalog verified and every font file read instead of
-/// doing both itself. The database is a process-wide `OnceLock`, so
-/// a renderer asked for meanwhile waits for this one: nothing is loaded
-/// twice, and it is the database the main thread would have built.
+/// Build the font database [`configured_font_system`] copies into every renderer now, and
+/// throw the font system away: a native launch runs this in the background from process
+/// start, so the main thread's first renderer finds the catalog verified and every font
+/// file read instead of doing both itself. The database is a process-wide `OnceLock`, so
+/// a renderer asked for meanwhile waits for this one: nothing is loaded twice, and it is
+/// the database the main thread would have built.
 pub fn prepare_font_database() {
     drop(configured_font_system());
 }
 
-/// The system's fonts, scanned once per process. A scan parses every
-/// installed font file, and each renderer would otherwise repeat it.
+/// The system's fonts, scanned once per process.
 #[cfg(not(test))]
 static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::Database)> =
     std::sync::OnceLock::new();
@@ -369,8 +335,8 @@ fn is_closing_punctuation(text: &str) -> bool {
     })
 }
 
-/// The CSS width keyword nearest a `wdth` axis value: the width a run is
-/// shaped at (cosmic-text takes widths as keywords).
+/// The CSS width keyword nearest a `wdth` axis value: the width a run is shaped at
+/// (cosmic-text takes widths as keywords).
 pub(crate) fn stretch_for_width(width: f32) -> cosmic_text::Stretch {
     use cosmic_text::Stretch;
     const WIDTHS: [(f32, Stretch); 9] = [
@@ -390,14 +356,9 @@ pub(crate) fn stretch_for_width(width: f32) -> cosmic_text::Stretch {
         .map_or(Stretch::Normal, |&(_, stretch)| stretch)
 }
 
-/// Where a laid-out glyph is painted: its pen position (`pen_x`, already
-/// moved for hanging punctuation) and baseline plus the shaper's GPOS offset.
-///
-/// cosmic-text keeps that offset apart from the pen position, in em units and
-/// with y pointing up. Complex scripts position mark and conjunct glyphs with
-/// it — Noto Sans Bengali moves parts of নমস্কার and বিশ্ব by more than half
-/// an em — so painting the bare pen position breaks them apart. Carets and
-/// hit-testing keep using the pen position.
+/// Where a laid-out glyph is painted: its pen position (`pen_x`, already moved for
+/// hanging punctuation) and baseline plus the shaper's GPOS offset. cosmic-text keeps
+/// that offset apart from the pen position, in em units and with y pointing up.
 pub(crate) fn glyph_paint_origin(
     glyph: &cosmic_text::LayoutGlyph,
     pen_x: f32,
@@ -453,12 +414,12 @@ pub(crate) fn discretionary_hyphen_advance(font_system: &mut FontSystem, style: 
         .fold(0.0f32, f32::max)
 }
 
-/// Named weight tiers mapping 1:1 to [`cosmic_text::fontdb::Weight`]'s
-/// numeric constants (Tailwind's font-medium/semibold/bold), so call sites
-/// read declaratively instead of passing raw u16s.
+/// Named weight tiers mapping 1:1 to [`cosmic_text::fontdb::Weight`]'s numeric constants
+/// (Tailwind's font-medium/semibold/bold), so call sites read declaratively instead of
+/// passing raw u16s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum TextWeight {
-    /// 400 — body / subtitle / explanatory text. Default.
+    /// 400 — body / subtitle / explanatory text.
     #[default]
     Regular,
     /// 500 — most chrome labels (buttons, secondary titles).
@@ -484,9 +445,7 @@ impl TextWeight {
     }
 }
 
-/// A font family to shape with. The three generic classes resolve to the
-/// system's default face for that class; `Named` targets a specific
-/// installed family by name.
+/// A font family to shape with.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub enum FontChoice {
     #[default]
@@ -496,17 +455,13 @@ pub enum FontChoice {
     Named(String),
 }
 
-/// Paragraph hyphenation policy. It is deliberately opt-in: short UI labels
-/// and identifiers should never acquire language-dependent line endings, while
-/// reading text can request TeX/Liang patterns with a BCP-47 language tag.
-/// Application-supplied discretionary hyphenation. Returned offsets are in
-/// the original UTF-8 byte space; invalid, edge, and non-character boundaries
-/// are ignored by the renderer.
+/// Paragraph hyphenation policy. It is deliberately opt-in: short UI labels and
+/// identifiers should never acquire language-dependent line endings, while reading text
+/// can request TeX/Liang patterns with a BCP-47 language tag.
 pub trait Hyphenator: Send + Sync {
     fn breaks(&self, text: &str) -> Vec<usize>;
 
-    /// Stable identity for shape/measurement caches. Change this value when
-    /// the algorithm, dictionary, or user settings change.
+    /// Stable identity for shape/measurement caches.
     fn cache_key(&self) -> u64;
 }
 
@@ -516,8 +471,6 @@ pub enum Hyphenation {
     None,
     /// Automatically insert discretionary breaks for this BCP-47 language.
     Auto(String),
-    /// Use an application-supplied algorithm without changing the source
-    /// string or replacing the text widget.
     Custom(Arc<dyn Hyphenator>),
 }
 
@@ -554,8 +507,6 @@ impl std::hash::Hash for Hyphenation {
             Self::Auto(language) => {
                 1_u8.hash(state);
                 language.hash(state);
-                // Layouts made before the patterns' code arrived (where it
-                // loads on first use) have no hyphens: make them again.
                 crate::text_break::hyphenation_generation().hash(state);
             }
             Self::Custom(hyphenator) => {
@@ -612,25 +563,14 @@ impl OpenTypeTag {
 /// forms whatever its kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextKind {
-    /// Running text. Numbers stay proportional.
     #[default]
     Prose,
-    /// Figures that line up in columns or change in place: times, dates,
-    /// durations, counts, prices, sizes, progress, clocks.
     Numeric,
-    /// Characters someone copies or compares one by one: verification and
-    /// recovery codes, TOTP, API keys, hashes, revealed passwords, Wi-Fi and
-    /// licence keys.
     Secret,
-    /// Names that must not be mistaken for another: usernames, handles,
-    /// email addresses, invite codes, workspace names, other people's file
-    /// names.
+    /// Names that must not be mistaken for another: usernames, handles, email addresses,
+    /// invite codes, workspace names, other people's file names.
     Identifier,
-    /// Web and other links. An identifier that also sets the zero apart:
-    /// a look-alike domain (`paypa1.com`, `g00gle.com`) is a phishing
-    /// vector.
     Url,
-    /// Source code and terminal text, in the mono face.
     Code,
 }
 
@@ -674,11 +614,7 @@ pub enum OpticalSizing {
     Value(f32),
 }
 
-/// The ground text is set on, as far as the face is concerned. Light ink on a
-/// dark ground loses fine hairlines first, so a family drawn in separate
-/// optical cuts keeps its sturdier text cut to larger sizes there
-/// ([`OpticalSizing::Auto`]). A theme's roles carry its content ground; a
-/// surface that paints its own ground (a book's page) says which it is.
+/// The ground text is set on, as far as the face is concerned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextGround {
     #[default]
@@ -687,11 +623,9 @@ pub enum TextGround {
 }
 
 impl TextGround {
-    /// The ground `color` is: dark when light ink reads better on it than
-    /// dark ink does.
+    /// The ground `color` is: dark when light ink reads better on it than dark ink does.
     #[must_use]
     pub fn of(color: Color) -> Self {
-        // Black and white contrast equally with a ground of this luminance.
         if crate::color::relative_luminance(color) < 0.179 {
             Self::Dark
         } else {
@@ -726,14 +660,10 @@ impl ParagraphAlign {
 pub enum TextWrapMode {
     #[default]
     Wrap,
-    /// Prefer word boundaries and fall back to glyph boundaries when one word
-    /// is wider than the available measure.
     WordOrGlyph,
-    /// Choose a narrower measure that keeps the same number of lines while
-    /// minimizing raggedness, like CSS `text-wrap: balance`.
     Balance,
-    /// Source code's soft wrap: a wrapped row hangs under its line's own
-    /// indentation, so a continuation never reads as a new, outdented line.
+    /// Source code's soft wrap: a wrapped row hangs under its line's own indentation, so
+    /// a continuation never reads as a new, outdented line.
     Indented,
 }
 
@@ -751,11 +681,9 @@ impl HangingPunctuation {
     };
 }
 
-/// The page-break rules every paged layout shares: fit, manual breaks,
-/// widow and orphan splits, headings kept with their text.
+/// The page-break rules every paged layout shares: fit, manual breaks, widow and orphan
+/// splits, headings kept with their text.
 pub use tilo_doc::paging;
-/// Minimum line counts retained on either side of a page/column break: the
-/// rule every paged layout shares.
 pub use tilo_doc::paging::Fragmentation;
 
 impl Hyphenation {
@@ -802,13 +730,10 @@ impl Hyphenation {
 /// The ellipsis [`TextRenderer::elide_to_width`] and its variants append.
 pub const ELLIPSIS: char = '\u{2026}';
 
-/// The complete typographic style for a plain text run.
-///
-/// Keeping these values together is more than API convenience: measurement,
-/// wrapping, glyph placement, and painting must all receive the exact same
-/// metrics or text will clip, jump, or wrap differently between layout and
-/// draw. `line_height` is a multiplier, matching CSS and the values in the
-/// theme's typography tokens.
+/// The complete typographic style for a plain text run. Keeping these values together is
+/// more than API convenience: measurement, wrapping, glyph placement, and painting must
+/// all receive the exact same metrics or text will clip, jump, or wrap differently
+/// between layout and draw.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
     pub size: f32,
@@ -826,45 +751,31 @@ pub struct TextStyle {
     pub wrap_mode: TextWrapMode,
     pub hanging_punctuation: HangingPunctuation,
     pub fragmentation: Fragmentation,
-    /// What `size` is relative to, and so whether the renderer's
-    /// accessibility text scale still applies to it.
     pub scaling: TextScaling,
-    /// What the text is; resolved to OpenType features against each face it
-    /// is set in.
     pub kind: TextKind,
-    /// The ground the text is set on, for the optical cut it is set in.
     pub ground: TextGround,
-    /// Set every look-alike (I, l, 1 and 0, O) apart whatever the kind: text
-    /// on a security surface ([`Self::on_security_surface`]). The renderer
-    /// also sets it on all text while the person's "Always distinguish
-    /// similar letters" setting is on.
+    /// Set every look-alike (I, l, 1 and 0, O) apart whatever the kind: text on a
+    /// security surface ([`Self::on_security_surface`]).
     pub distinguish: bool,
 }
 
-/// What a [`TextStyle`]'s size (and pixel letter spacing) is measured in.
-///
-/// Text must be scaled exactly once. A theme role is already resolved; a
-/// renderer-relative base size is scaled by the renderer; a document's own
-/// type is never scaled by an accessibility preference at all.
+/// What a [`TextStyle`]'s size (and pixel letter spacing) is measured in. Text must be
+/// scaled exactly once.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextScaling {
-    /// A 1× base size. The renderer multiplies it by its accessibility text
-    /// scale. [`TextStyle::new`] and the size-based renderer APIs use this.
+    /// A 1× base size.
     #[default]
     Renderer,
-    /// A final logical size that already includes the theme's UI and text
-    /// scale: every [`crate::theme::Theme::text`] role. Painted as given.
     Resolved,
-    /// A document-space size that belongs to the content, not the chrome: a
-    /// zoomed canvas, a PDF stamp, a terminal grid. Painted as given and
-    /// never grown by the text scale; the content's own zoom scales it.
+    /// A document-space size that belongs to the content, not the chrome: a zoomed
+    /// canvas, a PDF stamp, a terminal grid. Painted as given and never grown by the text
+    /// scale; the content's own zoom scales it.
     Content,
 }
 
 impl TextStyle {
     /// Construct regular sans-serif text at a renderer-relative base size
-    /// ([`TextScaling::Renderer`]) with the renderer's legacy leading. UI
-    /// text takes a role instead: [`crate::theme::Theme::text`].
+    /// ([`TextScaling::Renderer`]) with the renderer's legacy leading.
     pub fn new(size: f32) -> Self {
         Self {
             size,
@@ -888,9 +799,9 @@ impl TextStyle {
         }
     }
 
-    /// Document-space text at exactly `size` ([`TextScaling::Content`]):
-    /// zoomed canvases, PDF stamps, terminal grids. The accessibility text
-    /// scale never applies; the content's zoom does, through the transform.
+    /// Document-space text at exactly `size` ([`TextScaling::Content`]): zoomed canvases,
+    /// PDF stamps, terminal grids. The accessibility text scale never applies; the
+    /// content's zoom does, through the transform.
     pub fn content(size: f32) -> Self {
         Self {
             scaling: TextScaling::Content,
@@ -936,9 +847,7 @@ impl TextStyle {
         self.with_letter_spacing(em * size)
     }
 
-    /// Say what the text is ([`TextKind`]). `Code` also sets it in the mono
-    /// face. `Numeric` and `Secret` decide the figures, so they replace any
-    /// figure style set before them (the Reading role's old-style figures).
+    /// Say what the text is ([`TextKind`]).
     #[must_use]
     pub fn with_kind(mut self, kind: TextKind) -> Self {
         self.kind = kind;
@@ -952,19 +861,16 @@ impl TextStyle {
         self
     }
 
-    /// Say what ground the text is set on ([`TextGround`]). Theme roles
-    /// carry their theme's; a surface that paints its own ground sets it.
+    /// Say what ground the text is set on ([`TextGround`]).
     #[must_use]
     pub fn with_ground(mut self, ground: TextGround) -> Self {
         self.ground = ground;
         self
     }
 
-    /// Text on a security surface — a permission prompt, a link preview, an
-    /// invite or join confirmation, identity verification — where every
-    /// look-alike letter and figure is set apart, prose included. Toolkit
-    /// surfaces of these kinds mark themselves; a custom-painted one marks
-    /// its styles here.
+    /// Text on a security surface — a permission prompt, a link preview, an invite or
+    /// join confirmation, identity verification — where every look-alike letter and
+    /// figure is set apart, prose included.
     #[must_use]
     pub fn on_security_surface(mut self) -> Self {
         self.distinguish = true;
@@ -1074,18 +980,13 @@ impl TextStyle {
     }
 
     /// Opt this paragraph into automatic language-aware hyphenation.
-    ///
-    /// `language` is a BCP-47 tag such as `"en-US"`, `"de"`, or `"pt-BR"`.
-    /// Unknown or malformed tags fall back to normal word wrapping, so content
-    /// remains readable when no compiled pattern matches.
     #[must_use]
     pub fn with_auto_hyphenation(mut self, language: impl Into<String>) -> Self {
         self.hyphenation = Hyphenation::Auto(language.into());
         self
     }
 
-    /// Use a custom discretionary-break algorithm. The same policy is used
-    /// for measurement and painting, and participates in cache identity.
+    /// Use a custom discretionary-break algorithm.
     #[must_use]
     pub fn with_hyphenator(mut self, hyphenator: Arc<dyn Hyphenator>) -> Self {
         self.hyphenation = Hyphenation::Custom(hyphenator);
@@ -1096,9 +997,9 @@ impl TextStyle {
         self.size * self.line_height
     }
 
-    /// The line box this style paints, grown by `text_scale` for a style whose size is a 1×
-    /// base ([`TextScaling::Renderer`]) and painted as given otherwise: the height one line
-    /// of it takes, as [`TextRenderer`] measures and paints it.
+    /// The line box this style paints, grown by `text_scale` for a style whose size is a
+    /// 1× base ([`TextScaling::Renderer`]) and painted as given otherwise: the height one
+    /// line of it takes, as [`TextRenderer`] measures and paints it.
     #[must_use]
     pub fn line_height_px_at(&self, text_scale: f32) -> f32 {
         let scale = if self.scaling == TextScaling::Renderer {
@@ -1109,9 +1010,8 @@ impl TextStyle {
         self.line_height_px() * scale
     }
 
-    /// Resolve the integer weight accepted by cosmic-text: the last explicit
-    /// `wght` overrides the named tier, rounds to nearest, then clamps to 1..1000.
-    /// Painting uses each shaped glyph's resulting weight, including span bold.
+    /// Resolve the integer weight accepted by cosmic-text: the last explicit `wght`
+    /// overrides the named tier, rounds to nearest, then clamps to 1..1000.
     pub(crate) fn effective_weight(&self) -> Weight {
         let value = self
             .font_variations
@@ -1121,9 +1021,9 @@ impl TextStyle {
             .map_or_else(|| f32::from(self.weight.to_u16()), |axis| axis.value)
             .round()
             .clamp(1.0, 1000.0);
-        // Clamped to an integer in 1.0..=1000.0 immediately above, so this
-        // narrowing is exact; converting differently would risk drifting the
-        // resolved font weight against the pixel-diff golden.
+        // Clamped to an integer in 1.0..=1000.0 immediately above, so this narrowing is
+        // exact; converting differently would risk drifting the resolved font weight
+        // against the pixel-diff golden.
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -1183,9 +1083,8 @@ impl TextStyle {
         if self.italic {
             attrs = attrs.style(FontStyle::Italic);
         }
-        // Shaping, measuring and kerning follow the width the glyphs are
-        // drawn at (the draw applies `wdth` exactly; shaping takes the
-        // nearest CSS width keyword).
+        // Shaping, measuring and kerning follow the width the glyphs are drawn at (the
+        // draw applies `wdth` exactly; shaping takes the nearest CSS width keyword).
         if let Some(width) = self
             .font_variations
             .iter()
@@ -1196,8 +1095,8 @@ impl TextStyle {
         attrs
     }
 
-    /// What picks this style's optical cut besides the family, size, style
-    /// and weight of each run.
+    /// What picks this style's optical cut besides the family, size, style and weight of
+    /// each run.
     pub(crate) fn optical(&self) -> crate::font_catalog::optical::Optical {
         crate::font_catalog::optical::Optical {
             sizing: self.optical_sizing,
@@ -1244,8 +1143,6 @@ impl FontChoice {
         }
     }
 
-    /// A stable hash of the choice, used as part of the shape-cache key so two
-    /// families of the same text/size/weight are cached separately.
     fn cache_hash(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -1271,12 +1168,6 @@ pub struct TextLayoutConstraints {
 }
 
 /// Replaceable measurement/painting boundary used by [`crate::widget::Text`].
-/// Implementations keep localization, accessibility, Taffy integration, scene
-/// caching, and inspection supplied by the standard widget. `style` is always
-/// renderer-relative: implementations which delegate to [`TextRenderer`] pass
-/// it through unchanged. For theme-resolved or fixed-size widgets, `Text`
-/// compensates the font size for the renderer's current multiplier before this
-/// boundary; renderer-relative letter spacing keeps its established behavior.
 pub trait TextLayoutEngine {
     fn measure(
         &mut self,
@@ -1324,9 +1215,8 @@ impl std::fmt::Display for TextFlowRegionError {
 
 impl std::error::Error for TextFlowRegionError {}
 
-/// Non-rectangular local-coordinate region used for both line fitting and
-/// exact scene clipping. Concave polygons may produce several independent
-/// spans on one baseline, allowing text to flow around an inset or cutout.
+/// Non-rectangular local-coordinate region used for both line fitting and exact scene
+/// clipping.
 #[derive(Clone, Debug)]
 pub struct TextFlowRegion {
     points: Vec<Point>,
@@ -1336,7 +1226,6 @@ pub struct TextFlowRegion {
 }
 
 impl TextFlowRegion {
-    /// Build a closed polygon. Points are local to the Text widget's origin.
     pub fn polygon(points: impl IntoIterator<Item = Point>) -> Result<Self, TextFlowRegionError> {
         use std::hash::{Hash, Hasher};
 
@@ -1670,7 +1559,6 @@ fn force_flow_fragment(
     best
 }
 
-// Fixed metadata is bounded independently from variable retained payloads.
 const MEASURE_CACHE_LIMIT: usize = 4096;
 const MEASURE_CACHE_BYTES: usize = 2 * 1024 * 1024;
 const SHAPE_CACHE_BYTES: usize = 16 * 1024 * 1024;
@@ -1681,19 +1569,16 @@ pub struct LineFace {
     /// The size the line is set at, in the renderer's pixels.
     pub size: f32,
     pub coords: Vec<vello::NormalizedCoord>,
-    /// How far below the line's origin its baseline lies.
     pub baseline: f32,
 }
 
-/// One contiguous span of glyphs sharing a single font face, already
-/// positioned in the text block's local coordinate space. Painting is then
-/// just `scene.draw_glyphs` with the caller's colour + transform.
+/// One contiguous span of glyphs sharing a single font face, already positioned in the
+/// text block's local coordinate space. Painting is then just `scene.draw_glyphs` with
+/// the caller's colour + transform.
 #[derive(Clone)]
 struct GlyphRun {
     face_id: cosmic_text::fontdb::ID,
     font_weight: Weight,
-    /// The size the run was shaped at: the style's, or a matched fallback's
-    /// x-height-matched size.
     size: f32,
     glyphs: Vec<vello::Glyph>,
     normalized_coords: Vec<vello::NormalizedCoord>,
@@ -1746,8 +1631,6 @@ fn glyph_run_bytes(runs: &Vec<GlyphRun>) -> usize {
     )
 }
 
-/// Consecutive rich-text glyphs that share a face, weight, size, colour and
-/// baseline, flushed as one `draw_glyphs` call.
 struct GlyphBatch<'a> {
     face_id: cosmic_text::fontdb::ID,
     /// The text of the line the glyphs' byte offsets index.
@@ -1759,9 +1642,6 @@ struct GlyphBatch<'a> {
     variations: &'a [FontVariation],
 }
 
-/// Shaped glyph geometry plus the `(width, height)` measure derived from the
-/// same cosmic-text buffer, so a layout miss can reuse a prior paint (and a
-/// layout warm can satisfy the paint that follows) without reshaping.
 struct ShapedText {
     runs: Arc<Vec<GlyphRun>>,
     size: (f32, f32),
@@ -1772,9 +1652,6 @@ struct PreparedBuffer {
     hyphen_width: f32,
 }
 
-/// Upper bound on distinct shaped runs retained across frames. Static
-/// chrome labels warm this once; every subsequent frame is a pure `Arc`
-/// clone instead of a cosmic-text shape.
 const SHAPE_CACHE_LIMIT: usize = 4096;
 
 #[derive(Hash, PartialEq, Eq)]
@@ -1787,7 +1664,6 @@ struct InkFontKey {
     coords: Vec<vello::NormalizedCoord>,
 }
 
-/// Control points enclose every unhinted Bézier segment, including overhangs.
 #[derive(Default)]
 struct InkBoundsPen {
     bounds: Option<Rect>,
@@ -1804,7 +1680,6 @@ fn outline_ink_bounds(
     use skrifa::outline::DrawSettings;
     use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
     let face = FontRef::from_index(font.data.as_ref(), font.index).ok()?;
-    // Outline ink cannot bound layered color or bitmap glyphs.
     if [
         b"COLR", b"CPAL", b"CBDT", b"CBLC", b"sbix", b"SVG ", b"EBDT", b"EBLC",
     ]
@@ -1839,17 +1714,12 @@ fn outline_ink_bounds(
 pub struct GlyphOutline {
     /// The outline around the glyph's origin, y down, in the style's units.
     pub path: BezPath,
-    /// The glyph's origin on its baseline, where [`TextRenderer::draw_style`]
-    /// paints it.
     pub origin: Point,
-    /// How far the pen moves on to the next glyph.
     pub advance: f64,
     /// The bytes of the text the glyph shows.
     pub cluster: std::ops::Range<usize>,
 }
 
-/// A glyph's unhinted outline at `size`, y down; `None` for a colour or
-/// bitmap glyph, which has no outline to draw.
 fn outline_path(
     font: &Font,
     glyph_id: u16,
@@ -1883,7 +1753,6 @@ fn outline_path(
     Some(pen.0)
 }
 
-/// Draws a glyph outline into a path, flipping the font's y-up to y-down.
 struct PathPen(BezPath);
 
 impl skrifa::outline::OutlinePen for PathPen {
@@ -1944,8 +1813,7 @@ impl skrifa::outline::OutlinePen for InkBoundsPen {
     fn close(&mut self) {}
 }
 
-/// The identity of the fonts a renderer shapes with
-/// ([`TextRenderer::font_epoch`]).
+/// The identity of the fonts a renderer shapes with ([`TextRenderer::font_epoch`]).
 #[derive(Clone, Debug)]
 pub struct FontEpoch(Arc<()>);
 
@@ -1957,8 +1825,8 @@ impl PartialEq for FontEpoch {
 
 impl Eq for FontEpoch {}
 
-/// A renderer's fonts, locale, text scale and letter forms, to send to a
-/// thread that measures text the same way ([`TextRenderer::measuring_seed`]).
+/// A renderer's fonts, locale, text scale and letter forms, to send to a thread that
+/// measures text the same way ([`TextRenderer::measuring_seed`]).
 pub struct MeasuringSeed {
     locale: String,
     db: cosmic_text::fontdb::Database,
@@ -1989,51 +1857,27 @@ pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
     /// `(text, size, max_width, weight)` → measured `(width, height)`.
-    /// Uncached cosmic-text re-shape per frame measured ~7.5ms in debug
-    /// across a 50-widget tree; most widgets re-measure the same static
-    /// strings every frame, so caching drops that to a hash lookup.
     measure_cache: TextCache<(f32, f32)>,
-    /// Bumped by [`Self::bump_generation`] when locale or fonts change.
-    /// Generation participates in identity; bumping it also clears retained entries.
     generation: u64,
-    /// The text-presentation offer as this renderer last shaped: a host
-    /// asking for characters a run sets makes every run shaped before it be
-    /// shaped again.
     presentation_epoch: u64,
-    /// Identity of widget-owned layouts, unique across renderers and font epochs.
     layout_epoch: Arc<()>,
-    /// "Always distinguish similar letters" ([`Self::set_distinct_letters`]).
-    /// Mirrored into the shaping thread's state whenever the renderer
-    /// measures, paints or hands out its layout epoch, so layouts shaped
-    /// outside it ([`crate::richtext::RichTextLayout`]) follow it too.
+    /// "Always distinguish similar letters" ([`Self::set_distinct_letters`]). Mirrored
+    /// into the shaping thread's state whenever the renderer measures, paints or hands
+    /// out its layout epoch, so layouts shaped outside it
+    /// ([`crate::richtext::RichTextLayout`]) follow it too.
     distinct_letters: bool,
     hits: u64,
     misses: u64,
-    /// `(text, size, max_width, weight, style)` → shaped + positioned glyph
-    /// runs. An `Arc` value lets a lookup hand the runs back to the paint
-    /// loop without cloning the glyph vecs or holding a borrow on the cache
-    /// while the font system is accessed.
     shape_cache: TextCache<ShapedText>,
-    /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
-    /// (`TILO_UI_PERF`) can attribute draw-phase time between cosmic-text
-    /// and Vello encoding.
     shape_hits: u64,
     shape_misses: u64,
     shape_ns: u128,
-    /// App-provided accessibility text multiplier. Kept on the renderer so
-    /// custom canvas widgets that use the low-level text API can honour the
-    /// same scale as token-based controls without duplicating every draw call.
     text_scale: f32,
-    /// Bounded, generation-cleared cache; None means conservatively draw.
-    // The inner key is a bounded font glyph ID; avoid SipHash on every glyph.
-    // Font/variation identity retains the randomized outer map.
     ink_bounds: HashMap<InkFontKey, rustc_hash::FxHashMap<u16, Option<Rect>>>,
     ink_bounds_entries: usize,
-    /// Missing canonical browser assets observed by actual cosmic-text
-    /// shaping. Native/full-catalog renderers leave this disabled.
     browser_font_demands: Option<BTreeSet<String>>,
-    /// Successfully installed optional assets. Candidate fallback fonts are
-    /// requested one at a time so one glyph never downloads unused families.
+    /// Successfully installed optional assets. Candidate fallback fonts are requested one
+    /// at a time so one glyph never downloads unused families.
     browser_font_assets: HashSet<String>,
 }
 
@@ -2043,18 +1887,15 @@ impl Default for TextRenderer {
     }
 }
 
-/// Resolve a per-glyph rich-text colour override, falling back to `default`.
 fn resolve_rich_color(default: Color, color: Option<cosmic_text::Color>) -> Color {
     color.map_or(default, |c| Color::from_rgb8(c.r(), c.g(), c.b()))
 }
 
-/// Highlight bands paint behind glyphs so the ink reads on top.
 fn draw_rich_backgrounds(
     scene: &mut Scene,
     layout: &crate::richtext::RichTextLayout,
     transform: Affine,
 ) {
-    /// How far a chip's pill reaches past its run on each side.
     const PILL_REACH: f64 = 3.0;
     for &(s, e, [br, bg, bb]) in &layout.backgrounds {
         let band = Color::from_rgb8(br, bg, bb);
@@ -2110,11 +1951,8 @@ impl TextRenderer {
         })
     }
 
-    ///
-    /// # Errors
-    ///
-    /// Returns the catalog's packaging error if its manifest or fonts cannot
-    /// be loaded and validated.
+    /// Returns the catalog's packaging error if its manifest or fonts cannot be loaded
+    /// and validated.
     pub fn with_font_catalog(
         catalog: &crate::font_catalog::FontCatalog,
     ) -> Result<Self, crate::font_catalog::FontCatalogError> {
@@ -2158,8 +1996,8 @@ impl TextRenderer {
         renderer
     }
 
-    /// Whether [`Self::take_browser_font_demands`] has anything to hand
-    /// over, so a host can skip the call on the frames that have none.
+    /// Whether [`Self::take_browser_font_demands`] has anything to hand over, so a host
+    /// can skip the call on the frames that have none.
     #[must_use]
     pub fn browser_font_demands_pending(&self) -> bool {
         self.browser_font_demands
@@ -2167,8 +2005,7 @@ impl TextRenderer {
             .is_some_and(|demands| !demands.is_empty())
     }
 
-    /// Drain optional asset names demanded by missing glyphs in authoritative
-    /// shaping. The host may retry a failed name after later shaping reports it.
+    /// Drain optional asset names demanded by missing glyphs in authoritative shaping.
     pub fn take_browser_font_demands(&mut self) -> Vec<String> {
         self.browser_font_demands
             .as_mut()
@@ -2177,20 +2014,15 @@ impl TextRenderer {
             })
     }
 
-    /// A host fetch failed. Clear cached fallback measurements so a later
-    /// frame that still shapes the affected text can re-report demand.
     pub fn browser_font_failed(&mut self) {
         if self.browser_font_demands.is_some() {
             self.bump_generation();
         }
     }
 
-    /// Install one verified canonical optional asset and invalidate every
-    /// cached metric/layout identity before another frame can be drawn.
-    /// # Errors
-    /// Propagates canonical manifest, hash, size, and face validation errors.
-    /// `sha256` is the page's digest of `bytes`
-    /// ([`crate::font_catalog::FontCatalog::install_browser_asset`]).
+    /// Install one verified canonical optional asset and invalidate every cached
+    /// metric/layout identity before another frame can be drawn. Propagates canonical
+    /// manifest, hash, size, and face validation errors.
     pub fn install_browser_font(
         &mut self,
         name: &str,
@@ -2207,12 +2039,10 @@ impl TextRenderer {
         Ok(changed)
     }
 
-    /// Set the accessibility text multiplier used by subsequent measurement
-    /// and paint calls. Callers that custom-draw canvas text must set this from
-    /// the current theme before layout/painting; the renderer is retained
-    /// across frames and therefore keeps this value until it is replaced.
-    /// Invalid values fall back to 1× rather than poisoning the shaping cache
-    /// with NaN metrics.
+    /// Set the accessibility text multiplier used by subsequent measurement and paint
+    /// calls. Callers that custom-draw canvas text must set this from the current theme
+    /// before layout/painting; the renderer is retained across frames and therefore keeps
+    /// this value until it is replaced.
     pub fn set_text_scale(&mut self, scale: f32) {
         self.text_scale = if scale.is_finite() {
             scale.clamp(0.5, 4.0)
@@ -2222,10 +2052,7 @@ impl TextRenderer {
     }
 
     /// Set the family the generic sans-serif resolves to: the theme's UI face
-    /// ([`crate::tokens::Typography::sans_family`]). Text that names a role
-    /// already carries the family; this makes text built on the generic
-    /// family (inputs, toolkit internals) follow the same face. A family the
-    /// font system does not have is ignored.
+    /// ([`crate::tokens::Typography::sans_family`]).
     pub fn set_ui_face(&mut self, family: &str) {
         let db = self.font_system.db();
         if db.family_name(&Family::SansSerif) == family
@@ -2239,17 +2066,16 @@ impl TextRenderer {
         self.bump_generation();
     }
 
-    /// Follow a theme's type: its UI face ([`Self::set_ui_face`]) and its
-    /// "Always distinguish similar letters" ([`Self::set_distinct_letters`]).
+    /// Follow a theme's type: its UI face ([`Self::set_ui_face`]) and its "Always
+    /// distinguish similar letters" ([`Self::set_distinct_letters`]).
     pub fn apply_typography(&mut self, typography: &crate::tokens::Typography) {
         self.set_ui_face(&typography.sans_family);
         self.set_distinct_letters(typography.distinct_letters);
     }
 
-    /// Turn the "Always distinguish similar letters" setting on or off: with
-    /// it on, every look-alike (I, l, 1 and 0, O) is set apart in all text,
-    /// whatever its kind, where the face has the forms. The theme's
-    /// resolved [`crate::tokens::Typography::distinct_letters`].
+    /// Turn the "Always distinguish similar letters" setting on or off: with it on, every
+    /// look-alike (I, l, 1 and 0, O) is set apart in all text, whatever its kind, where
+    /// the face has the forms.
     pub fn set_distinct_letters(&mut self, on: bool) {
         self.sync_distinct_letters();
         if self.distinct_letters != on {
@@ -2259,16 +2085,15 @@ impl TextRenderer {
         }
     }
 
-    /// Whether every look-alike letter is set apart in text drawn now: the
-    /// setting is on, or a security surface is being drawn.
+    /// Whether every look-alike letter is set apart in text drawn now: the setting is on,
+    /// or a security surface is being drawn.
     pub fn distinguishes_letters(&self) -> bool {
         crate::font_catalog::matched::distinguish_everywhere()
     }
 
-    /// Lay out or paint a security surface — a permission prompt, a link
-    /// preview, an invite or join confirmation, identity verification —
-    /// with every look-alike letter and figure set apart in all its text,
-    /// prose included, whatever the setting.
+    /// Lay out or paint a security surface — a permission prompt, a link preview, an
+    /// invite or join confirmation, identity verification — with every look-alike letter
+    /// and figure set apart in all its text, prose included, whatever the setting.
     pub fn security_surface<R>(&mut self, draw: impl FnOnce(&mut Self) -> R) -> R {
         struct Leave;
         impl Drop for Leave {
@@ -2281,17 +2106,14 @@ impl TextRenderer {
         draw(self)
     }
 
-    /// The effective accessibility text scale used for both measurement and
-    /// drawing. Custom-drawn app chrome uses this to make its surrounding
-    /// geometry grow with the shared renderer rather than letting enlarged
-    /// type collide with fixed-size controls.
+    /// The effective accessibility text scale used for both measurement and drawing.
     pub fn text_scale(&self) -> f32 {
         self.text_scale
     }
 
     /// The style the shaper sees: only a renderer-relative style
-    /// ([`TextScaling::Renderer`]) is grown by the accessibility text scale;
-    /// resolved theme roles and document content are already final.
+    /// ([`TextScaling::Renderer`]) is grown by the accessibility text scale; resolved
+    /// theme roles and document content are already final.
     fn scaled_style<'a>(&self, style: &'a TextStyle) -> std::borrow::Cow<'a, TextStyle> {
         self.sync_distinct_letters();
         let distinguish =
@@ -2311,8 +2133,8 @@ impl TextRenderer {
     }
 
     /// Take-and-reset the per-frame shape-cache stats:
-    /// `(hits, misses, nanoseconds_spent_shaping)`, so each call reports only
-    /// that frame's shaping work.
+    /// `(hits, misses, nanoseconds_spent_shaping)`, so each call reports only that
+    /// frame's shaping work.
     pub fn take_shape_stats(&mut self) -> (u64, u64, u128) {
         let out = (self.shape_hits, self.shape_misses, self.shape_ns);
         self.shape_hits = 0;
@@ -2321,21 +2143,18 @@ impl TextRenderer {
         out
     }
 
-    /// Useful for benchmarks asserting "the static-label widgets warmed the
-    /// cache and subsequent frames are pure hits".
+    /// Useful for benchmarks asserting "the static-label widgets warmed the cache and
+    /// subsequent frames are pure hits".
     pub fn cache_stats(&self) -> (u64, u64) {
         (self.hits, self.misses)
     }
 
-    /// The fonts this renderer shapes with, as an identity that changes
-    /// whenever they do.
+    /// The fonts this renderer shapes with, as an identity that changes whenever they do.
     pub fn font_epoch(&self) -> FontEpoch {
         FontEpoch(Arc::clone(&self.layout_epoch))
     }
 
-    /// What a renderer on another thread needs to measure text exactly as
-    /// this one does. Cheap here: the fonts are shared, and the worker builds
-    /// its font system ([`MeasuringSeed::into_renderer`]).
+    /// What a renderer on another thread needs to measure text exactly as this one does.
     pub fn measuring_seed(&self) -> MeasuringSeed {
         MeasuringSeed {
             locale: self.font_system.locale().to_owned(),
@@ -2356,24 +2175,21 @@ impl TextRenderer {
         crate::font_catalog::matched::set_distinguish_everywhere(self.distinct_letters);
     }
 
-    /// Call this when the font set or active locale changes; cosmic-text
-    /// will shape glyphs differently after either swap, so stale numbers
-    /// would let widgets compute wrong layouts.
+    /// Call this when the font set or active locale changes; cosmic-text will shape
+    /// glyphs differently after either swap, so stale numbers would let widgets compute
+    /// wrong layouts.
     pub fn bump_generation(&mut self) {
         self.presentation_epoch = presentation_epoch();
         self.layout_epoch = Arc::new(());
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
-        // Entries key on `generation` so stale ones would never match
-        // anyway; the explicit clear reclaims their memory immediately.
+        // Entries key on `generation` so stale ones would never match anyway; the
+        // explicit clear reclaims their memory immediately.
         self.shape_cache.clear();
         self.ink_bounds.clear();
         self.ink_bounds_entries = 0;
     }
 
-    /// Shape again after a host changed whether runs keep the characters
-    /// they set ([`present_text`]): a run shaped before the host asked carries
-    /// none, and the caches that held it are keyed on the generation.
     fn follow_text_presentation(&mut self) {
         let epoch = presentation_epoch();
         if epoch == self.presentation_epoch {
@@ -2393,9 +2209,9 @@ impl TextRenderer {
         self.measure_weighted(text, size, max_width, TextWeight::Regular)
     }
 
-    /// Same as [`TextRenderer::measure`] but respects a typographic weight.
-    /// Heavier weights generally advance wider, so measurements must use
-    /// the same weight the draw path will render with.
+    /// Same as [`TextRenderer::measure`] but respects a typographic weight. Heavier
+    /// weights generally advance wider, so measurements must use the same weight the draw
+    /// path will render with.
     pub fn measure_weighted(
         &mut self,
         text: &str,
@@ -2406,9 +2222,7 @@ impl TextRenderer {
         self.measure_style(text, max_width, &TextStyle::new(size).with_weight(weight))
     }
 
-    /// Measure using one authoritative style value. This is the preferred
-    /// API for new widgets because the same value can be passed to
-    /// [`Self::draw_style`], preventing measurement/paint metric drift.
+    /// Measure using one authoritative style value.
     pub fn measure_style(
         &mut self,
         text: &str,
@@ -2418,9 +2232,6 @@ impl TextRenderer {
         self.measure_style_ex(text, max_width, style, true)
     }
 
-    /// Like [`Self::measure_style`] but skips warming the paint-side shape
-    /// cache. Elision probes many throwaway prefixes; keeping those out of
-    /// `shape_cache` preserves room for labels the next frame will paint.
     fn measure_style_cold(
         &mut self,
         text: &str,
@@ -2468,10 +2279,6 @@ impl TextRenderer {
         self.measure_style_cached(input, max_width, style, warm_shape)
     }
 
-    /// When `max_width` is wider than the text's natural line, cosmic-text
-    /// produces the same glyphs as an unconstrained shape. Collapse to `None`
-    /// so layout (often unconstrained) and paint (widget box width) share one
-    /// cache entry instead of reshaping the same label twice on first paint.
     fn collapse_unused_max_width(
         &mut self,
         input: &CacheQuery<'_>,
@@ -2481,9 +2288,6 @@ impl TextRenderer {
     ) -> Option<f32> {
         let text = input.text;
         let width = max_width?;
-        // Balance and hyphenation consult the wrap width even when the natural
-        // line would fit; keep those keys distinct. So does drawing a centred
-        // or end-aligned line: its glyphs sit inside the width.
         if style.wrap_mode == TextWrapMode::Balance
             || !matches!(style.hyphenation, Hyphenation::None)
             || (warm_shape && matches!(style.align, ParagraphAlign::Center | ParagraphAlign::End))
@@ -2503,9 +2307,9 @@ impl TextRenderer {
             return Some(width);
         }
 
-        // Shape once for the unconstrained probe. Warm paint geometry only when
-        // the width collapses away — wrapping text must not leave a stale
-        // unconstrained entry that the draw path will never hit.
+        // Shape once for the unconstrained probe. Warm paint geometry only when the width
+        // collapses away — wrapping text must not leave a stale unconstrained entry that
+        // the draw path will never hit.
         self.misses = self.misses.saturating_add(1);
         let prepared = self.shape_buffer(text, None, style);
         let natural = Self::buffer_metrics(&prepared, style.line_height_px());
@@ -2594,8 +2398,8 @@ impl TextRenderer {
             );
             lines = lines.saturating_add(1);
         }
-        // Line counts stay in the low hundreds; this cast is exact in that
-        // range, and any other conversion path risks the pixel golden.
+        // Line counts stay in the low hundreds; this cast is exact in that range, and any
+        // other conversion path risks the pixel golden.
         #[allow(
             clippy::cast_precision_loss,
             reason = "line counts stay well within f32's exact integer range"
@@ -2604,18 +2408,15 @@ impl TextRenderer {
         (width, height)
     }
 
-    /// Truncate `text` to fit within `max_width` on a single line, appending
-    /// [`ELLIPSIS`] when anything was dropped; returns just the ellipsis when
-    /// not even one character fits before it, and an empty string for empty
-    /// text or a non-positive width. Measures with [`TextWeight::Regular`];
-    /// pair with [`Self::elide_to_width_weighted`] or
-    /// [`Self::elide_to_width_style`] when the draw style differs.
+    /// Truncate `text` to fit within `max_width` on a single line, appending [`ELLIPSIS`]
+    /// when anything was dropped; returns just the ellipsis when not even one character
+    /// fits before it, and an empty string for empty text or a non-positive width.
     pub fn elide_to_width(&mut self, text: &str, size: f32, max_width: f32) -> String {
         self.elide_to_width_weighted(text, size, max_width, TextWeight::Regular)
     }
 
-    /// Weighted variant of [`Self::elide_to_width`] — measures with the
-    /// supplied [`TextWeight`] so the fit matches a bold/medium draw call.
+    /// Weighted variant of [`Self::elide_to_width`] — measures with the supplied
+    /// [`TextWeight`] so the fit matches a bold/medium draw call.
     pub fn elide_to_width_weighted(
         &mut self,
         text: &str,
@@ -2626,15 +2427,10 @@ impl TextRenderer {
         self.elide_to_width_style(text, max_width, &TextStyle::new(size).with_weight(weight))
     }
 
-    /// [`Self::elide_to_width`] measured with a full [`TextStyle`] — the
-    /// family (monospace), italic and weight the text will be drawn with.
-    ///
-    /// Cuts only between grapheme clusters, so a combining mark, an emoji
-    /// sequence or a flag is never split, and drops whitespace before the
-    /// ellipsis so it never reads as `" …"`. The kept prefix is the longest
-    /// whose *shaped* width including the ellipsis fits, found by binary
-    /// search, so a long label costs a handful of measures rather than one
-    /// per character.
+    /// [`Self::elide_to_width`] measured with a full [`TextStyle`] — the family
+    /// (monospace), italic and weight the text will be drawn with. Cuts only between
+    /// grapheme clusters, so a combining mark, an emoji sequence or a flag is never
+    /// split, and drops whitespace before the ellipsis so it never reads as `" …"`.
     pub fn elide_to_width_style(
         &mut self,
         text: &str,
@@ -2647,8 +2443,6 @@ impl TextRenderer {
         if self.measure_style_cold(text, None, style).0 <= max_width {
             return text.to_string();
         }
-        // Byte offsets where a cut may fall: the start of every grapheme
-        // cluster after the first. Cutting at index `i` keeps `text[..cuts[i]]`.
         let cuts: Vec<usize> = crate::text_break::grapheme_indices(text)
             .map(|(start, _)| start)
             .filter(|&start| start > 0)
@@ -2658,8 +2452,6 @@ impl TextRenderer {
             kept.push(ELLIPSIS);
             kept
         };
-        // Invariant: every cut below `lo` fits, every cut at or past `hi`
-        // does not.
         let (mut lo, mut hi) = (0usize, cuts.len());
         while lo < hi {
             let mid = lo.midpoint(hi);
@@ -2676,11 +2468,8 @@ impl TextRenderer {
         }
     }
 
-    /// Word-wraps `text` in `style` to `max_width` and clamps to at most
-    /// `max_lines` lines, eliding the last kept line when content overflows.
-    /// Draw each returned line in the same style, one
-    /// [`TextStyle::line_height_px`] apart. `max_lines == 1` degenerates to
-    /// [`Self::elide_to_width_style`].
+    /// Word-wraps `text` in `style` to `max_width` and clamps to at most `max_lines`
+    /// lines, eliding the last kept line when content overflows.
     pub fn clamp_to_lines(
         &mut self,
         text: &str,
@@ -2691,8 +2480,7 @@ impl TextRenderer {
         self.clamp_to_lines_style(text, max_width, max_lines, style)
     }
 
-    /// Style-aware line clamping. Wrapping and the final truncation marker
-    /// use the same font, weight and features as the text that will be drawn.
+    /// Style-aware line clamping.
     pub fn clamp_to_lines_style(
         &mut self,
         text: &str,
@@ -2713,8 +2501,8 @@ impl TextRenderer {
                 .map(|line| self.elide_to_width_style(&line, max_width, style))
                 .collect();
         }
-        // Keep the first `max_lines - 1` whole lines, then merge the rest
-        // onto the final line and elide it as the truncation marker.
+        // Keep the first `max_lines - 1` whole lines, then merge the rest onto the final
+        // line and elide it as the truncation marker.
         let (head, tail) = wrapped
             .split_at_checked(max_lines.saturating_sub(1))
             .unwrap_or((&wrapped, &[]));
@@ -2727,10 +2515,7 @@ impl TextRenderer {
         kept
     }
 
-    /// Greedy UAX #14 wrap of `text` at `max_width`. This handles scripts that
-    /// do not use ASCII spaces, keeps non-breaking spaces intact, and honors
-    /// explicit mandatory breaks. An unbreakable segment wider than the budget
-    /// stays on its own line; [`Self::clamp_to_lines`] elides it if necessary.
+    /// Greedy UAX #14 wrap of `text` at `max_width`.
     pub(crate) fn wrap_lines(
         &mut self,
         text: &str,
@@ -2823,15 +2608,13 @@ impl TextRenderer {
         self.measure_style(text, max_width, &style)
     }
 
-    /// Distinct family names of installed faces, sorted and de-duplicated
-    /// across weights/styles — the pool an app's font picker offers.
+    /// Distinct family names of installed faces, sorted and de-duplicated across
+    /// weights/styles — the pool an app's font picker offers.
     pub fn system_families(&self) -> Vec<String> {
         use std::collections::BTreeSet;
         let mut set: BTreeSet<String> = BTreeSet::new();
         for face in self.font_system.db().faces() {
             if let Some((name, _)) = face.families.first() {
-                // Skip internal/placeholder families with no real name. An
-                // optical cut is listed as the family it is a cut of.
                 if !name.trim().is_empty() {
                     set.insert(
                         crate::font_catalog::optical::family_name(name)
@@ -2844,7 +2627,6 @@ impl TextRenderer {
     }
 
     /// Measure `text` with style attributes and an optional monospace family.
-    /// NOT cached — these calls are rare (one per segment per frame).
     pub fn measure_styled(
         &mut self,
         text: &str,
@@ -2883,8 +2665,8 @@ impl TextRenderer {
     }
 
     /// Shape and paint with one authoritative style value. Pair this with
-    /// [`Self::measure_style`] so font metrics, wrapping, and glyph placement
-    /// cannot silently diverge.
+    /// [`Self::measure_style`] so font metrics, wrapping, and glyph placement cannot
+    /// silently diverge.
     pub fn draw_style(
         &mut self,
         scene: &mut Scene,
@@ -2906,9 +2688,8 @@ impl TextRenderer {
         );
     }
 
-    /// How far below the origin [`Self::draw_style`], given the same
-    /// arguments, puts the first line's baseline: what places text by its
-    /// baseline rather than its line box.
+    /// How far below the origin [`Self::draw_style`], given the same arguments, puts the
+    /// first line's baseline: what places text by its baseline rather than its line box.
     pub fn first_baseline_style(
         &mut self,
         text: &str,
@@ -2929,10 +2710,9 @@ impl TextRenderer {
             .map_or(style.size * 0.8, |glyph| glyph.y)
     }
 
-    /// The face [`Self::draw_style`] sets a line of `style` in, at the size
-    /// it sets it, with its variation coordinates, and how far below the
-    /// origin it puts the baseline: what a host needs to set the same line
-    /// itself (a page's own text field). `None` when no face is loaded.
+    /// The face [`Self::draw_style`] sets a line of `style` in, at the size it sets it,
+    /// with its variation coordinates, and how far below the origin it puts the baseline:
+    /// what a host needs to set the same line itself (a page's own text field).
     pub fn line_face(&mut self, style: &TextStyle) -> Option<LineFace> {
         let logical_style = style;
         let scaled_style = self.scaled_style(style);
@@ -2949,7 +2729,8 @@ impl TextRenderer {
         })
     }
 
-    /// Draw retained immutable input; colour and transform do not affect geometry identity.
+    /// Draw retained immutable input; colour and transform do not affect geometry
+    /// identity.
     pub fn draw_prepared(
         &mut self,
         scene: &mut Scene,
@@ -2989,19 +2770,12 @@ impl TextRenderer {
         self.paint_runs(scene, &runs, color, transform);
     }
 
-    /// Shapes `text` into a laid-out cosmic-text [`Buffer`], applying the
-    /// same hyphenation/balance handling measurement uses.
     fn shape_buffer(
         &mut self,
         text: &str,
         max_width: Option<f32>,
         style: &TextStyle,
     ) -> PreparedBuffer {
-        // The faces text needs are noted where it is shaped, not on every
-        // measure: a cached measure or shape was noted when this generation
-        // shaped it, and a font installed or failed starts a new one. Asking
-        // the catalog on every measure was a third of laying out a page of
-        // cards.
         self.note_browser_explicit_family(style);
         let line_height = style.line_height_px();
         let metrics = Metrics::new(style.size, line_height);
@@ -3036,9 +2810,10 @@ impl TextRenderer {
         };
         let layout_width = max_width.map(|width| (width - hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
-        // A word longer than the line (an address, a link) breaks anywhere once it cannot fit
-        // whole, never runs past the line; laid out for its narrowest (a width of nothing),
-        // text keeps its words whole, so a container never shrinks below its longest word.
+        // A word longer than the line (an address, a link) breaks anywhere once it cannot
+        // fit whole, never runs past the line; laid out for its narrowest (a width of
+        // nothing), text keeps its words whole, so a container never shrinks below its
+        // longest word.
         let breaks_words = layout_width.is_some_and(|width| width > 0.0);
         buffer.set_wrap(match style.wrap_mode {
             TextWrapMode::WordOrGlyph => Wrap::WordOrGlyph,
@@ -3096,17 +2871,12 @@ impl TextRenderer {
         let Some(demands) = self.browser_font_demands.as_mut() else {
             return;
         };
-        // A generic family demands the face it resolves to, so the page can
-        // start with the regular UI face alone and fetch the serif, the
-        // monospace and the italics when text first asks for them.
         let name = match &style.family {
             FontChoice::Named(name) => name.as_str(),
             FontChoice::SansSerif => UI_SANS_FAMILY,
             FontChoice::Serif => UI_SERIF_FAMILY,
             FontChoice::Monospace => UI_MONOSPACE_FAMILY,
         };
-        // A family drawn in optical cuts needs the cut for this size and the
-        // smaller ones its superscripts and footnotes take.
         let weight = style.effective_weight().0;
         let mut families = crate::font_catalog::optical::cuts_up_to(
             name,
@@ -3119,7 +2889,6 @@ impl TextRenderer {
             families.push(name);
         }
         let bold = weight > 500;
-        // A face without a bold sets bold text in its regular.
         let mut files = crate::font_catalog::product_files_for(&families, style.italic, bold);
         if files.is_empty() && bold {
             files = crate::font_catalog::product_files_for(&families, style.italic, false);
@@ -3142,9 +2911,6 @@ impl TextRenderer {
         self.browser_font_assets.contains("Noto-COLRv1.ttf")
     }
 
-    /// Flatten a shaped [`Buffer`] into per-face contiguous runs, baking the
-    /// baseline into each glyph so paint is a pure transform + colour, no
-    /// arithmetic.
     fn flatten_glyph_runs(&mut self, buffer: &Buffer, style: &TextStyle) -> Vec<GlyphRun> {
         let variations = style.resolved_variations();
         let mut runs = Vec::new();
@@ -3167,7 +2933,6 @@ impl TextRenderer {
                 if run.text.get(g.start..g.end) == Some("\u{ad}") {
                     continue;
                 }
-                // A matched script fallback is shaped at its own size.
                 let key = (g.font_id, g.font_weight, g.font_size.to_bits());
                 if let Some((face_id, font_weight, size)) = current
                     && current != Some(key)
@@ -3246,8 +3011,6 @@ impl TextRenderer {
             return;
         }
         let runs = Arc::new(self.flatten_glyph_runs(&prepared.buffer, style));
-        // Count measure-time warms as shape misses so paint-side stats still
-        // see the cosmic-text work that filled the entry.
         self.shape_misses = self.shape_misses.saturating_add(1);
         let bytes = glyph_run_bytes(&runs);
         if !self.shape_cache.insert(
@@ -3262,8 +3025,6 @@ impl TextRenderer {
         }
     }
 
-    /// Shape `text` into positioned [`GlyphRun`]s, caching the result. On a
-    /// hit this is an `Arc` clone; on a miss it runs cosmic-text once.
     fn shaped_query(
         &mut self,
         input: &CacheQuery<'_>,
@@ -3316,7 +3077,6 @@ impl TextRenderer {
         self.shaped_query(&CacheQuery::new(text, style), max_width, style)
     }
 
-    /// Resolve font handles through cosmic-text's existing face-and-weight cache.
     fn paint_runs(
         &mut self,
         scene: &mut Scene,
@@ -3342,10 +3102,9 @@ impl TextRenderer {
         }
     }
 
-    /// `text` shaped exactly as [`Self::draw_style`] paints it, one outline
-    /// per glyph: what draws text as geometry (an outlined export, words set
-    /// along a curve) and measures its ink. Colour and bitmap glyphs, which
-    /// have no outline, are left out.
+    /// `text` shaped exactly as [`Self::draw_style`] paints it, one outline per glyph:
+    /// what draws text as geometry (an outlined export, words set along a curve) and
+    /// measures its ink.
     pub fn glyph_outlines(
         &mut self,
         text: &str,
@@ -3402,14 +3161,9 @@ impl TextRenderer {
             .collect()
     }
 
-    /// The ink of `text`'s first glyph, shaped as [`Self::draw_style`] shapes
-    /// it: the bounds of its outline's points around the glyph's origin, y
-    /// down, in the style's units. `None` for text without glyphs and for a
-    /// colour or bitmap glyph. What measures a face's proportions (its
-    /// x-height from an `x`) without building the glyph's path: this shares
-    /// the outline walk the clip test already uses
-    /// ([`Self::draw_rich_in_clip`]), so measuring links no outline code of
-    /// its own.
+    /// The ink of `text`'s first glyph, shaped as [`Self::draw_style`] shapes it: the
+    /// bounds of its outline's points around the glyph's origin, y down, in the style's
+    /// units.
     pub fn first_glyph_ink_bounds(&mut self, text: &str, style: &TextStyle) -> Option<Rect> {
         if text.is_empty() {
             return None;
@@ -3484,8 +3238,8 @@ impl TextRenderer {
             .unwrap_or_default()
     }
 
-    /// Draw a [`crate::richtext::RichTextLayout`] (attributed, wrapped text)
-    /// in a single `color`, including its underline decorations.
+    /// Draw a [`crate::richtext::RichTextLayout`] (attributed, wrapped text) in a single
+    /// `color`, including its underline decorations.
     pub fn draw_rich(
         &mut self,
         scene: &mut Scene,
@@ -3495,7 +3249,6 @@ impl TextRenderer {
     ) {
         draw_rich_backgrounds(scene, layout, transform);
 
-        // Glyphs batch by face, shaped weight, color, size and baseline shift.
         for run in layout.buffer.layout_runs() {
             let paint = RunPaint { color, paint: None };
             self.draw_rich_run(scene, &run, layout, transform, paint, None);
@@ -3506,9 +3259,8 @@ impl TextRenderer {
         draw_rich_strikes(scene, layout, transform, color);
     }
 
-    /// Draw rich text while omitting only glyph batches proven outside `clip`.
-    /// The clip is in final scene coordinates; callers must keep actual clip
-    /// layers. Decorations remain unchanged. Unsupported ink draws normally.
+    /// Draw rich text while omitting only glyph batches proven outside `clip`. The clip
+    /// is in final scene coordinates; callers must keep actual clip layers.
     pub fn draw_rich_in_clip(
         &mut self,
         scene: &mut Scene,
@@ -3520,10 +3272,10 @@ impl TextRenderer {
         self.draw_rich_in_clip_painted(scene, layout, transform, color, clip, None);
     }
 
-    /// [`Self::draw_rich_in_clip`], each glyph in the colour `paint` gives
-    /// the byte it starts at, where it gives one: syntax colours applied as
-    /// the visible rows paint, so the paragraph is shaped without them and
-    /// an edit reshapes only the lines it touched.
+    /// [`Self::draw_rich_in_clip`], each glyph in the colour `paint` gives the byte it
+    /// starts at, where it gives one: syntax colours applied as the visible rows paint,
+    /// so the paragraph is shaped without them and an edit reshapes only the lines it
+    /// touched.
     pub fn draw_rich_in_clip_painted(
         &mut self,
         scene: &mut Scene,
@@ -3543,9 +3295,9 @@ impl TextRenderer {
         );
     }
 
-    /// [`Self::draw_rich_in_clip_painted`] inside `clip`, but for the rows
-    /// of the logical lines `leave_out` (ascending), whose pixels the frame
-    /// keeps ([`crate::draw_cull`]).
+    /// [`Self::draw_rich_in_clip_painted`] inside `clip`, but for the rows of the logical
+    /// lines `leave_out` (ascending), whose pixels the frame keeps
+    /// ([`crate::draw_cull`]).
     pub(crate) fn draw_rich_in_clip_painted_leaving_out(
         &mut self,
         scene: &mut Scene,
@@ -3556,8 +3308,6 @@ impl TextRenderer {
         paint: Option<&dyn Fn(usize) -> Option<Color>>,
     ) {
         draw_rich_backgrounds(scene, layout, transform);
-        // Every row whose ink can reach the clip, however far it hangs past
-        // its band; the glyph batches whose own ink misses it drop below.
         let reach = self.rich_ink_reach(layout);
         let rows: Box<dyn Iterator<Item = cosmic_text::LayoutRun<'_>>> =
             match clip_in_layout(transform, clip) {
@@ -3572,9 +3322,6 @@ impl TextRenderer {
                 None => Box::new(layout.buffer.layout_runs()),
             };
         for run in rows {
-            // A long block repeats this for every page slice it spans; skip
-            // whole visual lines before any per-glyph work or glyph encoding,
-            // and stop at the first below the clip: rows run downward.
             if rich_run_outside_clip(&run, transform, clip, reach) {
                 if rich_run_below_clip(&run, transform, clip, reach) {
                     break;
@@ -3592,8 +3339,6 @@ impl TextRenderer {
         draw_rich_strikes(scene, layout, transform, color);
     }
 
-    /// Batch and flush one shaped [`cosmic_text::LayoutRun`] of `layout` for
-    /// [`Self::draw_rich`].
     fn draw_rich_run(
         &mut self,
         scene: &mut Scene,
@@ -3608,7 +3353,6 @@ impl TextRenderer {
         }
     }
 
-    // Uniform runs need no rewritten positions or temporary glyph copies.
     fn draw_uniform_rich_run(
         &mut self,
         scene: &mut Scene,
@@ -3618,7 +3362,6 @@ impl TextRenderer {
         paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) -> bool {
-        // An inline emoji's glyphs are left out for its picture.
         if layout.hanging_punctuation.first
             || layout.hanging_punctuation.last
             || !layout.inline_emoji.is_empty()
@@ -3685,8 +3428,6 @@ impl TextRenderer {
         let mut cur_color: Option<Color> = None;
         let mut cur_weight: Option<Weight> = None;
         let mut cur_shift = BaselineShift::None;
-        // Avoid repeated growth for ordinary lines without reserving an
-        // unbounded long run whose individual style batches may be short.
         let mut batch: Vec<cosmic_text::LayoutGlyph> =
             Vec::with_capacity(run.glyphs.len().min(128));
         let mut size = 16.0f32;
@@ -3701,7 +3442,6 @@ impl TextRenderer {
             }
             let g_shift = layout.baseline_at(global_byte);
             let g_color = paint.at(global_byte, g);
-            // Glyphs batch by face, shaped weight, color, size and baseline shift.
             let changed = face != Some(g.font_id)
                 || cur_weight != Some(g.font_weight)
                 || cur_color != Some(g_color)
@@ -3853,8 +3593,6 @@ impl TextRenderer {
         let Some(first) = glyphs.first() else {
             return true;
         };
-        // Font identity and variation coordinates are shared by this batch.
-        // Hash them once, then resolve individual glyphs by their small IDs.
         if self.ink_bounds_entries >= SHAPE_CACHE_LIMIT {
             self.ink_bounds.clear();
             self.ink_bounds_entries = 0;
@@ -3883,7 +3621,6 @@ impl TextRenderer {
             let Some(bounds) = bounds else {
                 return false;
             };
-            // Match flush_glyphs' f32 origin before transforming it.
             let (x, y) = glyph_paint_origin(glyph, glyph.x, line_y);
             let (x, y) = (f64::from(x), f64::from(y));
             if !x.is_finite() || !y.is_finite() {
@@ -3918,19 +3655,17 @@ impl TextRenderer {
         }
         let mut hyphen = marker.clone();
         hyphen.glyph_id = glyph_id;
-        // The marker's GPOS offset was shaped for U+00AD, not this glyph.
         hyphen.x_offset = 0.0;
         hyphen.y_offset = 0.0;
         Some(hyphen)
     }
 }
 
-/// Whether a visual line cannot put ink inside `clip` (final scene space),
-/// judged on its vertical extent only (alignment moves runs horizontally):
-/// its band widened by how far any row's ink reaches past its own
-/// (`reach`, [`TextRenderer::rich_ink_reach`]) and by the pixels that ink
-/// covers. Non-finite geometry and transforms that rotate or shear are
-/// never culled.
+/// Whether a visual line cannot put ink inside `clip` (final scene space), judged on its
+/// vertical extent only (alignment moves runs horizontally): its band widened by how far
+/// any row's ink reaches past its own (`reach`, [`TextRenderer::rich_ink_reach`]) and by
+/// the pixels that ink covers. Non-finite geometry and transforms that rotate or shear
+/// are never culled.
 pub(crate) fn rich_run_outside_clip(
     run: &cosmic_text::LayoutRun<'_>,
     transform: Affine,
@@ -3961,13 +3696,8 @@ pub(crate) fn rich_run_outside_clip(
     screen.y1 < clip.y0 || screen.y0 > clip.y1
 }
 
-/// The pixels around ink bounds (`local`, drawn at `screen` through
-/// `transform`) that can still take coverage from it, with the f32 rounding
-/// of positions and transforms. The rounding grows with the coordinates on
-/// either side of `transform` and with its scale; its translation is
-/// already in the on-screen coordinates, so it does not scale the rounding
-/// again (a field scrolled far down would otherwise pad its rows and glyphs
-/// by thousands of pixels and draw ink far outside the clip).
+/// The pixels around ink bounds (`local`, drawn at `screen` through `transform`) that can
+/// still take coverage from it, with the f32 rounding of positions and transforms.
 fn ink_padding(local: Rect, screen: Rect, transform: Affine) -> f64 {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let coefficients = [a, b, c, d].iter().fold(1.0_f64, |m, v| m.max(v.abs()));
@@ -3979,8 +3709,8 @@ fn ink_padding(local: Rect, screen: Rect, transform: Affine) -> f64 {
     2.0 + 32.0 * f64::from(f32::EPSILON) * magnitude * coefficients
 }
 
-/// The colour a rich run's glyphs paint in: their shaped colour over the
-/// block's `color`, unless `paint` gives the byte a glyph starts at one.
+/// The colour a rich run's glyphs paint in: their shaped colour over the block's `color`,
+/// unless `paint` gives the byte a glyph starts at one.
 #[derive(Clone, Copy)]
 struct RunPaint<'p> {
     color: Color,
@@ -4007,10 +3737,9 @@ impl RunPaint<'_> {
     }
 }
 
-/// The rows `clip` (on screen) shows of a layout drawn with `transform`, as
-/// a span of the layout's y, when the transform keeps rows upright, and the
-/// pixels ink covers around its bounds there ([`ink_padding`]) in the same
-/// units.
+/// The rows `clip` (on screen) shows of a layout drawn with `transform`, as a span of the
+/// layout's y, when the transform keeps rows upright, and the pixels ink covers around
+/// its bounds there ([`ink_padding`]) in the same units.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "on-screen offsets in logical pixels are far inside f32"
@@ -4034,8 +3763,6 @@ fn clip_in_layout(transform: Affine, clip: Rect) -> Option<(f32, f32, f32)> {
     })
 }
 
-/// Whether `run` lies wholly below `clip` under an upright `transform`
-/// (no shear, no flip), so every later row of its paragraph does too.
 fn rich_run_below_clip(
     run: &cosmic_text::LayoutRun<'_>,
     transform: Affine,
@@ -4062,9 +3789,6 @@ fn rich_run_below_clip(
 mod tests {
     use super::*;
 
-    /// A short centred line drawn in a wide box sits in the middle of the
-    /// box, and an end-aligned one at its end: the draw keeps the width even
-    /// though the line fits without wrapping.
     #[test]
     fn a_line_that_fits_is_drawn_where_its_alignment_puts_it() {
         let mut renderer = crate::font_catalog::fixture_renderer();
@@ -4142,9 +3866,6 @@ mod tests {
             }
         }
 
-        // Case `named_weights_resolve_to_tailwind_numeric_values`:
-        // A drift here would silently collapse every chrome label onto the
-        // fallback weight.
         {
             assert_eq!(TextWeight::Regular.to_u16(), 400);
             assert_eq!(TextWeight::Medium.to_u16(), 500);
@@ -4152,14 +3873,13 @@ mod tests {
             assert_eq!(TextWeight::Bold.to_u16(), 700);
             assert_eq!(TextWeight::Bold.to_cosmic_weight(), Weight(700));
             assert_eq!(TextWeight::Regular.to_cosmic_weight(), Weight::NORMAL);
-            // Default must be Regular so call sites through `draw_text` keep
-            // their 400-weight behaviour.
+            // Default must be Regular so call sites through `draw_text` keep their
+            // 400-weight behaviour.
             assert_eq!(TextWeight::default(), TextWeight::Regular);
         }
 
-        // Case `font_choice_families_resolve_and_shape`:
-        // Two different families must be distinct shape-cache entries (so
-        // serif doesn't collide with sans).
+        // Case `font_choice_families_resolve_and_shape`: Two different families must be
+        // distinct shape-cache entries (so serif doesn't collide with sans).
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let fams = tr.system_families();
@@ -4184,7 +3904,6 @@ mod tests {
             assert!(ws > 0.0, "serif shapes to a real width");
             assert!(wn > 0.0, "sans shapes to a real width");
 
-            // A specific installed family shapes into glyph runs without panicking.
             let mut scene = Scene::new();
             let named = FontChoice::Named(fams[0].clone());
             tr.draw_style(
@@ -4196,7 +3915,6 @@ mod tests {
                 &TextStyle::new(20.0).with_family(named.clone()),
             );
 
-            // Serif and Sans of the same string are distinct shape-cache entries.
             let _ = tr.take_shape_stats();
             tr.draw_style(
                 &mut scene,
@@ -4243,8 +3961,8 @@ mod tests {
                     .any(|glyph| glyph.glyph_id == 0),
                 "{text} must expose missing canonical glyphs before demand"
             );
-            // The host asks this before the take, so it must say where the
-            // demand is and where it is not: nothing before shaping asked.
+            // The host asks this before the take, so it must say where the demand is and
+            // where it is not: nothing before shaping asked.
             assert!(renderer.browser_font_demands_pending());
             assert_eq!(renderer.take_browser_font_demands(), [expected]);
             assert!(
@@ -4637,8 +4355,9 @@ mod tests {
             let (_, plain_height) = tr.measure_style(text, Some(width), &plain);
             let (hyphenated_width, hyphenated_height) =
                 tr.measure_style(text, Some(width), &hyphenated);
-            // A word wider than the line breaks either way: plain text anywhere, where the
-            // line runs out, and hyphenated text at a hyphenation point, with a hyphen.
+            // A word wider than the line breaks either way: plain text anywhere, where
+            // the line runs out, and hyphenated text at a hyphenation point, with a
+            // hyphen.
             assert_eq!(plain_height, plain.line_height_px() * 2.0);
             assert!(hyphenated_height >= hyphenated.line_height_px() * 2.0);
             assert!(
@@ -4665,9 +4384,9 @@ mod tests {
 
     #[test]
     fn measure_cache_hits_and_keys_on_size_policy_and_generation() {
-        // Case `measure_cache_returns_hit_on_second_call`:
-        // Measuring the same string twice should hit the cache the second time
-        // — without this, every widget's `draw` pays a full cosmic-text shape.
+        // Case `measure_cache_returns_hit_on_second_call`: Measuring the same string
+        // twice should hit the cache the second time — without this, every widget's
+        // `draw` pays a full cosmic-text shape.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let label = "Hello, gallery!";
@@ -4696,22 +4415,17 @@ mod tests {
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "extensive";
-            // Wide enough that plain text collapses to an unconstrained key;
-            // hyphenation keeps the wrap width, so the two policies stay distinct.
             let width = 1000.0;
             let plain = TextStyle::new(20.0);
             let automatic = plain.clone().with_auto_hyphenation("en");
             let _ = tr.measure_style(text, Some(width), &plain);
             let _ = tr.measure_style(text, Some(width), &automatic);
             let (hits, misses) = tr.cache_stats();
-            // Plain collapses to unconstrained (probe miss + re-lookup hit);
-            // hyphenation keeps the wrap width as a second distinct miss.
+            // Plain collapses to unconstrained (probe miss + re-lookup hit); hyphenation
+            // keeps the wrap width as a second distinct miss.
             assert_eq!((hits, misses), (1, 2));
         }
 
-        // Case `bump_generation_invalidates_cache`:
-        // `bump_generation` blows away every cached entry — the next
-        // measure of a previously-seen string registers as a miss.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let _ = tr.measure("abc", 12.0, None);
@@ -4776,9 +4490,9 @@ mod tests {
             );
         }
 
-        // Case `background_span_emits_an_extra_fill_in_the_scene`:
-        // A highlighted run must add a real fill: the highlighted scene must
-        // encode strictly more paths than the plain one.
+        // Case `background_span_emits_an_extra_fill_in_the_scene`: A highlighted run must
+        // add a real fill: the highlighted scene must encode strictly more paths than the
+        // plain one.
         {
             use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
             let mut tr = crate::font_catalog::fixture_renderer();
@@ -4902,8 +4616,6 @@ mod tests {
 
         {
             let mut tr = crate::font_catalog::fixture_renderer();
-            // "e" + combining acute, repeated: a char-wise cut could strand the
-            // accent from its base letter.
             let s = "cafe\u{301} cafe\u{301} cafe\u{301} cafe\u{301}";
             for budget in [10.0_f32, 25.0, 40.0, 55.0, 70.0, 85.0] {
                 let out = tr.elide_to_width(s, 14.0, budget);
@@ -4956,8 +4668,6 @@ mod tests {
             assert!(tr.measure_style(&out, None, &mono).0 <= budget);
         }
 
-        // Case `elide_edge_cases`:
-        // A zero/empty budget yields empty output; so does empty input.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
@@ -5009,9 +4719,6 @@ mod tests {
 
     #[test]
     fn shape_cache_reuses_geometry_and_keys_on_width_and_generation() {
-        // Case `shape_cache_reshapes_once_for_repeated_draw`:
-        // The DRAW path caches shaped glyph geometry: drawing the same string
-        // twice shapes it once.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let mut scene = Scene::new();
@@ -5031,10 +4738,10 @@ mod tests {
             assert_eq!(ns, 0, "no shaping time on an all-hit frame");
         }
 
-        // Case `measure_warms_shape_cache_for_matching_draw_width`:
-        // Layout measures a label, then paint draws it inside a wider box.
-        // Collapsing an unused wrap width plus warming shape from measure must
-        // make that first paint a shape-cache hit (one cosmic-text reshape total).
+        // Case `measure_warms_shape_cache_for_matching_draw_width`: Layout measures a
+        // label, then paint draws it inside a wider box. Collapsing an unused wrap width
+        // plus warming shape from measure must make that first paint a shape-cache hit
+        // (one cosmic-text reshape total).
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let style = TextStyle::new(16.0);
@@ -5057,9 +4764,6 @@ mod tests {
             assert_eq!(ns, 0, "no shaping time when measure already warmed paint");
         }
 
-        // Case `shape_cache_reuses_geometry_across_recolor`:
-        // Colour is NOT part of the shape key — a theme recolour of the same
-        // label reuses the cached glyph geometry, making theme switches free.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let mut scene = Scene::new();
@@ -5074,7 +4778,6 @@ mod tests {
                 TextWeight::Regular,
             );
             let _ = tr.take_shape_stats();
-            // Same string + size + weight, different colour (dark→light theme).
             tr.draw_text_weighted(
                 &mut scene,
                 "Clear",
@@ -5089,9 +4792,8 @@ mod tests {
             assert_eq!(h, 1, "recolour must hit the cached geometry");
         }
 
-        // Case `shape_cache_keys_on_width`:
-        // A different wrap width is a different shape — wrapping changes
-        // glyph positions, so it must miss and reshape. Both widths must
+        // Case `shape_cache_keys_on_width`: A different wrap width is a different shape —
+        // wrapping changes glyph positions, so it must miss and reshape. Both widths must
         // actually wrap; an unused wider box collapses to unconstrained.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
@@ -5130,9 +4832,6 @@ mod tests {
             assert_eq!(h, 1, "the repeated width hits");
         }
 
-        // Case `bump_generation_invalidates_shape_cache`:
-        // `bump_generation` (locale / font hot-swap) invalidates shaped
-        // geometry too, so the next draw reshapes.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let mut scene = Scene::new();
@@ -5314,8 +5013,8 @@ mod tests {
                 "measurement uses the same scaled metrics that drawing receives: {base:?} -> {doubled:?}"
             );
 
-            // Measure already warmed both scaled geometries; drawing must hit
-            // each once rather than reshaping.
+            // Measure already warmed both scaled geometries; drawing must hit each once
+            // rather than reshaping.
             let mut scene = Scene::new();
             let _ = tr.take_shape_stats();
             tr.draw_text(

@@ -1,15 +1,6 @@
-//! Shared surface-drawing primitives — how a card/panel casts a shadow.
-//!
-//! [`shadow`] is the default: a true Gaussian blur of the surface's own
-//! rounded outline, so the shadow is the same shape as the thing casting
-//! it and equally dense the whole way round.
-//!
-//! [`soft_shadow`] is a baked-sprite falloff 9-sliced around the rect,
-//! kept only for effects with no outline to follow (a dragged card's
-//! accent glow) — anything with a corner radius
-//! should use [`shadow`] instead, since the sprite's corner term is a
-//! square-corner SDF that reads as a box with the corners rubbed out.
-//! Sprites are baked once per tint and cached.
+//! Shared surface-drawing primitives — how a card/panel casts a shadow. [`shadow`] is the
+//! default: a true Gaussian blur of the surface's own rounded outline, so the shadow is
+//! the same shape as the thing casting it and equally dense the whole way round.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -22,12 +13,9 @@ use crate::theme::Theme;
 use crate::tokens::{Colors, Shadow};
 use tilo_lock::MutexRecover as _;
 
-/// Shared silhouette for lightweight desktop floats. The asymmetry is only
-/// one or two logical pixels along each edge: enough to feel soft and held,
-/// never enough to look like a novelty blob. Generic floating windows use
-/// this exact path, body and border, so their corner radii cannot drift
-/// apart. (App-owned call and navigation cards are floating cards:
-/// [`crate::widget::floating_surface::paint_card`].)
+/// Shared silhouette for lightweight desktop floats. The asymmetry is only one or two
+/// logical pixels along each edge: enough to feel soft and held, never enough to look
+/// like a novelty blob.
 pub fn soft_outline(rect: Rect) -> BezPath {
     let mut path = BezPath::new();
     path.move_to((rect.x0 + 21.0, rect.y0 + 1.5));
@@ -59,11 +47,6 @@ pub fn soft_outline(rect: Rect) -> BezPath {
 }
 
 /// Shared quiet drag affordance for a detachable soft surface.
-///
-/// Call, navigation and generic floating windows use the same 36×3 logical
-/// pixel pill. Keeping this out of app renderers makes the cross-boundary
-/// gesture recognizable without imposing one shared title/control layout on
-/// workflow-specific surfaces.
 pub fn floating_drag_grip(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
     let grip = Rect::new(
         rect.center().x - 18.0,
@@ -80,9 +63,9 @@ pub fn floating_drag_grip(scene: &mut Scene, transform: Affine, rect: Rect, colo
     );
 }
 
-/// The resize handle in a resizable surface's free corner: three short
-/// diagonal strokes hugging the corner of `grip` that `anchor` names (`true`
-/// for the left, top edge), in `color`.
+/// The resize handle in a resizable surface's free corner: three short diagonal strokes
+/// hugging the corner of `grip` that `anchor` names (`true` for the left, top edge), in
+/// `color`.
 pub fn corner_resize_grip(
     scene: &mut Scene,
     transform: Affine,
@@ -119,31 +102,20 @@ pub fn corner_resize_grip(
     }
 }
 
-/// Resolution of the baked falloff along the profile axis: 256 samples
-/// across a band at most a couple hundred logical px wide is plenty.
+/// Resolution of the baked falloff along the profile axis: 256 samples across a band at
+/// most a couple hundred logical px wide is plenty.
 const SHADOW_SPRITE_SIZE: u32 = 256;
-/// Row count of the edge sprite: every row is an identical profile, but
-/// keeping a few (not one) leaves the image non-degenerate for the
-/// sampler, at a cost of 4 KB.
+/// Row count of the edge sprite: every row is an identical profile, but keeping a few
+/// (not one) leaves the image non-degenerate for the sampler, at a cost of 4 KB.
 const SHADOW_EDGE_ROWS: u32 = 4;
-/// Gaussian width of the falloff ring. Larger = softer, more spread-out.
 const SHADOW_GAUSSIAN_K: f64 = 0.35;
-/// Where the envelope peaks, as a fraction of the band it is baked
-/// across (the band runs one `spread` inside the rect's edge to one
-/// `spread` outside). `0.30` puts the peak `(1 - 2·0.30) = 0.4` of a
-/// spread under the edge and leaves the interior fully transparent, so
-/// translucent surfaces don't self-darken under their own fill.
+/// Where the envelope peaks, as a fraction of the band it is baked across (the band runs
+/// one `spread` inside the rect's edge to one `spread` outside).
 const SHADOW_PEAK_RADIUS: f64 = 0.30;
 
-/// The shadow's alpha as a function of the normalised signed distance
-/// `u` from the rect's edge: `-1` is one band inside the rect, `0` is
-/// exactly on the edge, `+1` is one `spread` outside.
-///
-/// The envelope is `bump · inner_shoulder · outer_shoulder`:
-/// - `bump` — the Gaussian ring peaking at [`SHADOW_PEAK_RADIUS`].
-/// - `inner_shoulder` — clamps the inner end of the band to zero.
-/// - `outer_shoulder` — clamps the outer end to zero so no slice can
-///   leak a hard-edged halo at the shadow's boundary.
+/// The shadow's alpha as a function of the normalised signed distance `u` from the rect's
+/// edge: `-1` is one band inside the rect, `0` is exactly on the edge, `+1` is one
+/// `spread` outside.
 fn shadow_profile(u: f64) -> f64 {
     let d = (u + 1.0) * 0.5;
     if d <= 0.0 || d >= 1.0 {
@@ -155,46 +127,29 @@ fn shadow_profile(u: f64) -> f64 {
     (bump * inner * outer).clamp(0.0, 1.0)
 }
 
-/// Signed distance to the rect, in band units, at a corner — the
-/// rounded-box SDF with a zero corner radius. `ux`/`uy` are each already
-/// normalised to their own band (`+1` one spread outside, `-1` at the
-/// inner end). Outside both edges this is `hypot`, so the iso-alpha
-/// contours are circles about the corner; once one coordinate goes
-/// inside, the `max` term collapses the field to a function of the
-/// other axis only — exactly what the neighbouring edge slice paints,
-/// so the two meet without a discontinuity.
+/// Signed distance to the rect, in band units, at a corner — the rounded-box SDF with a
+/// zero corner radius.
 fn corner_u(ux: f64, uy: f64) -> f64 {
     let ox = ux.max(0.0);
     let oy = uy.max(0.0);
     (ox * ox + oy * oy).sqrt() + ux.max(uy).min(0.0)
 }
 
-/// Map a texel index onto its band coordinate in `-1..=1`, sampling at
-/// pixel centres so the brush's half-texel offset doesn't skew the
-/// baked profile against the geometry it is stretched over.
+/// Map a texel index onto its band coordinate in `-1..=1`, sampling at pixel centres so
+/// the brush's half-texel offset doesn't skew the baked profile against the geometry it
+/// is stretched over.
 fn band_coord(i: u32, n: u32) -> f64 {
     2.0 * (f64::from(i) + 0.5) / f64::from(n) - 1.0
 }
 
-/// The pair of premultiplied-RGBA sprites one tint needs.
-///
-/// The channels are written premultiplied (`c * a`), so both [`Image`]s
-/// must declare [`ImageAlphaType::AlphaPremultiplied`]. Declaring
-/// straight alpha instead makes the renderer premultiply a second time,
-/// which squares the tint and roughly halves every shadow in the
-/// toolkit — the peak of a full-strength white shadow lands at
-/// `255 · a²` instead of `255 · a`. `soft_shadow_peak_matches_sprite_
-/// envelope` pins the composited strength so that cannot come back.
+/// The pair of premultiplied-RGBA sprites one tint needs. The channels are written
+/// premultiplied (`c * a`), so both [`Image`]s must declare
+/// [`ImageAlphaType::AlphaPremultiplied`].
 struct ShadowSprites {
-    /// `SHADOW_SPRITE_SIZE × SHADOW_EDGE_ROWS`: the 1-D profile along x
-    /// (inner end at x = 0), constant down every column. Stretched along
-    /// one axis only, so an edge's falloff width never depends on that
-    /// edge's length.
+    /// `SHADOW_SPRITE_SIZE × SHADOW_EDGE_ROWS`: the 1-D profile along x (inner end at x =
+    /// 0), constant down every column. Stretched along one axis only, so an edge's
+    /// falloff width never depends on that edge's length.
     edge: Image,
-    /// `SHADOW_SPRITE_SIZE²`: the corner quadrant, oriented bottom-right
-    /// (inner end at the origin), mirrored into the other three. Never
-    /// scaled by anything but the band, so corners stay `spread × spread`
-    /// and circular on any aspect ratio.
     corner: Image,
 }
 
@@ -238,13 +193,11 @@ fn build_shadow_sprites(r: u8, g: u8, b: u8) -> ShadowSprites {
     }
 }
 
-/// Per-tint sprite cache. Keyed by opaque `(r,g,b)`; the intensity is
-/// applied to the brush at draw time, so one pair serves every intensity.
 type ShadowSpriteCache = Mutex<HashMap<(u8, u8, u8), Arc<ShadowSprites>>>;
 
-/// Each tint owns a 256² corner plus a small edge image (~260 KiB total).
-/// Theme surfaces normally use only a handful of tints; 32 keeps those hot
-/// while bounding a dynamic-colour caller to roughly 8.1 MiB of cached pixels.
+/// Each tint owns a 256² corner plus a small edge image (~260 KiB total). Theme surfaces
+/// normally use only a handful of tints; 32 keeps those hot while bounding a
+/// dynamic-colour caller to roughly 8.1 MiB of cached pixels.
 const SHADOW_SPRITE_CACHE_LIMIT: usize = 32;
 
 fn cached_sprites(
@@ -267,15 +220,14 @@ fn cached_sprites(
 fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
     static CACHE: OnceLock<ShadowSpriteCache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    // A panic elsewhere while the lock was held can't corrupt this map (a
-    // plain sprite cache, not an invariant-bearing structure), so recover
-    // the data instead of taking the whole render path down with it.
+    // A panic elsewhere while the lock was held can't corrupt this map (a plain sprite
+    // cache, not an invariant-bearing structure), so recover the data instead of taking
+    // the whole render path down with it.
     let mut map = cache.lock_recover();
     cached_sprites(&mut map, (r, g, b))
 }
 
-/// Map a sprite's `sw × sh` pixel rect onto `dest`, optionally mirroring
-/// either axis. The sprite's x axis stays the destination's x axis.
+/// Map a sprite's `sw × sh` pixel rect onto `dest`, optionally mirroring either axis.
 fn slice_xform(dest: Rect, sw: f64, sh: f64, mirror_x: bool, mirror_y: bool) -> Affine {
     let (a, e) = if mirror_x {
         (-dest.width() / sw, dest.x1)
@@ -290,10 +242,6 @@ fn slice_xform(dest: Rect, sw: f64, sh: f64, mirror_x: bool, mirror_y: bool) -> 
     Affine::new([a, 0.0, 0.0, d, e, f])
 }
 
-/// [`slice_xform`] with the axes swapped: the sprite's x axis (its
-/// profile) maps onto the destination's *y* axis, and its rows stretch
-/// along the destination's x. Used for the top and bottom edges, where
-/// the same baked profile has to run vertically.
 fn slice_xform_rot(dest: Rect, sw: f64, sh: f64, mirror_y: bool) -> Affine {
     let (b, f) = if mirror_y {
         (-dest.height() / sw, dest.y1)
@@ -303,16 +251,9 @@ fn slice_xform_rot(dest: Rect, sw: f64, sh: f64, mirror_y: bool) -> Affine {
     Affine::new([0.0, b, dest.width() / sh, 0.0, dest.x0, f])
 }
 
-/// Paint the part of a slice that falls inside `clip`.
-///
-/// `local` maps the sprite onto the slice's **full** band geometry —
-/// always `spread` on each side of the edge — and `clip` narrows that to
-/// what this slice owns. Keeping the two separate is what lets a rect
-/// shorter than `2 · spread` share its inner band between opposing
-/// slices without squashing the profile or double-painting.
-///
-/// The shape is derived in `local` space (axis-aligned by construction),
-/// so the bbox is exact regardless of the caller's own `transform`.
+/// Paint the part of a slice that falls inside `clip`. The shape is derived in `local`
+/// space (axis-aligned by construction), so the bbox is exact regardless of the caller's
+/// own `transform`.
 fn blit(scene: &mut Scene, transform: Affine, local: Affine, brush: &ImageBrush, clip: Rect) {
     if clip.width() <= 0.0 || clip.height() <= 0.0 {
         return;
@@ -327,17 +268,6 @@ fn blit(scene: &mut Scene, transform: Affine, local: Affine, brush: &ImageBrush,
 }
 
 /// Paint a soft drop shadow for `rect`.
-///
-/// - `color`'s own alpha is ignored — pass the opaque hue; use
-///   `intensity` for strength.
-/// - `spread` extends the soft falloff this many logical px past every
-///   edge.
-/// - `offset_y` shifts the shadow downward (ambient light from above).
-/// - `intensity` in `0.0..=1.0` scales the whole shadow's opacity.
-///
-/// 9-sliced around the rect: corners get a fixed `spread × spread`
-/// circular sprite, edges stretch the 1-D profile along their own
-/// length. No-op for a degenerate rect, `spread <= 0`, or `intensity <= 0`.
 pub fn soft_shadow(
     scene: &mut Scene,
     transform: Affine,
@@ -350,8 +280,8 @@ pub fn soft_shadow(
     if rect.width() <= 0.0 || rect.height() <= 0.0 || intensity <= 0.0 || spread <= 0.0 {
         return;
     }
-    // Clip boundaries meet at the rect's mid-lines when narrower than
-    // `2 · spread`, so opposing slices divide the interior, not overlap.
+    // Clip boundaries meet at the rect's mid-lines when narrower than `2 · spread`, so
+    // opposing slices divide the interior, not overlap.
     let in_x = spread.min(rect.width() / 2.0);
     let in_y = spread.min(rect.height() / 2.0);
     let (ox0, ix0) = (rect.x0 - spread, rect.x0 + in_x);
@@ -367,9 +297,6 @@ pub fn soft_shadow(
     let n = f64::from(SHADOW_SPRITE_SIZE);
     let rows = f64::from(SHADOW_EDGE_ROWS);
 
-    // `intensity` rides on the brushes, not a group layer: the eight
-    // slices are clipped to non-overlapping regions so they can't
-    // double-darken, and a layer per shadow isn't free in vello.
     let alpha = intensity.clamp(0.0, 1.0);
 
     // Corners: 2·spread square centred on the corner, mirrored per quadrant.
@@ -404,7 +331,6 @@ pub fn soft_shadow(
         blit(scene, transform, local, &corner, clip);
     }
 
-    // Edges: centre slice skipped — the envelope is zero past one band in.
     let edge = ImageBrush::new(sprites.edge.clone()).with_alpha(alpha);
     for (band, clip, mirror_x) in [
         (
@@ -438,14 +364,9 @@ pub fn soft_shadow(
     }
 }
 
-/// Paint the drop shadow an elevation token describes, following `rect`'s
-/// own corner `radius` — a true Gaussian blur of the surface's own
-/// rounded outline, unlike [`soft_shadow`]'s square-corner-SDF
-/// approximation.
-///
-/// The token's `color` alpha is the shadow's strength and is honoured
-/// here; [`soft_shadow`] ignores it in favour of a separate `intensity`
-/// argument. No-op for a degenerate rect or a token with no blur.
+/// Paint the drop shadow an elevation token describes, following `rect`'s own corner
+/// `radius` — a true Gaussian blur of the surface's own rounded outline, unlike
+/// [`soft_shadow`]'s square-corner-SDF approximation.
 pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, token: &Shadow) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -454,7 +375,6 @@ pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, tok
         && outline.width > 0.0
         && outline.color.components[3] > 0.0
     {
-        // Wholly outside the surface, along its own corners.
         let half = f64::from(outline.width) / 2.0;
         scene.stroke(
             &Stroke::new(f64::from(outline.width)),
@@ -488,8 +408,8 @@ pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, tok
     );
 }
 
-/// Every pixel [`shadow`] can paint under `rect`, antialiasing included, in
-/// `rect`'s coordinates; `None` when it paints nothing.
+/// Every pixel [`shadow`] can paint under `rect`, antialiasing included, in `rect`'s
+/// coordinates; `None` when it paints nothing.
 pub fn shadow_bounds(rect: Rect, token: &Shadow) -> Option<Rect> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
@@ -504,8 +424,8 @@ pub fn shadow_bounds(rect: Rect, token: &Shadow) -> Option<Rect> {
     if token.blur <= 0.0 || token.color.components[3] <= 0.0 {
         return outline;
     }
-    // Vello paints the blur inside the rect grown by its kernel, 2.5
-    // standard deviations; one more pixel covers the shape's antialiasing.
+    // Vello paints the blur inside the rect grown by its kernel, 2.5 standard deviations;
+    // one more pixel covers the shape's antialiasing.
     let reach = 2.5 * std_dev_for(token.blur) + 1.0;
     let offset = f64::from(token.offset_y);
     let shadow_rect = Rect::new(rect.x0, rect.y0 + offset, rect.x1, rect.y1 + offset);
@@ -514,42 +434,29 @@ pub fn shadow_bounds(rect: Rect, token: &Shadow) -> Option<Rect> {
 }
 
 /// The Gaussian standard deviation a CSS-style `blur` radius means.
-///
-/// Halving is the conventional mapping, and vello cuts its kernel at
-/// `2.5 * std_dev`, so a token's visible falloff ends about `1.25 * blur`
-/// past the surface. One function so every surface agrees.
 pub fn std_dev_for(blur: f32) -> f64 {
     f64::from(blur) / 2.0
 }
 
-/// Paint an elevation-token shadow under `rect`, square-cornered. For
-/// callers with no radius to follow — anything rounded must call
-/// [`shadow`] instead, or it gets a shadow of a different shape than itself.
+/// Paint an elevation-token shadow under `rect`, square-cornered. For callers with no
+/// radius to follow — anything rounded must call [`shadow`] instead, or it gets a shadow
+/// of a different shape than itself.
 pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, token: &Shadow) {
     shadow(scene, transform, rect, 0.0, token);
 }
 
-/// The regions a window is made of (HIG §9.2). Each has one ground, and
-/// the framework paints it: an app declares which region an area is (a
-/// `NavShell` slot, or [`region`] in a painted app) and never fills it.
+/// The regions a window is made of (HIG §9.2). Each has one ground, and the framework
+/// paints it: an app declares which region an area is (a `NavShell` slot, or [`region`]
+/// in a painted app) and never fills it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Region {
-    /// The window ground, `surfaces.content`: every app's background.
     Content,
-    /// The navigation column at the leading edge, `surfaces.sidebar`.
     Sidebar,
-    /// The detail column at the trailing edge, `surfaces.inspector`.
     Inspector,
 }
 
-/// Paint `region`'s ground over `rect` and return it, for the region's
-/// contents to measure against ([`Theme::on_ground`],
-/// [`Colors::lift_on`], [`edge_on`]).
-///
-/// A region is told apart from the content beside it by its tone. Where a
-/// material gives the two the same ground (high contrast), the region draws
-/// the hairline instead, on the edge it shares with content: the trailing
-/// edge of a sidebar, the leading edge of an inspector.
+/// Paint `region`'s ground over `rect` and return it, for the region's contents to
+/// measure against ([`Theme::on_ground`], [`Colors::lift_on`], [`edge_on`]).
 pub fn region(
     scene: &mut Scene,
     transform: Affine,
@@ -562,8 +469,6 @@ pub fn region(
         return ground;
     }
     if region == Region::Content {
-        // The window ground in the window role's finish; the regions beside
-        // it are steps of the same body and take its finish's light from it.
         crate::backdrop::fill_role(
             scene,
             transform,
@@ -590,26 +495,20 @@ pub fn region(
     ground
 }
 
-/// Whether a region tier is too close to the content ground to separate
-/// from it by tone alone.
+/// Whether a region tier is too close to the content ground to separate from it by tone
+/// alone.
 #[must_use]
 pub fn region_needs_edge(ground: Color, content: Color) -> bool {
     let l = |c: Color| f64::from(crate::color::Oklch::from_color(c).l);
     (l(ground) - l(content)).abs() < crate::tokens::colors::REGION_MIN_STEP
 }
 
-/// Alphas [`edge_on`] tries, ascending, until the hairline visibly moves the
-/// surface it is drawn on (HIG §9.5). Step 0 is the control hairline
-/// (`chrome::shell::HAIRLINE_ALPHA`); the ladder only climbs on grounds so
-/// dark or so light that a 26-alpha wash lands within rounding distance of
-/// the surface — relative luminance compresses at the dark end, so pure
-/// black needs more alpha for the same visible step.
+/// Alphas [`edge_on`] tries, ascending, until the hairline visibly moves the surface it
+/// is drawn on (HIG §9.5).
 pub const EDGE_ALPHA_STEPS: &[u8] = &[26, 40, 56, 72, 92];
 
-/// How far `edge` moves `surface` once painted on it, in relative-luminance
-/// units — the measurement HIG §9.5 asks every chrome border to pass. Uses
-/// the same compositor as `Colors::hairline_on` / `lift_target` /
-/// `window_edge`, so one rounding model decides "visible" everywhere.
+/// How far `edge` moves `surface` once painted on it, in relative-luminance units — the
+/// measurement HIG §9.5 asks every chrome border to pass.
 #[must_use]
 pub fn edge_delta(edge: Color, surface: Color) -> f64 {
     use crate::a11y::relative_luminance;
@@ -617,11 +516,9 @@ pub fn edge_delta(edge: Color, surface: Color) -> f64 {
     (relative_luminance(painted) - relative_luminance(surface)).abs()
 }
 
-/// The derived 1 px rest edge of a control, card or row: a hairline
-/// measured against the surface it is painted on, never a declared
-/// `border_standard` (which is one fixed colour per theme and disappears on
-/// a raised dark surface). Walks [`EDGE_ALPHA_STEPS`] until the edge
-/// visibly registers (`tokens::colors::HAIRLINE_MIN_DELTA`).
+/// The derived 1 px rest edge of a control, card or row: a hairline measured against the
+/// surface it is painted on, never a declared `border_standard` (which is one fixed
+/// colour per theme and disappears on a raised dark surface).
 #[must_use]
 pub fn edge_on(surface: Color) -> Color {
     let key = u32::from_be_bytes([surface.r(), surface.g(), surface.b(), surface.a()]);
@@ -645,7 +542,6 @@ pub fn edge_on(surface: Color) -> Color {
     edge
 }
 
-/// The uncached ladder walk behind [`edge_on`].
 fn derive_edge_on(surface: Color) -> Color {
     use crate::a11y::relative_luminance;
     let ground = relative_luminance(surface);
@@ -661,10 +557,10 @@ fn derive_edge_on(surface: Color) -> Color {
     last
 }
 
-/// A frame asks for the edge of the same three or four theme constants
-/// hundreds of times (every row, card and rule), and each derivation is a
-/// handful of `powf` calls per ladder step. `edge_on` is a pure function of
-/// its 8-bit input, so the last few answers are kept per thread.
+/// A frame asks for the edge of the same three or four theme constants hundreds of times
+/// (every row, card and rule), and each derivation is a handful of `powf` calls per
+/// ladder step. `edge_on` is a pure function of its 8-bit input, so the last few answers
+/// are kept per thread.
 struct EdgeMemo {
     entries: [Option<(u32, Color)>; EDGE_MEMO_SLOTS],
     next: usize,
@@ -688,22 +584,19 @@ pub fn edge_on_with(surface: Color, alpha: u8) -> Color {
     Colors::hairline_on(surface, alpha)
 }
 
-/// How far a rule that carries a colour of its own moves the ground it lands on: clearly more
-/// than the neutral hairline beside it ([`crate::tokens::colors::HAIRLINE_MIN_DELTA`]) does. A
-/// neutral rule divides two things of one kind and says nothing by itself; a rule in the accent
-/// says "this is where something starts", so it reads as a mark at a glance, never as another
-/// division.
+/// How far a rule that carries a colour of its own moves the ground it lands on: clearly
+/// more than the neutral hairline beside it
+/// ([`crate::tokens::colors::HAIRLINE_MIN_DELTA`]) does. A neutral rule divides two
+/// things of one kind and says nothing by itself; a rule in the accent says "this is
+/// where something starts", so it reads as a mark at a glance, never as another division.
 pub const COLOURED_RULE_MIN_DELTA: f64 = crate::tokens::colors::HAIRLINE_MIN_DELTA * 3.0;
 
-/// The 1 px rule `ink` draws when it is painted on `ground`: the ink's own hue, at the smallest
-/// alpha that moves that ground by [`COLOURED_RULE_MIN_DELTA`] — clearly more than the ground's
-/// own hairline ([`edge_on`]) moves it — or the ink whole where even a full wash moves it less.
-///
-/// [`edge_on`] derives the neutral edge of a surface it *is*: it picks black or white from the
-/// surface and is then painted on a ground of another tone, where a rule that carries a colour
-/// of its own (a divider in the accent where reading starts again) would land as nothing. A
-/// rule meant to carry a colour is derived against the ground it lands on, never against
-/// itself, and is drawn at a weight a person reads without looking for it.
+/// The 1 px rule `ink` draws when it is painted on `ground`: the ink's own hue, at the
+/// smallest alpha that moves that ground by [`COLOURED_RULE_MIN_DELTA`] — clearly more
+/// than the ground's own hairline ([`edge_on`]) moves it — or the ink whole where even a
+/// full wash moves it less. A rule meant to carry a colour is derived against the ground
+/// it lands on, never against itself, and is drawn at a weight a person reads without
+/// looking for it.
 #[must_use]
 pub fn rule_of(ink: Color, ground: Color) -> Color {
     let [r, g, b, _] = ink.to_rgba8().to_u8_array();
@@ -716,9 +609,9 @@ pub fn rule_of(ink: Color, ground: Color) -> Color {
     ink
 }
 
-/// The outline a crisp 1 px edge is stroked on: half a pixel inside `rect`,
-/// so a 1 px stroke covers exactly the outermost pixel row of the surface
-/// and never bleeds onto the ground beside it.
+/// The outline a crisp 1 px edge is stroked on: half a pixel inside `rect`, so a 1 px
+/// stroke covers exactly the outermost pixel row of the surface and never bleeds onto the
+/// ground beside it.
 #[must_use]
 pub fn edge_outline(rect: Rect, radius: f64) -> RoundedRect {
     RoundedRect::from_rect(rect.inset(-0.5), (radius - 0.5).max(0.0))
@@ -729,10 +622,8 @@ fn snap(rect: Rect) -> Rect {
     crate::paint::snap_rect(rect)
 }
 
-/// Fill a card / row / tile and give it its derived rest edge in one call —
-/// the one way an app or shell surface paints an edged surface. The edge
-/// derives from `fill` itself: a stroke that sits entirely on the surface
-/// needs no knowledge of what is behind it.
+/// Fill a card / row / tile and give it its derived rest edge in one call — the one way
+/// an app or shell surface paints an edged surface.
 pub fn card(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, fill: Color) {
     let rect = snap(rect);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -754,10 +645,9 @@ pub fn card(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, fill:
     );
 }
 
-/// Clip what is painted next to the inside of a [`card`] at `rect` with
-/// `radius`, until the caller's `scene.pop_layer()`: content held past the
-/// card's edge (a dragged marker, a scrolled drawing) is cut there instead
-/// of spilling over what surrounds the card.
+/// Clip what is painted next to the inside of a [`card`] at `rect` with `radius`, until
+/// the caller's `scene.pop_layer()`: content held past the card's edge (a dragged marker,
+/// a scrolled drawing) is cut there instead of spilling over what surrounds the card.
 pub fn push_card_clip(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64) {
     scene.push_layer(
         Fill::NonZero,
@@ -768,11 +658,9 @@ pub fn push_card_clip(scene: &mut Scene, transform: Affine, rect: Rect, radius: 
     );
 }
 
-/// [`card`] for a translucent `fill` (an accent wash, a hover tint): the
-/// edge derives from what the eye sees — `fill` composited over `ground` —
-/// not from the wash's own RGB. A 16 % accent wash on a light panel is
-/// still a light surface and wants a dark hairline; judged by the accent
-/// alone it would get a white one and vanish.
+/// [`card`] for a translucent `fill` (an accent wash, a hover tint): the edge derives
+/// from what the eye sees — `fill` composited over `ground` — not from the wash's own
+/// RGB.
 pub fn card_on(
     scene: &mut Scene,
     transform: Affine,
@@ -802,24 +690,18 @@ pub fn card_on(
     );
 }
 
-/// A floating Panel-role surface (menu, popover, sheet, toast) in one call:
-/// the floating material ([`crate::floating_surface::Material::Floating`],
-/// the blurred backdrop under a panel-ground tint, opaque where blur is
-/// unavailable) with its 1 px inner hairline ([`floating_edge`]) — HIG
-/// §9.5's Panel row, so an app never spells the fill + stroke pair itself.
-/// Rows inside it use [`separator`] with an `s3` inset and
-/// [`crate::chrome::selection_tier_on`] against the panel ground. The
-/// shadow is [`floating_shadow`], painted first by the caller.
+/// A floating Panel-role surface (menu, popover, sheet, toast) in one call: the floating
+/// material ([`crate::floating_surface::Material::Floating`], the blurred backdrop under
+/// a panel-ground tint, opaque where blur is unavailable) with its 1 px inner hairline
+/// ([`floating_edge`]) — HIG §9.5's Panel row, so an app never spells the fill + stroke
+/// pair itself. The shadow is [`floating_shadow`], painted first by the caller.
 pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     panel_unsnapped(scene, transform, snap(rect), radius, theme);
 }
 
-/// [`panel`] exactly where it is laid out, without snapping to the pixel
-/// grid: for chrome whose own place is fractional or moving — a window's
-/// controls in a bar a strip carries, a surface arriving on a spring. A
-/// snap rounds the surface to the grid where it is drawn now; translated a
-/// frame later, it would stand up to half a pixel from the drawing it
-/// replays and from the glyphs it holds.
+/// [`panel`] exactly where it is laid out, without snapping to the pixel grid: for chrome
+/// whose own place is fractional or moving — a window's controls in a bar a strip
+/// carries, a surface arriving on a spring.
 pub fn panel_unsnapped(
     scene: &mut Scene,
     transform: Affine,
@@ -840,11 +722,10 @@ pub fn panel_unsnapped(
     floating_edge_unsnapped(scene, transform, rect, radius, theme);
 }
 
-/// The two-layer shadow of a floating surface: the tight contact layer
-/// that defines its edge, under the wide layer that reads as distance
-/// ([`crate::tokens::Elevation::contact`], [`crate::tokens::Elevation::floating`]),
-/// both along the surface's own rounded outline. `alpha` scales both, for
-/// a surface still arriving.
+/// The two-layer shadow of a floating surface: the tight contact layer that defines its
+/// edge, under the wide layer that reads as distance
+/// ([`crate::tokens::Elevation::contact`], [`crate::tokens::Elevation::floating`]), both
+/// along the surface's own rounded outline.
 pub fn floating_shadow(
     scene: &mut Scene,
     transform: Affine,
@@ -854,10 +735,8 @@ pub fn floating_shadow(
     theme: &Theme,
 ) {
     let elevation = &theme.tokens.elevation;
-    // A body tinted less than half shows what is below it nearly clear, so
-    // its own shadow must not show through it: the shadow falls outside it
-    // only. (The stock frosted material tints the blur heavily enough to
-    // carry it.)
+    // A body tinted less than half shows what is below it nearly clear, so its own shadow
+    // must not show through it: the shadow falls outside it only.
     let floating = theme.finish(crate::tokens::SurfaceRole::Floating);
     let clear = floating.translucent() && floating.tint() < CLEAR_TINT;
     let outside = clear.then(|| {
@@ -887,12 +766,10 @@ pub fn floating_shadow(
     }
 }
 
-/// The tint under which a translucent body reads as clear, not frosted:
-/// its own shadow would show through it.
 const CLEAR_TINT: f32 = 0.5;
 
-/// Every pixel [`floating_shadow`] can paint for a surface at `rect`, the
-/// surface's own included.
+/// Every pixel [`floating_shadow`] can paint for a surface at `rect`, the surface's own
+/// included.
 pub fn floating_shadow_bounds(rect: Rect, theme: &Theme) -> Rect {
     let elevation = &theme.tokens.elevation;
     [elevation.contact, elevation.floating]
@@ -901,16 +778,15 @@ pub fn floating_shadow_bounds(rect: Rect, theme: &Theme) -> Rect {
         .fold(rect, |all, layer| all.union(layer))
 }
 
-/// The 1 px inner hairline a floating surface carries on its outermost
-/// pixel row ([`crate::chrome::panel_border`]): white at 7 % on a dark
-/// material, black at 8 % on a light one, full strength on high contrast.
-/// Paint it after the surface's body, at the surface's own radius.
+/// The 1 px inner hairline a floating surface carries on its outermost pixel row
+/// ([`crate::chrome::panel_border`]): white at 7 % on a dark material, black at 8 % on a
+/// light one, full strength on high contrast.
 pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     floating_edge_unsnapped(scene, transform, snap(rect), radius, theme);
 }
 
-/// [`floating_edge`] exactly where the surface stands, without snapping it
-/// to the pixel grid (see [`panel_unsnapped`]).
+/// [`floating_edge`] exactly where the surface stands, without snapping it to the pixel
+/// grid (see [`panel_unsnapped`]).
 fn floating_edge_unsnapped(
     scene: &mut Scene,
     transform: Affine,
@@ -949,17 +825,15 @@ fn floating_edge_unsnapped(
     );
 }
 
-/// How wide the selected edge is: twice the rest edge, so it reads as the
-/// same outline made heavier.
+/// How wide the selected edge is: twice the rest edge, so it reads as the same outline
+/// made heavier.
 #[must_use]
 pub fn selected_edge_width(theme: &Theme) -> f64 {
     f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0) * 2.0
 }
 
-/// The selected object's edge, in place of the rest edge [`card`] paints:
-/// at the same position, a heavier line in the accent drawn wholly inside
-/// the surface's outline. One outline, with no gap and no ring outside it.
-/// Every selectable card or tile marks its selected state with it.
+/// The selected object's edge, in place of the rest edge [`card`] paints: at the same
+/// position, a heavier line in the accent drawn wholly inside the surface's outline.
 pub fn selected_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     let rect = snap(rect);
     let width = selected_edge_width(theme);
@@ -976,8 +850,8 @@ pub fn selected_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     );
 }
 
-/// [`card`], or for the selected one its fill with the [`selected_edge`] in
-/// place of the rest edge.
+/// [`card`], or for the selected one its fill with the [`selected_edge`] in place of the
+/// rest edge.
 pub fn selectable_card(
     scene: &mut Scene,
     transform: Affine,
@@ -1007,9 +881,7 @@ pub fn selectable_card(
 /// The boundary of authored content, independent of the pixels inside it.
 #[derive(Clone, Copy, Debug)]
 pub enum ContentFrame {
-    /// A square sheet on the canvas ground.
     Sheet,
-    /// A thumbnail whose selected edge sits outside the image.
     Thumbnail { selected: bool },
 }
 
@@ -1036,9 +908,9 @@ impl ContentFrame {
     }
 }
 
-/// A 1 px separator between rows inside a surface: derived against
-/// `surface`, inset `inset` from both ends (HIG §9.5: `spacing.s3`, never
-/// full-bleed into a corner radius), centred on `y`.
+/// A 1 px separator between rows inside a surface: derived against `surface`, inset
+/// `inset` from both ends (HIG §9.5: `spacing.s3`, never full-bleed into a corner
+/// radius), centred on `y`.
 pub fn separator(
     scene: &mut Scene,
     transform: Affine,
@@ -1054,9 +926,8 @@ pub fn separator(
     scene.fill(Fill::NonZero, transform, edge_on(surface), None, &rule);
 }
 
-/// A 1 px vertical separator between two columns or panes, derived against
-/// `surface` like [`separator`], inset `inset` from both ends and centred
-/// on `x`. The column rule of a painted split, a gutter beside a list.
+/// A 1 px vertical separator between two columns or panes, derived against `surface` like
+/// [`separator`], inset `inset` from both ends and centred on `x`.
 pub fn vertical_separator(
     scene: &mut Scene,
     transform: Affine,
@@ -1089,12 +960,11 @@ pub enum ContentEdge {
     Trailing,
 }
 
-/// How far a [`content_edge_fade`] reaches into the viewport, at most a
-/// third of it.
+/// How far a [`content_edge_fade`] reaches into the viewport, at most a third of it.
 pub(crate) const CONTENT_FADE_PX: f64 = 24.0;
 
-/// Where [`content_edge_fade`] paints over the viewport `rect` toward
-/// `edge`: what a scroller copies under it is not what the fade shows.
+/// Where [`content_edge_fade`] paints over the viewport `rect` toward `edge`: what a
+/// scroller copies under it is not what the fade shows.
 #[must_use]
 pub fn content_edge_fade_band(rect: Rect, edge: ContentEdge) -> Rect {
     let along = match edge {
@@ -1110,12 +980,8 @@ pub fn content_edge_fade_band(rect: Rect, edge: ContentEdge) -> Rect {
     }
 }
 
-/// Fade content out toward `edge` of the viewport `rect`: the `ground` the
-/// content is drawn on, opaque at the edge and clear a short way in, eased
-/// so it has no start line. Paint it over the content, and only while
-/// more content can scroll in from that edge (a `Scrollable` with
-/// `with_edge_fade` does both). The replacement for a media scrim, a
-/// `DestOut` mask or a hand-made gradient at the end of a list.
+/// Fade content out toward `edge` of the viewport `rect`: the `ground` the content is
+/// drawn on, opaque at the edge and clear a short way in, eased so it has no start line.
 pub fn content_edge_fade(
     scene: &mut Scene,
     transform: Affine,
@@ -1148,10 +1014,10 @@ pub fn content_edge_fade(
     scene.fill(Fill::NonZero, transform, &gradient, None, &band);
 }
 
-/// The one device-pixel row a separator centred on `y` occupies: `y` is
-/// snapped so a caller passing a whole-pixel coordinate gets a crisp rule,
-/// not a two-row smear at half alpha (which would fall under
-/// `HAIRLINE_MIN_DELTA` even though the colour itself registers).
+/// The one device-pixel row a separator centred on `y` occupies: `y` is snapped so a
+/// caller passing a whole-pixel coordinate gets a crisp rule, not a two-row smear at half
+/// alpha (which would fall under `HAIRLINE_MIN_DELTA` even though the colour itself
+/// registers).
 #[must_use]
 pub fn separator_rect(x0: f64, x1: f64, y: f64, inset: f64) -> Option<Rect> {
     let (a, b) = (x0 + inset, x1 - inset);
@@ -1162,17 +1028,17 @@ pub fn separator_rect(x0: f64, x1: f64, y: f64, inset: f64) -> Option<Rect> {
     Some(Rect::new(a, top, b, top + 1.0))
 }
 
-/// The border every surface carries under the theme's shape role, as
-/// `(width, ink)`, or `None` where the theme keeps the design language's
-/// own hairlines ([`crate::tokens::BorderInk::Hairline`]).
+/// The border every surface carries under the theme's shape role, as `(width, ink)`, or
+/// `None` where the theme keeps the design language's own hairlines
+/// ([`crate::tokens::BorderInk::Hairline`]).
 #[must_use]
 pub fn border(theme: &Theme) -> Option<(f64, Color)> {
     let ink = theme.tokens.border_color?;
     Some((f64::from(theme.tokens.border.width), ink))
 }
 
-/// Stroke the theme's border ([`border`]) wholly inside `body`. Returns
-/// whether one was drawn, so a caller drops the hairline it stands in for.
+/// Stroke the theme's border ([`border`]) wholly inside `body`. Returns whether one was
+/// drawn, so a caller drops the hairline it stands in for.
 pub fn paint_border(
     scene: &mut Scene,
     transform: Affine,
@@ -1197,15 +1063,9 @@ pub fn paint_border(
     true
 }
 
-/// Paint a control's face (a button, a field's well, a segmented track, a
-/// toggle's body) with the control role's painter set
-/// (`crate::part_paint::Part::ControlFace`), then the theme's border
-/// around it. The rest face (`surfaces.raised`) is drawn at rest, where a
-/// set may let the window ground through it and light it; a face of any
-/// other fill (a primary action, a selection, a hover lift) is drawn
-/// selected: those carry state, and their ink is measured on them, so the
-/// toolkit's sets keep them opaque. Returns whether a border was drawn,
-/// which stands in for the control's own rest edge.
+/// Paint a control's face (a button, a field's well, a segmented track, a toggle's body)
+/// with the control role's painter set (`crate::part_paint::Part::ControlFace`), then the
+/// theme's border around it.
 pub fn control_face(
     scene: &mut Scene,
     transform: Affine,
@@ -1216,7 +1076,6 @@ pub fn control_face(
     use crate::part_paint::{Moment, Part, States, builtin, paint_part, part_tokens};
     use crate::tokens::SurfaceRole;
     if fill.components[3] <= 0.0 {
-        // A plain face at rest has no body to finish or outline.
         return false;
     }
     let rest = fill == theme.tokens.colors.surfaces.raised;
@@ -1332,8 +1191,8 @@ mod tests {
                     );
                 }
             }
-            // The declared border is what vanished on the dark preset: derived
-            // must register there where declared does not.
+            // The declared border is what vanished on the dark preset: derived must
+            // register there where declared does not.
             let dark = Theme::dark();
             let raised = dark.tokens.colors.surfaces.raised;
             let declared = edge_delta(dark.tokens.colors.border_standard, raised);
@@ -1369,8 +1228,6 @@ mod tests {
                     edge_delta(derived, seen) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
                     "card_on edge must register on the seen surface"
                 );
-                // Judged by the wash's own RGB the hairline can flip polarity and
-                // stop registering on the surface the eye sees.
                 let naive = edge_on(wash);
                 assert!(
                     edge_delta(derived, seen) >= edge_delta(naive, seen),
@@ -1392,9 +1249,9 @@ mod tests {
         }
 
         {
-            // The memo must be transparent: the same surface asked twice (and
-            // many distinct surfaces cycling through the slots) always yields
-            // exactly what the ladder derives.
+            // The memo must be transparent: the same surface asked twice (and many
+            // distinct surfaces cycling through the slots) always yields exactly what the
+            // ladder derives.
             let theme = Theme::dark();
             let surfaces = [
                 theme.tokens.colors.surfaces.base,
@@ -1435,7 +1292,6 @@ mod tests {
                     assert!(edge_delta(border, ground) > 0.005, "{name}: it registers");
                 }
             }
-            // Degenerate rects paint nothing rather than a stray hairline.
             let mut scene = Scene::new();
             panel(
                 &mut scene,
@@ -1459,10 +1315,6 @@ mod tests {
             assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
         }
 
-        // Case `quiet_chip_edge_registers_on_every_preset`:
-        // The quiet chip's edge is derived from its own fill, so it registers
-        // on every preset — the declared `border_standard` it replaces measured
-        // under the visibility floor on the dark preset's raised surface.
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let quiet = crate::widget::ChipStyle::Neutral.colors(
@@ -1516,9 +1368,6 @@ mod tests {
             assert_eq!(retained.corner.height, SHADOW_SPRITE_SIZE);
         }
 
-        // Case `edge_sprite_runs_from_zero_through_the_peak_back_to_zero`:
-        // Ends of the band are zero, and the peak sits where
-        // [`SHADOW_PEAK_RADIUS`] says.
         {
             let s = build_shadow_sprites(0, 0, 0);
             let n = SHADOW_SPRITE_SIZE;
@@ -1530,7 +1379,6 @@ mod tests {
                 alpha_at(&s.edge, n - 1, 0) <= 2,
                 "outer end of the band must be ~0"
             );
-            // Peak column: SHADOW_PEAK_RADIUS along the band.
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1548,8 +1396,8 @@ mod tests {
                 (i32::from(peak) - expected).abs() <= 2,
                 "the baked peak must be {expected}/255; got {peak}"
             );
-            // Every row must match — that's what lets one sprite stretch to
-            // any edge length.
+            // Every row must match — that's what lets one sprite stretch to any edge
+            // length.
             for y in 1..SHADOW_EDGE_ROWS {
                 for x in [0, peak_x, n / 2, n - 1] {
                     assert_eq!(
@@ -1561,10 +1409,9 @@ mod tests {
             }
         }
 
-        // Case `corner_sprite_joins_the_edge_profile_where_the_slices_meet`:
-        // The corner sprite must equal the edge profile along the two
-        // rows/columns where it meets an edge slice — the join is continuous by
-        // construction.
+        // Case `corner_sprite_joins_the_edge_profile_where_the_slices_meet`: The corner
+        // sprite must equal the edge profile along the two rows/columns where it meets an
+        // edge slice — the join is continuous by construction.
         {
             let s = build_shadow_sprites(0, 0, 0);
             let n = SHADOW_SPRITE_SIZE;
@@ -1574,27 +1421,20 @@ mod tests {
                     alpha_at(&s.edge, x, 0),
                     "corner row 0 must equal the edge profile at x={x}"
                 );
-                // …and by symmetry the innermost column equals it in y.
                 assert_eq!(
                     alpha_at(&s.corner, 0, x),
                     alpha_at(&s.edge, x, 0),
                     "corner column 0 must equal the edge profile at y={x}"
                 );
             }
-            // The outer corner of the sprite is a full spread × spread away
-            // diagonally — outside the circle — so it is a true zero.
             assert_eq!(alpha_at(&s.corner, n - 1, n - 1), 0);
         }
 
-        // Case `corner_sprite_contours_are_circular`:
-        // The corner's iso-alpha contours are circles about the corner
-        // point, not the elliptical contours a stretched radial sprite
-        // would produce.
         {
             let s = build_shadow_sprites(0, 0, 0);
             let n = f64::from(SHADOW_SPRITE_SIZE);
-            // Walking a quarter circle of radius `r` (in band units) out
-            // from the corner must hold the alpha constant.
+            // Walking a quarter circle of radius `r` (in band units) out from the corner
+            // must hold the alpha constant.
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1625,8 +1465,6 @@ mod tests {
         img.data.data()[idx as usize]
     }
 
-    /// The red channel of the render *is* the composited alpha, so a
-    /// sample reads the production output of [`shadow`] directly.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1649,8 +1487,8 @@ mod tests {
         }
     }
 
-    /// A control face painted in `finish` (and `border`, `depth`) over the
-    /// dark window ground: RGBA rows of 120 × 60.
+    /// A control face painted in `finish` (and `border`, `depth`) over the dark window
+    /// ground: RGBA rows of 120 × 60.
     fn control_in(
         finish: crate::tokens::Finish,
         border: crate::tokens::Border,
@@ -1721,7 +1559,6 @@ mod tests {
                 rgb(theme.tokens.colors.surfaces.raised)
             ));
         }
-        // Translucent: the window ground shows through at the tint.
         let (theme, rgba) = control_in(Finish::frosted(0.0, 0.5, 1.0), Border::STOCK, Depth::None);
         let half = crate::tokens::colors::over(
             theme.tokens.colors.surfaces.content,
@@ -1733,7 +1570,6 @@ mod tests {
             "{:?}",
             at(&rgba, 60, 30)
         );
-        // Glass: the sheen lights the upper body and the rim its top edge.
         let (_, rgba) = control_in(
             Finish::glass([0.0, 0.6, 1.0, 0.0, 0.5, 0.3]),
             Border::STOCK,
@@ -1742,7 +1578,6 @@ mod tests {
         let sum = |p: [u8; 3]| p.iter().map(|c| u16::from(*c)).sum::<u16>();
         assert!(sum(at(&rgba, 30, 14)) > sum(at(&rgba, 90, 46)), "sheen");
         assert!(sum(at(&rgba, 60, 10)) > sum(at(&rgba, 60, 13)), "lit rim");
-        // A strong border outlines the face, inside it.
         let (theme, rgba) = control_in(
             Finish::flat(),
             Border {
@@ -1759,12 +1594,10 @@ mod tests {
             at(&rgba, 60, 11),
             rgb(theme.tokens.colors.text_tertiary)
         ));
-        // No depth: nothing below the face but the ground.
         assert!(near(
             at(&rgba, 60, 54),
             rgb(theme.tokens.colors.surfaces.content)
         ));
-        // Outline depth: a line around the face where its shadow was.
         let (theme, rgba) = control_in(Finish::solid(), Border::STOCK, Depth::Outline);
         assert!(!near(
             at(&rgba, 60, 50),
@@ -1774,7 +1607,6 @@ mod tests {
             at(&rgba, 60, 56),
             rgb(theme.tokens.colors.surfaces.content)
         ));
-        // The stock theme's shadow still falls below.
         let (theme, rgba) = control_in(Finish::solid(), Border::STOCK, Depth::STOCK);
         assert!(!near(
             at(&rgba, 60, 52),
@@ -1784,11 +1616,9 @@ mod tests {
 
     #[test]
     fn token_shadow_is_even_and_follows_its_alpha_and_blur() {
-        // Case `token_shadow_is_even_around_a_rounded_corner`:
-        // A shadow is as even around a rounded corner as along a flat edge,
-        // since it's a blur of the surface's own outline. Sampling is at
-        // equal *normal* distance from the silhouette — out from the flat
-        // edge, and out along the corner arc's diagonal.
+        // Case `token_shadow_is_even_around_a_rounded_corner`: A shadow is as even around
+        // a rounded corner as along a flat edge, since it's a blur of the surface's own
+        // outline.
         {
             let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
             let radius = 24.0;
@@ -1817,9 +1647,6 @@ mod tests {
             }
         }
 
-        // Case `token_shadow_honours_the_token_alpha`:
-        // The token's colour alpha is the shadow's strength; unlike
-        // [`soft_shadow`], [`shadow`] actually reads it.
         {
             let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
             let radius = 24.0;
@@ -1848,9 +1675,6 @@ mod tests {
             );
         }
 
-        // Case `token_shadow_reach_follows_blur`:
-        // A token's visible reach is set by its `blur`, through the one
-        // shared mapping ([`std_dev_for`]).
         {
             let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
             let token = Shadow {
@@ -1887,9 +1711,9 @@ mod tests {
         }
     }
 
-    /// The red channel of the render *is* the composited alpha, so the
-    /// sampler reads the production output of [`soft_shadow`] in the
-    /// same units [`shadow_profile`] declares.
+    /// The red channel of the render *is* the composited alpha, so the sampler reads the
+    /// production output of [`soft_shadow`] in the same units [`shadow_profile`]
+    /// declares.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1916,26 +1740,13 @@ mod tests {
 
     #[test]
     fn soft_shadow_falloff_is_seamless_circular_and_spread_sized() {
-        // Case `soft_shadow_peak_matches_sprite_envelope`:
-        // The composited shadow has to reach the strength the sprite's
-        // alpha envelope describes. A full-intensity white shadow peaks at
-        // `bump · inner · outer = 1 · 1 · (1 - SHADOW_PEAK_RADIUS) = 0.7`,
-        // so over black the brightest pixel on the ring is `255 · 0.7 ≈
-        // 178`. If the premultiplied sprite were handed to the renderer as
-        // straight alpha, the tint would get premultiplied twice and that
-        // peak would collapse to `255 · 0.7² ≈ 125` — this pins against that.
-        //
-        // The ring's position is asserted too, measured from the rect's
-        // **edge**: the envelope peaks `(1 - 2·SHADOW_PEAK_RADIUS)` of a
-        // `spread` inside the edge and dies exactly one `spread` outside it,
-        // whatever the rect's size.
+        // Case `soft_shadow_peak_matches_sprite_envelope`: The composited shadow has to
+        // reach the strength the sprite's alpha envelope describes.
         {
             let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
             let spread = 30.0;
             let at = render_shadow(400, 400, rect, spread);
 
-            // Walk outward along the horizontal centre line and keep the
-            // brightest sample plus where it was found.
             let (cx, cy) = (200.0, 200.0);
             let half = rect.width() / 2.0 + spread; // 80 px
             let (mut peak, mut peak_dx) = (0u8, 0.0f64);
@@ -1981,9 +1792,6 @@ mod tests {
                 (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread,
             );
 
-            // The centre stays clear so a card's own fill paints over an
-            // unmodified backdrop, and the target's corner is fully
-            // transparent so no square halo leaks out.
             assert!(at(cx, cy) <= 6, "sprite centre must stay clear");
             assert_eq!(
                 at(cx + half, cy + half),
@@ -1992,11 +1800,10 @@ mod tests {
             );
         }
 
-        // Case `soft_shadow_falloff_width_is_the_spread_not_the_rects_size`:
-        // The falloff outside an edge is a function of the distance to that
-        // edge and of `spread` — never of the rect's own dimensions. Wide,
-        // tall and small-square must all match [`shadow_profile`] pixel for
-        // pixel, on both axes.
+        // Case `soft_shadow_falloff_width_is_the_spread_not_the_rects_size`: The falloff
+        // outside an edge is a function of the distance to that edge and of `spread` —
+        // never of the rect's own dimensions. Wide, tall and small-square must all match
+        // [`shadow_profile`] pixel for pixel, on both axes.
         {
             let spread = 40.0;
             #[allow(
@@ -2005,7 +1812,6 @@ mod tests {
                 reason = "spread is a small positive px constant in these tests, always well within u32 range"
             )]
             let span = spread as u32 + 6;
-            // Wide (the overview's active row), tall, and a small square.
             let wide = outward_profiles(Rect::new(150.0, 330.0, 1172.0, 565.0), spread, span);
             let tall = outward_profiles(Rect::new(560.0, 100.0, 800.0, 800.0), spread, span);
             let square = outward_profiles(Rect::new(600.0, 400.0, 700.0, 500.0), spread, span);
@@ -2018,8 +1824,6 @@ mod tests {
                 ("square/right", &square.0),
                 ("square/bottom", &square.1),
             ] {
-                // 1. Every sample matches the declared envelope at its own
-                //    distance from the edge, in units of `spread`.
                 for (k, got) in profile.iter().enumerate() {
                     #[allow(
                         clippy::cast_precision_loss,
@@ -2039,8 +1843,6 @@ mod tests {
                      {profile:?}"
                     );
                 }
-                // 2. …so the band is `spread` wide: still painting half way
-                //    out, nothing at all past the spread.
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -2064,7 +1866,6 @@ mod tests {
                     "{label}: nothing may paint past {spread} px — the spread \
                  *is* the falloff width: {profile:?}"
                 );
-                // 3. And it is actually a shadow at the edge, not a hairline.
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "255.0 * shadow_profile(0.0) is within 0.0..=255.0"
@@ -2078,8 +1879,6 @@ mod tests {
                 );
             }
 
-            // 4. Stated directly: the three aspect ratios agree with each
-            //    other, and each rect's own two axes agree.
             for (label, a, b) in [
                 ("wide vs square", &wide.0, &square.0),
                 ("tall vs square", &tall.0, &square.0),
@@ -2096,10 +1895,6 @@ mod tests {
             }
         }
 
-        // Case `soft_shadow_corners_stay_circular_on_a_wide_rect`:
-        // A corner's falloff is a `spread`-radius quarter circle: alpha a
-        // given distance diagonally out from the corner matches alpha the
-        // same distance straight out from an edge — on a wide rect too.
         {
             let spread = 40.0;
             let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
@@ -2120,16 +1915,12 @@ mod tests {
             }
         }
 
-        // Case `soft_shadow_is_uniform_along_an_edge_and_seamless_at_the_slice_joins`:
-        // Along one edge the shadow is constant, including across the
-        // boundaries where the edge slice meets the two corner slices — any
-        // step there would show as a hairline running out of the corner.
         {
             let spread = 40.0;
             let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
             let at = render_shadow(1400, 900, rect, spread);
-            // The corner slices own the first and last `spread` of the edge;
-            // between them the field must not vary at all.
+            // The corner slices own the first and last `spread` of the edge; between them
+            // the field must not vary at all.
             for dy in [1.0_f64, 8.0, 20.0] {
                 let y = rect.y1 + dy;
                 let start = rect.x0 + spread;
@@ -2169,9 +1960,9 @@ mod tests {
             }
         }
 
-        // Case `soft_shadow_leaves_a_wide_rects_interior_clear`:
-        // A wide card's interior stays completely clear — the centre slice
-        // is skipped because the envelope is zero more than one band in.
+        // Case `soft_shadow_leaves_a_wide_rects_interior_clear`: A wide card's interior
+        // stays completely clear — the centre slice is skipped because the envelope is
+        // zero more than one band in.
         {
             let spread = 40.0;
             let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
@@ -2185,8 +1976,8 @@ mod tests {
 
         {
             let mut scene = Scene::new();
-            // Zero-area rect, zero intensity, zero spread — must not panic
-            // and must add nothing detectable (we just assert it returns).
+            // Zero-area rect, zero intensity, zero spread — must not panic and must add
+            // nothing detectable; the test only asserts it returns.
             soft_shadow(
                 &mut scene,
                 Affine::IDENTITY,
@@ -2216,11 +2007,9 @@ mod tests {
             );
         }
 
-        // Case `a_pill_thinner_than_the_spread_keeps_the_full_falloff`:
-        // A pill shorter than `2 · spread` still gets the full outward
-        // falloff: opposing slices share the interior instead of squashing
-        // the profile. The toolkit's tab/close/restore pills are this shape
-        // (26 px tall against a 10 px spread).
+        // Case `a_pill_thinner_than_the_spread_keeps_the_full_falloff`: A pill shorter
+        // than `2 · spread` still gets the full outward falloff: opposing slices share
+        // the interior instead of squashing the profile.
         {
             let spread = 20.0;
             // 24 px tall — narrower than 2 · spread — and 120 px wide.
@@ -2250,9 +2039,8 @@ mod tests {
         }
     }
 
-    /// Sample the shadow outward from the middle of `rect`'s right and
-    /// bottom edges, one sample per pixel, starting half a pixel outside
-    /// the edge.
+    /// Sample the shadow outward from the middle of `rect`'s right and bottom edges, one
+    /// sample per pixel, starting half a pixel outside the edge.
     fn outward_profiles(rect: Rect, spread: f64, span: u32) -> (Vec<u8>, Vec<u8>) {
         let at = render_shadow(1400, 900, rect, spread);
         let right = (0..span)

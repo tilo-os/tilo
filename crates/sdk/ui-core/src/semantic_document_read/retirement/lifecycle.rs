@@ -2,7 +2,6 @@
 use super::{RetirementHandle, RetirementOwner};
 
 /// Negative custody consumed before the real component factory.
-/// No Live association or semantic reader can be created by this value.
 pub struct MountRetirement {
     owner: RetirementOwner,
     app: Option<RootRetirementPrelude>,
@@ -23,7 +22,7 @@ impl MountRetirement {
     }
 }
 
-/// Direct App/assembly field. Never copied through CallbackBinding or a widget.
+/// Direct App/assembly field.
 pub(crate) struct RootRetirementPrelude(RetirementHandle);
 impl RootRetirementPrelude {
     pub(crate) fn retire(&self) {

@@ -1,11 +1,6 @@
-//! Theme layer stack.
-//!
-//! Precedence, lowest to highest, is fixed in [`resolve_theme_layers`]:
-//! built-in defaults, distribution defaults, the user's theme, the workspace
-//! temperature, accessibility. Every layer below the workspace is a
-//! [`ThemeDocument`]; a distribution may pin any of its roles, and a pin
-//! beats the user's theme only for that role. Accessibility always wins.
-//! See `docs/architecture/theming.md`.
+//! Theme layer stack. Precedence, lowest to highest, is fixed in
+//! [`resolve_theme_layers`]: built-in defaults, distribution defaults, the user's theme,
+//! the workspace temperature, accessibility.
 
 use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
@@ -14,12 +9,11 @@ use crate::theme::{Theme, WindowAppearance};
 use crate::theme_document::{Preset, ThemeDensity, ThemeDocument};
 use crate::tokens::{Emphasis, PresenceHue};
 
-/// JSON id of the distribution-defaults layer. The same layer is also read
-/// from [`DISTRIBUTION_DEFAULTS_KEY`].
+/// JSON id of the distribution-defaults layer.
 pub const DISTRIBUTION_LAYER_ID: &str = "distribution";
 
-/// JSON key of the distribution-defaults object inside the device's
-/// appearance section ([`settings_store::appearance::DEVICE_SECTION`]).
+/// JSON key of the distribution-defaults object inside the device's appearance section
+/// ([`settings_store::appearance::DEVICE_SECTION`]).
 pub const DISTRIBUTION_DEFAULTS_KEY: &str = "distribution_defaults";
 
 /// Pin id for the palette (hue, chroma, ladder, ink, status).
@@ -67,8 +61,7 @@ pub const ACCESSIBILITY_SCHEMA_MIN: u32 = 1;
 /// Schema this build writes for the accessibility layer.
 pub const ACCESSIBILITY_SCHEMA_VERSION: u32 = 1;
 
-/// Versioned accessibility object inside `appearance`. Absent on files that
-/// store the same fields as flat flags; those open as schema 1.
+/// Versioned accessibility object inside `appearance`.
 pub(crate) const ACCESSIBILITY_LAYER_KEY: &str = "accessibility";
 
 /// The settings section the person's appearance lives in.
@@ -83,22 +76,20 @@ pub const LIGHT_THEME_KEY: &str = "light_theme";
 pub const CUSTOM_THEMES_KEY: &str = "custom_themes";
 /// `appearance` key: the person's density, over whichever theme is shown.
 pub const DENSITY_KEY: &str = "density";
-/// `appearance` key: per-workspace temperature overrides, OKLCH degrees by
-/// workspace id.
+/// `appearance` key: per-workspace temperature overrides, OKLCH degrees by workspace id.
 pub const WORKSPACE_TEMPERATURES_KEY: &str = "workspace_temperatures";
-/// `appearance` key: "Always distinguish similar letters", `true` or
-/// `false`; absent follows the face (on with Hyperlegible).
+/// `appearance` key: "Always distinguish similar letters", `true` or `false`; absent
+/// follows the face (on with Hyperlegible).
 pub const DISTINCT_LETTERS_KEY: &str = "distinct_letters";
 
-/// `appearance` key: the interface face the person chose, by name, over the
-/// theme's own (`settings_store::appearance::UI_FACE`).
+/// `appearance` key: the interface face the person chose, by name, over the theme's own
+/// (`settings_store::appearance::UI_FACE`).
 pub const UI_FACE_KEY: &str = "ui_face";
-/// `appearance` key: the accent the person chose, by a presence hue's name,
-/// over the theme's own (`settings_store::appearance::ACCENT`).
+/// `appearance` key: the accent the person chose, by a presence hue's name, over the
+/// theme's own (`settings_store::appearance::ACCENT`).
 pub const ACCENT_KEY: &str = "accent";
-/// `appearance` key: how much of the theme's translucency the person keeps,
-/// `1` as the theme sets it and `0` opaque
-/// (`settings_store::appearance::TRANSLUCENCY`).
+/// `appearance` key: how much of the theme's translucency the person keeps, `1` as the
+/// theme sets it and `0` opaque (`settings_store::appearance::TRANSLUCENCY`).
 pub const TRANSLUCENCY_KEY: &str = "translucency";
 
 fn distribution_schema() -> u32 {
@@ -118,15 +109,9 @@ fn schema_admitted(version: u32, min: u32, max: u32) -> bool {
 }
 
 /// Policy pins on a distribution-defaults document.
-///
-/// Pins name roles of the theme document ([`PINNABLE`]). Accessibility
-/// fields (`high_contrast`, `forced_colors`, `text_scale`, `ui_scale`,
-/// `reduce_motion`, `reduce_transparency`) are not pinnable: a document may
-/// name them and they are ignored.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DistributionPolicy {
-    /// Role names this distribution pins.
     #[serde(default)]
     pub pins: Vec<String>,
 }
@@ -139,17 +124,15 @@ impl DistributionPolicy {
     }
 }
 
-/// Defaults a distribution ships with the OS image: a theme (a preset id or
-/// a whole document) and the pins in [`Self::policy`].
+/// Defaults a distribution ships with the OS image: a theme (a preset id or a whole
+/// document) and the pins in [`Self::policy`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DistributionDefaults {
     #[serde(default = "distribution_schema")]
     pub schema_version: u32,
-    /// A preset id ([`Preset::find`]). Ignored when [`Self::document`] is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
-    /// A whole theme document, admitted like a user's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<ThemeDocument>,
     #[serde(default)]
@@ -170,7 +153,6 @@ impl Default for DistributionDefaults {
 }
 
 impl DistributionDefaults {
-    /// Structural check. A failure means this layer is not applied.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != DISTRIBUTION_DEFAULTS_SCHEMA_VERSION {
             return Err("unsupported distribution defaults schema");
@@ -205,7 +187,6 @@ impl DistributionDefaults {
     }
 }
 
-/// Accessibility fields a distribution may name in its pins without effect.
 fn is_accessibility_field(name: &str) -> bool {
     matches!(
         name,
@@ -219,12 +200,6 @@ fn is_accessibility_field(name: &str) -> bool {
     )
 }
 
-/// Accessibility layer. Nothing below it can lower contrast, shrink text,
-/// or turn motion back on.
-///
-/// `schema_version` is admitted by [`Self::validate`] before the layer
-/// changes a theme. Text and UI scales outside the usable band are clamped
-/// in [`Self::materialize`], which is what [`resolve_theme_layers`] applies.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccessibilityLayer {
     #[serde(default = "accessibility_schema")]
@@ -233,28 +208,20 @@ pub struct AccessibilityLayer {
     pub high_contrast: bool,
     #[serde(default)]
     pub forced_colors: bool,
-    /// Multiplier for type only. Usable band is
-    /// [`Self::TEXT_SCALE_MIN`]..=[`Self::TEXT_SCALE_MAX`].
+    /// Multiplier for type only.
     #[serde(default = "scale_one")]
     pub text_scale: f32,
-    /// Multiplier for spacing, radii, and type together.
     #[serde(default = "scale_one")]
     pub ui_scale: f32,
     #[serde(default)]
     pub reduce_motion: bool,
-    /// Floating chrome is opaque instead of blurred and tinted.
     #[serde(default)]
     pub reduce_transparency: bool,
     #[serde(default)]
     pub thick_caret: bool,
-    /// Set the UI in the Hyperlegible face ([`crate::tokens::UiFace`])
-    /// whatever face the theme chose.
     #[serde(default)]
     pub hyperlegible: bool,
-    /// "Always distinguish similar letters": I, l, 1 and 0, O set apart in
-    /// all text. `None` keeps the theme's choice
-    /// ([`crate::theme::ThemeType::distinguishes_letters`]: on with
-    /// Hyperlegible, including the Hyperlegible this layer chooses).
+    /// "Always distinguish similar letters": I, l, 1 and 0, O set apart in all text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distinct_letters: Option<bool>,
 }
@@ -269,12 +236,6 @@ impl AccessibilityLayer {
     /// Same upper bound as [`Theme::with_ui_scale`].
     pub const UI_SCALE_MAX: f32 = 3.0;
 
-    /// Structural check. A failure means this layer is not applied.
-    ///
-    /// Schema versions outside
-    /// `ACCESSIBILITY_SCHEMA_MIN`..=`ACCESSIBILITY_SCHEMA_VERSION`
-    /// are rejected, as is a non-finite scale. A finite scale outside the
-    /// usable band is clamped by [`Self::materialize`], not rejected.
     pub fn validate(&self) -> Result<(), &'static str> {
         if !schema_admitted(
             self.schema_version,
@@ -292,14 +253,8 @@ impl AccessibilityLayer {
         Ok(())
     }
 
-    /// [`Self::validate`], then clamp scales into the usable band.
-    ///
-    /// The returned scales are what resolution applies. The raw payload is
-    /// not handed to [`Theme::with_text_scale`] or [`Theme::with_ui_scale`].
-    ///
-    /// # Errors
-    ///
-    /// The same static message as [`Self::validate`].
+    /// [`Self::validate`], then clamp scales into the usable band. The same static
+    /// message as [`Self::validate`].
     pub fn materialize(&self) -> Result<Self, &'static str> {
         self.validate()?;
         Ok(Self {
@@ -329,32 +284,17 @@ impl Default for AccessibilityLayer {
     }
 }
 
-/// The person's own finish over whichever theme is shown: the interface face
-/// they read best, their accent, and how much of the theme's translucency they
-/// keep. All are roles the theme already has ([`PIN_TYPE`], [`PIN_EMPHASIS`],
-/// [`PIN_MATERIAL`]); this layer only says the person would rather have them
-/// their way than the theme's, so no custom theme has to be written for a
-/// face, a colour or a blur.
-///
-/// A role the distribution pins stays the distribution's, and accessibility
-/// is applied after this (high contrast and "make panels opaque" win).
+/// The person's own finish over whichever theme is shown: the interface face they read
+/// best, their accent, and how much of the theme's translucency they keep.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FinishLayer {
-    /// Any family name a theme's type role may name; `None` follows the
-    /// theme.
     pub ui_face: Option<String>,
-    /// The hue the person wants as the accent; `None` follows the theme's
-    /// emphasis.
     pub accent: Option<PresenceHue>,
-    /// `0` opaque floating chrome, `1` as the theme sets it; `None` follows
-    /// the theme.
+    /// `0` opaque floating chrome, `1` as the theme sets it; `None` follows the theme.
     pub translucency: Option<f32>,
 }
 
 impl FinishLayer {
-    /// Structural check. A failure means this layer is not applied.
-    /// A face name is anything a theme document may name; a translucency
-    /// outside the band is clamped by [`Self::materialize`], not rejected.
     pub fn validate(&self) -> Result<(), &'static str> {
         if let Some(face) = &self.ui_face {
             let face = face.trim();
@@ -374,12 +314,8 @@ impl FinishLayer {
         self.ui_face.is_none() && self.accent.is_none() && self.translucency.is_none()
     }
 
-    /// [`Self::validate`], then trim the face and clamp the translucency into
-    /// its band: what resolution applies.
-    ///
-    /// # Errors
-    ///
-    /// The same static message as [`Self::validate`].
+    /// [`Self::validate`], then trim the face and clamp the translucency into its band:
+    /// what resolution applies. The same static message as [`Self::validate`].
     pub fn materialize(&self) -> Result<Self, &'static str> {
         self.validate()?;
         Ok(Self {
@@ -395,32 +331,22 @@ impl FinishLayer {
     }
 }
 
-/// Inputs to [`resolve_theme_layers`]. Absent layers contribute nothing.
+/// Inputs to [`resolve_theme_layers`].
 #[derive(Clone, Debug, Default)]
 pub struct ThemeLayerStack {
     pub distribution_defaults: Option<DistributionDefaults>,
-    /// The theme the person chose for the current mode. `None` means they
-    /// have not chosen one, or chose one this build does not admit.
     pub user_theme: Option<ThemeDocument>,
-    /// The person's own face, accent and translucency over that theme.
     pub finish: FinishLayer,
-    /// Where and for whom the window is shown: the temperature of its
-    /// workspace (the person's override for it,
-    /// [`workspace_temperature_override`], or the hue of its wallpaper,
-    /// [`crate::theme::workspace_hue`]) and the person's own colour. Set by
-    /// the host that shows the window — the shell, for its chrome and over
-    /// the shell-ui channel for every app window. A settings document never
-    /// supplies it: the temperature belongs to a workspace and the colour to
-    /// an identity, not to the theme.
+    /// Where and for whom the window is shown: the temperature of its workspace (the
+    /// person's override for it, [`workspace_temperature_override`], or the hue of its
+    /// wallpaper, [`crate::theme::workspace_hue`]) and the person's own colour. A
+    /// settings document never supplies it: the temperature belongs to a workspace and
+    /// the colour to an identity, not to the theme.
     pub window: WindowAppearance,
     pub accessibility: AccessibilityLayer,
 }
 
 impl ThemeLayerStack {
-    /// Read a settings document. An appearance section that names no theme
-    /// is "no user theme", not the dark preset, so distribution defaults
-    /// still show. An unreadable document is an empty stack (built-in
-    /// defaults only).
     #[must_use]
     pub fn from_settings_json(
         text: &str,
@@ -449,9 +375,6 @@ impl ThemeLayerStack {
     }
 }
 
-/// The person's finish an `appearance` section names: their face, their
-/// accent and how much of the theme's translucency they keep. Keys the
-/// section does not name (or names unusably) leave that role to the theme.
 fn finish_layer(appearance: Option<&serde_json::Value>) -> FinishLayer {
     let face = appearance
         .and_then(|section| section.get(UI_FACE_KEY))
@@ -480,10 +403,8 @@ fn finish_layer(appearance: Option<&serde_json::Value>) -> FinishLayer {
     }
 }
 
-/// Which theme the mode and schedule in `settings` show, and with the
-/// person's density over it. `None` when the appearance section names no
-/// theme, or names one this build does not admit (an unknown preset, a
-/// missing custom document, another schema).
+/// Which theme the mode and schedule in `settings` show, and with the person's density
+/// over it.
 #[must_use]
 pub fn user_document(
     settings: &serde_json::Value,
@@ -550,8 +471,8 @@ pub fn user_document(
     Some(document)
 }
 
-/// The person's temperature for workspace `id`, in OKLCH degrees, when they
-/// set one over its wallpaper's (`appearance.workspace_temperatures`).
+/// The person's temperature for workspace `id`, in OKLCH degrees, when they set one over
+/// its wallpaper's (`appearance.workspace_temperatures`).
 #[must_use]
 pub fn workspace_temperature_override(settings: &serde_json::Value, id: &str) -> Option<f32> {
     let hue = settings
@@ -572,9 +493,7 @@ fn accessibility_layer(
     appearance: Option<&serde_json::Value>,
 ) -> AccessibilityLayer {
     if let Some(value) = appearance.and_then(|section| section.get(ACCESSIBILITY_LAYER_KEY)) {
-        // A present object is the whole layer. A document that does not
-        // parse is not schema 1: validate rejects it and resolution leaves
-        // the theme unchanged by accessibility.
+        // A present object is the whole layer.
         return serde_json::from_value(value.clone()).unwrap_or(AccessibilityLayer {
             schema_version: 0,
             ..AccessibilityLayer::default()
@@ -607,9 +526,7 @@ fn bool_field(section: Option<&serde_json::Value>, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Flat flags beside the theme. Missing or non-finite stays at 1.
-/// [`AccessibilityLayer::materialize`] clamps a finite value that sits
-/// outside the usable band before resolution applies it.
+/// Flat flags beside the theme.
 fn scale_field(section: Option<&serde_json::Value>, key: &str) -> f32 {
     section
         .and_then(|value| value.get(key)?.as_f64())
@@ -618,8 +535,6 @@ fn scale_field(section: Option<&serde_json::Value>, key: &str) -> f32 {
         .unwrap_or(1.0)
 }
 
-/// The user's document with every role the distribution pins taken from
-/// the distribution's.
 fn merge_pins(
     user: &ThemeDocument,
     distribution: &ThemeDocument,
@@ -655,21 +570,6 @@ fn merge_pins(
     merged
 }
 
-/// Resolve the stack. Order, lowest first:
-///
-/// 1. built-in defaults ([`Preset::Dark`])
-/// 2. distribution defaults, when [`DistributionDefaults::validate`] accepts them
-/// 3. the user's theme and their finish ([`ThemeLayerStack::finish`]), except
-///    the roles the distribution pins
-/// 4. the window ([`ThemeLayerStack::window`]): its workspace's temperature,
-///    which moves the neutral hue only and shows nothing on a palette with
-///    chroma 0, and the person's colour
-/// 5. accessibility, when [`AccessibilityLayer::materialize`] accepts it:
-///    the high-contrast palette of the theme's polarity (high contrast or
-///    forced colours), clamped text and UI scale, reduced motion, reduced
-///    transparency, thick caret, the Hyperlegible face, distinct similar
-///    letters. A rejected payload leaves the theme unchanged by this layer
-///
 #[must_use]
 pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
     let distribution = stack
@@ -690,8 +590,6 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
     let mut theme = Theme::from_document(&document).unwrap_or_else(Theme::dark);
     theme = theme.in_window(&stack.window);
 
-    // A rejected accessibility payload — bad schema, or a non-finite scale —
-    // does not change contrast, caret, type size, or motion.
     let Ok(access) = stack.accessibility.materialize() else {
         return theme;
     };
@@ -715,13 +613,9 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         .with_reduce_transparency(access.reduce_transparency)
 }
 
-/// The person's finish over the resolved theme: their face for the theme's,
-/// their accent hue for the theme's emphasis, and their share of the theme's
-/// translucency — `0` turns every role's blur off and its tint opaque, `1`
-/// leaves the theme as it is. All are roles the theme already has, so a pinned
-/// `type`, `emphasis` or `material` stays the distribution's; a
-/// high-contrast palette has no accent to give; accessibility is applied after
-/// this and still wins.
+/// The person's finish over the resolved theme: their face for the theme's, their accent
+/// hue for the theme's emphasis, and their share of the theme's translucency — `0` turns
+/// every role's blur off and its tint opaque, `1` leaves the theme as it is.
 fn apply_finish(
     document: &mut ThemeDocument,
     finish: &FinishLayer,
@@ -738,9 +632,6 @@ fn apply_finish(
     }
     if let Some(accent) = finish.accent {
         if !pinned(PIN_EMPHASIS) && !document.palette.high_contrast {
-            // The theme's own derivation from a chosen hue: the fill, its
-            // hover and press, the label on it, the accent ink and every
-            // lift tinted with it, at the contrast its palette keeps.
             document.emphasis = Emphasis::Tinted {
                 hue: accent.degrees(),
             };
@@ -749,7 +640,6 @@ fn apply_finish(
     if let Some(strength) = finish.translucency {
         if !pinned(PIN_MATERIAL) {
             let material = &mut document.material;
-            // A finish is a painter set; the setting is taken by value.
             let window = material.window.clone();
             material.window = window.with_translucency(strength);
             let control = material.control.clone();
@@ -764,8 +654,7 @@ fn apply_finish(
     }
 }
 
-/// Tokens a content surface paints with when [`ContentSurface::forced`] is
-/// set. When it is clear, a document keeps its own page palette.
+/// Tokens a content surface paints with when [`ContentSurface::forced`] is set.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContentSurface {
     pub forced: bool,
@@ -792,9 +681,8 @@ impl Theme {
         }
     }
 
-    /// [`resolve_theme_layers`] for a settings document, including file
-    /// scales and reduced motion. [`Theme::configured`] leaves scales and
-    /// reduced motion to the host instead.
+    /// [`resolve_theme_layers`] for a settings document, including file scales and
+    /// reduced motion.
     #[must_use]
     pub fn resolved_from_settings(text: &str) -> Self {
         resolve_theme_layers(&ThemeLayerStack::from_settings_json(
@@ -920,8 +808,6 @@ mod tests {
             window: warm_window,
             ..ThemeLayerStack::default()
         });
-        // The stock dark material takes the workspace's hue at its own lightness
-        // and chroma (design language, "Workspace temperature").
         let (tinted, stock) = (
             crate::color::Oklch::from_color(neutral.tokens.colors.surfaces.content),
             crate::color::Oklch::from_color(Theme::dark().tokens.colors.surfaces.content),
@@ -966,15 +852,14 @@ mod tests {
             ..light_stack()
         });
         assert_eq!(mine.tokens.colors.you, PresenceHue::Violet);
-        // The ring is the accent's ink: the colour's hue at its contrast floor.
         assert_eq!(mine.border_focus, mine.tokens.colors.intent.accent_ink);
         let ring = crate::color::Oklch::from_color(mine.border_focus).h;
         let violet =
             crate::color::Oklch::from_color(mine.tokens.colors.presence.hue(PresenceHue::Violet)).h;
         let d = (ring - violet).rem_euclid(360.0);
         assert!(d.min(360.0 - d) <= 15.0, "the ring is the person's colour");
-        // The identity's colour reaches a window through its host, never
-        // through the settings document's theme.
+        // The identity's colour reaches a window through its host, never through the
+        // settings document's theme.
         let json = Theme::resolved_from_settings(r#"{"identity":{"colour":"amber"}}"#);
         assert_eq!(json.tokens.colors.you, Theme::light().tokens.colors.you);
     }
@@ -1046,10 +931,8 @@ mod tests {
             );
             theme.tokens.typography.distinct_letters
         };
-        // The default face: off.
         let mut stack = light_stack();
         assert!(!distinct(&stack));
-        // A theme set in Hyperlegible: on by default, off when it says so.
         if let Some(user) = stack.user_theme.as_mut() {
             user.type_.face = "Hyperlegible".into();
         }
@@ -1063,8 +946,6 @@ mod tests {
             user.type_.distinct_letters = Some(true);
         }
         assert!(distinct(&stack));
-        // Accessibility's Hyperlegible turns them on with it; the person's
-        // own choice in the layer wins either way.
         let mut stack = light_stack();
         stack.accessibility.hyperlegible = true;
         assert!(distinct(&stack));
@@ -1265,7 +1146,6 @@ mod tests {
             "and opaque chrome"
         );
 
-        // The theme's own material stays when the person keeps all of it.
         let full =
             Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark","translucency":1.0}}"#);
         assert!(
@@ -1286,8 +1166,6 @@ mod tests {
         );
         assert_eq!(full.document.type_.face, stock.document.type_.face);
 
-        // A name the presence palette does not have leaves the accent the
-        // theme's emphasis gives.
         let unknown = Theme::resolved_from_settings(
             r#"{"appearance":{"mode":"dark","accent":"chartreuse"}}"#,
         );
@@ -1321,8 +1199,6 @@ mod tests {
         assert_eq!(pinned.document.type_.face, "Noto Sans");
         assert!((pinned.tokens.colors.surfaces.material_blur_px - 24.0).abs() < 1e-4);
 
-        // High contrast turns the material opaque whatever the person chose,
-        // and "reduce transparency" still overrides a translucent choice.
         let opaque = resolve_theme_layers(&ThemeLayerStack {
             finish: FinishLayer {
                 ui_face: None,
@@ -1372,9 +1248,6 @@ mod tests {
                         hue: accent.degrees()
                     }
                 );
-                // The accent is the hue the person chose, and everything the
-                // theme derives from it: the fill's steps, the label on it,
-                // the ink the ring and caret take.
                 let (fill, ink) = (
                     Oklch::from_color(c.intent.accent),
                     Oklch::from_color(c.intent.accent_ink),
@@ -1406,8 +1279,6 @@ mod tests {
                         .join(", ")
                 );
 
-                // The same colour the theme paints for a person wearing that
-                // hue: one derivation, two ways of naming it.
                 let as_you = resolve_theme_layers(&ThemeLayerStack {
                     user_theme: Some(preset.document()),
                     window: WindowAppearance {
@@ -1421,7 +1292,6 @@ mod tests {
             }
         }
 
-        // Following the theme leaves the accent the theme has.
         let stock = resolve_theme_layers(&light_stack());
         let violet = resolve_theme_layers(&ThemeLayerStack {
             finish: FinishLayer {
@@ -1479,9 +1349,6 @@ mod tests {
             .accent
         );
 
-        // High contrast has no accent to give, whichever way it is asked for:
-        // a colourless theme stays one, and accessibility's own high contrast
-        // drops the accent an ordinary theme would have worn.
         for theme in [
             resolve_theme_layers(&ThemeLayerStack {
                 user_theme: Some(Preset::HighContrast.document()),

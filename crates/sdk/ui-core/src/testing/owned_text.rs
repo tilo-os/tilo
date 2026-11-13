@@ -1,10 +1,5 @@
-//! A text editor that owns one document string, for tests that need a real
-//! document edit behind a [`TextInput`].
-//!
-//! A `TextInput` only edits its own buffer. An owner shows the document's
-//! value, writes each user edit back, and reports the heads it captured
-//! before that write so the host records one undo step — exactly what an
-//! application's editor does.
+//! A text editor that owns one document string, for tests that need a real document edit
+//! behind a [`TextInput`]. A `TextInput` only edits its own buffer.
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 
@@ -27,15 +22,12 @@ impl OwnedText {
         }
     }
 
-    /// Write the input's pending user edit, keeping the earliest unreported
-    /// heads as the boundary of the step it opens.
     fn publish(&mut self, doc: &mut crate::widget::Edits<'_>, root: &ObjId) {
         let Some(text) = self.input.take_dirty() else {
             return;
         };
         if crate::doc::read_str_or_text(doc.doc(), root, self.key).as_deref() == Some(text.as_str())
         {
-            // A caret or selection change is not an edit.
             return;
         }
         #[derive(Debug, serde::Serialize)]
@@ -68,8 +60,6 @@ impl OwnedText {
         self.show(doc.doc(), root);
     }
 
-    /// Show the document's value: bind its text object, or adopt a plain
-    /// string until the first edit turns it into one.
     fn show(&mut self, doc: &AutoCommit, root: &ObjId) {
         match doc.get(root, self.key) {
             Ok(Some((Value::Object(ObjType::Text), obj))) => self.input.bind_text(obj),

@@ -124,8 +124,8 @@ fn unchanged_frames_do_not_wake_or_replace_the_painted_pixels() {
         (1, 2, Some(4))
     );
 
-    // A new view needs its first frame and wake even when its pixels match
-    // the document whose retained frame was explicitly cleared.
+    // A new view needs its first frame and wake even when its pixels match the document
+    // whose retained frame was explicitly cleared.
     *shared.frames.lock().unwrap() = None;
     present_frame(&shared, 1, frame(1, 2, resized.rgba.clone(), Some(5)));
     assert_eq!(wakes.load(Ordering::Relaxed), 4);
@@ -234,7 +234,6 @@ fn a_caret_blink_changes_only_its_rect_of_the_shown_frame() {
     );
     assert!(queued(&tx).is_empty(), "nothing asked of the host");
 
-    // The same rect again changes nothing and wakes nothing.
     deliver_damage(
         &routes,
         3,
@@ -257,7 +256,6 @@ fn damage_for_a_frame_the_tab_lacks_asks_the_host_for_it_whole_once() {
         [serde_json::json!({"op":"resend_frame","tab":4})],
         "asked once"
     );
-    // The frame whole, then damage for a frame of other dimensions.
     deliver_frame(
         &routes,
         4,
@@ -282,7 +280,6 @@ fn a_client_tabs_damage_folds_into_what_the_owner_queued_for_it() {
     let routes = Arc::new(Mutex::new(HashMap::from([(2, Arc::downgrade(&shared))])));
     let tx = CommandQueue::default();
 
-    // Onto a whole frame not yet sent, the rect is written into it.
     deliver_frame(
         &routes,
         2,
@@ -301,7 +298,6 @@ fn a_client_tabs_damage_folds_into_what_the_owner_queued_for_it() {
         "the owner draws none of it"
     );
 
-    // Two changes not yet sent go as one, in order.
     let other = crate::webview::PixelRect {
         x: 40,
         y: 30,
@@ -315,8 +311,6 @@ fn a_client_tabs_damage_folds_into_what_the_owner_queued_for_it() {
     assert_eq!(folded.rects, [caret(), other]);
     assert!(queued(&tx).is_empty());
 
-    // More change than a whole frame: the host sends it whole, and what
-    // changed meanwhile waits for it.
     let all = crate::webview::PixelRect {
         x: 0,
         y: 0,
@@ -348,8 +342,8 @@ fn a_client_tabs_damage_folds_into_what_the_owner_queued_for_it() {
     assert!(outbox.take_damage().is_some(), "changes flow again");
 }
 
-/// Two of a client's tabs painting every frame both reach it: the outbox
-/// takes their frames in turn rather than always the lowest tab's first.
+/// Two of a client's tabs painting every frame both reach it: the outbox takes their
+/// frames in turn rather than always the lowest tab's first.
 #[test]
 fn two_streaming_client_tabs_both_make_progress() {
     let outbox = shared::Outbox::default();
@@ -364,7 +358,6 @@ fn two_streaming_client_tabs_both_make_progress() {
     for shade in 1..=20 {
         let (tab, _) = outbox.take_frame().expect("a frame is queued");
         *sent.entry(tab).or_default() += 1;
-        // The tab paints again before the next frame is sent.
         outbox.frame(tab, frame(shade));
     }
     assert_eq!(sent.get(&2), Some(&10), "sent {sent:?}");
@@ -384,9 +377,6 @@ mod shared_memory {
         }
     }
 
-    /// A frame drawn here comes out of its slot converted, and the slot is
-    /// the host's again; a client tab's goes on as the host wrote it; a
-    /// closed tab's frees its slot all the same.
     #[test]
     fn frames_in_memory_reach_their_tab_and_free_their_slot() {
         let memory = FrameMemory::create().unwrap();
@@ -430,8 +420,8 @@ mod shared_memory {
         );
     }
 
-    /// A notice for a slot the host never filled, or one past the memory,
-    /// is the host breaking the protocol.
+    /// A notice for a slot the host never filled, or one past the memory, is the host
+    /// breaking the protocol.
     #[test]
     fn a_notice_for_an_unready_or_missing_slot_is_refused() {
         let memory = FrameMemory::create().unwrap();
@@ -442,9 +432,6 @@ mod shared_memory {
         assert!(shown.frames.lock().unwrap().is_none());
     }
 
-    /// The engine hands its host the frame memory: the host is told the
-    /// descriptor, which is open in it. (`tilo-process` shows a child
-    /// writing through such a descriptor.)
     #[test]
     fn a_host_inherits_its_frame_memory() {
         let (dir, host) = super::super::tests::helper_fixture(

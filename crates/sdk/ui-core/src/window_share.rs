@@ -1,26 +1,8 @@
-//! Sharing a window live: one app shows another app's view of a resource, and the desktop says
-//! which windows there are to share.
-//!
-//! A message that shares a window shows the window's resource as it is now — not a picture of
-//! the sharer's screen: every reader's desktop runs the resource's own app on its own copy of
-//! the record and draws that app's view, scaled down, where the message asked for it. The
-//! record syncs like any other, so the miniature follows the sharer's work, and what a reader
-//! sees is what their grants let their copy hold.
-//!
-//! - **Embeds.** An app declares where it wants which resource drawn ([`declare`], one [`Embed`]
-//!   each) and reads back how each is coming along ([`state`]). The host draws them over the
-//!   app's content, clipped to [`Embed::clip`], and never hands them input: opening the resource
-//!   is the app's own action. A window no host draws embeds for ([`drawn`] is false) shows what
-//!   it draws itself in their place.
-//! - **Windows to share.** The desktop lists the windows open on a record ([`publish_windows`]),
-//!   so a picker names real ones ([`windows`]); a window's own menu asks the sharing app to share
-//!   it ([`ask_to_share`], [`take_ask`]).
-//! - **What is shared.** The sharing app says which windows it shares ([`publish_shared`]), so
-//!   the desktop marks them and offers "Stop sharing" on them ([`Ask::Stop`]).
-//!
-//! An app in a process of its own makes the same calls: its runner carries them over the app's
-//! shell-ui connection ([`crate::floating_surface`]), and outside a session nothing hosts them.
-//! What every desktop does with the windows and the views is one [`host`].
+//! Sharing a window live: one app shows another app's view of a resource, and the desktop
+//! says which windows there are to share. A message that shares a window shows the
+//! window's resource as it is now — not a picture of the sharer's screen: every reader's
+//! desktop runs the resource's own app on its own copy of the record and draws that app's
+//! view, scaled down, where the message asked for it.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -31,47 +13,37 @@ use vello::kurbo::Rect;
 #[path = "window_share_host.rs"]
 pub mod host;
 
-/// The most embeds one window may ask for at once: a host runs an app for
-/// each, so a long scroll of shares shows the ones in view.
+/// The most embeds one window may ask for at once: a host runs an app for each, so a long
+/// scroll of shares shows the ones in view.
 pub const MAX_EMBEDS: usize = 4;
-/// The most asks a host keeps for an app that has not read them yet.
 const MAX_ASKS: usize = 8;
 /// The most windows a desktop lists for the sharing app's picker.
 pub const MAX_WINDOWS: usize = 64;
 /// The most windows one app says it shares.
 pub const MAX_SHARED: usize = 64;
-/// Longest id, title or place the connection carries, in bytes: longer
-/// text is cut at a character boundary.
+/// Longest id, title or place the connection carries, in bytes: longer text is cut at a
+/// character boundary.
 const MAX_TEXT_BYTES: usize = 1024;
 
-/// The app that shares windows into conversations and takes the desktop's
-/// asks ([`take_ask`]): the desktop brings it forward when a window's menu
-/// asks to share.
+/// The app that shares windows into conversations and takes the desktop's asks
+/// ([`take_ask`]): the desktop brings it forward when a window's menu asks to share.
 pub const SHARING_APP: &str = "so.tilo.chat";
 
-/// A resource as one app's view shows it: the app, the record it keeps the
-/// resource in and the resource itself.
+/// A resource as one app's view shows it: the app, the record it keeps the resource in
+/// and the resource itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ResourceView {
-    /// The app showing it, by package id.
     pub app: String,
-    /// The record it lives in.
     pub record: String,
-    /// The resource, by its published id.
     pub resource: String,
 }
 
 /// One place an app wants a resource drawn by its own app.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Embed {
-    /// Names the embed across frames (a message's id).
     pub key: String,
     pub view: ResourceView,
-    /// Where it goes, in the window's layout coordinates. The host keeps the
-    /// view's own proportions inside it.
     pub rect: Rect,
-    /// What of it may show: the part of the app's content it is scrolled
-    /// into.
     pub clip: Rect,
 }
 
@@ -79,33 +51,20 @@ pub struct Embed {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "reason", rename_all = "snake_case")]
 pub enum EmbedState {
-    /// The app's code or the record is on its way.
     Loading,
-    /// The view is drawn.
     Showing,
-    /// It cannot be shown: the record is gone, or it may not be read here.
     Unavailable(String),
 }
 
 /// A window its person has open on a record, as the desktop lists it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenWindow {
-    /// The desktop's id of its tab.
     pub tab: u64,
-    /// The app, by package id.
     pub app: String,
-    /// The app's name, as the desktop names it.
     pub app_title: String,
-    /// What its tab says.
     pub title: String,
-    /// The record it shows, as its route names it: empty for the app's own
-    /// record of the workspace.
     pub record: String,
-    /// The kind of the record's resource.
     pub kind: String,
-    /// What in the record the window shows (a note of the notebook), as
-    /// the app's `open` takes it: its bar's location anchor. `None`: the
-    /// record as a whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
 }
@@ -117,8 +76,6 @@ impl OpenWindow {
         ResourceView {
             app: self.app.clone(),
             record: self.record.clone(),
-            // The app's own record of the workspace has no id of its own;
-            // its kind names the resource it is.
             resource: if let Some(item) = &self.item {
                 item.clone()
             } else if self.record.is_empty() {
@@ -133,11 +90,9 @@ impl OpenWindow {
 /// A window the sharing app shares, as it tells the desktop.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedWindow {
-    /// The message that shares it.
     pub message: String,
     pub app: String,
     pub record: String,
-    /// Where it is shared, as people read it ("#general").
     pub place: String,
 }
 
@@ -145,14 +100,12 @@ pub struct SharedWindow {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "ask", rename_all = "snake_case")]
 pub enum Ask {
-    /// Share this window: the app asks where, and with which access.
     Share(OpenWindow),
-    /// Stop sharing what this message shares.
     Stop { message: String },
 }
 
-/// An [`Embed`] as the shell-ui connection carries it: its geometry as
-/// plain logical-pixel arrays (`[x0, y0, x1, y1]`).
+/// An [`Embed`] as the shell-ui connection carries it: its geometry as plain
+/// logical-pixel arrays (`[x0, y0, x1, y1]`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeclaredEmbed {
     pub key: String,
@@ -174,8 +127,8 @@ impl From<&Embed> for DeclaredEmbed {
 }
 
 impl DeclaredEmbed {
-    /// The embed it declares, bounded; `None` for geometry that is not
-    /// finite or has no area, which nothing could be drawn into.
+    /// The embed it declares, bounded; `None` for geometry that is not finite or has no
+    /// area, which nothing could be drawn into.
     #[must_use]
     pub fn embed(&self) -> Option<Embed> {
         let rect = |[x0, y0, x1, y1]: [f64; 4]| {
@@ -198,8 +151,8 @@ pub struct KeyedEmbedState {
     pub state: EmbedState,
 }
 
-/// `text` cut to the most the connection carries of an id, a title or a
-/// place, at a character boundary.
+/// `text` cut to the most the connection carries of an id, a title or a place, at a
+/// character boundary.
 #[must_use]
 pub fn bounded(text: &str) -> String {
     let mut end = text.len().min(MAX_TEXT_BYTES);
@@ -269,15 +222,11 @@ impl Ask {
 struct Desktop {
     windows: Vec<OpenWindow>,
     shared: Vec<SharedWindow>,
-    /// Bumped by every [`publish_shared`] that changed what is shared.
     shared_revision: u64,
     asks: VecDeque<Ask>,
     /// Whether a host draws embeds on this thread.
     draws: bool,
-    /// The embeds of the process's own window, for an app in a process of
-    /// its own: its runner carries them to the shell.
     own: Embeds,
-    /// Bumped by every declaration that changed [`Self::own`].
     own_revision: u64,
 }
 
@@ -285,10 +234,8 @@ thread_local! {
     static DESKTOP: RefCell<Desktop> = RefCell::new(Desktop::default());
 }
 
-// --- the app's side
-
-/// Ask for `embeds` in the window the app is shown in, at most
-/// [`MAX_EMBEDS`] (the first ones). Cheap when nothing changed.
+/// Ask for `embeds` in the window the app is shown in, at most [`MAX_EMBEDS`] (the first
+/// ones).
 pub fn declare(mut embeds: Vec<Embed>) {
     embeds.truncate(MAX_EMBEDS);
     if let Some(window) = crate::window_toolbar::window() {
@@ -311,15 +258,13 @@ pub fn state(key: &str) -> Option<EmbedState> {
     }
 }
 
-/// Whether a host draws this window's embeds. Without one, the app draws
-/// its own stand-in where each would be.
+/// Whether a host draws this window's embeds.
 #[must_use]
 pub fn drawn() -> bool {
     DESKTOP.with_borrow(|desktop| desktop.draws)
 }
 
-/// The windows the person has open on a record, as the desktop last listed
-/// them.
+/// The windows the person has open on a record, as the desktop last listed them.
 #[must_use]
 pub fn windows() -> Vec<OpenWindow> {
     DESKTOP.with_borrow(|desktop| desktop.windows.clone())
@@ -335,29 +280,24 @@ pub fn publish_shared(shared: Vec<SharedWindow>) {
     });
 }
 
-/// Whether the desktop asked the sharing app something it has not taken
-/// yet.
+/// Whether the desktop asked the sharing app something it has not taken yet.
 #[must_use]
 pub fn asked() -> bool {
     DESKTOP.with_borrow(|desktop| !desktop.asks.is_empty())
 }
 
-/// The oldest thing the desktop asked of the sharing app and it has not
-/// taken yet.
+/// The oldest thing the desktop asked of the sharing app and it has not taken yet.
 #[must_use]
 pub fn take_ask() -> Option<Ask> {
     DESKTOP.with_borrow_mut(|desktop| desktop.asks.pop_front())
 }
-
-// --- the host's side
 
 /// The host draws embeds on this thread (`true`), or no longer does.
 pub fn set_drawn(draws: bool) {
     DESKTOP.with_borrow_mut(|desktop| desktop.draws = draws);
 }
 
-/// List the windows the person has open on a record. Returns whether the
-/// list changed.
+/// List the windows the person has open on a record.
 pub fn publish_windows(windows: Vec<OpenWindow>) -> bool {
     DESKTOP.with_borrow_mut(|desktop| {
         let changed = desktop.windows != windows;
@@ -384,8 +324,8 @@ pub fn ask_to_stop(message: impl Into<String>) {
     });
 }
 
-/// Hand the sharing app `ask`: the runner of an app in a process of its
-/// own, as the shell asked it.
+/// Hand the sharing app `ask`: the runner of an app in a process of its own, as the shell
+/// asked it.
 pub fn deliver_ask(ask: Ask) {
     push(ask);
 }
@@ -399,10 +339,8 @@ fn push(ask: Ask) {
     });
 }
 
-// --- the runner of an app in a process of its own
-
-/// The process window's embeds and their revision, when the revision is
-/// not `seen` (the one last sent to the shell; 0 before any).
+/// The process window's embeds and their revision, when the revision is not `seen` (the
+/// one last sent to the shell; 0 before any).
 #[must_use]
 pub fn own_embeds_since(seen: u64) -> Option<(u64, Vec<Embed>)> {
     DESKTOP.with_borrow(|desktop| {
@@ -410,8 +348,8 @@ pub fn own_embeds_since(seen: u64) -> Option<(u64, Vec<Embed>)> {
     })
 }
 
-/// What the app shares and its revision, when the revision is not `seen`
-/// (the one last sent to the shell; 0 before any).
+/// What the app shares and its revision, when the revision is not `seen` (the one last
+/// sent to the shell; 0 before any).
 #[must_use]
 pub fn shared_since(seen: u64) -> Option<(u64, Vec<SharedWindow>)> {
     DESKTOP.with_borrow(|desktop| {
@@ -419,9 +357,8 @@ pub fn shared_since(seen: u64) -> Option<(u64, Vec<SharedWindow>)> {
     })
 }
 
-/// How the shell says the process window's embeds are coming along: every
-/// one it draws, so an embed it no longer names has no state. Returns
-/// whether that changed.
+/// How the shell says the process window's embeds are coming along: every one it draws,
+/// so an embed it no longer names has no state.
 pub fn set_own_states(states: Vec<KeyedEmbedState>) -> bool {
     DESKTOP.with_borrow_mut(|desktop| {
         let declared = &desktop.own.declared;
@@ -436,8 +373,8 @@ pub fn set_own_states(states: Vec<KeyedEmbedState>) -> bool {
     })
 }
 
-/// The shell that drew the embeds and listed the windows went away: a new
-/// one is told everything afresh.
+/// The shell that drew the embeds and listed the windows went away: a new one is told
+/// everything afresh.
 pub fn host_lost() {
     set_drawn(false);
     publish_windows(Vec::new());

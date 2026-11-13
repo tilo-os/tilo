@@ -1,12 +1,9 @@
-//! A key's place on the keyboard, named as the DOM names it
-//! (`KeyboardEvent.code`), for the keys whose meaning a layout changes: the
-//! letters, digits and punctuation. Named keys (Enter, the arrows) mean the
-//! same on every layout and travel by name alone.
+//! A key's place on the keyboard, named as the DOM names it (`KeyboardEvent.code`), for
+//! the keys whose meaning a layout changes: the letters, digits and punctuation. Named
+//! keys (Enter, the arrows) mean the same on every layout and travel by name alone.
 
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-/// Every code this module names, so an engine can check a code it is given
-/// against the same list.
 const CODES: [(KeyCode, &str); 49] = [
     (KeyCode::KeyA, "KeyA"),
     (KeyCode::KeyB, "KeyB"),
@@ -59,8 +56,7 @@ const CODES: [(KeyCode, &str); 49] = [
     (KeyCode::Space, "Space"),
 ];
 
-/// The DOM code of the key pressed, when it is one whose meaning the layout
-/// decides.
+/// The DOM code of the key pressed, when it is one whose meaning the layout decides.
 #[must_use]
 pub fn dom_code(key: PhysicalKey) -> Option<&'static str> {
     let PhysicalKey::Code(code) = key else {
@@ -83,7 +79,6 @@ mod tests {
 
     #[test]
     fn a_key_is_named_by_its_place_not_its_letter() {
-        // German layouts print Z on the key a US layout prints Y on.
         assert_eq!(dom_code(PhysicalKey::Code(KeyCode::KeyY)), Some("KeyY"));
         assert_eq!(
             dom_code(PhysicalKey::Code(KeyCode::IntlBackslash)),

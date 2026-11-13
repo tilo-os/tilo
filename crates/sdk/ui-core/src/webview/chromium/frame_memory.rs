@@ -1,18 +1,6 @@
-//! A page's frames in memory the app and its engine host both map.
-//!
-//! Piping each frame cost two kernel copies (into the pipe, out of it) and,
-//! at the pipe's 64 KiB, hundreds of writes and wakeups per frame. Instead the
-//! app creates this memory (a sealed memfd on Linux, an unlinked POSIX shared
-//! memory object on macOS) and hands its descriptor to the host once, at spawn
-//! (`--frame-memory-fd=N`). The host copies a paint's BGRA pixels into a free
-//! slot, marks it ready and sends a notice down the pipe
-//! ([`protocol::SharedFrame`]); the reader copies the pixels out, converting
-//! them on the way, and marks the slot free again.
-//!
-//! The layout is the host's `frame_memory.h`: a header page holding one
-//! 32-bit state per slot at [`SLOT_STATES`], then [`SLOTS`] slots of
-//! [`SLOT_BYTES`]. A host started without the memory, or one older than it,
-//! pipes its frames as before.
+//! A page's frames in memory the app and its engine host both map. Piping each frame cost
+//! two kernel copies (into the pipe, out of it) and, at the pipe's 64 KiB, hundreds of
+//! writes and wakeups per frame.
 
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -24,7 +12,6 @@ use super::protocol::{self, SharedFrame};
 
 const HEADER_BYTES: usize = 4096;
 const SLOT_STATES: usize = 64;
-/// Every frame the protocol accepts fits one slot.
 const SLOT_BYTES: usize = protocol::MAX_PACKET as usize;
 const SLOTS: u32 = 2;
 const MEMORY_BYTES: usize = HEADER_BYTES + SLOTS as usize * SLOT_BYTES;
@@ -34,9 +21,7 @@ const READY: u32 = 1;
 /// What the reader makes of a slot's pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Pixels {
-    /// Converted for drawing here.
     Rgba,
-    /// As the host wrote them, for a client process to convert.
     Bgra,
     /// Nobody shows the tab any more: only the slot is freed.
     Discard,
@@ -78,8 +63,8 @@ impl FrameMemory {
         }
     }
 
-    /// Takes the frame `notice` announces out of its slot and frees the slot
-    /// for the host's next frame.
+    /// Takes the frame `notice` announces out of its slot and frees the slot for the
+    /// host's next frame.
     pub(super) fn take(&self, notice: &SharedFrame, pixels: Pixels) -> io::Result<Option<Vec<u8>>> {
         let size = notice.size();
         if notice.slot >= SLOTS || size > SLOT_BYTES {
@@ -125,9 +110,9 @@ impl FrameMemory {
     }
 }
 
-/// Takes a frame out of the frame memory for the tab it belongs to, freeing
-/// its slot whether or not the tab is still shown: a client tab's frame goes
-/// on as the host wrote it, a frame drawn here is converted as it is copied.
+/// Takes a frame out of the frame memory for the tab it belongs to, freeing its slot
+/// whether or not the tab is still shown: a client tab's frame goes on as the host wrote
+/// it, a frame drawn here is converted as it is copied.
 pub(super) fn deliver(
     routes: &Routes,
     memory: &FrameMemory,

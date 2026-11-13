@@ -35,7 +35,6 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
         encode_command(WebViewCommand::ExtensionClick { id: id.into() }),
         Some(json!({"op":"extension_click","id":id}))
     );
-    // Not an extension's id, or a token too short to keep a worker apart.
     for bad in [
         WebViewCommand::ExtensionClick {
             id: "ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP".into(),
@@ -80,7 +79,6 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             token: None,
             commands: None,
         },
-        // Commands that are no manifest's object, or past any manifest's size.
         WebViewCommand::ExtensionAccess {
             id: id.into(),
             permissions: Vec::new(),
@@ -167,7 +165,6 @@ fn an_extensions_button_state_arrives_for_one_tab_or_every_tab() {
             url: format!("chrome-extension://{id}/popup.html"),
         })
     );
-    // Another extension's page, an unknown field, a misfit icon: refused.
     let other = "bbcdefghijklmnopabcdefghijklmnop";
     for bad in [
         json!({"event":"extension_open_popup","id":id,"url":format!("chrome-extension://{other}/p.html")}),
@@ -240,8 +237,8 @@ fn a_page_menu_arrives_with_check_marks_separators_and_submenus() {
             ],
         })
     );
-    // Five levels, more than 24 rows at a level or 200 in all, or a check
-    // mark that is not one: refused whole.
+    // Five levels, more than 24 rows at a level or 200 in all, or a check mark that is
+    // not one: refused whole.
     let mut deep = json!([{"id":1,"label":"Five"}]);
     for level in 0..4 {
         deep = json!([{"id":level + 2,"label":"Deeper","items":deep}]);
@@ -384,7 +381,6 @@ fn an_extensions_notification_arrives_and_a_choice_goes_back() {
             }),
         })
     );
-    // A quiet one (asked so, or a change to one shown) says so.
     let quiet = event(
         json!({"event":"extension_notification","tab":2,"id":id,"notification":"copy",
         "title":"Copying","message":"Two files","context":"","items":[],"buttons":[],
@@ -404,7 +400,6 @@ fn an_extensions_notification_arrives_and_a_choice_goes_back() {
             notice: None,
         })
     );
-    // Past the host's bounds, or not an extension's: refused.
     let shown = |extra: Value| {
         let mut value = json!({"event":"extension_notification","id":id,"notification":"n",
             "title":"T","message":"M","context":"","items":[],"buttons":[]});
@@ -509,7 +504,6 @@ fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_
             asked: set(&["tabs"], &["http://127.0.0.1/*"]),
         })
     );
-    // All it holds now, also nothing.
     assert_eq!(
         event(
             json!({"event":"extension_permissions","tab":2,"id":id,"permissions":[],"origins":[]})
@@ -519,7 +513,6 @@ fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_
             granted: set(&[], &[]),
         })
     );
-    // The page that asked closed before the person answered.
     assert_eq!(
         event(json!({"event":"extension_permission_closed","tab":2,"request":4})),
         Some(WebViewEvent::ExtensionPermissionClosed { request: 4 })
@@ -532,8 +525,6 @@ fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_
     ] {
         assert_eq!(event(bad.clone()), None, "{bad}");
     }
-    // A request for nothing, without its number, from no extension, or of
-    // another shape: refused.
     for bad in [
         json!({"event":"extension_permission_request","request":4,"id":id,"permissions":[],"origins":[]}),
         json!({"event":"extension_permission_request","id":id,"permissions":["tabs"],"origins":[]}),
@@ -596,8 +587,6 @@ fn an_extension_asks_the_person_to_sign_in_on_a_web_page() {
             flow: 3,
         })
     );
-    // Only a web page, of a bounded length, from an extension's id, for a
-    // sign-in the engine numbered.
     let sign_in = |url: Value| json!({"event":"extension_sign_in","id":id,"url":url,"interactive":false,"flow":1});
     for bad in [
         sign_in(json!(format!("chrome-extension://{id}/p.html"))),
@@ -612,7 +601,6 @@ fn an_extension_asks_the_person_to_sign_in_on_a_web_page() {
     ] {
         assert_eq!(event(bad.clone()), None, "{bad}");
     }
-    // The tab the Browser shows it in is marked as that sign-in's.
     let panel = WebViewCommand::ExtensionSignInPanel {
         id: id.into(),
         flow: 3,
@@ -671,7 +659,6 @@ fn what_follows_an_extensions_keyword_goes_to_it_and_its_suggestions_come_back()
         assert!(command_within_limits(&command), "{command:?}");
         assert_eq!(encode_command(command), Some(wire));
     }
-    // Not an extension, more than the host reads, a request past its range.
     for bad in [
         WebViewCommand::ExtensionOmnibox {
             id: "short".into(),
@@ -774,8 +761,6 @@ fn an_extensions_side_panel_opens_closes_and_follows_its_options() {
         event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"close","url":null})),
         side_panel(Change::Close)
     );
-    // Another extension's page, a web page, a page to open missing, an
-    // unknown mode: refused.
     let other = "bbcdefghijklmnopabcdefghijklmnop";
     for bad in [
         json!({"event":"extension_side_panel","id":id,"mode":"open","url":format!("chrome-extension://{other}/p.html")}),
@@ -838,7 +823,6 @@ fn a_side_panels_tab_and_a_shortcut_pressed_in_the_browsers_field_reach_the_host
         }
     ));
 
-    // The keys extensions' commands hold, as Chrome names them.
     let event = |value: Value| {
         validate_event(&value).ok()?;
         decode_event(&value)
@@ -870,7 +854,6 @@ fn a_side_panels_tab_and_a_shortcut_pressed_in_the_browsers_field_reach_the_host
         assert_eq!(event(bad.clone()), None, "{bad}");
     }
 
-    // A key pressed, named as the host names the keys it is forwarded.
     let pressed = |key: KeyInput, shift: bool| {
         ExtensionShortcut::pressed(
             &key,

@@ -1,20 +1,11 @@
-//! Finishes: what each surface role is made of, how its edges are drawn
-//! and how it stands off what is below it (`docs/architecture/theming.md`,
-//! "Material, shape and depth").
-//!
-//! A theme document sets one [`Finish`] per surface role
-//! ([`RoleFinishes`]: the window ground, raised controls, floating chrome
-//! and bars), one [`Border`] and one [`Depth`]. The toolkit paints every
-//! surface of a role with the role's painter set (`crate::part_paint`,
-//! through `crate::surface` and `crate::backdrop`), so a theme makes
-//! everything flat and blocky or everything glass without an app or widget
-//! knowing.
-//!
-//! Legibility never depends on a finish: whatever lies below a translucent
-//! or glass surface is held inside a band around the role's ground before
-//! the tint is laid over it (`crate::backdrop::material_band`), so ink keeps
-//! the contrast it has on the opaque ground over the worst backdrop
-//! (`crate::theme::ThemeDocument::findings`).
+//! Finishes: what each surface role is made of, how its edges are drawn and how it separates
+//! from what is below it (`docs/architecture/theming.md`, "Material, shape and depth"). A
+//! theme document sets one [`Finish`] per surface role ([`RoleFinishes`]: the window
+//! ground, raised controls, floating chrome and bars), one [`Border`] and one [`Depth`].
+//! Legibility never depends on a finish: whatever lies below a translucent or glass
+//! surface is held inside a band around the role's ground before the tint is laid over it
+//! (`crate::backdrop::material_band`), so ink keeps the contrast it has on the opaque
+//! ground over the worst backdrop (`crate::theme::ThemeDocument::findings`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
@@ -47,16 +38,10 @@ use crate::part_paint::{PainterSet, Param, builtin};
 #[derive(Clone)]
 pub struct Finish {
     set: PainterSet,
-    /// The parameters the document states, in the order the set declares
-    /// them.
     params: Arc<[Param]>,
-    /// The theme's own surface shader, for the `shader` set; empty for
-    /// every set that draws without one.
     shader: crate::tokens::shader::Source,
 }
 
-/// A finish as a document spells it: the set's name, its parameters, and
-/// for the `shader` set the program itself.
 #[derive(Deserialize)]
 struct FinishDocument {
     painter: String,
@@ -134,8 +119,8 @@ static SOLID: LazyLock<Finish> = LazyLock::new(|| Finish::builtin(builtin::defau
 static FLAT: LazyLock<Finish> = LazyLock::new(|| Finish::builtin(builtin::block_set(), &[]));
 
 impl Finish {
-    /// `set` with `params`, as the set declares them: every parameter it
-    /// requires stated, none it does not declare.
+    /// `set` with `params`, as the set declares them: every parameter it requires stated,
+    /// none it does not declare.
     pub fn new<N: Into<String>>(
         set: PainterSet,
         params: impl IntoIterator<Item = (N, f32)>,
@@ -174,7 +159,6 @@ impl Finish {
         Self::new(set, params)
     }
 
-    /// A built-in set with parameters it is known to take.
     fn builtin(set: &PainterSet, params: &[(&str, f32)]) -> Self {
         Self {
             set: set.clone(),
@@ -189,8 +173,7 @@ impl Finish {
         }
     }
 
-    /// The theme's own surface shader, for the `shader` set; empty
-    /// otherwise.
+    /// The theme's own surface shader, for the `shader` set; empty otherwise.
     #[must_use]
     pub fn shader(&self) -> &crate::tokens::shader::Source {
         &self.shader
@@ -215,9 +198,8 @@ impl Finish {
         FLAT.clone()
     }
 
-    /// The Default set showing what is below, blurred by `blur` logical
-    /// pixels, its colour scaled by `saturation`, under the ground at
-    /// `tint` opacity.
+    /// The Default set showing what is below, blurred by `blur` logical pixels, its
+    /// colour scaled by `saturation`, under the ground at `tint` opacity.
     #[must_use]
     pub fn frosted(blur: f32, tint: f32, saturation: f32) -> Self {
         Self::builtin(
@@ -226,8 +208,8 @@ impl Finish {
         )
     }
 
-    /// The Glass set with `[blur, tint, saturation, refraction,
-    /// edge_highlight, specular]`, for tests.
+    /// The Glass set with
+    /// `[blur, tint, saturation, refraction, edge_highlight, specular]`, for tests.
     #[cfg(test)]
     pub(crate) fn glass(
         [blur, tint, saturation, refraction, edge_highlight, specular]: [f32; 6],
@@ -255,11 +237,10 @@ impl Finish {
         )
     }
 
-    /// The stock glass material: what a bar and the floating chrome are made of where a person
-    /// asks to see what lies below — the backdrop blurred, left mostly to show and a little
-    /// bent and lit at the rim, so a glass bar reads as glass over any wallpaper rather than
-    /// as its ground. Its tint stays high enough that the theme's ink keeps the contrast
-    /// [`material_band`] holds every backdrop to, in light and in dark.
+    /// The stock glass material: what a bar and the floating chrome are made of where a
+    /// person asks to see what lies below — the backdrop blurred, left mostly to show and
+    /// a little bent and lit at the rim, so a glass bar reads as glass over any wallpaper
+    /// rather than as its ground.
     #[must_use]
     pub fn stock_glass() -> Self {
         const TINT: f32 = 0.3;
@@ -307,8 +288,8 @@ impl Finish {
             .map(|param| param.value)
     }
 
-    /// Whether the role lets what is below it through: it states a blur, a
-    /// tint or a saturation.
+    /// Whether the role lets what is below it through: it states a blur, a tint or a
+    /// saturation.
     #[must_use]
     pub fn translucent(&self) -> bool {
         ["blur", "tint", "saturation"]
@@ -334,17 +315,17 @@ impl Finish {
         self.param("saturation").unwrap_or(1.0)
     }
 
-    /// Whether the role draws the hairline the design language gives it:
-    /// every set's surfaces but Block's, which carry the border alone.
+    /// Whether the role draws the hairline the design language gives it: every set's
+    /// surfaces but Block's, which carry the border alone.
     #[must_use]
     pub fn hairline(&self) -> bool {
         self.set != *builtin::block_set()
     }
 
-    /// The finish actually painted where nothing may be translucent
-    /// (reduced transparency, high contrast): the toolkit's own sets become
-    /// solid, Block staying flat; a theme's own set keeps drawing, every
-    /// backdrop it asks for shown as its fallback.
+    /// The finish actually painted where nothing may be translucent (reduced
+    /// transparency, high contrast): the toolkit's own sets become solid, Block staying
+    /// flat; a theme's own set keeps drawing, every backdrop it asks for shown as its
+    /// fallback.
     #[must_use]
     pub fn opaque(&self) -> &Self {
         if self.set == *builtin::default_set() || self.set == *builtin::glass_set() {
@@ -354,9 +335,8 @@ impl Finish {
         }
     }
 
-    /// The finish painted under forced colours: what they guarantee is not
-    /// a theme's set to keep, so always the toolkit's own, solid (Block
-    /// staying flat).
+    /// The finish painted under forced colours: what they guarantee is not a theme's set
+    /// to keep, so always the toolkit's own, solid (Block staying flat).
     #[must_use]
     pub fn forced(&self) -> &Self {
         if self.set == *builtin::block_set() {
@@ -366,8 +346,8 @@ impl Finish {
         }
     }
 
-    /// Structural check: every parameter finite and in the band its set
-    /// admits, and a shader a theme stated is a surface shader
+    /// Structural check: every parameter finite and in the band its set admits, and a
+    /// shader a theme stated is a surface shader
     /// ([`crate::tokens::shader::Source::validate`]).
     pub fn validate(&self) -> Result<(), &'static str> {
         let specs = self.set.painter().params();
@@ -390,8 +370,7 @@ impl Finish {
         Ok(())
     }
 
-    /// This finish with every parameter held to the band its set is built
-    /// at.
+    /// This finish with every parameter held to the band its set is built at.
     #[must_use]
     pub fn usable(&self) -> Self {
         let specs = self.set.painter().params();
@@ -418,9 +397,8 @@ impl Finish {
         }
     }
 
-    /// This finish at `strength` of its translucency: `0` turns its blur off
-    /// and its tint opaque (and a glass body's light with it), `1` leaves it
-    /// as it is. An opaque finish stays as it is.
+    /// This finish at `strength` of its translucency: `0` turns its blur off and its tint
+    /// opaque (and a glass body's light with it), `1` leaves it as it is.
     #[must_use]
     pub fn with_translucency(&self, strength: f32) -> Self {
         let strength = strength.clamp(0.0, 1.0);
@@ -432,15 +410,15 @@ impl Finish {
             .iter()
             .map(|param| {
                 let value = match param.name.as_str() {
-                    // The ground's opacity over the backdrop: `0` shows it all, `1` hides it
-                    // completely, so a weaker translucency raises the tint toward opaque.
+                    // The ground's opacity over the backdrop: `0` shows it all, `1` hides
+                    // it completely, so a weaker translucency raises the tint toward
+                    // opaque.
                     "tint" => param.value + (1.0 - strength) * (1.0 - param.value),
-                    // What the tint lets through, and how the glass bends and lights: each
-                    // falls away with the strength.
                     "saturation" => 1.0 - strength * (1.0 - param.value),
                     // A look's own grain, not its translucency: a cell, a pixel grid, a
-                    // shader's pattern stays what it is at any strength, or a calm surface
-                    // would lose the cells it is made of (and a `0` cell draws nothing).
+                    // shader's pattern stays what it is at any strength, or a calm
+                    // surface would lose the cells it is made of (and a `0` cell draws
+                    // nothing).
                     "cell" | "grid" | "scale" | "phase" | "light_angle" => param.value,
                     _ => param.value * strength,
                 };
@@ -458,39 +436,21 @@ impl Finish {
     }
 }
 
-/// The surface roles a theme finishes. Each is a level of the design
-/// language (`docs/design-language.md`, "Surfaces").
+/// The surface roles a theme finishes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SurfaceRole {
-    /// The window ground every app paints on, and its regions.
     Window,
-    /// A raised control: a button's face, a field's well, a segmented
-    /// track, an object's card.
     Control,
-    /// Floating chrome: menus, popovers, the palette, sheets, Quick
-    /// Settings, notifications, tooltips.
     Floating,
-    /// A bar: the top bar and the window group's tab strip.
     Bar,
 }
 
 /// What the shell's chrome — its bar and its dock — is made of, as the person chose it.
-///
-/// A person's style is one choice, and both of its cases are the theme's: the glass is the
-/// theme's bar material (else its floating one, the blurred material every theme has), and
-/// the calm surface is that same material with nothing showing through it. A theme therefore
-/// looks glass where it says glass, and solid where the person asked for calm, with no view
-/// knowing what either is made of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChromeMaterial {
-    /// What the theme gives a bar's body: the stock glass material on the stock themes, a
-    /// theme's own material where it declares one, flat where it declares none.
     #[default]
     Bar,
-    /// The theme's glass: its bar material, else its floating material.
     Glass,
-    /// That glass made calm: the same material with nothing below it showing through and
-    /// every light off it.
     Calm,
 }
 
@@ -504,22 +464,17 @@ crate::component::choice!(ChromeMaterial, "ChromeMaterial", {
 /// (`crate::theme::ThemeMaterial`) as the toolkit paints it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoleFinishes {
-    /// The window ground. Windows never overlap, so a translucent window
-    /// shows the desktop behind it.
+    /// The window ground. Windows never overlap, so a translucent window shows the
+    /// desktop behind it.
     pub window: Finish,
-    /// Raised controls, over the window ground.
     pub control: Finish,
-    /// Floating chrome.
     pub floating: Finish,
-    /// The top bar's body, and the theme's glass for a chrome the person asked to see what
-    /// lies below: the stock themes give the bar the glass material. `None`: a theme gives
-    /// the bar no body of its own, and it draws flat.
     pub bar: Option<Finish>,
 }
 
 impl RoleFinishes {
-    /// The design language's finishes: opaque windows and controls, the
-    /// blurred floating material, and a glass bar.
+    /// The design language's finishes: opaque windows and controls, the blurred floating
+    /// material, and a glass bar.
     #[must_use]
     pub fn stock() -> Self {
         Self {
@@ -595,14 +550,10 @@ impl Default for RoleFinishes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BorderInk {
-    /// The stock edges: each surface keeps the hairline the design language
-    /// gives it (a window's edge, a floating panel's inner hairline, a
-    /// card's rest edge) and controls draw none.
     Hairline,
-    /// Every surface of every role outlined in `border_standard`.
     Standard,
-    /// Every surface of every role outlined in the strong ink: the tertiary
-    /// text tier, which clears 3:1 on every surface (WCAG 1.4.11).
+    /// Every surface of every role outlined in the strong ink: the tertiary text tier,
+    /// which clears 3:1 on every surface (WCAG 1.4.11).
     Strong,
 }
 
@@ -610,7 +561,7 @@ pub enum BorderInk {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Border {
-    /// Width of an outline, logical pixels. A hairline is always 1.
+    /// Width of an outline, logical pixels.
     pub width: f32,
     pub ink: BorderInk,
 }
@@ -644,17 +595,16 @@ impl Default for Border {
     }
 }
 
-/// How a surface stands off what is below it.
+/// How a surface separates from what is below it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Depth {
-    /// Soft shadows, the design language's elevation, their strength
-    /// scaled by `strength` (`1` stock).
-    Shadow { strength: f32 },
-    /// No shadow; a surface that would cast one is outlined instead, in
-    /// the border's ink (the strong ink where the border is a hairline).
+    /// Soft shadows, the design language's elevation, their strength scaled by `strength`
+    /// (`1` stock).
+    Shadow {
+        strength: f32,
+    },
     Outline,
-    /// No shadow and no outline: surfaces stand off by tone alone.
     None,
 }
 
@@ -689,20 +639,16 @@ impl Default for Depth {
     }
 }
 
-/// How far, as a contrast ratio, a translucent surface may stand off its
-/// ground anywhere, whatever is behind it. Every ink drawn on a surface is
-/// chosen to clear 7:1 on the opaque ground (`SMALL_TEXT_MIN_CONTRAST`; a
-/// disabled row's dim ink included), so on the material it still clears
-/// 7 / 1.5 ≈ 4.7:1, above body text's 4.5:1 with room for 8-bit rounding.
+/// How far, as a contrast ratio, a translucent surface may stand off its ground anywhere,
+/// whatever is behind it.
 pub const MATERIAL_SPREAD: f64 = 1.5;
 
-/// How far what shows through a translucent surface of `ground` may stand
-/// off it: [`MATERIAL_SPREAD`], narrowed to what the theme's inks can
-/// afford. Contrast ratios on one side of a ground divide exactly, so ink
-/// with ratio `r` on the ground keeps `r / spread` on the band's far end;
-/// the spread is the least of `r / floor` over the three ink tiers (body
-/// text for primary and secondary, large text for tertiary, AAA text on a
-/// high-contrast palette), never below `1` (an opaque surface).
+/// How far what shows through a translucent surface of `ground` may stand off it:
+/// [`MATERIAL_SPREAD`], narrowed to what the theme's inks can afford. Contrast ratios on
+/// one side of a ground divide exactly, so ink with ratio `r` on the ground keeps
+/// `r / spread` on the band's far end; the spread is the least of `r / floor` over the
+/// three ink tiers (body text for primary and secondary, large text for tertiary, AAA
+/// text on a high-contrast palette), never below `1` (an opaque surface).
 #[must_use]
 pub fn material_spread(colors: &crate::tokens::Colors, ground: vello::peniko::Color) -> f64 {
     use crate::tokens::contrast::{BODY_TEXT_MIN_CONTRAST, HIGH_CONTRAST_TEXT_MIN_CONTRAST};
@@ -722,20 +668,15 @@ pub fn material_spread(colors: &crate::tokens::Colors, ground: vello::peniko::Co
         (colors.text_tertiary, large),
     ]
     .into_iter()
-    // A hair inside, so the binding ink lands on its floor, not below it.
     .map(|(ink, floor)| crate::color::contrast_ratio(ink, ground) / floor * (1.0 - 1e-6))
     .fold(MATERIAL_SPREAD, f64::min)
     .max(1.0)
 }
 
-/// The darkest and the lightest colour a translucent surface of `ground`
-/// shows, whatever lies below it: on the side of the ground its ink stands
-/// on, the ground stepped toward that end of the theme's neutral ramp until
-/// it stands [`material_spread`] off it (or reaches the end); on the other
-/// side, the ramp's end itself. The backdrop pass compresses what shows
-/// through into this band before the tint is laid over it
-/// (`crate::backdrop::Legible`), so these are the worst backdrops ink on
-/// the material is measured against.
+/// The darkest and the lightest colour a translucent surface of `ground` shows, whatever
+/// lies below it: on the side of the ground its ink stands on, the ground stepped toward
+/// that end of the theme's neutral ramp until it stands [`material_spread`] off it (or
+/// reaches the end); on the other side, the ramp's end itself.
 #[must_use]
 pub fn material_band(
     colors: &crate::tokens::Colors,
@@ -764,9 +705,9 @@ pub fn material_band(
         at(within)
     };
     let stops = &colors.neutral.stops;
-    // Ink stands on one side of its ground; what shows through on the other
-    // side only parts further from it, so that side runs to the ramp's end
-    // and keeps more of what lies below.
+    // Ink stands on one side of its ground; what shows through on the other side only
+    // parts further from it, so that side runs to the ramp's end and keeps more of what
+    // lies below.
     let luminance = crate::color::relative_luminance;
     let ink_lighter = luminance(colors.text_primary) > luminance(ground);
     let far = |end: Color| {
@@ -795,11 +736,11 @@ pub fn role_ground(colors: &crate::tokens::Colors, role: SurfaceRole) -> vello::
     }
 }
 
-/// What a surface of `role` can look like at its darkest and its lightest
-/// under `finishes`, over any backdrop: the role's ground when it is
-/// opaque; the band around it ([`material_band`]) when it shows a blurred
-/// backdrop; and for a translucent control, which is never blurred, its
-/// ground at its tint over the darkest and lightest window it can stand on.
+/// What a surface of `role` can look like at its darkest and its lightest under
+/// `finishes`, over any backdrop: the role's ground when it is opaque; the band around it
+/// ([`material_band`]) when it shows a blurred backdrop; and for a translucent control,
+/// which is never blurred, its ground at its tint over the darkest and lightest window it
+/// can stand on.
 #[must_use]
 pub fn worst_grounds(
     colors: &crate::tokens::Colors,
@@ -862,8 +803,6 @@ mod tests {
             serde_json::from_value::<Finish>(serde_json::json!({"painter": "default"})).unwrap(),
             Finish::solid()
         );
-        // The set's parameters, in its order, whatever order a document
-        // states them in.
         assert_eq!(
             serde_json::from_value::<Finish>(serde_json::json!({
                 "painter": "default", "saturation": 1.2, "tint": 0.5, "blur": 24.0
@@ -894,7 +833,6 @@ mod tests {
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");
         }
-        // A blur past its usable band is built at the band's end.
         assert!((Finish::frosted(60.0, 0.5, 1.0).usable().blur() - 48.0).abs() < 1e-6);
     }
 
@@ -935,11 +873,9 @@ mod tests {
         assert!(Finish::stock_floating().translucent());
     }
 
-    /// A calm surface is the glass with its translucency off: its light
-    /// falls away with the strength, but a look's own grain — a pixel cell,
-    /// the cell grid, a shader's pattern size — is what the look is made of,
-    /// so it stays. Scaling those by `0` left the shell's calm bar drawing
-    /// flat, which read as a bug in the look rather than the theme's choice.
+    /// A calm surface is the glass with its translucency off: its light falls away with
+    /// the strength, but a look's own grain — a pixel cell, the cell grid, a shader's
+    /// pattern size — is what the look is made of, so it stays.
     #[test]
     fn calm_keeps_the_looks_own_grain_and_drops_the_light() {
         let pixelated = Finish::named(
@@ -952,7 +888,6 @@ mod tests {
         assert_eq!(calm.param("cell"), Some(4.0), "the cells stay a look");
         assert_eq!(calm.param("cover"), Some(0.0), "nothing shows through");
         assert_eq!(calm.param("grid"), Some(0.2), "the grid stays");
-        // The light a glass body catches goes with its translucency.
         let glass = glass_with(16.0, 0.2, 1.5);
         let calm = glass.with_translucency(0.0);
         assert!((calm.param("refraction").unwrap_or(0.0)).abs() < 1e-6);

@@ -42,7 +42,6 @@ pub enum Failure {
     Busy,
     Retired,
     Rejected,
-    /// No acknowledgement: do not infer success or automatically retry.
     Unknown,
 }
 
@@ -55,8 +54,8 @@ pub struct Receipt {
     deadline: Instant,
 }
 
-/// The original host's one-shot completion end. Completing it grants no input
-/// authority; the host must first bind delivery to its original field owner.
+/// The original host's one-shot completion end. Completing it grants no input authority;
+/// the host must first bind delivery to its original field owner.
 pub struct Resolver(Receipt);
 impl Resolver {
     pub fn complete(self, result: Result<Option<Lease>, Failure>) {
@@ -104,10 +103,8 @@ impl Receipt {
         result.clone()
     }
 
-    /// Stop a final that has not been admitted. After admission its outcome is
-    /// uncertain until the original native reply; never synthesize an undo.
-    /// After a session-start acknowledgement, revoke its original scope while
-    /// preserving that acknowledgement; a retired signal cannot revoke a successor.
+    /// Stop a final that has not been admitted. After admission its outcome is uncertain
+    /// until the original native reply; never synthesize an undo.
     pub fn cancel(&self) {
         self.canceled.store(true, Ordering::Release);
         self.complete(Err(Failure::Unknown));
@@ -282,8 +279,8 @@ struct Pending {
     operation: Operation,
     final_receipt: Option<Receipt>,
 }
-// Retirement acknowledges internal lease cleanup. The original caller sees a
-// known refusal regardless of whether a heartbeat or the final observed it first.
+// Retirement acknowledges internal lease cleanup. The original caller sees a known
+// refusal regardless of whether a heartbeat or the final observed it first.
 fn public_failure(failure: Failure) -> Failure {
     if failure == Failure::Retired {
         Failure::Rejected
@@ -309,8 +306,7 @@ struct Final {
     needs_check: bool,
 }
 
-/// An original-field transaction. Never replace a queued final's target while
-/// an earlier check is pending; retirement is acknowledged before re-preparing.
+/// An original-field transaction.
 pub(crate) struct Guard {
     lease: Option<Lease>,
     history: Option<Receipt>,
@@ -609,7 +605,6 @@ impl Guard {
         }
     }
     /// Explicit consent starts one bounded session on the existing lease.
-    /// The fingerprint stays stable while its acknowledgement is pending.
     pub fn start(&mut self) -> Option<Receipt> {
         if self.revoked || self.activated || self.final_text.is_some() || self.retiring.is_some() {
             return None;

@@ -1,22 +1,10 @@
-//! What a scroller showed in the frame being drawn and in the frame its host
-//! presented, and what a frame that differs from the one on screen repaints.
-//!
-//! A scroller notes each frame it draws ([`ShownFrames::note`]) and moves the
-//! note to the presented side when the host shows the frame
-//! ([`ShownFrames::present`]). From its `collect_damage` it then asks how the
-//! two compare ([`ShownFrames::compare`]): shown alike but for the scroll,
-//! the scroll is offered as a copy ([`super::offer`]) and only what stays put
-//! over the content is damage; shown alike in every way, it damages what it
-//! knows changed in place; anything else repaints its viewport.
-//!
-//! Most scrollers describe a frame as a [`Showing`]: the scroll, the clip,
-//! the transform, a look that must match for any reuse, and the pieces of
-//! content it painted (a text editor's lines and caret, a page stack's
-//! pages, a reader's paragraphs), each with a fingerprint of its paint.
-//! [`ShownFrames::damage`] then repaints only the pieces that changed,
-//! whether the frame scrolled or not. A piece's paint is a fingerprint, or
-//! the scene it drew ([`Painted`]) for a scroller that keeps its rows'
-//! scenes (a table, a tree).
+//! What a scroller showed in the frame being drawn and in the frame its host presented,
+//! and what a frame that differs from the one on screen repaints. A scroller notes each
+//! frame it draws ([`ShownFrames::note`]) and moves the note to the presented side when
+//! the host shows the frame ([`ShownFrames::present`]). Most scrollers describe a frame
+//! as a [`Showing`]: the scroll, the clip, the transform, a look that must match for any
+//! reuse, and the pieces of content it painted (a text editor's lines and caret, a page
+//! stack's pages, a reader's paragraphs), each with a fingerprint of its paint.
 
 use std::cell::{Ref, RefCell, RefMut};
 
@@ -24,41 +12,34 @@ use vello::kurbo::{Affine, Rect, Vec2};
 
 /// One frame of a scroller, as a later frame compares it.
 pub trait Shown {
-    /// How far the content is scrolled: it lands on screen at its origin
-    /// minus this, in logical pixels.
+    /// How far the content is scrolled: it lands on screen at its origin minus this, in
+    /// logical pixels.
     fn scroll(&self) -> Vec2;
     /// Where the content paints, in logical pixels.
     fn clip(&self) -> Rect;
-    /// The transform the content landed on screen with
-    /// ([`super::on_screen`]).
+    /// The transform the content landed on screen with ([`super::on_screen`]).
     fn transform(&self) -> Affine;
-    /// Whether `self` shows the content as `other` does but for the scroll
-    /// and what the scroller damages in place itself: the same zoom, the
-    /// same content size, the same look.
+    /// Whether `self` shows the content as `other` does but for the scroll and what the
+    /// scroller damages in place itself: the same zoom, the same content size, the same
+    /// look.
     fn same_view(&self, other: &Self) -> bool;
-    /// Whether the content itself is as `other` shows it, so a scroll
-    /// between the two only moves it. A scroller whose content changed in
-    /// place repaints a scrolled frame.
+    /// Whether the content itself is as `other` shows it, so a scroll between the two
+    /// only moves it.
     fn same_content(&self, _other: &Self) -> bool {
         true
     }
-    /// What the scroller paints over its content inside [`Self::clip`] that
-    /// does not move with it (a scroll bar's lane, an edge fade, a banner).
+    /// What the scroller paints over its content inside [`Self::clip`] that does not move
+    /// with it (a scroll bar's lane, an edge fade, a banner).
     fn overlays(&self, out: &mut Vec<Rect>);
 }
 
 /// How the frame being drawn differs from the one on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Since {
-    /// Shown alike and not scrolled: the scroller damages what changed in
-    /// place. Overlays that changed are already damage.
     Still,
-    /// Only scrolled, and the host copies what stays on screen: the
-    /// overlays are damage of the copy, and those of the frame on screen
-    /// that are gone are already damage.
     Copied,
-    /// Shown otherwise, or scrolled for a host that does not copy: the
-    /// scroller repaints its viewport.
+    /// Shown otherwise, or scrolled for a host that does not copy: the scroller repaints
+    /// its viewport.
     Repaint,
 }
 
@@ -85,8 +66,6 @@ impl<S> ShownFrames<S> {
     }
 
     /// From the scroller's `mark_drawn`: the frame just drawn is on screen.
-    /// Not drawn this frame, what the screen shows where the scroller lies
-    /// is not known to be its content, and its next frame repaints.
     pub fn present(&mut self) {
         self.presented = self.drawing.get_mut().take();
     }
@@ -102,8 +81,8 @@ impl<S> ShownFrames<S> {
         Ref::filter_map(self.drawing.borrow(), Option::as_ref).ok()
     }
 
-    /// The frame being drawn, to add what its draw learns late (the thumbs
-    /// its bars painted).
+    /// The frame being drawn, to add what its draw learns late (the thumbs its bars
+    /// painted).
     pub fn drawing_mut(&self) -> Option<RefMut<'_, S>> {
         RefMut::filter_map(self.drawing.borrow_mut(), Option::as_mut).ok()
     }
@@ -113,8 +92,8 @@ impl<S> ShownFrames<S> {
         self.presented.as_ref()
     }
 
-    /// Forget both frames: an outer cache owns the draw now, and the next
-    /// frame the scroller draws repaints.
+    /// Forget both frames: an outer cache owns the draw now, and the next frame the
+    /// scroller draws repaints.
     pub fn forget(&mut self) {
         *self.drawing.get_mut() = None;
         self.presented = None;
@@ -122,11 +101,9 @@ impl<S> ShownFrames<S> {
 }
 
 impl<S: Shown + PartialEq> ShownFrames<S> {
-    /// From the scroller's `collect_damage`: how this frame differs from
-    /// the one on screen, offering a scroll to a host that copies on
-    /// behalf of `owner` (the widget in the tree the scroller draws in).
-    /// What stays put over the content and changed (or that a copy moves)
-    /// is added to `regions`.
+    /// From the scroller's `collect_damage`: how this frame differs from the one on
+    /// screen, offering a scroll to a host that copies on behalf of `owner` (the widget
+    /// in the tree the scroller draws in).
     pub fn compare<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> Since {
         let Some((drawing, presented)) = self.frames() else {
             return Since::Repaint;
@@ -171,11 +148,10 @@ impl<S: Shown + PartialEq> ShownFrames<S> {
 }
 
 impl<S: Shown> ShownFrames<S> {
-    /// From the scroller's draw, once this frame is noted: where the frame
-    /// keeps the pixels of its content, as [`Self::compare`] will find it
-    /// (moved by a copy, or not moved), for its content to leave out what
-    /// it has nothing new to paint for ([`crate::draw_cull`]). `None` when
-    /// it repaints its viewport.
+    /// From the scroller's draw, once this frame is noted: where the frame keeps the
+    /// pixels of its content, as [`Self::compare`] will find it (moved by a copy, or not
+    /// moved), for its content to leave out what it has nothing new to paint for
+    /// ([`crate::draw_cull`]).
     pub(crate) fn keep(&self) -> Option<crate::draw_cull::Keep> {
         let (drawing, presented) = self.frames()?;
         if drawing.clip() != presented.clip()
@@ -188,8 +164,6 @@ impl<S: Shown> ShownFrames<S> {
         if delta != Vec2::ZERO && !drawing.same_content(presented) {
             return None;
         }
-        // What paints over the content without moving repaints, where it
-        // is and where it was.
         let mut overlays = Vec::new();
         drawing.overlays(&mut overlays);
         presented.overlays(&mut overlays);
@@ -197,11 +171,7 @@ impl<S: Shown> ShownFrames<S> {
     }
 }
 
-/// One piece of what a scroller paints: a line, a page, a caret. `rect` is
-/// where it paints with the content unscrolled (on screen plus the scroll),
-/// or on screen for a piece that does not move with the content; `paint`
-/// fingerprints its pixels, or is the scene that painted them
-/// ([`Painted`]).
+/// One piece of what a scroller paints: a line, a page, a caret.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Piece<P = u64> {
     pub key: u64,
@@ -209,9 +179,8 @@ pub struct Piece<P = u64> {
     pub paint: P,
 }
 
-/// A piece's paint as the scene it drew, drawn where the piece stands in
-/// the content unscrolled, so a piece a scroll only moved encodes the same.
-/// Two compare equal when they encode alike ([`vello::Scene::encoding_eq`]).
+/// A piece's paint as the scene it drew, drawn where the piece stands in the content
+/// unscrolled, so a piece a scroll only moved encodes the same.
 #[derive(Clone, Default)]
 pub struct Painted(pub vello::Scene);
 
@@ -239,22 +208,16 @@ impl Painted {
 /// A scroller's frame as most scrollers describe it ([`Shown`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Showing<L, P = u64> {
-    /// How far the content is scrolled ([`Shown::scroll`]).
     pub scroll: Vec2,
     /// Where the content paints, in logical pixels.
     pub clip: Rect,
-    /// The transform the content landed on screen with
-    /// ([`super::on_screen`]).
     pub transform: Affine,
-    /// What the whole view's paint depends on (a zoom, a theme's colours,
-    /// a selection painted across pieces): another look repaints it.
     pub look: L,
-    /// What paints over the content without moving with it.
     pub overlays: Vec<Rect>,
     /// The pieces of content in view, by ascending key.
     pub pieces: Vec<Piece<P>>,
-    /// What paints beside or over the content at fixed places (a thumb in a
-    /// bar, a strip of thumbnails), by ascending key, `rect` on screen.
+    /// What paints beside or over the content at fixed places (a thumb in a bar, a strip
+    /// of thumbnails), by ascending key, `rect` on screen.
     pub fixed: Vec<Piece<P>>,
 }
 
@@ -289,16 +252,14 @@ impl<L, P> Showing<L, P> {
         self.pieces.get(at)
     }
 
-    /// Where `piece` of this frame paints on screen, within the clip.
     fn on_screen(&self, piece: &Piece<P>) -> Rect {
         (piece.rect - self.scroll).intersect(self.clip)
     }
 }
 
-/// What a scroller that keeps its rows' scenes ([`Painted`]) paints
-/// besides them, which must be as it was for any reuse: its box, and what
-/// it paints there that does not scroll and is not a piece of its own (a
-/// header, a focus ring).
+/// What a scroller that keeps its rows' scenes ([`Painted`]) paints besides them, which
+/// must be as it was for any reuse: its box, and what it paints there that does not
+/// scroll and is not a piece of its own (a header, a focus ring).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Around {
     pub bounds: Rect,
@@ -317,12 +278,10 @@ pub fn piece_key(name: impl std::hash::Hash) -> u64 {
 }
 
 impl Showing<Around, Painted> {
-    /// A frame of the content `pieces`, each `rect` where it stands on
-    /// screen this frame, scrolled `scroll` and shown in `clip` landing with
-    /// `transform` ([`super::on_screen`]); `fixed` stands over or beside it
-    /// where it is (a bar, an edge fade, a field open over a row). `None`
-    /// when two pieces share a key or a box is not finite: nothing then
-    /// says which pixels changed.
+    /// A frame of the content `pieces`, each `rect` where it stands on screen this frame,
+    /// scrolled `scroll` and shown in `clip` landing with `transform`
+    /// ([`super::on_screen`]); `fixed` stands over or beside it where it is (a bar, an
+    /// edge fade, a field open over a row).
     pub fn painted(
         scroll: Vec2,
         clip: Rect,
@@ -362,8 +321,8 @@ impl Showing<Around, Painted> {
 }
 
 impl PaintedFrames {
-    /// [`Self::damage`], and on a frame that repaints, the whole box the
-    /// scroller paints now, `bounds`, and where it painted before.
+    /// [`Self::damage`], and on a frame that repaints, the whole box the scroller paints
+    /// now, `bounds`, and where it painted before.
     pub fn damage_within<T: ?Sized>(&self, owner: &T, bounds: Rect, regions: &mut Vec<Rect>) {
         if self.damage(owner, regions) == Since::Repaint {
             let before = self.presented().map(|shown| shown.look.bounds);
@@ -373,10 +332,9 @@ impl PaintedFrames {
 }
 
 impl<L: PartialEq, P: PartialEq> ShownFrames<Showing<L, P>> {
-    /// From the scroller's `collect_damage`: [`Self::compare`], then the
-    /// pieces that changed, came or went where the screen showed them
-    /// before; the viewport when the frame repaints. Returns how the frame
-    /// compared.
+    /// From the scroller's `collect_damage`: [`Self::compare`], then the pieces that
+    /// changed, came or went where the screen showed them before; the viewport when the
+    /// frame repaints.
     pub fn damage<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> Since {
         let since = self.compare(owner, regions);
         let Some((drawing, presented)) = self.frames().filter(|_| since != Since::Repaint) else {
@@ -385,15 +343,14 @@ impl<L: PartialEq, P: PartialEq> ShownFrames<Showing<L, P>> {
             }
             return since;
         };
-        // What the screen showed before, where this frame draws: a piece
-        // that came into it is new content in place, one that came into
-        // view only is in the strip the scroll exposed.
+        // What the screen showed before, where this frame draws: a piece that came into
+        // it is new content in place, one that came into view only is in the strip the
+        // scroll exposed.
         let seen = (presented.clip + presented.scroll - drawing.scroll).intersect(drawing.clip);
         for piece in &drawing.pieces {
             match presented.piece(piece.key) {
                 Some(was) if was == piece => {}
                 Some(was) => {
-                    // The old paint, moved with the content by any copy.
                     let (now, then) = (drawing.on_screen(piece), drawing.on_screen(was));
                     regions.push(now);
                     if then != now {

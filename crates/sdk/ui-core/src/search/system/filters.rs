@@ -7,8 +7,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-/// Toggle `kind` in the chip selection. Kinds combine; the empty
-/// selection means everything shows.
+/// Toggle `kind` in the chip selection.
 pub fn toggle_kind(selected: &mut Vec<ResourceKind>, kind: ResourceKind) {
     if let Some(pos) = selected.iter().position(|k| k == &kind) {
         selected.remove(pos);
@@ -23,8 +22,8 @@ pub enum FilterAction {
     /// Open or close the overflow list of kinds that did not fit the row.
     More,
 }
-/// One kind chip: the kind it toggles, its label and its accessible name,
-/// in whatever language the host shows.
+/// One kind chip: the kind it toggles, its label and its accessible name, in whatever
+/// language the host shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KindChip {
     pub kind: ResourceKind,
@@ -61,8 +60,8 @@ impl Default for FilterText {
         }
     }
 }
-/// The band a palette host reserves for the filter strip: where it sits, the
-/// height of one chip row, and how many rows the current layout allows for.
+/// The band a palette host reserves for the filter strip: where it sits, the height of
+/// one chip row, and how many rows the current layout allows for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FilterStripSlot {
     pub band: Rect,
@@ -126,7 +125,7 @@ impl SearchFilters {
     pub fn kinds(&self) -> impl Iterator<Item = &ResourceKind> {
         self.kinds.iter().map(|chip| &chip.kind)
     }
-    /// Paint into a host's filter band. Return the row reservation for the next layout.
+    /// Paint into a host's filter band.
     pub fn draw(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -201,9 +200,6 @@ impl SearchFilters {
 
     pub fn search_filters_accessibility(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // `checked` is the toggle/radio state AT reads; `selected` mirrors
-        // it so "which one is chosen" also answers the selection question
-        // a list-style reader (and the bench's `selected` check) asks.
         let bounded = |node: AccessNode, rect: Rect, checked: bool| {
             let node = node.with_state(AccessState {
                 checked: Some(checked),
@@ -218,9 +214,9 @@ impl SearchFilters {
             }
         };
 
-        // Bounds are the pointer targets (`selector_hit_rect`: the painted
-        // pill grown to the §9.6 floor), the same rects a press is tested
-        // against — what a reader names is exactly what a finger hits.
+        // Bounds are the pointer targets (`selector_hit_rect`: the painted pill grown to
+        // the §9.6 floor), the same rects a press is tested against — what a reader names
+        // is exactly what a finger hits.
         let kinds: Vec<ResourceKind> = self.kinds().cloned().collect();
         let mut chips = Vec::with_capacity(kinds.len().saturating_add(1));
         chips.push(bounded(
@@ -282,17 +278,14 @@ impl SearchFilters {
             return Rect::ZERO;
         }
         // The floor is already clamped to `row_h − s1` at draw
-        // (`search_pointer_floor_h`), so two rows' targets never overlap
-        // however the palette scales its rows; clipping to the band keeps
-        // the first and last rows' targets off the query field and the
-        // results.
+        // (`search_pointer_floor_h`), so two rows' targets never overlap however the
+        // palette scales its rows; clipping to the band keeps the first and last rows'
+        // targets off the query field and the results.
         let h = painted.height().max(self.search_pointer_floor_h);
         let cy = painted.center().y;
         let grown = Rect::new(painted.x0, cy - h / 2.0, painted.x1, cy + h / 2.0);
-        // Clipped to the band the pill was laid out in (frozen at draw),
-        // never to a band a pending row request has already moved.
-        // Overflow chips under More sit below that band — keep their
-        // own target rather than clipping them to a sliver or away.
+        // Clipped to the band the pill was laid out in (frozen at draw), never to a band
+        // a pending row request has already moved.
         let band = self.search_band_for_targets();
         if band.area() <= 0.0 || painted.intersect(band).area() <= 0.0 {
             return grown;
@@ -317,8 +310,8 @@ impl SearchFilters {
         self.selector_hit_rect(self.search_more_rect)
     }
 
-    /// The band the pills were laid out in when they were last drawn: hit
-    /// targets keep to it, whatever a later layout asks for.
+    /// The band the pills were laid out in when they were last drawn: hit targets keep to
+    /// it, whatever a later layout asks for.
     pub fn search_band_for_targets(&self) -> Rect {
         if self.search_band_at_draw.area() > 0.0 {
             self.search_band_at_draw
@@ -362,28 +355,18 @@ impl SearchFilters {
         let chip_text_style = Self::filter_label_style(theme);
         let row_h = self.row_height;
         let control_h = Self::filter_control_height(theme, text_renderer, row_h);
-        // Cached before any geometry helper runs, so the hit rects
-        // consulted later agree with what was painted.
         self.search_filter_control_h = control_h;
-        // The pointer floor a target may grow to: §9.6's 32, but never past
-        // `row_h − s1`, so neighbouring rows' targets keep the gutter the
-        // pills keep (the palette's row is `36·text_scale`; below 100 %
-        // text it is the row, not the floor, that bounds the target).
+        // The pointer floor a target may grow to: §9.6's 32, but never past `row_h − s1`,
+        // so neighbouring rows' targets keep the gutter the pills keep (the palette's row
+        // is `36·text_scale`; below 100 % text it is the row, not the floor, that bounds
+        // the target).
         self.search_pointer_floor_h = f64::from(tokens.metrics.min_pointer_target)
             .min(row_h - f64::from(tokens.spacing.s1))
             .max(control_h);
 
-        // Dynamic: one chip per kind any registered provider exposes, so
-        // a new provider gets a chip for free. Empty selection means
-        // "everything shows", stated by the leading "All" chip. Every
-        // chip stays reachable, past the first row through More.
         let labels: Vec<String> = std::iter::once(self.text.all_label.clone())
             .chain(self.kinds.iter().map(|chip| chip.label.clone()))
             .collect();
-        // Chip padding is `s3` either side — the shared `Chip` primitive's
-        // own padding, so a filter chip and a chip anywhere else in the
-        // shell are one shape — and chips sit `s2` apart. Both are the
-        // live theme's steps, so a custom or scaled theme moves them too.
         let chip_pad = f64::from(tokens.spacing.s3);
         let chip_gap = f64::from(tokens.spacing.s2);
         let natural: Vec<f64> = labels
@@ -476,27 +459,20 @@ impl SearchFilters {
             );
         }
 
-        // One chip row: overflow kinds live under More, so the band does
-        // not grow.
+        // One chip row: overflow kinds live under More, so the band does not grow.
         self.search_chip_rows = 1;
     }
 }
 
-/// Narrowest a chip is ever squeezed to before its label is just an
-/// ellipsis: the §9.6 pointer floor — a pill narrower than a finger is
-/// not a target whatever it says. (Was a tuned 34 until 2026-09-17.)
+/// Narrowest a chip is ever squeezed to before its label is just an ellipsis: the §9.6
+/// pointer floor — a pill narrower than a finger is not a target whatever it says.
 const CHIP_MIN_W_PX: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
 /// Height of a Selector at 100 % text (HIG §9.6, `metrics.selector_height`).
-/// The unscaled token, for the constructor's resting value before any theme
-/// is seen; the live band reads `theme.tokens.metrics.selector_height` in
-/// [`SearchFilters::filter_control_height`] and grows with the measured
-/// label from there.
 pub const SELECTOR_HEIGHT_PX: f64 = crate::tokens::Metrics::BASE.selector_height as f64;
 
 /// One row of filter chips, with kinds that did not fit sitting behind More.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChipRow {
-    /// One rect per chip. Overflowed chips are [`Rect::ZERO`] until More opens.
     pub rects: Vec<Rect>,
     /// The More chip, present only when at least one kind did not fit.
     pub more: Option<Rect>,
@@ -504,8 +480,7 @@ pub struct ChipRow {
     pub overflow: Vec<usize>,
 }
 
-/// Lays chips on a single row at their natural width. Leftovers stay
-/// reachable through a More chip rather than wrapping to a second row.
+/// Lays chips on a single row at their natural width.
 pub fn lay_out_chip_row_with_more(
     natural: &[f64],
     more_w: f64,
@@ -596,9 +571,6 @@ pub fn lay_out_more_menu(
 }
 
 /// Widths for one row of chips that must all fit inside `available`.
-/// Chips narrower than an equal share keep their natural width and hand
-/// the rest to the ones that are over, so squeezing costs the long
-/// labels and leaves short ones alone.
 pub fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
     if natural.is_empty() {
         return Vec::new();
@@ -633,15 +605,8 @@ pub fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
         .collect()
 }
 
-/// One pill in the search card's filter band, shared by the kind chips
-/// and the "All" reset chip.
-///
-/// One filter chip: a Selector (HIG §9.1) whose body is its selection tier
-/// (§9.3 — idle transparent, hover `lift(0.5)`, chosen `lift(1.0)` with a
-/// hairline and inner glow) and whose label is ink chosen against whatever
-/// that tier painted, so it stays legible on every preset. Until
-/// 2026-09-17 the chosen chip wore `accent[5]` (§9.4 reserves accent for
-/// live state) and the idle one a `lift(0.35)` wash of its own.
+/// One pill in the search card's filter band, shared by the kind chips and the "All"
+/// reset chip.
 pub fn draw_filter_chip(
     scene: &mut Scene,
     transform: Affine,
@@ -656,10 +621,6 @@ pub fn draw_filter_chip(
     let radius = crate::chrome::ChromeRole::Selector.radius(theme, rect.height());
     let tier = crate::chrome::selection_tier(theme, state);
     tier.paint(scene, transform, rect, radius);
-    // The chosen chip's label is the control label (`text_primary`); the
-    // others recede to `text_dim`. Either way the ink is measured against
-    // the surface actually under it — the lifted body, or the panel ground
-    // showing through an idle chip.
     let lifted = state.active || state.pressed || state.hover;
     let under = if lifted {
         tier.fill
@@ -672,8 +633,8 @@ pub fn draw_filter_chip(
         colors.text_dim
     };
     let text_color = colors.ink_on(under, tone, crate::tokens::colors::ON_FILL_MIN_CONTRAST);
-    // Control labels are medium weight (HIG §9.6); measured and drawn at
-    // the same weight so the centring holds.
+    // Control labels are medium weight (HIG §9.6); measured and drawn at the same weight
+    // so the centring holds.
     let (lw, lh) = text_renderer.measure_style(
         label,
         None,

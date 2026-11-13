@@ -1,16 +1,8 @@
-//! How the shared components answer the pointer: the hover and press
-//! response, as a theme role (`docs/design-language.md`, "Lifts";
-//! `docs/architecture/theming.md`, the `response` role).
-//!
-//! A pointed-at control lifts off its ground; a pressed one presses into
-//! it. Both are four numbers a theme may set — how far the fill lifts
-//! toward the next surface step (`lift`), how much of the person's accent
-//! washes into that lift (`tint`), how far the whole control scales about
-//! its centre (`scale`) and how strongly a lit edge catches it (`glow`) —
-//! and every shared component reads them here
-//! ([`crate::chrome::selection_tier_on`], [`crate::chrome::selector_tier`],
-//! a button's face). An app never picks one: it says a control is hovered
-//! or pressed, and the theme's response draws it.
+//! How the shared components answer the pointer: the hover and press response, as a theme
+//! role (`docs/design-language.md`, "Lifts"; `docs/architecture/theming.md`, the
+//! `response` role). A pointed-at control lifts off its ground; a pressed one presses
+//! into it. An app never picks one: it says a control is hovered or pressed, and the
+//! theme's response draws it.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,8 +10,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseStep {
-    /// How far the fill steps toward the next surface (`1` one surface
-    /// step, [`crate::tokens::Colors::lift_on`]).
+    /// How far the fill steps toward the next surface (`1` one surface step,
+    /// [`crate::tokens::Colors::lift_on`]).
     pub lift: f32,
     /// How much of the accent washes into the lift, `0..=0.25`.
     pub tint: f32,
@@ -30,9 +22,8 @@ pub struct ResponseStep {
 }
 
 impl ResponseStep {
-    /// How far a lift may step, in surface steps: never none, because a
-    /// theme cannot remove the hover and press lift (`docs/design-language.md`,
-    /// "Theming").
+    /// How far a lift may step, in surface steps: never none, because a theme cannot
+    /// remove the hover and press lift (`docs/design-language.md`, "Theming").
     pub const LIFT_ADMITTED: std::ops::RangeInclusive<f32> = 0.25..=2.0;
     /// How much accent a lift may carry.
     pub const TINT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.25;
@@ -43,7 +34,6 @@ impl ResponseStep {
 
     /// The stock hover lift, half a surface step.
     pub const HOVER_LIFT: f32 = 0.5;
-    /// The stock press scale.
     pub const PRESS_SCALE: f32 = 0.97;
 
     /// The stock idle response: no lift, no tint, no scale, no glow.
@@ -74,9 +64,8 @@ impl ResponseStep {
         Ok(())
     }
 
-    /// This step between the rest and `self` at `t` (`0` at rest, `1`
-    /// arrived), as the part motion's progress moves it. A step that
-    /// changes no lever is the lever's value at rest.
+    /// This step between the rest and `self` at `t` (`0` at rest, `1` arrived), as the
+    /// part motion's progress moves it.
     #[must_use]
     pub fn at(&self, t: f32) -> Self {
         let t = t.clamp(0.0, 1.0);
@@ -114,9 +103,9 @@ pub struct Response {
 }
 
 impl Response {
-    /// The design language's response: a hover lifts half a surface step, a
-    /// press a whole one and sinks to 0.97 with a lit edge (the stock glow's
-    /// `0.2` is the chrome's 51-of-255 inner hairline).
+    /// The design language's response: a hover lifts half a surface step, a press a whole
+    /// one and sinks to 0.97 with a lit edge (the stock glow's `0.2` is the chrome's
+    /// 51-of-255 inner hairline).
     pub const STOCK: Self = Self {
         hover: ResponseStep {
             lift: ResponseStep::HOVER_LIFT,
@@ -132,9 +121,8 @@ impl Response {
         },
     };
 
-    /// The response of a theme that holds still (`motion.curve: none`, as
-    /// block does): the same lifts, nothing scaling and no lit edge, because
-    /// nothing there moves.
+    /// The response of a theme that holds still (`motion.curve: none`, as block does):
+    /// the same lifts, nothing scaling and no lit edge, because nothing there moves.
     pub const STILL: Self = Self {
         hover: ResponseStep {
             lift: ResponseStep::HOVER_LIFT,
@@ -150,8 +138,8 @@ impl Response {
         },
     };
 
-    /// The step for the pointer states `hovered` and `pressed`; a press
-    /// answers with the press step whatever else is true.
+    /// The step for the pointer states `hovered` and `pressed`; a press answers with the
+    /// press step whatever else is true.
     #[must_use]
     pub fn step(&self, hovered: bool, pressed: bool) -> ResponseStep {
         if pressed {
@@ -222,7 +210,6 @@ mod tests {
     #[test]
     fn out_of_band_levers_are_refused() {
         for bad in [
-            // No lift at all: a theme cannot remove it.
             ResponseStep::REST,
             ResponseStep {
                 lift: -0.1,

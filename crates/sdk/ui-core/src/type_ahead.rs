@@ -1,11 +1,7 @@
-//! Type-ahead in a list: typing the first letters of a name moves to it.
-//!
-//! Every list of names a person scans (a folder in Files, the file chooser)
-//! answers typing the same way: letters typed in quick succession spell the
-//! start of a name and move to the first row it begins; after a pause the
-//! next letter starts over. Typing one letter again and again steps through
-//! the rows that begin with it. The list keeps its rows and its cursor; this
-//! keeps what was typed and says where to go.
+//! Type-ahead in a list: typing the first letters of a name moves to it. Every list of
+//! names a person scans (a folder in Files, the file chooser) answers typing the same
+//! way: letters typed in quick succession spell the start of a name and move to the first
+//! row it begins; after a pause the next letter starts over.
 
 use crate::time::{Duration, Instant};
 
@@ -20,8 +16,8 @@ pub struct TypeAhead {
 }
 
 impl TypeAhead {
-    /// Add `text` (a key's characters) to what is being typed at `now`,
-    /// starting over after a pause.
+    /// Add `text` (a key's characters) to what is being typed at `now`, starting over
+    /// after a pause.
     pub fn type_text(&mut self, text: &str, now: Instant) {
         if self
             .last
@@ -45,9 +41,8 @@ impl TypeAhead {
         &self.typed
     }
 
-    /// Whether a name is being typed at `now`: something was typed and the
-    /// pause that starts over has not passed. A space continues such a name;
-    /// otherwise it is the list's own key.
+    /// Whether a name is being typed at `now`: something was typed and the pause that
+    /// starts over has not passed.
     #[must_use]
     pub fn is_typing(&self, now: Instant) -> bool {
         !self.typed.is_empty()
@@ -57,11 +52,6 @@ impl TypeAhead {
     }
 
     /// The row to move to among `labels`, given the row the cursor is on.
-    ///
-    /// A longer name refines from the current row, which stays put while it
-    /// still matches; one letter repeated steps to the next row beginning
-    /// with it. Matching ignores case and wraps around. `None` when no row
-    /// begins with what was typed.
     #[must_use]
     pub fn target<'a>(
         &self,
@@ -74,9 +64,8 @@ impl TypeAhead {
         })
     }
 
-    /// [`Self::target`] among `len` rows read one at a time by `label`
-    /// (`None` for a row without a name), so a long list is searched
-    /// without collecting its names.
+    /// [`Self::target`] among `len` rows read one at a time by `label` (`None` for a row
+    /// without a name), so a long list is searched without collecting its names.
     #[must_use]
     pub fn target_at<'a>(
         &self,
@@ -92,7 +81,6 @@ impl TypeAhead {
             self.typed.clone()
         };
         let start = match current {
-            // One letter, or the same letter again: the next row with it.
             Some(current) if repeated => current.saturating_add(1),
             Some(current) => current,
             None => 0,

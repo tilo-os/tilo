@@ -1,25 +1,21 @@
-//! Menus the engine offers: a page's context menu (`context_menu`) and an
-//! extension's toolbar button menu (`extension_menu`), checked and bounded
-//! as they arrive.
+//! Menus the engine offers: a page's context menu (`context_menu`) and an extension's
+//! toolbar button menu (`extension_menu`), checked and bounded as they arrive.
 use serde_json::Value;
 
 use super::{extension_id, valid_id};
 use crate::webview::WebViewEvent;
 
-/// Bounds on a menu the engine offers: rows at each level, levels, and rows
-/// in all.
 const MENU_LEVEL_ROWS: usize = 24;
 const MENU_DEPTH: usize = 4;
 pub(super) const MENU_ROWS: usize = 200;
 
-/// Take one row from what is left of a menu's rows; `None` when none is.
 fn take_row(left: &mut usize) -> Option<()> {
     *left = left.checked_sub(1)?;
     Some(())
 }
 
-/// A page's context menu rows (`context_menu`): commands by id, separators,
-/// and submenus at most [`MENU_DEPTH`] deep.
+/// A page's context menu rows (`context_menu`): commands by id, separators, and submenus
+/// at most [`MENU_DEPTH`] deep.
 pub(super) fn decode_context_items(
     value: &Value,
     depth: usize,

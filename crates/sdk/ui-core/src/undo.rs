@@ -1,57 +1,19 @@
-//! Seeing and driving undo from inside a widget.
-//!
-//! Undo itself lives on [`State`](crate::state::State) / [`UndoLog`](crate::state::UndoLog), and
-//! the host ([`App`](crate::app::App)) drives it from Ctrl+Z. A [`Widget`](crate::widget::Widget)
-//! only ever receives `&mut AutoCommit`, so on its own it can neither ask *"is there anything to
-//! undo?"* nor *do* it — which is why apps shipped a shortcut hint instead of an Undo button.
-//!
-//! This module is the missing channel, deliberately two one-way halves rather than a handle onto
-//! the whole `State`:
-//!
-//! * **Host → widget.** Once per frame the host publishes an [`UndoStatus`] to every laid-out
-//!   widget via [`UndoControl::set_undo_status`]; a widget stores it (embed an [`UndoAccess`]) and
-//!   reads it from `draw` and, the part that matters for assistive technology, from
-//!   `accessibility`, which only gets `&self`.
-//! * **Widget → host.** A widget records an [`UndoRequest`] and the host drains it via
-//!   [`UndoControl::take_undo_request`] and performs it through `App::perform_undo` — the *same*
-//!   method the Ctrl+Z key handler calls, so a button and the shortcut cannot drift apart.
-//!
-//! Both halves sweep the host's `node_map`, which every laid-out widget registers itself in during
-//! `build_layout`, so a control works at any depth with no container forwarding — the same
-//! mechanism [`Widget::cursor_shape`](crate::widget::Widget::cursor_shape) and
-//! [`Widget::tooltip`](crate::widget::Widget::tooltip) already use.
-//!
-//! A third channel one step earlier: an app whose edits are dispatched
-//! [`tilo_actions`](crate::local_dispatch) actions reports the bracket around them through
-//! [`CommittedActions::take_committed_action`], and [`record_dispatched_action`] is where a host
-//! turns that into the undo entry the two halves see.
-//!
-//! Most apps need none of this directly: drop an [`UndoButton`](crate::widget::UndoButton) into a
-//! toolbar and it is wired.
+//! Seeing and driving undo from inside a widget. Undo itself lives on
+//! [`State`](crate::state::State) / [`UndoLog`](crate::state::UndoLog), and the host
+//! ([`App`](crate::app::App)) drives it from Ctrl+Z.
 
-// Canonical Edit operation identity is shared with portable widget dispatch.
 pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
 
-/// What the live undo history can do *right now*, as a widget sees it.
-///
-/// Published by the host once per frame. Every field is derived from the real
-/// [`UndoLog`](crate::state::UndoLog) at publish time and is scoped to the
-/// local author exactly as Ctrl+Z is — so `can_undo` is false precisely when
-/// pressing Ctrl+Z would do nothing, and a control rendered from it cannot
-/// promise an action the shortcut would refuse.
+/// What the live undo history can do *right now*, as a widget sees it. Every field is
+/// derived from the real [`UndoLog`](crate::state::UndoLog) at publish time and is scoped
+/// to the local author exactly as Ctrl+Z is — so `can_undo` is false precisely when
+/// pressing Ctrl+Z would do nothing, and a control rendered from it cannot promise an
+/// action the shortcut would refuse.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UndoStatus {
     pub can_undo: bool,
-    /// There is an action this user can redo.
     pub can_redo: bool,
-    /// What undo would revert, as the step's action record says it (the
-    /// sentence its history row reads) — see [`step_summary`].
-    ///
-    /// `None` when there is nothing to undo, or when the step names no action
-    /// to say: the control then reads as the bare verb.
     pub undo_summary: Option<String>,
-    /// The mirror of [`undo_summary`](Self::undo_summary) for redo: what
-    /// re-applying would put back.
     pub redo_summary: Option<String>,
 }
 
@@ -76,12 +38,9 @@ impl UndoStatus {
         }
     }
 
-    /// The sentence an assistive technology should hear as the control's
-    /// *description*: what the verb would do, or the reason it
-    /// is unavailable.
-    ///
-    /// `"Nothing to undo"` when unavailable — never a description of an action
-    /// that is not there.
+    /// The sentence an assistive technology should hear as the control's *description*:
+    /// what the verb would do, or the reason it is unavailable. `"Nothing to undo"` when
+    /// unavailable — never a description of an action that is not there.
     pub fn description(&self, which: UndoRequest) -> String {
         if !self.can(which) {
             return format!("Nothing to {}", which.verb());
@@ -93,8 +52,8 @@ impl UndoStatus {
     }
 }
 
-/// A widget's request that the host drive the history. The host performs it
-/// through the one undo implementation; a widget never touches the stacks.
+/// A widget's request that the host drive the history. The host performs it through the
+/// one undo implementation; a widget never touches the stacks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UndoRequest {
@@ -119,8 +78,8 @@ impl UndoRequest {
         }
     }
 
-    /// The keyboard shortcut the host binds to this verb, for a tooltip — so
-    /// the control teaches the shortcut rather than replacing it.
+    /// The keyboard shortcut the host binds to this verb, for a tooltip — so the control
+    /// teaches the shortcut rather than replacing it.
     pub fn shortcut(self) -> &'static str {
         match self {
             UndoRequest::Undo => "Ctrl+Z",
@@ -130,18 +89,6 @@ impl UndoRequest {
 }
 
 /// Which history verb, if any, a command-modified character key means.
-///
-/// Both the live host ([`App`](crate::app::App)) and the headless
-/// [`FrameHarness`](crate::headless::FrameHarness) resolve the key through this, so an app
-/// driven by a test scenario undoes on the same keystroke the user's fingers
-/// do. The binding itself is the host-shortcut table in
-/// [`platform`](crate::platform::HostShortcut). `character` is winit's logical
-/// key text; `shift` is read from the modifier state rather than from the
-/// character's case, because a shifted "z" arrives as `"Z"` on some layouts
-/// and `"z"` on others.
-///
-/// Returns `None` when the key is not a history binding — including when
-/// the command modifier is not held.
 pub fn shortcut(
     conventions: crate::platform::PlatformConventions,
     character: &str,
@@ -159,53 +106,10 @@ pub fn shortcut(
     }
 }
 
-/// Turn the actions a widget dispatched during the last event into exactly one
-/// undo boundary. Returns whether an entry was recorded.
-///
-/// The counterpart of [`shortcut`] for the *other* direction: the single place
-/// "an edit became an undo boundary" is written down, so a widget behaves
-/// identically under the live host ([`App`](crate::app::App)) and under the
-/// headless [`FrameHarness`](crate::headless::FrameHarness). Both call this once per tick.
-///
-/// It matters that there is only one of these, because there are two separate
-/// ways to get it wrong and both are silent:
-///
-/// * **Not draining at all.** [`take_committed_action`](crate::undo::CommittedActions::take_committed_action)
-///   is rising-edge, so a host that never reads it records nothing — an app
-///   whose edits all travel through [`tilo_actions`](crate::local_dispatch) then has
-///   an empty undo history no matter how much the user changed. The driver did
-///   exactly this, which made undo unobservable to every headless test of such
-///   an app.
-/// * **Draining anonymously.** Undo is author-scoped: an entry with no author
-///   is skipped by the local user's own Ctrl+Z, which then reverts an *older*
-///   entry instead. So the boundary must be attributed, and to the same
-///   identity [`State::undo_as`](crate::state::State::undo_as) is asked about.
-///
-/// * **Draining only the root.** This is the third host→widget channel of its
-///   kind, and it was the only one that read a single widget: no container in
-///   the toolkit forwards `take_committed_action`, so an app that put its
-///   editor inside a `Row`, a `Column`, or a `NavShell` lost every boundary
-///   with no error anywhere. Like [`UndoStatus`] and [`UndoRequest`], this
-///   sweeps `node_map` — every laid-out widget registers itself there — so a
-///   widget is reached at any depth.
-///
-/// Every bracket found is drained, even when the actions turned out to change
-/// nothing: the rising edge must be cleared, or a later unrelated edit would be
-/// bracketed from a stale point and undone along with it.
-///
-/// One tick is one boundary. When several widgets dispatched in the same tick,
-/// the entry spans from the *earliest* of their brackets — the one the others
-/// descend from — so a single Ctrl+Z reverts the tick rather than peeling it
-/// apart in an order the user never performed.
-///
-/// # Safety
-///
-/// `root` and the `node_map` pointers must point at widgets that are alive for
-/// the call — the invariant every `node_map` sweep in
-/// [`App`](crate::app::App) and [`FrameHarness`](crate::headless::FrameHarness) already
-/// relies on. Exactly one `&mut` is live at a time, so a widget that is both
-/// the root and registered in the map is safe (and yields its bracket once,
-/// because reading clears it).
+/// Turn the actions a widget dispatched during the last event into exactly one undo
+/// boundary. `root` and the `node_map` pointers must point at widgets that are alive for
+/// the call — the invariant every `node_map` sweep in [`App`](crate::app::App) and
+/// [`FrameHarness`](crate::headless::FrameHarness) already relies on.
 pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
@@ -236,9 +140,6 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     true
 }
 
-/// Bound host variant. The exclusive owner keeps root and both maps stable.
-/// `order` names the mapped nodes to visit: every node that can report a
-/// bracket (a bound node, a [`CommittedActions`] widget), or all.
 pub(crate) unsafe fn record_dispatched_action_bound(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
@@ -311,40 +212,34 @@ pub(crate) unsafe fn record_dispatched_action_bound(
     true
 }
 
-/// A widget whose own controls dispatch the actions its resource exports,
-/// and so report the undo boundary around them (see
-/// [`record_dispatched_action`]).
+/// A widget whose own controls dispatch the actions its resource exports, and so report
+/// the undo boundary around them (see [`record_dispatched_action`]).
 pub trait CommittedActions {
-    /// The document heads captured just before the widget's last dispatched
-    /// action. Rising-edge: reading clears it.
+    /// The document heads captured just before the widget's last dispatched action.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>>;
 
-    /// Whether the undo step the last boundary opened stays open for the
-    /// actions that continue it (the rest of a word typed a keystroke at a
-    /// time). Answered by the widget itself, never its children.
+    /// Whether the undo step the last boundary opened stays open for the actions that
+    /// continue it (the rest of a word typed a keystroke at a time). Answered by the
+    /// widget itself, never its children.
     fn keeps_undo_step_open(&self) -> bool {
         false
     }
 }
 
-/// A control that shows or drives the document's undo history (an Undo
-/// button). The host reaches every laid-out widget through its `node_map`, so
-/// a control works at any depth with no container forwarding.
+/// A control that shows or drives the document's undo history (an Undo button).
 pub trait UndoControl {
-    /// Host → widget: the live undo state, published once per frame. Call
-    /// the provider only when the status is shown; a historical summary can
-    /// need a document diff.
+    /// Host → widget: the live undo state, published once per frame.
     fn set_undo_status(&mut self, _status: &mut dyn FnMut() -> UndoStatus) {}
 
-    /// Widget → host: an undo or redo the user asked for, performed through
-    /// the same path as Ctrl+Z. Rising-edge: reading clears it.
+    /// Widget → host: an undo or redo the user asked for, performed through the same path
+    /// as Ctrl+Z.
     fn take_undo_request(&mut self) -> Option<UndoRequest> {
         None
     }
 }
 
-/// A focused component's observed history, or an original-field observation
-/// that is not available yet. Pending is never replaced by document history.
+/// A focused component's observed history, or an original-field observation that is not
+/// available yet. Pending is never replaced by document history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalUndoStatus {
     Ready(UndoStatus),
@@ -359,30 +254,26 @@ impl LocalUndoStatus {
     }
 }
 
-/// A component with its own editing history, offered the host's keyboard
-/// undo/redo shortcut before the application document consumes it.
+/// A component with its own editing history, offered the host's keyboard undo/redo
+/// shortcut before the application document consumes it.
 pub trait LocalUndo {
-    /// None means this component does not own the focused history. Pending
-    /// means it owns it, but cannot currently advertise an available entry.
+    /// None means this component does not own the focused history. Pending means it owns
+    /// it, but cannot currently advertise an available entry.
     fn local_undo_status(&self) -> Option<LocalUndoStatus> {
         None
     }
 
-    /// True when exported Edit operations complete through Widget's existing
-    /// asynchronous operation receipts rather than on shortcut dispatch.
+    /// True when exported Edit operations complete through Widget's existing asynchronous
+    /// operation receipts rather than on shortcut dispatch.
     fn local_undo_is_deferred(&self) -> bool {
         false
     }
 
-    /// `true` only while focus is inside the component and it consumed the
-    /// request.
+    /// `true` only while focus is inside the component and it consumed the request.
     fn handle_local_undo_request(&mut self, request: UndoRequest) -> bool;
 
-    /// Admit a deferred system Edit request without exposing the host's raw
-    /// operation protocol to apps. True means queued, never already succeeded.
-    /// The component retains this invocation and reports its actual native ACK
-    /// through `poll_local_undo_operation`. Required hosted custody continues to
-    /// be declined by the generic adapter; this interface supplies no grant.
+    /// Admit a deferred system Edit request without exposing the host's raw operation
+    /// protocol to apps. True means queued, never already succeeded.
     fn start_local_undo_operation(
         &mut self,
         _invocation: tilo_actions::InvocationId,
@@ -391,8 +282,8 @@ pub trait LocalUndo {
         Ok(false)
     }
 
-    /// Complete only this component's previously admitted native Edit request.
-    /// A lost ACK must fail explicitly; it must not become document Undo.
+    /// Complete only this component's previously admitted native Edit request. A lost ACK
+    /// must fail explicitly; it must not become document Undo.
     fn poll_local_undo_operation(
         &mut self,
         _invocation: tilo_actions::InvocationId,
@@ -423,8 +314,6 @@ pub(crate) fn start_local_history(
     start_deferred_undo(local, request.invocation, request.payload)
 }
 
-/// Hands a native Edit request to `local` if it defers its history. Apart from
-/// the generic lookup, so the decoding lives in the toolkit, not in each app.
 #[inline(never)]
 fn start_deferred_undo(
     local: &mut dyn LocalUndo,
@@ -517,8 +406,8 @@ pub fn handle_local_undo_request(
         .any(|child| handle_local_undo_request(child, request))
 }
 
-/// A widget that restores its ephemeral state (caret, selection) around the
-/// undo points its owner's actions make.
+/// A widget that restores its ephemeral state (caret, selection) around the undo points
+/// its owner's actions make.
 pub trait UndoPoints: crate::widget::Widget {
     /// Ephemeral state (caret, selection) saved with an undo point.
     fn get_state(&self) -> Option<String> {
@@ -541,12 +430,6 @@ pub fn set_state(widget: &mut (impl crate::widget::Widget + ?Sized), state: &str
     }
 }
 
-/// The bracket the others descend from, or `None` when there were none.
-///
-/// A change graph has no total order over heads, so "earliest" is asked of the
-/// document rather than guessed: the bracket with the most changes after it is
-/// the one furthest back. The single-bracket case — every tick — skips the
-/// question entirely.
 fn earliest_bracket(
     state: &mut crate::state::State,
     mut brackets: Vec<Vec<automerge::ChangeHash>>,
@@ -620,10 +503,9 @@ impl UndoAccess {
         self.status.can(which)
     }
 
-    /// Ask the host to perform `which`. Returns `false` — and enqueues
-    /// nothing — when the verb is unavailable, so a control that somehow got
-    /// activated while empty cannot make the host attempt an undo that isn't
-    /// there.
+    /// Ask the host to perform `which`. Returns `false` — and enqueues nothing — when the
+    /// verb is unavailable, so a control that somehow got activated while empty cannot
+    /// make the host attempt an undo that isn't there.
     pub fn request(&mut self, which: UndoRequest) -> bool {
         if !self.can(which) {
             return false;
@@ -632,8 +514,7 @@ impl UndoAccess {
         true
     }
 
-    /// Widget → host: take the pending request. Rising-edge — reading clears
-    /// it, so one activation produces exactly one undo.
+    /// Widget → host: take the pending request.
     pub fn take_request(&mut self) -> Option<UndoRequest> {
         self.pending.take()
     }
@@ -826,7 +707,6 @@ mod tests {
 
         {
             let mut access = UndoAccess::new();
-            // Nothing published yet: an empty history.
             assert!(!access.request(UndoRequest::Undo), "empty history refuses");
             assert_eq!(
                 access.take_request(),
@@ -837,7 +717,6 @@ mod tests {
             access.publish(&status(true, false));
             assert!(access.request(UndoRequest::Undo));
             assert_eq!(access.take_request(), Some(UndoRequest::Undo));
-            // Redo is still unavailable even though undo is.
             assert!(!access.request(UndoRequest::Redo));
             assert_eq!(access.take_request(), None);
         }
@@ -872,8 +751,6 @@ mod tests {
             let shortcut = |c, command, shift| shortcut(linux, c, command, shift);
             assert_eq!(shortcut("z", true, false), Some(UndoRequest::Undo));
             assert_eq!(shortcut("Z", true, false), Some(UndoRequest::Undo));
-            // Shift is read from the modifiers, not from the character's case:
-            // a shifted "z" reaches winit as either spelling.
             assert_eq!(shortcut("z", true, true), Some(UndoRequest::Redo));
             assert_eq!(shortcut("Z", true, true), Some(UndoRequest::Redo));
             assert_eq!(shortcut("y", true, false), Some(UndoRequest::Redo));
@@ -899,7 +776,6 @@ mod tests {
             assert_eq!(live.description(UndoRequest::Redo), "Redo: Added a card");
         }
 
-        // A step that names no action reads as the bare verb.
         {
             let s = UndoStatus {
                 can_undo: true,
@@ -910,10 +786,9 @@ mod tests {
     }
 }
 
-/// What `entry`'s step did, as its action record says it: the step an
-/// undo or redo moved is named by itself, not by the change that moved it
-/// ([`UndoEntry::step`](crate::state::UndoEntry::step)). `None` for a step
-/// that names no action.
+/// What `entry`'s step did, as its action record says it: the step an undo or redo moved
+/// is named by itself, not by the change that moved it
+/// ([`UndoEntry::step`](crate::state::UndoEntry::step)).
 pub(crate) fn step_summary(entry: &crate::state::UndoEntry) -> Option<String> {
     entry
         .step
@@ -921,8 +796,8 @@ pub(crate) fn step_summary(entry: &crate::state::UndoEntry) -> Option<String> {
         .and_then(crate::history_source::sentence::step_summary)
 }
 
-/// The undo status of `history` for `author`, read without finalizing a
-/// displayed owner's live edit.
+/// The undo status of `history` for `author`, read without finalizing a displayed owner's
+/// live edit.
 pub(crate) fn status_snapshot(
     doc: &automerge::AutoCommit,
     history: &crate::state::UndoLog,

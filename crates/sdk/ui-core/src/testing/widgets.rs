@@ -1,18 +1,9 @@
-//! Boilerplate for the probe widgets this crate's own tests define.
-//!
-//! Each macro expands inside an `impl Widget for ...` (or produces the whole
-//! `impl AppWidget`) so a probe only spells out the methods it observes.
+//! Boilerplate for the probe widgets this crate's own tests define. Each macro expands
+//! inside an `impl Widget for ...` (or produces the whole `impl AppWidget`) so a probe
+//! only spells out the methods it observes.
 
-/// Stubs for [`Widget`](crate::widget::Widget) methods a probe does not
-/// observe; it emits exactly the named pieces:
-///
-/// - `leaf_layout`: a default-styled leaf registered for this widget
-/// - `unregistered_leaf_layout`: a default-styled leaf left out of the node map
-/// - `name = "..."`: a fixed widget name
-/// - `name_field`: the name stored in `self.name`
-///
-/// `apply_layout`, `draw`, `get_rect` and `handle_event` need no stub: the
-/// trait defaults do nothing.
+/// Stubs for [`Widget`](crate::widget::Widget) methods a probe does not observe; it emits
+/// exactly the named pieces.
 macro_rules! inert_widget_methods {
     (@ leaf_layout) => {
         fn build_layout(
@@ -54,10 +45,6 @@ macro_rules! inert_widget_methods {
     };
 }
 
-/// Forwards the named required [`Widget`](crate::widget::Widget) methods to
-/// the widget in field `$field` (a name or a tuple index):
-/// `delegate_widget_methods!(inner: sync, build_layout, apply_layout, draw,
-/// handle_event, get_rect)`.
 macro_rules! delegate_widget_methods {
     (@ $field:tt sync) => {
         fn sync(&mut self, doc: &$crate::widget::AppModel, path: &$crate::widget::ModelPath) {
@@ -118,10 +105,6 @@ macro_rules! delegate_widget_methods {
     };
 }
 
-/// An [`AppWidget`](crate::widget::AppWidget) for a probe: an editor with the
-/// given title, a `T` glyph and no permission hint. `icon = ...` and
-/// `kind = ...` override the defaults, a leading `impl [generics]` adds impl
-/// parameters, and a trailing `{ ... }` block adds further methods.
 macro_rules! test_app_widget {
     (@ or , $default:expr) => {
         $default
@@ -163,8 +146,8 @@ macro_rules! test_app_widget {
 
 pub(crate) use {delegate_widget_methods, inert_widget_methods, test_app_widget};
 
-/// Two editor windows side by side, as the desktop's strip lays them out:
-/// 400x300 each in a surface that fills its parent.
+/// Two editor windows side by side, as the desktop's strip lays them out: 400x300 each in
+/// a surface that fills its parent.
 pub(crate) struct TwoWindows {
     tiles: [crate::widget::TileHost; 2],
     rect: ::vello::kurbo::Rect,

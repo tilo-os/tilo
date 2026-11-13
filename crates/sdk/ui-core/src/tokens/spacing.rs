@@ -1,10 +1,8 @@
-/// The 4 px spacing scale every gap, inset and gutter is drawn from.
-///
-/// `Copy` so a `const` context can read a step (`Spacing::BASE.s3`) for the
-/// handful of chrome constants that must be compile-time values; everything
-/// with a `Theme` in hand reads `theme.tokens.spacing.*`, which is already
-/// scaled by [`crate::Theme::with_ui_scale`] and by a custom theme's
-/// `spacing_px`.
+/// The 4 px spacing scale every gap, inset and gutter is drawn from. `Copy` so a `const`
+/// context can read a step (`Spacing::BASE.s3`) for the handful of chrome constants that
+/// must be compile-time values; everything with a `Theme` in hand reads
+/// `theme.tokens.spacing.*`, which is already scaled by [`crate::Theme::with_ui_scale`]
+/// and by a custom theme's `spacing_px`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spacing {
     pub s0: f32,
@@ -16,51 +14,29 @@ pub struct Spacing {
     pub s8: f32,
     pub s12: f32,
     pub s16: f32,
-    /// The scale named by relationship: how far apart two things are
-    /// follows from how they relate, so one relationship never carries two
-    /// different gaps.
+    /// The scale named by relationship: how far apart two things are follows from how
+    /// they relate, so one relationship never carries two different gaps.
     pub rhythm: RhythmScale,
 }
 
-/// How two neighbours relate, which decides how far apart they sit
-/// (HIG §7b). Layout containers take one (`Column::with_rhythm`,
-/// `Row::with_rhythm`) and resolve it against the theme they are laid out
-/// with, so the gap follows density, `ui_scale` and a custom spacing scale.
+/// How two neighbours relate, which decides how far apart they sit (HIG §7b).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Rhythm {
-    /// Neighbours that meet: a window's bar and the content under it are one surface, not two
-    /// things standing beside each other, so nothing separates them.
     None,
-    /// The smallest gap two neighbours may have: a label and its caption, and anything else
-    /// that takes no press.
     Tight,
-    /// Controls inside one cluster: the closest two controls stand. The face a control draws is
-    /// smaller than the press target it takes, which reaches into the gap around it, so this is
-    /// the step two controls hold between them; `Tight` is for neighbours that take no press.
     Related,
-    /// Siblings of equal weight: rows, cards, clusters on a bar.
     Sibling,
-    /// Between two sections; padding inside a panel body.
     Section,
-    /// Between groups of sections; the content gutter.
     Group,
 }
 
-/// The gaps of each [`Rhythm`], each a step of the [`Spacing`] scale and
-/// scaled with it.
+/// The gaps of each [`Rhythm`], each a step of the [`Spacing`] scale and scaled with it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RhythmScale {
-    /// The smallest gap two neighbours may have; a control's face inset.
     pub tight: f32,
-    /// Controls inside one cluster (a bar's tool buttons, a field and its
-    /// toggle).
     pub related: f32,
-    /// Siblings of equal weight: clusters on a bar, cards and rows in a
-    /// list.
     pub sibling: f32,
-    /// Padding inside a card or panel body; the gap between two sections.
     pub section: f32,
-    /// The gap between groups of sections, and the content gutter.
     pub group: f32,
 }
 
@@ -101,9 +77,6 @@ impl RhythmScale {
 
 impl Spacing {
     /// Unscaled reference scale: 0 / 4 / 8 / 12 / 16 / 24 / 32 / 48 / 64.
-    /// [`Spacing::default`] returns this; a `const` that has to agree with
-    /// a token (a shell breakpoint composed from a gutter, say) reads it
-    /// directly instead of restating the number.
     pub const BASE: Self = Self {
         s0: 0.0,
         s1: 4.0,
@@ -134,8 +107,7 @@ impl Spacing {
     }
 
     /// Every step multiplied by `factor` (`ui_scale`, or a custom theme's
-    /// `spacing_px / BASE.s3`). Proportions between steps are preserved, so
-    /// a widget that pairs `s2` with `s4` keeps its 1:2 rhythm at any scale.
+    /// `spacing_px / BASE.s3`).
     #[must_use]
     pub fn scaled(&self, factor: f32) -> Self {
         Self {
@@ -159,9 +131,9 @@ impl Default for Spacing {
     }
 }
 
-/// A named step on the [`Spacing`] scale, for APIs that resolve a gap at
-/// layout time from the `Theme` they are handed (`Spacer::token`) rather than
-/// taking an unscaled pixel value from the caller.
+/// A named step on the [`Spacing`] scale, for APIs that resolve a gap at layout time from
+/// the `Theme` they are handed (`Spacer::token`) rather than taking an unscaled pixel
+/// value from the caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpacingStep {
     S0,

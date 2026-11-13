@@ -17,7 +17,6 @@ pub enum PointerAction {
 
 impl PointerAction {
     /// Build input for a host whose EventCtx uses this positive input scale.
-    /// A logical point is converted exactly once; button edges carry no position.
     pub fn event(self, scale_factor: f64) -> WindowEvent {
         let device_id = DeviceId::dummy();
         match self {
@@ -32,7 +31,6 @@ impl PointerAction {
     }
 
     /// Drive the production Widget::handle_event path with the host's own context.
-    /// Layout, painting, focus and per-frame harvest remain the host's responsibility.
     pub fn dispatch(self, widget: &mut dyn Widget, ctx: &mut EventCtx<'_>) {
         widget.handle_event(&self.event(ctx.scale_factor), ctx);
     }

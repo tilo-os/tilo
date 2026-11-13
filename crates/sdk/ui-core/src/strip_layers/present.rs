@@ -1,12 +1,7 @@
-//! Presenting frames drawn as layers: the layer textures a host keeps, the
-//! work each frame takes on them, and the composite into the host's output.
-//!
-//! The host supplies the raster ([`LayerRaster`]): how a scene is rendered
-//! into one layer texture, under which completion policy, and how the
-//! composite reaches its output. The compositor renders under a frame
-//! deadline and waits for the GPU; an app's render worker submits and
-//! presents. What a frame rasterises, copies and composites is decided here,
-//! the same for both.
+//! Presenting frames drawn as layers: the layer textures a host keeps, the work each
+//! frame takes on them, and the composite into the host's output. The host supplies the
+//! raster ([`LayerRaster`]): how a scene is rendered into one layer texture, under which
+//! completion policy, and how the composite reaches its output.
 
 use vello::peniko::Color;
 use vello::{FineDamageRect, Scene, wgpu};
@@ -34,11 +29,9 @@ pub trait LayerRaster {
     /// What the backdrop layer is rasterised over.
     fn base_color(&self) -> Color;
 
-    /// Rasterise `scene` over `base` into `layer`: within `regions` only,
-    /// when given, keeping the rest of the texture.
-    ///
-    /// # Errors
-    /// When the render fails or misses the host's completion policy.
+    /// Rasterise `scene` over `base` into `layer`: within `regions` only, when given,
+    /// keeping the rest of the texture. When the render fails or misses the host's
+    /// completion policy.
     fn render(
         &mut self,
         layer: &mut LayerTexture,
@@ -47,12 +40,9 @@ pub trait LayerRaster {
         base: Color,
     ) -> Result<(), Self::Error>;
 
-    /// Encode with `encode` what writes the output (the composite, writing
-    /// the output view it is given), and submit it under the host's
-    /// completion policy.
-    ///
-    /// # Errors
-    /// When the submission fails or misses the host's completion policy.
+    /// Encode with `encode` what writes the output (the composite, writing the output
+    /// view it is given), and submit it under the host's completion policy. When the
+    /// submission fails or misses the host's completion policy.
     fn composite(
         &mut self,
         encode: impl FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
@@ -62,15 +52,13 @@ pub trait LayerRaster {
 /// The layer textures of one output and what they hold.
 #[derive(Default)]
 pub struct LayerPresenter {
-    /// Allocated by the first frame that comes as layers.
     layers: Option<StripLayers>,
-    /// The work the latest presented frame planned.
     last_work: Option<LayerWork>,
 }
 
 impl LayerPresenter {
-    /// Whether `cache` can be presented on an output of `size`: it has
-    /// strips, one drawing for each, on a canvas at least as wide.
+    /// Whether `cache` can be presented on an output of `size`: it has strips, one
+    /// drawing for each, on a canvas at least as wide.
     #[must_use]
     pub fn can_present(cache: &FrameCache, size: (u32, u32)) -> bool {
         !cache.strips.is_empty()
@@ -78,15 +66,9 @@ impl LayerPresenter {
             && cache.width >= size.0
     }
 
-    /// Composite `cache`, frame `revision`, into the output: a strip pan
-    /// copies what stays on screen and rasterises only what it uncovered.
-    /// `holds` is the frame the output target holds now, when it holds a
-    /// complete one; only what changed since is composited when that is the
-    /// frame last composited from the layers.
-    ///
-    /// # Errors
-    /// As the raster's; a failure forgets what the layers hold, so the next
-    /// frame rasterises them whole.
+    /// Composite `cache`, frame `revision`, into the output: a strip pan copies what
+    /// stays on screen and rasterises only what it uncovered. As the raster's; a failure
+    /// forgets what the layers hold, so the next frame rasterises them whole.
     pub fn present<R: LayerRaster>(
         &mut self,
         raster: &mut R,
@@ -109,16 +91,10 @@ impl LayerPresenter {
         result
     }
 
-    /// Bring the layer textures up to `cache` without compositing it: the
-    /// content at rest drawn as layers, so that the first frame of the next
-    /// pan copies and composites instead of rasterising every layer.
-    /// Rasterises only the layers that differ from what the textures hold, a
-    /// whole one in bands ([`warm_bands`]), and stops between two renders as
-    /// soon as `keep_going` says a frame waits, keeping what it finished.
-    /// The output is left alone. Returns the pixels rasterised.
-    ///
-    /// # Errors
-    /// As the raster's; a failure forgets what the layers hold.
+    /// Bring the layer textures up to `cache` without compositing it: the content at rest
+    /// drawn as layers, so that the first frame of the next pan copies and composites
+    /// instead of rasterising every layer. As the raster's; a failure forgets what the
+    /// layers hold.
     pub fn warm<R: LayerRaster>(
         &mut self,
         raster: &mut R,
@@ -133,17 +109,15 @@ impl LayerPresenter {
             return Ok(0);
         }
         let mut shown = layers.shown.take().unwrap_or_else(Shown::unknown);
-        // The output keeps the frame it shows, which these textures no
-        // longer composite to.
         shown.revision = None;
         let warmed = warm_into(layers, raster, &mut shown, cache, &work, keep_going);
         layers.shown = warmed.is_ok().then_some(shown);
         warmed
     }
 
-    /// The output went from `previous` to `revision` without a pixel
-    /// changing: layers it was composited from as `previous` are still what
-    /// it shows, so the next pan composites only what moves.
+    /// The output went from `previous` to `revision` without a pixel changing: layers it
+    /// was composited from as `previous` are still what it shows, so the next pan
+    /// composites only what moves.
     pub fn kept(&mut self, previous: u64, revision: u64) {
         if let Some(shown) = self
             .layers
@@ -155,18 +129,17 @@ impl LayerPresenter {
         }
     }
 
-    /// What the layer textures hold is no longer known (the colour the
-    /// backdrop is rasterised over changed, or the renderer lost geometry):
-    /// the next frame rasterises every layer.
+    /// What the layer textures hold is no longer known (the colour the backdrop is
+    /// rasterised over changed, or the renderer lost geometry): the next frame rasterises
+    /// every layer.
     pub fn forget(&mut self) {
         if let Some(layers) = self.layers.as_mut() {
             layers.shown = None;
         }
     }
 
-    /// Whether the layer textures hold every layer of some frame: then a
-    /// frame drawn as layers composites from them, rasterising only what
-    /// changed.
+    /// Whether the layer textures hold every layer of some frame: then a frame drawn as
+    /// layers composites from them, rasterising only what changed.
     #[must_use]
     pub fn holds_layers(&self) -> bool {
         self.layers
@@ -181,8 +154,8 @@ impl LayerPresenter {
         self.last_work.as_ref()
     }
 
-    /// The pixels the latest [`Self::present`] rasterised and composited,
-    /// on an output of `size`, for counters.
+    /// The pixels the latest [`Self::present`] rasterised and composited, on an output of
+    /// `size`, for counters.
     #[must_use]
     pub fn last_pixels(&self, size: (u32, u32)) -> Option<(u64, u64)> {
         self.last_work
@@ -203,7 +176,6 @@ impl LayerPresenter {
     }
 }
 
-/// [`LayerPresenter::present`]'s renders and composite.
 fn run<R: LayerRaster>(
     layers: &mut StripLayers,
     raster: &mut R,
@@ -216,7 +188,6 @@ fn run<R: LayerRaster>(
         let texture = layers.texture_mut(Layer::Backdrop);
         raster.render(texture, &cache.layers.backdrop, None, base)?;
     }
-    // The chrome's changed tiles, or all of it.
     let chrome_tiles = work.chrome_tiles.clone().filter(|_| raster.sparse());
     if work.chrome && chrome_tiles.as_ref().is_none_or(|tiles| !tiles.is_empty()) {
         let texture = layers.texture_mut(Layer::Chrome);
@@ -263,15 +234,12 @@ fn run<R: LayerRaster>(
     })
 }
 
-/// The strips layer's scene as the screen shows it.
 fn panned(cache: &FrameCache) -> Scene {
     let mut scene = Scene::new();
     append_panned(&mut scene, &cache.layers, &cache.strips);
     scene
 }
 
-/// Move the strips layer's bands `copies` names. `false` when they were not
-/// moved: the layer is then rasterised whole.
 fn copy_bands<R: LayerRaster>(
     layers: &mut StripLayers,
     raster: &R,
@@ -293,8 +261,7 @@ fn area_of(rects: &[FineDamageRect]) -> u64 {
     rects.iter().copied().map(area).fold(0, u64::saturating_add)
 }
 
-/// [`LayerPresenter::warm`]'s renders, noting in `shown` each layer as it
-/// is done. Returns the pixels rasterised.
+/// [`LayerPresenter::warm`]'s renders, noting in `shown` each layer as it is done.
 fn warm_into<R: LayerRaster>(
     layers: &mut StripLayers,
     raster: &mut R,
@@ -317,8 +284,8 @@ fn warm_into<R: LayerRaster>(
         if !keep_going() {
             return Ok(pixels);
         }
-        // A chrome texture that holds the drawing the chrome changed from
-        // takes only the tiles that changed (a clock tick).
+        // A chrome texture that holds the drawing the chrome changed from takes only the
+        // tiles that changed (a clock tick).
         let damaged = work
             .chrome_tiles
             .clone()
@@ -384,9 +351,6 @@ fn warm_into<R: LayerRaster>(
     Ok(pixels)
 }
 
-/// Rasterise `scene` over `base` into all of `texture`, band by band when
-/// `bands` cuts it, asking `keep_going` between two bands. Whether the
-/// whole layer got drawn.
 fn warm_whole<R: LayerRaster>(
     raster: &mut R,
     texture: &mut LayerTexture,
@@ -407,15 +371,14 @@ fn warm_whole<R: LayerRaster>(
     Ok(true)
 }
 
-/// The raster an app's render worker presents layers with: vello renders
-/// each layer straight into its texture and the composite writes the
-/// worker's retained target, all submitted in order on one queue, so
-/// nothing waits for the GPU here; presenting the target follows them.
+/// The raster an app's render worker presents layers with: vello renders each layer
+/// straight into its texture and the composite writes the worker's retained target, all
+/// submitted in order on one queue, so nothing waits for the GPU here; presenting the
+/// target follows them.
 pub struct QueuedRaster<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub renderer: &'a mut vello::Renderer,
-    /// The retained target the composite writes.
     pub output: &'a wgpu::TextureView,
     pub size: (u32, u32),
     pub base_color: Color,
@@ -492,8 +455,8 @@ fn sparse_supported(_: &vello::Renderer) -> bool {
     false
 }
 
-/// Render only `regions` of `layer`; `false`, with nothing rendered, when
-/// the renderer cannot.
+/// Render only `regions` of `layer`; `false`, with nothing rendered, when the renderer
+/// cannot.
 #[cfg(feature = "native")]
 fn render_regions(
     raster: &mut QueuedRaster<'_>,

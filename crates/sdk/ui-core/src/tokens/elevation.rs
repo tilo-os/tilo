@@ -1,25 +1,12 @@
 use vello::peniko::Color;
 
-/// One step of the elevation ramp — a complete description of a drop
-/// shadow, and the **only** description a surface is allowed to use.
-///
-/// - `offset_y` — how far the shadow sits below the surface, held at a
-///   quarter of `blur` all the way up the ramp; larger and the shadow
-///   reads as a dark bar under one edge rather than depth.
-/// - `blur` — a CSS-style blur radius; [`crate::surface::shadow`] halves
-///   it for the Gaussian's standard deviation, so falloff dies out about
-///   `1.25 * blur` past the surface's outline.
-/// - `color` — hue **and strength**. Alpha is honoured, not decorative:
-///   dropping it is how the quick-settings panel once rendered a
-///   43%-black token as a 100%-black smear.
+/// One step of the elevation ramp — a complete description of a drop shadow, and the
+/// **only** description a surface is allowed to use.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
     pub offset_y: f32,
     pub blur: f32,
     pub color: Color,
-    /// The line a surface is outlined with in place of this shadow, where
-    /// the theme's depth is an outline (`crate::tokens::Depth::Outline`):
-    /// drawn along the surface's own outline by [`crate::surface::shadow`].
     pub outline: Option<Outline>,
 }
 
@@ -32,8 +19,8 @@ pub struct Outline {
 }
 
 impl Shadow {
-    /// The same shadow with its alpha scaled by `factor` — the one way an
-    /// animating surface fades its elevation with itself.
+    /// The same shadow with its alpha scaled by `factor` — the one way an animating
+    /// surface fades its elevation with itself.
     #[must_use]
     pub fn with_alpha_scaled(self, factor: f32) -> Self {
         Self {
@@ -48,13 +35,8 @@ impl Shadow {
     }
 }
 
-/// How much of the dark material's floating shadow a **light** material
-/// keeps: the design language's light floating layer (alpha 0.14) over the
-/// dark one (0.38).
-///
-/// A drop shadow is black in either polarity, so equal alpha does not buy
-/// equal weight: the same wash that a dark ground swallows whole lands hard
-/// on a pale one.
+/// How much of the dark material's floating shadow a **light** material keeps: the design
+/// language's light floating layer (alpha 0.14) over the dark one (0.38).
 pub const LIGHT_SHADOW_SCALE: f32 = 0.14 / 0.38;
 
 const fn black(offset_y: f32, blur: f32, alpha: u8) -> Shadow {
@@ -66,33 +48,21 @@ const fn black(offset_y: f32, blur: f32, alpha: u8) -> Shadow {
     }
 }
 
-/// Elevation (`docs/design-language.md`, "Surfaces"): a window tile casts
-/// one soft shadow that lifts it off the desktop ground; a floating thing
-/// casts two, a tight contact layer that defines its edge and a wide one
-/// that reads as distance. Bars, cards and selected controls cast none: a
-/// selection is a lift ([`crate::tokens::Intents::selection`]).
+/// Elevation (`docs/design-language.md`, "Surfaces"): a window tile casts one soft shadow
+/// that lifts it off the desktop ground; a floating thing casts two, a tight contact
+/// layer that defines its edge and a wide one that reads as distance.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Elevation {
-    /// The soft shadow under a window tile on the desktop ground, painted
-    /// at the tile's radius.
     pub window: Shadow,
-    /// The wide layer of a floating thing's shadow — a menu, popover, the
-    /// palette, a sheet, quick settings, a toast, a tooltip, a dragged
-    /// object. Paint both layers with [`crate::surface::floating_shadow`].
     pub floating: Shadow,
-    /// The tight layer at a floating surface's foot, under the wide one: it
-    /// defines the edge where the wide shadow alone reads as haze.
     pub contact: Shadow,
-    /// The 1 px inner hairline a floating surface draws just inside its
-    /// outline: white on a dark material, black on a light one.
+    /// The 1 px inner hairline a floating surface draws just inside its outline: white on
+    /// a dark material, black on a light one.
     pub floating_edge: Color,
-    /// The wheel disc's rim light: a different vocabulary from a drop
-    /// shadow, of which only the hue is read.
+    /// The wheel disc's rim light: a different vocabulary from a drop shadow, of which
+    /// only the hue is read.
     pub glass_inner: Shadow,
-    /// The wheel disc's outer bloom. Only the hue is read.
     pub glass_outer: Shadow,
-    /// The factor this material's shadow was scaled by relative to the dark
-    /// one, for a widget composing its own soft stack (a sprite, a ring).
     pub shadow_scale: f32,
 }
 
@@ -116,8 +86,8 @@ impl Elevation {
         }
     }
 
-    /// Elevation on a **light** material: the same geometry, lighter, and
-    /// a black inner hairline.
+    /// Elevation on a **light** material: the same geometry, lighter, and a black inner
+    /// hairline.
     pub fn light() -> Self {
         let d = Self::dark();
         Self {
@@ -135,10 +105,9 @@ impl Elevation {
 }
 
 impl Elevation {
-    /// This elevation under a theme's depth: shadows at `strength`; for an
-    /// outline, no shadows and the window's and a floating thing's outline
-    /// in `outline`; for none, nothing at all. The glass rim and bloom are
-    /// the wheel's own vocabulary and stay.
+    /// This elevation under a theme's depth: shadows at `strength`; for an outline, no
+    /// shadows and the window's and a floating thing's outline in `outline`; for none,
+    /// nothing at all.
     #[must_use]
     pub fn with_depth(self, depth: crate::tokens::Depth, outline: Outline) -> Self {
         let strength = depth.shadow_strength();

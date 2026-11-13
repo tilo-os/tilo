@@ -155,16 +155,11 @@ fn a_hosted_windows_slots_reach_its_bar_and_presses_reach_its_app() {
         window.take_events(),
         vec![ToolbarEvent::Action { id: "new".into() }]
     );
-    // Its tile went (a rebuild gives the tab a fresh window): the old
-    // window's slots leave the bar.
     let sync = slots.sync_hosted(&[], groups.iter_mut());
     assert!(sync.changed);
     assert_eq!(groups[0].tab_toolbar(5), None);
 }
 
-/// A window of an app in the host's own process (the browser's) shows the
-/// reactions to its record in its bar, as an app's own window does, and a
-/// press on a pill reaches the app as the reaction it is.
 #[test]
 fn a_hosted_windows_reactions_reach_its_bar_and_presses_reach_its_app() {
     use crate::window_toolbar::{REACTION_ACTION_PREFIX, ToolbarReaction, ToolbarReactions};
@@ -204,8 +199,8 @@ fn a_hosted_windows_reactions_reach_its_bar_and_presses_reach_its_app() {
     );
 }
 
-/// The desktop's own "Share to channel…" ends the menu of a window whose
-/// app has a bar, and choosing it reaches the desktop, never the app.
+/// The desktop's own "Share to channel…" ends the menu of a window whose app has a bar,
+/// and choosing it reaches the desktop, never the app.
 #[test]
 fn the_desktops_own_menu_items_join_an_apps_bar_and_come_back_to_the_desktop() {
     let window = HostedWindow::new();
@@ -252,10 +247,8 @@ fn the_desktops_own_menu_items_join_an_apps_bar_and_come_back_to_the_desktop() {
     assert_eq!(groups[0].tab_toolbar(5), Some(&new_contact()));
 }
 
-/// A window whose app declared no bar still offers the desktop's own items:
-/// they are its only slots, a menu alone, which leaves its title where it
-/// is. Choosing one reaches the desktop as from a bar, and taking them away
-/// leaves the window bare again.
+/// A window whose app declared no bar still offers the desktop's own items: they are its
+/// only slots, a menu alone, which leaves its title where it is.
 #[test]
 fn a_window_without_a_bar_offers_the_desktops_items_in_a_menu_alone() {
     let bare = HostedWindow::new();
@@ -296,8 +289,6 @@ fn a_window_without_a_bar_offers_the_desktops_items_in_a_menu_alone() {
     assert_eq!(groups[0].tab_toolbar(6), None, "bare again");
 }
 
-/// An app hears once when its window starts floating over the desk and once when it stands in its
-/// strip again.
 #[test]
 fn an_app_hears_when_its_window_floats_and_when_it_stands_again() {
     let mut toolbars = WindowSlots::default();

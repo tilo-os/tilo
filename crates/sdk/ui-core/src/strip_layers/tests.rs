@@ -136,8 +136,8 @@ fn a_pan_along_both_axes_copies_what_stays_and_rasterises_the_uncovered_edges() 
         true,
     );
     assert!(!work.backdrop && !work.chrome);
-    // Content moved 12 left and 20 down: what stays is copied there, the
-    // right columns and the top rows the move uncovered are rasterised.
+    // Content moved 12 left and 20 down: what stays is copied there, the right columns
+    // and the top rows the move uncovered are rasterised.
     assert_eq!(
         work.workspace,
         WorkspaceWork::Pan {
@@ -233,8 +233,6 @@ fn a_changed_strip_rasterises_its_destination_and_geometry_the_layer() {
     assert_eq!(geometry.composite, Some(full_rect(SIZE)));
 }
 
-/// A strip drawn as two window groups, each a damage part: one near the
-/// canvas's left edge, one far right of the screen.
 fn grouped(near: Color, far: Color) -> (Scene, Option<crate::scene_parts::SectionParts>) {
     let mut drawn = Scene::new();
     let ((), parts) = crate::scene_parts::record(&mut drawn, |drawn| {
@@ -257,12 +255,6 @@ fn grouped_cache(near: Color, far: Color, scroll_x: u32) -> FrameCache {
     frame
 }
 
-/// A window group off screen that changed while the strip rested (an app
-/// presenting its first content unseen) rasterises nothing; one on
-/// screen rasterises its own bounds, in whole tiles inside the strip's
-/// band, and nothing else of the strip. Panning while it changes copies
-/// the strip as any pan does and rasterises the uncovered columns and
-/// the group. A strip drawn without parts still rasterises its band.
 #[test]
 fn a_changed_window_group_rasterises_only_where_it_is_on_screen() {
     let shown = Shown::of(&grouped_cache(Color::WHITE, Color::WHITE, 40), 1);
@@ -281,9 +273,6 @@ fn a_changed_window_group_rasterises_only_where_it_is_on_screen() {
         SIZE,
         true,
     );
-    // The group changed without the strip moving: every row the band
-    // holds is copied where it stands, and the group is drawn again on
-    // the rows and columns it was drawn on.
     assert_eq!(
         near.workspace,
         WorkspaceWork::Pan {
@@ -313,9 +302,6 @@ fn a_changed_window_group_rasterises_only_where_it_is_on_screen() {
     let WorkspaceWork::Pan { copies, uncovered } = &panned.workspace else {
         panic!("a pan with a changed group copies: {:?}", panned.workspace);
     };
-    // The run past the changed group's own columns copies every row the
-    // pan keeps: that change is drawn where it stands, and the rows a run
-    // copies are the run's.
     assert_eq!(
         copies,
         &vec![BandCopy {
@@ -353,15 +339,13 @@ fn a_changed_window_group_rasterises_only_where_it_is_on_screen() {
     );
 }
 
-/// A group at the strip's left edge changed while the strip panned: the
-/// pan copies every row it keeps and draws the group again where it
-/// stands. A change nowhere on screen is not drawn at all: no row moved
-/// because of it, and nothing shows it.
+/// A group at the strip's left edge changed while the strip panned: the pan copies every
+/// row it keeps and draws the group again where it stands.
 #[test]
 fn a_pan_copies_its_rows_and_draws_a_changed_group_where_it_stands() {
-    // A group drawn at the canvas's left edge (110..410, shown at 10..310
-    // with the strip 100 px right of the canvas), so the columns a pan
-    // brings it to are the run a move of at most a strip's width leaves.
+    // A group drawn at the canvas's left edge (110..410, shown at 10..310 with the strip
+    // 100 px right of the canvas), so the columns a pan brings it to are the run a move
+    // of at most a strip's width leaves.
     let edge = |near: Color, far: Color| {
         let mut drawn = Scene::new();
         let ((), parts) = crate::scene_parts::record(&mut drawn, |drawn| {
@@ -379,8 +363,8 @@ fn a_pan_copies_its_rows_and_draws_a_changed_group_where_it_stands() {
         frame
     };
     let shown = Shown::of(&edge(Color::WHITE, Color::WHITE), 1);
-    // The strip moved 4 px left with the group at its edge changed: the
-    // pan copies the rows it keeps and draws the group where it stands.
+    // The strip moved 4 px left with the group at its edge changed: the pan copies the
+    // rows it keeps and draws the group where it stands.
     let work = plan(Some(&shown), &edge(Color::BLACK, Color::WHITE), SIZE, true);
     let WorkspaceWork::Pan { copies, uncovered } = &work.workspace else {
         panic!("a pan: {work:?}");
@@ -397,7 +381,6 @@ fn a_pan_copies_its_rows_and_draws_a_changed_group_where_it_stands() {
         }],
         "copies, with {uncovered:?}"
     );
-    // The rows the change stands on are drawn again where it stands.
     assert_eq!(
         uncovered,
         &vec![FineDamageRect {
@@ -409,17 +392,10 @@ fn a_pan_copies_its_rows_and_draws_a_changed_group_where_it_stands() {
     );
     assert!(work.raster_pixels(SIZE) < 900 * 400);
 
-    // A group the move does not reach changed with the strips beside it,
-    // and nothing on screen shows that change: no row is copied and none
-    // is drawn.
     let near = plan(Some(&shown), &edge(Color::WHITE, Color::BLACK), SIZE, true).workspace;
     assert_eq!(near, WorkspaceWork::Unchanged);
 }
 
-/// Two strips whose destinations meet (each draws its shadows past its
-/// row): the upper one pans. Its own rows are copied; the band both
-/// cover, where the lower strip's drawing stays put, is rasterised; the
-/// lower strip's own rows are left alone.
 #[test]
 fn where_a_panning_strip_meets_a_still_one_the_shared_band_is_rasterised() {
     let mut lower = strip(0);
@@ -529,9 +505,9 @@ fn changed_chrome_rasterises_the_chrome_and_composites_the_output() {
     assert!(matches!(work.workspace, WorkspaceWork::Pan { .. }));
 }
 
-/// Chrome that changed only in the tiles its damage names, from the
-/// drawing the chrome texture holds, rasterises and composites those
-/// tiles; measured from another drawing, it rasterises the whole layer.
+/// Chrome that changed only in the tiles its damage names, from the drawing the chrome
+/// texture holds, rasterises and composites those tiles; measured from another drawing,
+/// it rasterises the whole layer.
 #[test]
 fn changed_chrome_from_the_drawing_held_rasterises_only_its_tiles() {
     let shown = Shown::of(&cache(Color::BLACK, vec![strip(40)]), 1);
@@ -580,9 +556,6 @@ fn changed_chrome_from_the_drawing_held_rasterises_only_its_tiles() {
     assert_eq!(other.composite, Some(full_rect(SIZE)));
 }
 
-/// A warm that stopped while drawing a layer leaves that texture holding
-/// nothing known: the next frame rasterises it and composites the whole
-/// output, and what the warm finished stays as it is.
 #[test]
 fn a_layer_a_warm_left_unknown_is_rasterised_and_the_output_composited_whole() {
     let frame = cache(Color::BLACK, vec![strip(40)]);

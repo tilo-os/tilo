@@ -7,9 +7,6 @@ use vello::peniko::FontData as Font;
 
 use super::{FontVariation, TextRenderer, glyph_paint_origin};
 
-/// The bounds a face declares for all its glyphs at `size` (its `head`
-/// box), y down around a glyph's origin; its ascent and descent where it
-/// declares none.
 fn face_declared_ink(font: &Font, size: f32, coords: &[vello::NormalizedCoord]) -> Option<Rect> {
     use skrifa::instance::{LocationRef, NormalizedCoord, Size};
     use skrifa::{FontRef, MetadataProvider};
@@ -43,10 +40,8 @@ fn face_declared_ink(font: &Font, size: f32, coords: &[vello::NormalizedCoord]) 
         .then_some(bounds)
 }
 
-/// The vertical extent of `bounds` (a glyph's ink around its origin, y
-/// down) for `glyph` of `run`, on the baseline it is drawn on with its
-/// baseline shift. A pixel's coverage is the area it shares with the
-/// outline, so nothing paints past these bounds.
+/// The vertical extent of `bounds` (a glyph's ink around its origin, y down) for `glyph`
+/// of `run`, on the baseline it is drawn on with its baseline shift.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "glyph bounds at a text size are far inside f32"
@@ -68,8 +63,6 @@ fn rich_glyph_ink(
     (y + bounds.y0 as f32, y + bounds.y1 as f32)
 }
 
-/// The bounds each face a walk over glyphs meets declares
-/// ([`face_declared_ink`]), looked up once for each face, weight and size.
 #[derive(Default)]
 struct DeclaredInk {
     seen: Vec<((cosmic_text::fontdb::ID, Weight, u32), Option<Rect>)>,
@@ -109,11 +102,8 @@ impl DeclaredInk {
 
 impl TextRenderer {
     /// How far the ink of `layout`'s rows reaches past their bands
-    /// ([`crate::richtext::InkReach`]): from the bounds each face declares
-    /// for all its glyphs, at the size and on the baseline each glyph is
-    /// drawn with. The layout keeps each logical line's reach
-    /// (`crate::richtext::InkReachCache`), so after an edit only the lines
-    /// it replaced are walked, looking a face up only where it changes.
+    /// ([`crate::richtext::InkReach`]): from the bounds each face declares for all its
+    /// glyphs, at the size and on the baseline each glyph is drawn with.
     pub fn rich_ink_reach(
         &mut self,
         layout: &crate::richtext::RichTextLayout,
@@ -129,8 +119,6 @@ impl TextRenderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         lines.resize(layout.buffer.lines.len(), None);
         let mut faces = DeclaredInk::default();
-        // A line's rows come one after another: its reach is kept once the
-        // next line starts.
         let mut pending: Option<(usize, InkReach)> = None;
         for run in layout.buffer.layout_runs() {
             if lines.get(run.line_i).is_none_or(Option::is_some) {
@@ -171,9 +159,9 @@ impl TextRenderer {
         reach
     }
 
-    /// How far the ink of logical line `line`'s rows reaches past their
-    /// bands, worked out as [`Self::rich_ink_reach`] does; the most of any
-    /// line's for a line `layout` does not have.
+    /// How far the ink of logical line `line`'s rows reaches past their bands, worked out
+    /// as [`Self::rich_ink_reach`] does; the most of any line's for a line `layout` does
+    /// not have.
     pub fn rich_line_ink_reach(
         &mut self,
         layout: &crate::richtext::RichTextLayout,
@@ -191,8 +179,6 @@ impl TextRenderer {
             .unwrap_or(all)
     }
 
-    /// The bounds `face` declares for all its glyphs at `size`, y down
-    /// ([`face_declared_ink`]).
     fn face_declared_ink(
         &mut self,
         face: cosmic_text::fontdb::ID,

@@ -14,7 +14,7 @@ fn compositions_reach_the_host_in_utf16_and_its_field_reports_place_them() {
         .unwrap(),
         json!({"op":"ime_composition","text":"日本語","selection_start":2,"selection_end":2})
     );
-    // No caret given: it stands after the text. An emoji is two units.
+    // No caret given: it stands after the text.
     assert_eq!(
         encode_command(WebViewCommand::ImeComposition {
             text: "a😀".into(),
@@ -23,7 +23,6 @@ fn compositions_reach_the_host_in_utf16_and_its_field_reports_place_them() {
         .unwrap()["selection_start"],
         3
     );
-    // An offset inside a character counts from that character's start.
     assert_eq!(
         encode_command(WebViewCommand::ImeComposition {
             text: "日本".into(),
@@ -69,8 +68,6 @@ fn compositions_reach_the_host_in_utf16_and_its_field_reports_place_them() {
         composing.composition,
         Some(vello::kurbo::Rect::new(60.0, 44.0, 92.0, 66.0))
     );
-    // The field reported again where it moved keeps its composition; the
-    // composition ending clears it.
     assert!(
         text_field_event("text_field", &field, Some(composing))
             .unwrap()
@@ -87,7 +84,6 @@ fn compositions_reach_the_host_in_utf16_and_its_field_reports_place_them() {
         .composition,
         None
     );
-    // Focus leaving the field, and bounds without a field, leave none.
     let left = json!({"event":"text_field","editable":false});
     assert!(validate_event(&left).is_ok());
     assert_eq!(text_field_event("text_field", &left, Some(composing)), None);
@@ -107,8 +103,6 @@ fn compositions_reach_the_host_in_utf16_and_its_field_reports_place_them() {
 
 #[test]
 fn keys_carry_their_place_on_the_keyboard() {
-    // A Russian layout's Ctrl+С carries the key it is on, which the host
-    // turns into the page's Ctrl+C.
     let cmd = encode_command(WebViewCommand::Key {
         key: crate::webview::KeyInput::Character("с".into()),
         down: true,

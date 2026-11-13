@@ -1,14 +1,8 @@
 //! Shared one-dimensional virtualization geometry for lists, trees, and tables.
-//!
-//! [`VirtualViewport`] keeps stable item keys, lazily measured heights, a
-//! Fenwick prefix-sum index, and the scroll position in one place. Collection
-//! widgets use it for four operations that must agree exactly: visible-range
-//! calculation, row placement, hit testing, and scrollbar metrics.
-//!
-//! Reconciliation is anchor-preserving. Inserting, removing, or resizing rows
-//! above the first visible item does not move the content under the user's
-//! eyes. Measured heights follow stable keys across moves; unseen rows retain
-//! the configured estimate until measured.
+//! [`VirtualViewport`] keeps stable item keys, lazily measured heights, a Fenwick
+//! prefix-sum index, and the scroll position in one place. Collection widgets use it for
+//! four operations that must agree exactly: visible-range calculation, row placement, hit
+//! testing, and scrollbar metrics.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -26,11 +20,10 @@ const PAGE_FRACTION: f64 = 0.9;
 const DRAG_SCROLL_THRESHOLD: f64 = 4.0;
 const MAX_DRAG_FLING_VELOCITY: f64 = 6_000.0;
 const WHEEL_LINE_PX: f64 = 60.0;
-/// How far back a lift looks when estimating the release velocity.
 const KINETIC_WINDOW: Duration = Duration::from_millis(100);
-/// The shortest interval one sample is assumed to span. Devices report at
-/// 60-240 Hz; a burst delivered faster than that (event coalescing, replay,
-/// a test driver) must not read as an unbounded velocity.
+/// The shortest interval one sample is assumed to span. Devices report at 60-240 Hz; a
+/// burst delivered faster than that (event coalescing, replay, a test driver) must not
+/// read as an unbounded velocity.
 const KINETIC_MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(8);
 /// Below this release speed a lift is a deliberate stop, not a throw.
 pub(crate) const KINETIC_MIN_VELOCITY: f64 = 60.0;
@@ -47,8 +40,6 @@ pub enum ScrollAlignment {
 }
 
 impl ScrollAlignment {
-    /// The scroll offset that lands an item spanning `top..top + height` this
-    /// way in a `viewport`-tall window currently scrolled to `offset`.
     fn offset_for(self, top: f64, height: f64, offset: f64, viewport: f64) -> f64 {
         let bottom = top + height;
         match self {
@@ -65,19 +56,13 @@ impl ScrollAlignment {
     }
 }
 
-/// How quickly a fling slows, per second: velocity decays as
-/// `v(t) = v₀·e^(−k·t)`. One rate for every scroll surface, so lists
-/// ([`ScrollMomentum`]) and documents (`Scrollable`) glide alike.
+/// How quickly a fling slows, per second: velocity decays as `v(t) = v₀·e^(−k·t)`.
 pub const FLING_DECAY_PER_SECOND: f64 = 9.0;
 
 /// Below this speed (logical px/s) a glide has come to rest.
 pub const GLIDE_REST_SPEED: f64 = 2.0;
 
-/// Advance a fling by `seconds`: the distance it covers and the velocity it
-/// keeps. The distance is the exact integral of the decay, so one 40 ms step
-/// lands where four 10 ms steps do — a fling travels the same at 25, 60 and
-/// 90 fps, and after a stalled frame. No clamp: a stall is covered, not
-/// dropped.
+/// Advance a fling by `seconds`: the distance it covers and the velocity it keeps.
 #[must_use]
 pub fn glide_step(velocity: f64, seconds: f64) -> (f64, f64) {
     let velocity = finite_or_zero(velocity);
@@ -89,31 +74,26 @@ pub fn glide_step(velocity: f64, seconds: f64) -> (f64, f64) {
     let displacement = velocity * (1.0 - keep) / k;
     let remaining = velocity * keep;
     if remaining.abs() < GLIDE_REST_SPEED {
-        // Coming to rest, it covers the rest of the decay too: a glide
-        // lands where it was always going ([`glide_rest_distance`]).
+        // Coming to rest, it covers the rest of the decay too: a glide lands where it was
+        // always going ([`glide_rest_distance`]).
         return (velocity / k, 0.0);
     }
     (displacement, remaining)
 }
 
-/// How far a glide at `velocity` travels before it rests: the whole
-/// integral of the decay, `v₀/k`, which its steps ([`glide_step`]) cover
-/// exactly whatever the frame rate.
+/// How far a glide at `velocity` travels before it rests: the whole integral of the
+/// decay, `v₀/k`, which its steps ([`glide_step`]) cover exactly whatever the frame rate.
 #[must_use]
 pub fn glide_rest_distance(velocity: f64) -> f64 {
     finite_or_zero(velocity) / FLING_DECAY_PER_SECOND
 }
 
 /// Deterministic single-axis momentum used by virtualized collection widgets.
-/// Wheel input moves immediately; line-wheel impulses additionally feed this
-/// decay curve so detented wheels can traverse long collections without
-/// requiring one event per row.
 #[derive(Clone, Debug)]
 pub struct ScrollMomentum {
     velocity: f64,
-    /// When the glide was last advanced, or started: the next
-    /// [`Self::advance`] covers the time since, never an idle gap before
-    /// the glide began.
+    /// When the glide was last advanced, or started: the next [`Self::advance`] covers
+    /// the time since, never an idle gap before the glide began.
     last_step: Option<Instant>,
     max_velocity: f64,
     kinetic: KineticSampler,
@@ -122,17 +102,14 @@ pub struct ScrollMomentum {
     device_per_unit: f64,
     /// What [`Self::advance`] has not yet moved: less than a device pixel.
     carry: f64,
-    /// The give past the ends while fingers pull the content there, and its
-    /// spring back once they let go ([`crate::motion::RubberBand`]).
     band: crate::motion::RubberBand,
-    /// The view the give is measured against, whether the content scrolls
-    /// along it at all (no give otherwise), and the motion the person
-    /// allows ([`Self::set_view`]).
+    /// The view the give is measured against, whether the content scrolls along it at all
+    /// (no give otherwise), and the motion the person allows ([`Self::set_view`]).
     view: f64,
     scrolls: bool,
     motion: crate::tokens::EffectiveMotion,
-    /// The pixel delta the fingers moved in the event being applied, and
-    /// whether the give took some of it in.
+    /// The pixel delta the fingers moved in the event being applied, and whether the give
+    /// took some of it in.
     hand: f64,
     taken_in: bool,
 }
@@ -158,9 +135,9 @@ impl Default for ScrollMomentum {
 }
 
 impl ScrollMomentum {
-    /// The view `extent` long the give past the ends is measured against,
-    /// whether the content `scrolls` along it (content that fits gives
-    /// nowhere), and the `motion` the person allows (reduced: no give).
+    /// The view `extent` long the give past the ends is measured against, whether the
+    /// content `scrolls` along it (content that fits gives nowhere), and the `motion` the
+    /// person allows (reduced: no give).
     pub fn set_view(&mut self, extent: f64, scrolls: bool, motion: crate::tokens::EffectiveMotion) {
         self.view = extent.max(0.0);
         self.scrolls = scrolls;
@@ -170,15 +147,15 @@ impl ScrollMomentum {
         }
     }
 
-    /// How far past an end the content is drawn at `now`, in whole device
-    /// pixels: negative before the start.
+    /// How far past an end the content is drawn at `now`, in whole device pixels:
+    /// negative before the start.
     #[must_use]
     pub fn give(&self, now: Instant) -> f64 {
         self.band.give(now, self.device_per_unit).y
     }
 
-    /// Whether the give wants a frame: it springs back, or was drawn
-    /// otherwise than it stands now.
+    /// Whether the give wants a frame: it springs back, or was drawn otherwise than it
+    /// stands now.
     #[must_use]
     pub fn give_needs_frame(&self, now: Instant) -> bool {
         self.band.needs_frame(now, self.device_per_unit)
@@ -193,8 +170,8 @@ impl ScrollMomentum {
         Self::default()
     }
 
-    /// Add a logical-pixel wheel impulse. Return the immediate delta so the
-    /// caller can apply it in the same input frame.
+    /// Add a logical-pixel wheel impulse. Return the immediate delta so the caller can
+    /// apply it in the same input frame.
     pub fn push(&mut self, delta: f64) -> f64 {
         let delta = finite_or_zero(delta);
         self.start_clock();
@@ -202,7 +179,6 @@ impl ScrollMomentum {
         delta
     }
 
-    /// A glide that was at rest starts its clock now.
     fn start_clock(&mut self) {
         if !self.is_active() {
             self.last_step = Some(crate::time::now());
@@ -211,16 +187,13 @@ impl ScrollMomentum {
     }
 
     /// Continue from a content-space drag velocity after pointer release.
-    /// The velocity is clamped to the same ceiling as accumulated wheel
-    /// impulses, keeping a bad timestamp or synthetic pointer from launching
-    /// the viewport an unbounded distance.
     pub fn fling(&mut self, velocity: f64) {
         self.start_clock();
         self.velocity = finite_or_zero(velocity).clamp(-self.max_velocity, self.max_velocity);
     }
 
-    /// How many device pixels one logical pixel is on the display the
-    /// owner draws to (its event context's scale factor).
+    /// How many device pixels one logical pixel is on the display the owner draws to (its
+    /// event context's scale factor).
     pub fn set_device_scale(&mut self, device_per_unit: f64) {
         self.device_per_unit = if device_per_unit.is_finite() && device_per_unit > 0.0 {
             device_per_unit
@@ -229,12 +202,9 @@ impl ScrollMomentum {
         };
     }
 
-    /// Advance the glide to `now` (the frame's time) and return the
-    /// logical-pixel displacement since the last step or since it started,
-    /// in whole device pixels, carrying the rest to the next frame. A host
-    /// that copies what stays on screen ([`crate::scroll_copy`]) moves whole
-    /// pixels only: a glide in fractional steps would repaint its whole
-    /// viewport every frame, the frames that most need to be cheap.
+    /// Advance the glide to `now` (the frame's time) and return the logical-pixel
+    /// displacement since the last step or since it started, in whole device pixels,
+    /// carrying the rest to the next frame.
     pub fn advance(&mut self, now: Instant) -> f64 {
         if !self.is_active() {
             self.last_step = None;
@@ -248,9 +218,8 @@ impl ScrollMomentum {
         self.advance_by(elapsed)
     }
 
-    /// Advance the glide by `elapsed` and return the logical-pixel
-    /// displacement, in whole device pixels like [`Self::advance`]: for a
-    /// driver that keeps its own frame clock.
+    /// Advance the glide by `elapsed` and return the logical-pixel displacement, in whole
+    /// device pixels like [`Self::advance`]: for a driver that keeps its own frame clock.
     pub fn advance_by(&mut self, elapsed: Duration) -> f64 {
         if !self.is_active() {
             self.carry = 0.0;
@@ -263,9 +232,9 @@ impl ScrollMomentum {
         whole
     }
 
-    /// How much further the glide moves before it rests, in logical
-    /// pixels, as [`Self::advance`] moves it: in whole device pixels, so
-    /// what was moved plus this is where it lands. 0 at rest.
+    /// How much further the glide moves before it rests, in logical pixels, as
+    /// [`Self::advance`] moves it: in whole device pixels, so what was moved plus this is
+    /// where it lands. 0 at rest.
     #[must_use]
     pub fn rest_distance(&self) -> f64 {
         if !self.is_active() {
@@ -281,8 +250,8 @@ impl ScrollMomentum {
         if self.is_active() { self.velocity } else { 0.0 }
     }
 
-    /// Advance the curve by `elapsed` and return the logical-pixel
-    /// displacement ([`glide_step`]).
+    /// Advance the curve by `elapsed` and return the logical-pixel displacement
+    /// ([`glide_step`]).
     fn tick(&mut self, elapsed: Duration) -> f64 {
         if !self.is_active() {
             return 0.0;
@@ -298,13 +267,7 @@ impl ScrollMomentum {
         self.carry = 0.0;
     }
 
-    /// Classify one vertical wheel event. Line (detented) wheels accelerate
-    /// through [`Self::push`]; pixel (touchpad, touchscreen) deltas, in the
-    /// display's pixels, track the finger exactly in logical pixels (set the
-    /// display's scale first, [`Self::set_device_scale`]) and, when the
-    /// gesture's `Ended` phase arrives
-    /// while still moving, continue as a fling. `reduce_motion` keeps every
-    /// movement 1:1 with the input.
+    /// Classify one vertical wheel event.
     pub fn wheel(
         &mut self,
         delta: &winit::event::MouseScrollDelta,
@@ -328,7 +291,6 @@ impl ScrollMomentum {
                 TouchPhase::Ended => {
                     let release = self.kinetic.release(crate::time::now());
                     let now = crate::motion::frame_now();
-                    // Let go past an end, the give springs back instead.
                     if self.band.is_stretched(now) {
                         let velocity = release.map_or(0.0, |(_, velocity)| velocity);
                         self.band.release(
@@ -364,18 +326,16 @@ impl ScrollMomentum {
                     if phase == TouchPhase::Started {
                         self.kinetic.reset();
                     }
-                    // Fingers back on the surface catch a glide in progress.
                     self.stop();
-                    // A pixel delta is in the display's pixels; the content
-                    // moves in logical ones, 1:1 with the fingers at any
-                    // scale ([`Self::set_device_scale`]).
+                    // A pixel delta is in the display's pixels; the content moves in
+                    // logical ones, 1:1 with the fingers at any scale
+                    // ([`Self::set_device_scale`]).
                     let delta = -finite_or_zero(position.y) / self.device_per_unit;
                     if delta == 0.0 {
                         return WheelStep::Ignored;
                     }
                     self.pending_pixel = true;
                     self.hand = delta;
-                    // Moving back toward the content takes a give in first.
                     let rest = self
                         .band
                         .take_in(
@@ -392,12 +352,8 @@ impl ScrollMomentum {
         }
     }
 
-    /// Report how far the [`WheelStep::Scroll`] delta moved the content;
-    /// returns whether the view moved, the content or its give. What
-    /// fingers asked past an end pulls the content through the rubber band
-    /// ([`Self::set_view`]); a delta refused whole with no give (at an edge,
-    /// under reduced motion) stops momentum and forgets the gesture so an
-    /// outer scroll region can take it over, fling included.
+    /// Report how far the [`WheelStep::Scroll`] delta moved the content; returns whether
+    /// the view moved, the content or its give.
     pub fn wheel_applied(&mut self, delta: f64, moved: f64) -> bool {
         let pixel = std::mem::take(&mut self.pending_pixel);
         let mut gave = std::mem::take(&mut self.taken_in);
@@ -429,10 +385,10 @@ impl ScrollMomentum {
     }
 }
 
-/// The glide of a scroll view that pans both ways (a document, a canvas, a
-/// wide table): one [`ScrollMomentum`] per axis, so it decays as every list
-/// glides ([`glide_step`]) and steps in whole device pixels, which a host
-/// that copies what a scroll keeps on screen copies.
+/// The glide of a scroll view that pans both ways (a document, a canvas, a wide table):
+/// one [`ScrollMomentum`] per axis, so it decays as every list glides ([`glide_step`])
+/// and steps in whole device pixels, which a host that copies what a scroll keeps on
+/// screen copies.
 #[derive(Clone, Debug, Default)]
 pub struct ScrollGlide {
     x: ScrollMomentum,
@@ -445,8 +401,7 @@ impl ScrollGlide {
         Self::default()
     }
 
-    /// Glide on from a release `velocity` (logical pixels per second, in
-    /// content space). A zero velocity stops it.
+    /// Glide on from a release `velocity` (logical pixels per second, in content space).
     pub fn fling(&mut self, vx: f64, vy: f64) {
         for (axis, velocity) in [(&mut self.x, vx), (&mut self.y, vy)] {
             if velocity == 0.0 {
@@ -478,8 +433,8 @@ impl ScrollGlide {
         self.y.set_device_scale(device_per_unit);
     }
 
-    /// Advance to `now` (the frame's time): the displacement since the last
-    /// step, in whole device pixels per axis.
+    /// Advance to `now` (the frame's time): the displacement since the last step, in
+    /// whole device pixels per axis.
     pub fn advance(&mut self, now: Instant) -> (f64, f64) {
         (self.x.advance(now), self.y.advance(now))
     }
@@ -502,12 +457,6 @@ impl ScrollGlide {
 }
 
 /// Release-velocity estimator for continuous (pixel) scrolling.
-///
-/// Touchpads and touchscreens report a gesture as `PixelDelta` wheel events
-/// bracketed by [`winit::event::TouchPhase`]s. Feed every delta the view
-/// actually consumed to [`Self::record`]; on `Ended`, [`Self::release`]
-/// returns the average content-space velocity over the last 100 ms, so a
-/// finger that paused before lifting does not fling.
 #[derive(Clone, Debug, Default)]
 pub struct KineticSampler {
     samples: VecDeque<(Instant, f64, f64)>,
@@ -531,8 +480,8 @@ impl KineticSampler {
         self.samples.clear();
     }
 
-    /// End the gesture and return its content-space velocity in logical
-    /// pixels per second, or `None` when the fingers had come to rest.
+    /// End the gesture and return its content-space velocity in logical pixels per
+    /// second, or `None` when the fingers had come to rest.
     pub fn release(&mut self, now: Instant) -> Option<(f64, f64)> {
         self.prune(now);
         let samples = std::mem::take(&mut self.samples);
@@ -567,20 +516,16 @@ impl KineticSampler {
 /// [`ScrollMomentum::wheel`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WheelStep {
-    /// Move the content by this many logical pixels now, then report how
-    /// far it moved through [`ScrollMomentum::wheel_applied`].
+    /// Move the content by this many logical pixels now, then report how far it moved
+    /// through [`ScrollMomentum::wheel_applied`].
     Scroll(f64),
-    /// A continuous gesture ended fast enough to keep gliding, or past an
-    /// end, where its give springs back; the event is consumed.
     Fling,
-    /// Nothing to do (a phase marker, or a gesture that ended at rest).
     Ignored,
 }
 
 /// Result of moving a pointer tracked by [`DragScroller`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DragScrollUpdate {
-    /// Absolute content offset implied by the pointer displacement.
     pub target_offset: f64,
     /// `true` only on the update that crosses the drag threshold.
     pub began: bool,
@@ -589,15 +534,11 @@ pub struct DragScrollUpdate {
 /// Result of releasing a pointer tracked by [`DragScroller`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DragScrollFinish {
-    /// Whether the gesture crossed the drag threshold.
     pub dragged: bool,
-    /// Content-space velocity suitable for [`ScrollMomentum::fling`].
     pub velocity: f64,
 }
 
 /// Thresholded, single-axis pointer panning shared by virtual collections.
-/// A press remains a click until it moves four logical pixels; once active,
-/// offset and release velocity are derived from the same pointer samples.
 #[derive(Clone, Debug, Default)]
 pub struct DragScroller {
     gesture: Option<DragGesture>,
@@ -646,8 +587,6 @@ impl DragScroller {
         if seconds > 0.0 {
             let sample = (-(axis - gesture.last_axis) / seconds)
                 .clamp(-MAX_DRAG_FLING_VELOCITY, MAX_DRAG_FLING_VELOCITY);
-            // Low-pass filtering avoids a noisy final pointer sample deciding
-            // the whole release velocity while remaining responsive.
             gesture.velocity = gesture.velocity * 0.65 + sample * 0.35;
         }
         gesture.last_axis = axis;
@@ -722,7 +661,6 @@ enum AnchorFallback<K> {
 pub struct VirtualViewport<K> {
     items: Vec<Item<K>>,
     index_by_key: HashMap<K, usize>,
-    /// Fenwick tree; slot zero is unused.
     sums: Vec<f64>,
     estimated_height: f64,
     viewport: f64,
@@ -734,8 +672,6 @@ impl<K> VirtualViewport<K>
 where
     K: Clone + Eq + Hash,
 {
-    /// Create an empty viewport. Estimates and measurements are clamped to at
-    /// least one logical pixel so prefix sums remain strictly increasing.
     #[must_use]
     pub fn new(estimated_height: f64) -> Self {
         Self {
@@ -764,8 +700,7 @@ where
         self.estimated_height
     }
 
-    /// Change the fallback height for rows that have not been measured. The
-    /// first visible stable key stays at the same screen position.
+    /// Change the fallback height for rows that have not been measured.
     pub fn set_estimated_height(&mut self, height: f64) {
         let next = valid_height(height);
         if next.to_bits() == self.estimated_height.to_bits() {
@@ -824,13 +759,9 @@ where
         self.set_offset(self.offset + finite_or_zero(delta));
     }
 
-    /// Replace model order while retaining measurements and the visible
-    /// anchor by stable key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ReconcileError::DuplicateKey`] without changing the viewport
-    /// when `keys` contains duplicates.
+    /// Replace model order while retaining measurements and the visible anchor by stable
+    /// key. Returns [`ReconcileError::DuplicateKey`] without changing the viewport when
+    /// `keys` contains duplicates.
     pub fn reconcile<I>(&mut self, keys: I) -> Result<(), ReconcileError>
     where
         I: IntoIterator<Item = K>,
@@ -842,9 +773,7 @@ where
         }
 
         let mut anchor = self.capture_anchor();
-        // Choose a surviving neighbour before replacing the old order. This
-        // is computed only for a deleted anchor and avoids cloning the entire
-        // tail of a million-row collection on every reconciliation.
+        // Choose a surviving neighbour before replacing the old order.
         if let Some(anchor) = &mut anchor
             && !unique.contains(&anchor.primary)
             && let Some(index) = self.index_of(&anchor.primary)
@@ -915,7 +844,6 @@ where
         self.item_top(index).map(|top| top - self.offset)
     }
 
-    /// Cache a measured height. Returns whether geometry changed.
     pub fn measure_index(&mut self, index: usize, height: f64) -> bool {
         let next = valid_height(height);
         let Some(item) = self.items.get(index) else {
@@ -935,7 +863,7 @@ where
         true
     }
 
-    /// Cache a measured height by stable key. Returns whether geometry changed.
+    /// Cache a measured height by stable key.
     pub fn measure(&mut self, key: &K, height: f64) -> bool {
         self.index_of(key)
             .is_some_and(|index| self.measure_index(index, height))
@@ -1104,13 +1032,8 @@ impl<K> SparseAnchor<K> {
     }
 }
 
-/// Virtual geometry for collections whose logical item count is much larger
-/// than the set of resident keys.
-///
-/// Unlike [`VirtualViewport`], this type does not store one entry per logical
-/// row. Unmeasured rows share an estimate; only measured stable keys and their
-/// prefix-sum deltas consume memory. The owning model resolves keys at visible
-/// indices and indices for measured/anchored keys during reconciliation.
+/// Virtual geometry for collections whose logical item count is much larger than the set
+/// of resident keys.
 #[derive(Clone, Debug)]
 pub struct SparseVirtualViewport<K> {
     count: usize,
@@ -1124,8 +1047,6 @@ pub struct SparseVirtualViewport<K> {
     measured_indices: Vec<usize>,
     prefix_deltas: Vec<f64>,
     height_by_index: HashMap<usize, f64>,
-    /// The space above the first item and below the last, part of the
-    /// content: it scrolls with the items ([`Self::set_edges`]).
     lead: f64,
     trail: f64,
 }
@@ -1153,11 +1074,8 @@ where
         }
     }
 
-    /// Leave `lead` above the first item and `trail` below the last, as a
-    /// page's padding is: the content's, scrolled with the items, and hitting
-    /// none. A view showing the lead (at its top) stays at its top; one
-    /// scrolled past it keeps the items in view where they are. Whether they
-    /// changed.
+    /// Leave `lead` above the first item and `trail` below the last, as a page's padding
+    /// is: the content's, scrolled with the items, and hitting none.
     pub fn set_edges(&mut self, lead: f64, trail: f64) -> bool {
         let (lead, trail) = (finite_non_negative(lead), finite_non_negative(trail));
         if lead.to_bits() == self.lead.to_bits() && trail.to_bits() == self.trail.to_bits() {
@@ -1209,8 +1127,8 @@ where
         self.restore_numeric_anchor(anchor);
     }
 
-    /// Set a geometry floor without discarding authored estimates or stable
-    /// measured heights. Lowering the floor restores those original values.
+    /// Set a geometry floor without discarding authored estimates or stable measured
+    /// heights.
     pub fn set_minimum_height(&mut self, height: f64) {
         let next = valid_height(height);
         if next.to_bits() == self.minimum_height.to_bits() {
@@ -1285,7 +1203,6 @@ where
             .index_at_content_offset(self.offset)
             .or_else(|| self.count.checked_sub(1))?;
         let key = key_at(index)?;
-        // Above the first item, in the lead, `within` is negative.
         Some(SparseAnchor {
             key,
             index,
@@ -1293,8 +1210,8 @@ where
         })
     }
 
-    /// Reconcile a new logical count. `index_of` is called only for resident
-    /// measured keys and the captured anchor, never for every logical row.
+    /// Reconcile a new logical count. `index_of` is called only for resident measured
+    /// keys and the captured anchor, never for every logical row.
     pub fn reconcile<F>(&mut self, count: usize, mut index_of: F, anchor: Option<&SparseAnchor<K>>)
     where
         F: FnMut(&K) -> Option<usize>,
@@ -1326,8 +1243,8 @@ where
         self.clamp_offset();
     }
 
-    /// Whether `key` has a measured height: a row that has been laid out,
-    /// as against one that stands at the estimate.
+    /// Whether `key` has a measured height: a row that has been laid out, as against one
+    /// that stands at the estimate.
     #[must_use]
     pub fn is_measured(&self, key: &K) -> bool {
         self.measurements.contains_key(key)
@@ -1355,8 +1272,8 @@ where
         true
     }
 
-    /// Cache a row folded away as taking no room at all: a closed group's rows stand on the
-    /// same offset, under their heading's band.
+    /// Cache a row folded away as taking no room at all: a closed group's rows stand on
+    /// the same offset, under their heading's band.
     pub fn collapse(&mut self, index: usize, key: K) -> bool {
         if index >= self.count {
             return false;
@@ -1372,8 +1289,8 @@ where
         true
     }
 
-    /// Forget a row's folded-away measurement: it takes the room it measures again, as a row
-    /// that was never folded does. [`Self::collapse`]'s other half.
+    /// Forget a row's folded-away measurement: it takes the room it measures again, as a
+    /// row that was never folded does.
     pub fn expand(&mut self, index: usize, key: &K) -> bool {
         if index >= self.count
             || self
@@ -1391,9 +1308,8 @@ where
         true
     }
 
-    /// Move a resident measurement to a replacement stable key without
-    /// changing its logical position. Useful when a placeholder resolves to
-    /// a real model id.
+    /// Move a resident measurement to a replacement stable key without changing its
+    /// logical position.
     pub fn remap_key(&mut self, old: &K, new: K) -> bool {
         if old == &new {
             return false;
@@ -1444,8 +1360,8 @@ where
         self.range_around(self.overscan, self.overscan)
     }
 
-    /// Half-open item range intersecting the viewport stretched `above`
-    /// pixels up and `below` pixels down.
+    /// Half-open item range intersecting the viewport stretched `above` pixels up and
+    /// `below` pixels down.
     #[must_use]
     pub fn range_around(&self, above: f64, below: f64) -> Range<usize> {
         if self.count == 0 {
@@ -1473,7 +1389,6 @@ where
             return None;
         }
         let at = self.offset + viewport_y;
-        // The lead above the first item is no item's.
         self.index_at_content_offset(at)
             .filter(|index| self.item_top(*index).is_some_and(|top| top <= at))
     }
@@ -1487,12 +1402,8 @@ where
         self.offset.to_bits() != previous.to_bits()
     }
 
-    /// Scroll one page while keeping the focused row's screen position as
-    /// the navigation anchor. A page the content's edge cuts short (a list
-    /// that fits its viewport, or one already showing its last page) lands
-    /// on the row at that edge instead, as it is then in view. Runtime and
-    /// memory stay independent of `count`, including hundred-million-row
-    /// models with variable measured heights.
+    /// Scroll one page while keeping the focused row's screen position as the navigation
+    /// anchor.
     pub(crate) fn page_from(&mut self, index: usize, forward: bool) -> Option<(usize, bool)> {
         if self.count == 0 || self.viewport <= 0.0 || index >= self.count {
             return None;
@@ -1541,8 +1452,8 @@ where
         self.prefix_deltas.push(0.0);
         self.height_by_index.clear();
         for (index, authored_height) in rows {
-            // A row folded away takes no room: the minimum keeps the rows a person can see
-            // and press reachable, and a folded row is neither.
+            // A row folded away takes no room: the minimum keeps the rows a person can
+            // see and press reachable, and a folded row is neither.
             let height = if authored_height <= 0.0 {
                 0.0
             } else {
@@ -1584,7 +1495,6 @@ where
         let index = self
             .index_at_content_offset(self.offset)
             .or_else(|| self.count.checked_sub(1))?;
-        // Above the first item, in the lead, the offset within it is negative.
         Some((index, self.offset - self.item_top(index)?))
     }
 
@@ -1702,8 +1612,8 @@ mod tests {
         }
 
         {
-            // On a display of two device pixels per logical pixel, fingers
-            // that moved 40 device pixels move the content 20 logical ones.
+            // On a display of two device pixels per logical pixel, fingers that moved 40
+            // device pixels move the content 20 logical ones.
             use winit::dpi::PhysicalPosition;
             use winit::event::{MouseScrollDelta, TouchPhase};
             let mut momentum = ScrollMomentum::new();
@@ -2008,8 +1918,6 @@ mod tests {
         }
 
         {
-            // A page the content's edge cuts short lands on the edge row:
-            // a list that fits its viewport, then one on its last page.
             let mut view = SparseVirtualViewport::<u64>::new(24.0);
             view.reconcile(5, |_| None, None);
             view.set_viewport(720.0);
@@ -2060,13 +1968,11 @@ mod tests {
             assert_eq!(view.item_view_top(9), Some(50.0 - 8.0 - 20.0));
             assert_eq!(view.hit_test(45.0), None, "nor is the trail");
 
-            // Past the lead, the items in view stay where they are as it changes.
             view.set_offset(100.0);
             let before = view.item_view_top(5);
             assert!(view.set_edges(20.0, 8.0));
             assert_eq!(view.item_view_top(5), before);
 
-            // At the top, the view stays at the top and shows the new lead.
             view.set_offset(0.0);
             assert!(view.set_edges(30.0, 8.0));
             assert_eq!(view.offset(), 0.0);

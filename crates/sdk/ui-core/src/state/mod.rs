@@ -6,22 +6,13 @@ use tilo_automerge::ApplyIncoming;
 
 pub(crate) mod owned_restore;
 pub(crate) use collaboration::state::HistoryMoment;
-/// A document's undo, below the toolkit.
 pub use collaboration::state::{UndoEntry, UndoLog};
-/// The primitive undo, redo and restore write through, below the toolkit.
 pub use collaboration::state::{write_patches, write_revert_patches, write_revert_patches_where};
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
 
-/// The actors this replica has written one document as, beyond the ones the
-/// document itself names.
-///
-/// A mount writing as another author writes under the writer derived for that
-/// author ([`crate::record::author_writer`]); the frame puts the record's
-/// writer back when the action ends, so only the frame's note of it is left.
-/// A handle on this device writing an action ([`crate::history_source::authors`])
-/// needs no note: its actor carries the device's own in its suffix, which
-/// [`DocumentFrontier::delta`] reads off the document.
+/// The actors this replica has written one document as, beyond the ones the document
+/// itself names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WritingActors {
     actors: HashSet<ActorId>,
@@ -40,27 +31,21 @@ impl WritingActors {
     }
 }
 
-/// An explicit outbound synchronization frontier for one document route.
-///
-/// Automerge's `save_incremental` cursor is process-global to an `AutoCommit`:
-/// any full save, debug export, or second transport consumer may advance it.
-/// A frontier instead names the exact heads one destination is known to have,
-/// so serialization is independent of unrelated callers and can later be
-/// advanced from an acknowledgement rather than merely from a send attempt.
+/// An explicit outbound synchronization frontier for one document route. A frontier
+/// instead names the exact heads one destination is known to have, so serialization is
+/// independent of unrelated callers and can later be advanced from an acknowledgement
+/// rather than merely from a send attempt.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DocumentFrontier {
-    /// Heads whose whole history the destination is known to hold.
     heads: Vec<ChangeHash>,
-    /// Changes the destination delivered. It holds them, and they are never
-    /// sent back; they are kept apart from `heads` because a delivered change
-    /// can build on one this device has not sent yet, and that one still has
-    /// to go out.
+    /// Changes the destination delivered. It holds them, and they are never sent back;
+    /// they are kept apart from `heads` because a delivered change can build on one this
+    /// device has not sent yet, and that one still has to go out.
     observed: Vec<ChangeHash>,
 }
 
 impl DocumentFrontier {
-    /// Start at the document's current heads. Existing content is treated as
-    /// the baseline; late joiners acquire it through the snapshot handshake.
+    /// Start at the document's current heads.
     pub fn at_document(doc: &mut AutoCommit) -> Self {
         Self {
             heads: doc.get_heads(),
@@ -68,23 +53,21 @@ impl DocumentFrontier {
         }
     }
 
-    /// Serialize everything after this frontier and advance it to the heads
-    /// represented by that payload. Unlike `save_incremental`, this does not
-    /// share hidden mutable cursor state with persistence or snapshot export.
+    /// Serialize everything after this frontier and advance it to the heads represented
+    /// by that payload.
     pub fn take_delta(&mut self, doc: &mut AutoCommit, own: &WritingActors) -> Vec<u8> {
         let (delta, current) = self.pending_delta(doc, own);
         self.advance(current);
         delta
     }
 
-    /// Everything the document holds that the destination does not, whoever
-    /// made it: for a destination that mirrors the record whole, such as a
-    /// page replicating an open record, not for a route, which publishes this
-    /// replica's own changes alone ([`Self::pending_delta`]).
+    /// Everything the document holds that the destination does not, whoever made it: for
+    /// a destination that mirrors the record whole, such as a page replicating an open
+    /// record, not for a route, which publishes this replica's own changes alone
+    /// ([`Self::pending_delta`]).
     pub fn pending_mirror_delta(&mut self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
         let current = doc.get_heads();
         if current == self.heads {
-            // Nothing was made since the frontier: no change to walk for.
             return (Vec::new(), current);
         }
         let delta = doc.save_after(&self.heads);
@@ -94,9 +77,7 @@ impl DocumentFrontier {
         (delta, current)
     }
 
-    /// Build a delta without advancing the frontier. Call [`Self::advance`]
-    /// only after the durable transport accepts it; a saturated/disconnected
-    /// queue can then be retried instead of silently losing the mutation.
+    /// Build a delta without advancing the frontier.
     pub fn pending_delta(
         &mut self,
         doc: &mut AutoCommit,
@@ -104,38 +85,24 @@ impl DocumentFrontier {
     ) -> (Vec<u8>, Vec<ChangeHash>) {
         let current = doc.get_heads();
         if current == self.heads {
-            // Nothing was made since the frontier: no change to walk for.
             return (Vec::new(), current);
         }
         let delta = self.delta(doc, own);
         if !delta.is_empty() {
             return (delta, current);
         }
-        // Everything this replica would publish is there already: what the
-        // route delivered covers what arrived, and the frontier says so
-        // without another clone.
         self.advance(current.clone());
         (Vec::new(), current)
     }
 
-    /// What this device holds that the destination does not, as an
-    /// incremental payload: this replica's own changes after the frontier,
-    /// made under the document's current actor, a writer `own` names, or a
-    /// handle on this device whose actor carries the device's own.
-    ///
-    /// Another replica's change is never in it, whether or not this frontier
-    /// was told it arrived: a change is published by the replica that made
-    /// it, and the identity service signs a change for the action that names
-    /// it. A route that handed a change on would publish history its device
-    /// did not make, which no action of its own names. History a route does
-    /// not get this way — another device's, or this one's from before a join —
-    /// arrives whole, in the snapshot a route publishes when it opens and when
-    /// a holder asks for one.
+    /// What this device holds that the destination does not, as an incremental payload:
+    /// this replica's own changes after the frontier, made under the document's current
+    /// actor, a writer `own` names, or a handle on this device whose actor carries the
+    /// device's own. Another replica's change is never in it, whether or not this
+    /// frontier was told it arrived: a change is published by the replica that made it,
+    /// and the identity service signs a change for the action that names it.
     pub fn delta(&self, doc: &mut AutoCommit, own: &WritingActors) -> Vec<u8> {
         let actor = doc.get_actor().clone();
-        // A change made as a handle on this device, as an action made by one
-        // person is, carries the device's actor in its suffix
-        // ([`crate::history_source::authors::DeviceActors`]).
         let device = crate::history_source::authors::DeviceActors::of(&actor);
         let mut bytes = Vec::new();
         for change in doc.get_changes(&self.heads) {
@@ -150,24 +117,20 @@ impl DocumentFrontier {
         bytes
     }
 
-    /// Advance to heads whose delta a durable destination accepted. Its own
-    /// accepted changes cover everything the document held, delivered ones
-    /// included.
+    /// Advance to heads whose delta a durable destination accepted.
     pub fn advance(&mut self, heads: Vec<ChangeHash>) {
         self.heads = heads;
         self.observed.clear();
     }
 
     /// Treat the document's current state as already observed on this route.
-    /// Used after applying inbound data so it is not echoed back as a new
-    /// outbound mutation.
     pub fn rebase(&mut self, doc: &mut AutoCommit) {
         self.heads = doc.get_heads();
         self.observed.clear();
     }
 
-    /// Record changes known to have arrived from this destination without
-    /// claiming that it received locally pending changes.
+    /// Record changes known to have arrived from this destination without claiming that
+    /// it received locally pending changes.
     pub fn observe(&mut self, observed: impl IntoIterator<Item = ChangeHash>) {
         for hash in observed {
             if !self.heads.contains(&hash) && !self.observed.contains(&hash) {
@@ -176,9 +139,9 @@ impl DocumentFrontier {
         }
     }
 
-    /// Whether the destination already holds the document at `heads`: nothing
-    /// arrived since this device was told what it holds, and every change
-    /// under those heads was delivered or accepted then.
+    /// Whether the destination already holds the document at `heads`: nothing arrived
+    /// since this device was told what it holds, and every change under those heads was
+    /// delivered or accepted then.
     pub fn unchanged(&self, heads: &[ChangeHash]) -> bool {
         self.observed.is_empty()
             && self.heads.len() == heads.len()
@@ -193,9 +156,9 @@ impl DocumentFrontier {
         );
     }
 
-    /// Record what a delivered incremental carried beyond what applied: a
-    /// change whose history this replica lacks waits for it, but this route
-    /// delivered it now, and it is never sent back.
+    /// Record what a delivered incremental carried beyond what applied: a change whose
+    /// history this replica lacks waits for it, but this route delivered it now, and it
+    /// is never sent back.
     fn observe_undelivered(&mut self, doc: &mut AutoCommit, payload: &[u8]) {
         self.observe(changes_beyond(doc, payload));
     }
@@ -205,9 +168,8 @@ impl DocumentFrontier {
     }
 }
 
-/// The changes `payload` carries that `doc` does not hold: loading a change
-/// whose history is missing keeps it until that history arrives, and it was
-/// delivered now all the same.
+/// The changes `payload` carries that `doc` does not hold: loading a change whose history
+/// is missing keeps it until that history arrives, and it was delivered now all the same.
 pub fn changes_beyond(doc: &mut AutoCommit, payload: &[u8]) -> Vec<ChangeHash> {
     let Ok(changes) = automerge::Automerge::parse_changes(payload) else {
         return Vec::new();
@@ -219,9 +181,7 @@ pub fn changes_beyond(doc: &mut AutoCommit, payload: &[u8]) -> Vec<ChangeHash> {
         .collect()
 }
 
-/// A CRDT document paired with the explicit frontier for one collaboration
-/// route. This is the small, undo-free replica used by metadata documents such
-/// as the workspace index; application documents add history through [`State`].
+/// A CRDT document paired with the explicit frontier for one collaboration route.
 pub struct DocumentReplica {
     doc: AutoCommit,
     outbound: DocumentFrontier,
@@ -252,13 +212,9 @@ impl DocumentReplica {
         self.outbound.advance(heads);
     }
 
-    /// Apply incremental Automerge bytes, whole or not at all, and retain them
-    /// in the outbound frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `data` is not a valid incremental Automerge payload
-    /// for this document; nothing of it is applied then.
+    /// Apply incremental Automerge bytes, whole or not at all, and retain them in the
+    /// outbound frontier. Returns an error when `data` is not a valid incremental
+    /// Automerge payload for this document; nothing of it is applied then.
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
         let loaded = self.doc.load_incoming_whole(data)?;
@@ -267,12 +223,9 @@ impl DocumentReplica {
         Ok(loaded)
     }
 
-    /// Merge a complete Automerge snapshot and retain its observed frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `data` is not a valid Automerge snapshot or cannot
-    /// be merged into this document.
+    /// Merge a complete Automerge snapshot and retain its observed frontier. Returns an
+    /// error when `data` is not a valid Automerge snapshot or cannot be merged into this
+    /// document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut incoming = AutoCommit::load(data)?;
         let before = self.doc.get_heads();
@@ -282,15 +235,11 @@ impl DocumentReplica {
     }
 }
 
-/// The unified state object that holds our CRDT document.
+/// An app's state: the CRDT document `App` merges and saves.
 pub struct State {
     pub doc: AutoCommit,
     pub root: ObjId,
-    /// The primary collaboration route's explicit outbound frontier. Kept
-    /// beside the document so every merge/adoption rebases it atomically.
     outbound: DocumentFrontier,
-    /// This document's history. Swapped out with the document itself in
-    /// [`Self::adopt_doc`] — see there for why it cannot travel.
     undo: UndoLog,
 }
 
@@ -314,17 +263,10 @@ impl State {
         }
     }
 
-    /// Replace the live document with another one — a different record's.
-    ///
-    /// The undo history goes with it: an [`UndoEntry`] is a pair of change
-    /// hashes in *this* document's graph, and carried across a swap it would
-    /// name changes the new document has never seen. Each record's history is
-    /// its own, so the stacks reset rather than travel.
-    ///
-    /// Returns `false` when the history revision namespace is exhausted. In
-    /// that case the live document is deliberately left in place: adopting a
-    /// new one under an indistinguishable revision could reuse cached history
-    /// UI from the old document.
+    /// Replace the live document with another one — a different record's. The undo
+    /// history goes with it: an [`UndoEntry`] is a pair of change hashes in *this*
+    /// document's graph, and carried across a swap it would name changes the new document
+    /// has never seen.
     pub fn adopt_doc(&mut self, doc: AutoCommit) -> bool {
         let Some(next) = self.undo.revision().checked_add(1) else {
             return false;
@@ -337,21 +279,19 @@ impl State {
         true
     }
 
-    /// A counter that changes whenever this document's history does. See
-    /// [`UndoLog::revision`].
+    /// A counter that changes whenever this document's history does.
     pub fn history_revision(&self) -> u64 {
         self.undo.revision()
     }
 
-    /// Commit the current transaction and push a change-based undo entry
-    /// recording the heads that bracket this action.
+    /// Commit the current transaction and push a change-based undo entry recording the
+    /// heads that bracket this action.
     pub fn commit_action(&mut self, focused_node_idx: Option<usize>, metadata: Option<String>) {
         self.commit_action_authored(focused_node_idx, metadata, None);
     }
 
-    /// Commit the current transaction and push a change-based undo entry,
-    /// attributing it to `author` so multi-user undo can isolate users. Returns
-    /// `true` iff a change was committed (see the [`UndoLog`] method).
+    /// Commit the current transaction and push a change-based undo entry, attributing it
+    /// to `author` so multi-user undo can isolate users.
     pub fn commit_action_authored(
         &mut self,
         focused_node_idx: Option<usize>,
@@ -378,20 +318,17 @@ impl State {
         )
     }
 
-    /// The newest step of this session still in effect, without taking it
-    /// back.
+    /// The newest step of this session still in effect, without taking it back.
     pub fn peek_last_undo(&self) -> Option<UndoEntry> {
         self.undo.peek_last_undo(&self.doc)
     }
 
-    /// How many steps of this session are in effect. See
-    /// [`UndoLog::undo_depth`].
+    /// How many steps of this session are in effect.
     pub fn undo_depth(&self) -> usize {
         self.undo.undo_depth(&self.doc)
     }
 
-    /// Whether `author` has anything to undo / redo. See
-    /// [`UndoLog::can_undo_as`].
+    /// Whether `author` has anything to undo / redo.
     pub fn can_undo_as(&self, author: Option<&UserId>) -> bool {
         self.undo.can_undo_as(&self.doc, author)
     }
@@ -400,21 +337,16 @@ impl State {
         self.undo.can_redo_as(&self.doc, author)
     }
 
-    /// What the history can do for `author` right now, ready to hand to a
-    /// widget — see [`UndoStatus`](crate::undo::UndoStatus).
-    ///
-    /// The summaries are what each step's action record says it did
-    /// ([`crate::undo::step_summary`]), the sentence its history row reads,
-    /// so a control and the timeline describe an action the same way.
+    /// What the history can do for `author` right now, ready to hand to a widget — see
+    /// [`UndoStatus`](crate::undo::UndoStatus).
     pub fn undo_status(&self, author: Option<&UserId>) -> crate::undo::UndoStatus {
         crate::undo::status_snapshot(&self.doc, &self.undo, author)
     }
 
-    /// Record an action that has *already* been committed into `doc`
-    /// out-of-band (e.g. a `tilo_actions` action the Ctrl+K palette dispatched,
-    /// which owns its own actor + timestamp commit boundary). Brackets the
-    /// undo entry with the caller-supplied `before` heads, clears the redo
-    /// stack, and realigns the undo baseline.
+    /// Record an action that has *already* been committed into `doc` out-of-band (e.g. a
+    /// `tilo_actions` action the Ctrl+K palette dispatched, which owns its own actor +
+    /// timestamp commit boundary). Brackets the undo entry with the caller-supplied
+    /// `before` heads, clears the redo stack, and realigns the undo baseline.
     pub fn record_committed_action(
         &mut self,
         before: Vec<ChangeHash>,
@@ -425,9 +357,8 @@ impl State {
             .record_committed_action(&mut self.doc, before, focused_node_idx, metadata)
     }
 
-    /// As [`Self::record_committed_action`], naming who performed it — for a
-    /// change that reached this document from outside the window. See
-    /// [`UndoLog::record_committed_action_authored`].
+    /// As [`Self::record_committed_action`], naming who performed it — for a change that
+    /// reached this document from outside the window.
     pub fn record_committed_action_authored(
         &mut self,
         before: Vec<ChangeHash>,
@@ -444,18 +375,10 @@ impl State {
         )
     }
 
-    /// Rewrite the document to the content it had at `target_heads`, as a NEW
-    /// forward change — "restore to this version" from the history scrubber.
-    /// Takes the same route as undo: derive the patches from current to
-    /// target, then write them, so history is appended to, never rewritten.
-    ///
-    /// Consequences: the restore shows up in the timeline as its own entry
-    /// (the versions it rolled past are still there); remote edits merged in
-    /// while scrubbing survive, since only what actually differs is
-    /// rewritten; and the restore is itself undoable.
-    ///
-    /// Returns `true` when something changed; a restore to the current state
-    /// is a no-op.
+    /// Rewrite the document to the content it had at `target_heads`, as a NEW forward
+    /// change — "restore to this version" from the history scrubber. Takes the same route
+    /// as undo: derive the patches from current to target, then write them, so history is
+    /// appended to, never rewritten.
     pub fn restore_to_heads(
         &mut self,
         target_heads: &[ChangeHash],
@@ -472,11 +395,7 @@ impl State {
         )
     }
 
-    /// Undo the most recent action by writing its inverse as a new forward
-    /// change. Callers pass the *current* focus index and widget metadata so
-    /// the redo entry carries the caret/focus state at the moment undo fired
-    /// — otherwise Ctrl+Shift+Z would rehydrate the text body but leave the
-    /// caret at offset 0.
+    /// Undo the most recent action by writing its inverse as a new forward change.
     pub fn undo(
         &mut self,
         current_focused_idx: Option<usize>,
@@ -485,10 +404,10 @@ impl State {
         self.undo_as(None, current_focused_idx, current_metadata)
     }
 
-    /// Undo on behalf of `author`: the entry point every interactive Ctrl+Z
-    /// takes. With an author, undo skips past other people's actions, so one
-    /// collaborator never reverts another's work; `None` — an app running
-    /// with no identity at all — keeps the plain LIFO behaviour.
+    /// Undo on behalf of `author`: the entry point every interactive Ctrl+Z takes. With
+    /// an author, undo skips past other people's actions, so one collaborator never
+    /// reverts another's work; `None` — an app running with no identity at all — keeps
+    /// the plain LIFO behaviour.
     pub fn undo_as(
         &mut self,
         author: Option<&UserId>,
@@ -499,8 +418,8 @@ impl State {
             .undo_as(&mut self.doc, author, current_focused_idx, current_metadata)
     }
 
-    /// Redo on behalf of `author` — the mirror of [`Self::undo_as`], so a
-    /// redo cannot re-apply an action the local user never undid.
+    /// Redo on behalf of `author` — the mirror of [`Self::undo_as`], so a redo cannot
+    /// re-apply an action the local user never undid.
     pub fn redo_as(
         &mut self,
         author: Option<&UserId>,
@@ -511,11 +430,8 @@ impl State {
             .redo_as(&mut self.doc, author, current_focused_idx, current_metadata)
     }
 
-    /// Redo the most recently undone action by inverting the inverse change
-    /// (re-applying the original action's delta as a new forward change).
-    /// `current_focused_idx` / `current_metadata` are captured on the undo
-    /// stack so a subsequent undo can park the caret back where it was
-    /// pre-redo.
+    /// Redo the most recently undone action by inverting the inverse change (re-applying
+    /// the original action's delta as a new forward change).
     pub fn redo(
         &mut self,
         current_focused_idx: Option<usize>,
@@ -530,10 +446,6 @@ impl State {
     }
 
     /// Wrap an already-loaded document.
-    ///
-    /// The entry point for persistence: the store hands back
-    /// the previous session's `AutoCommit` — history, actor identity and all
-    /// — and this adopts it as the live document without a byte round-trip.
     pub fn from_doc(mut doc: AutoCommit) -> Self {
         let undo = UndoLog::new(&mut doc);
         let outbound = DocumentFrontier::at_document(&mut doc);
@@ -559,42 +471,26 @@ impl State {
         })
     }
 
-    /// Apply an incremental CRDT patch (bytes produced by
-    /// `AutoCommit::save_incremental` on another peer) into this document.
-    /// Returns the number of ops applied on success.
-    ///
-    /// This is how an incremental `CollabEvent::Document` is merged on the
-    /// receiver side — without it, incremental deltas broadcast by one peer
-    /// would never reach another peer's CRDT.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid incremental Automerge patch
-    /// (corrupt bytes, or bytes that don't apply to this document's history).
-    /// A payload that stops parsing part way is refused whole: none of its
-    /// changes are applied, not even the ones before the corruption.
+    /// Apply an incremental CRDT patch (bytes produced by `AutoCommit::save_incremental`
+    /// on another peer) into this document. This is how an incremental
+    /// `CollabEvent::Document` is merged on the receiver side — without it, incremental
+    /// deltas broadcast by one peer would never reach another peer's CRDT. Returns an
+    /// error if `data` is not a valid incremental Automerge patch (corrupt bytes, or
+    /// bytes that don't apply to this document's history).
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
         let n = self.doc.load_incoming_whole(data)?;
-        // Keep the undo baseline aligned with the new, merged document state
-        // so the *next* local action brackets against a complete picture.
-        // Existing entries keep their original before/after heads — those
-        // remain valid addresses into the append-only change graph after a
-        // merge, so undoing an earlier action still reverts exactly that
-        // action, leaving the just-merged remote ops intact.
+        // Keep the undo baseline aligned with the new, merged document state so the
+        // *next* local action brackets against a complete picture.
         self.undo.rebase(&mut self.doc);
         self.outbound.observe_changes_after(&mut self.doc, &before);
         self.outbound.observe_undelivered(&mut self.doc, data);
         Ok(n)
     }
 
-    /// Merge a complete peer snapshot without replacing local work, then
-    /// atomically align undo and outbound frontiers with the merged graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `data` is not a valid Automerge snapshot or cannot
-    /// be merged into this document.
+    /// Merge a complete peer snapshot without replacing local work, then atomically align
+    /// undo and outbound frontiers with the merged graph. Returns an error when `data` is
+    /// not a valid Automerge snapshot or cannot be merged into this document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut incoming = AutoCommit::load(data)?;
         let before = self.doc.get_heads();
@@ -604,8 +500,8 @@ impl State {
         Ok(())
     }
 
-    /// Prepare primary-route bytes without advancing its frontier. The caller
-    /// advances only after its durable queue accepts the payload.
+    /// Prepare primary-route bytes without advancing its frontier. The caller advances
+    /// only after its durable queue accepts the payload.
     pub fn pending_outbound_delta(&mut self) -> (Vec<u8>, Vec<ChangeHash>) {
         self.outbound
             .pending_delta(&mut self.doc, &WritingActors::default())
@@ -621,9 +517,6 @@ impl State {
     }
 
     /// Serialize the changes made since the last `save/save_incremental` call.
-    /// The returned bytes can be fed into another peer's `load_incremental`
-    /// to replay just the delta — the basic building block of efficient
-    /// CRDT sync.
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.doc.save_incremental()
     }
@@ -664,7 +557,6 @@ mod tests {
         assert!(state.doc.get(ROOT, "first").unwrap().is_none());
         assert!(replica.load_incremental(&torn).is_err());
         assert!(replica.doc.get(ROOT, "first").unwrap().is_none());
-        // The whole payload applies.
         assert!(state.load_incremental(&first).unwrap() > 0);
         assert_eq!(state.doc.get_heads(), peer.get_heads());
     }
@@ -675,8 +567,6 @@ mod tests {
         doc.put(ROOT, "mine", "this device").unwrap();
         doc.commit();
         let mine = doc.get_heads();
-        // Another device adds to the same document, and this replica takes
-        // the change in.
         let mut other = AutoCommit::load(&doc.save())
             .unwrap()
             .with_actor(automerge::ActorId::random());
@@ -688,9 +578,9 @@ mod tests {
             other.get_heads(),
             "the change is held here"
         );
-        // A frontier never told the delivered change arrived publishes this
-        // replica's change alone: a change goes out from the replica that
-        // made it, and the snapshot handshake carries the rest.
+        // A frontier never told the delivered change arrived publishes this replica's
+        // change alone: a change goes out from the replica that made it, and the snapshot
+        // handshake carries the rest.
         let mut frontier = DocumentFrontier::default();
         let (delta, heads) = frontier.pending_delta(&mut doc, &WritingActors::default());
         let published = automerge::Automerge::parse_changes(&delta).unwrap();
@@ -706,8 +596,6 @@ mod tests {
         doc.put(ROOT, "setting", "on").unwrap();
         doc.commit();
         let mut frontier = DocumentFrontier::at_document(&mut doc);
-        // An action one person performs writes as that person's handle on this
-        // device; the record's writer is put back when the action ends.
         let handled = automerge::ActorId::from(
             crate::history_source::authors::device_actor("alice", &device).as_slice(),
         );
@@ -729,9 +617,6 @@ mod tests {
         doc.put(ROOT, "setting", "on").unwrap();
         doc.commit();
         let mut frontier = DocumentFrontier::at_document(&mut doc);
-        // A mount writing as another author writes under the writer derived
-        // for that author; the frame puts the record's writer back when it
-        // ends, so the route remembers the writer it noted.
         let mut own = WritingActors::default();
         let authored = crate::record::author_writer(&writer, "alice");
         own.note(authored.clone());
@@ -1132,39 +1017,38 @@ mod tests {
         {
             let mut state = State::new();
 
-            // Seed a mutation so commit_action has something to push.
             state
                 .doc
                 .put(&automerge::ROOT, "k", ScalarValue::Str("v".into()))
                 .unwrap();
             state.commit_action(Some(7), Some("meta1".into()));
 
-            // Simulate a second mutation whose current caret/focus should
-            // be the one we expect redo to rehydrate.
+            // Simulate a second mutation whose current caret/focus should be the one we
+            // expect redo to rehydrate.
             state
                 .doc
                 .put(&automerge::ROOT, "k", ScalarValue::Str("v2".into()))
                 .unwrap();
 
-            // Undo with *current* state (Some(3) / "meta_current") — this is
-            // what callers like `App::commit_action` pass through.
+            // Undo with the current state (Some(3) / "meta_current"), as `App::commit_action`
+            // passes it.
             let popped = state
                 .undo(Some(3), Some("meta_current".into()))
                 .expect("undo must pop the seeded entry");
             assert_eq!(popped.focused_node_idx, Some(7));
             assert_eq!(popped.widget_metadata, Some("meta1".into()));
 
-            // Redo — the test-only callers here don't need to bump the stack,
-            // so pass None/None. The returned entry must reflect the state
-            // that was current at the moment `undo(...)` fired.
+            // Redo — the test-only callers here don't need to bump the stack, so pass
+            // None/None. The returned entry must reflect the state that was current at
+            // the moment `undo(...)` fired.
             let redone = state
                 .redo(None, None)
                 .expect("redo must pop the redo-stack entry");
             assert_eq!(redone.focused_node_idx, Some(3));
             assert_eq!(redone.widget_metadata, Some("meta_current".into()));
 
-            // Sanity: the doc itself is back at the post-second-mutation
-            // state so renderers stay in sync.
+            // Sanity: the doc itself is back at the post-second-mutation state so
+            // renderers stay in sync.
             let (val, _) = state.doc.get(&automerge::ROOT, "k").unwrap().unwrap();
             assert_eq!(val.as_str(), Some("v2"));
         }
@@ -1267,14 +1151,11 @@ mod tests {
             state.doc.splice_text(&text, 0, 0, "Hello").unwrap();
             state.commit_action(None, None);
 
-            // Capture the heads a remote peer would have forked from (pre local action).
             let before_local = state.doc.get_heads();
 
-            // LOCAL action: append " World".
             state.doc.splice_text(&text, 5, 0, " World").unwrap();
             state.commit_action(None, None);
 
-            // CONCURRENT remote edit forked from before the local action: prepend "X".
             let mut remote = state.doc.fork_at(&before_local).unwrap();
             let rtext = remote.get(&ROOT, "body").unwrap().unwrap().1;
             remote.splice_text(&rtext, 0, 0, "X").unwrap();
@@ -1289,7 +1170,6 @@ mod tests {
 
             state.undo(None, None).expect("undo pops the local action");
 
-            // Local " World" reverted; remote "X" survives.
             assert_eq!(
                 text_body(&state, &text),
                 "XHello",
@@ -1334,7 +1214,6 @@ mod tests {
             state.commit_action(None, None);
             let before_local = state.doc.get_heads();
 
-            // LOCAL action: delete " World".
             state.doc.splice_text(&text, 5, 6, "").unwrap();
             state.commit_action(None, None);
 
@@ -1367,10 +1246,10 @@ mod tests {
         // the live document — not just unpopped from the stack.
         {
             let mut state = State::new();
-            // Alice sets a=1
+            // Alice sets a=1.
             state.doc.put(&ROOT, "a", 1).unwrap();
             state.commit_action_authored(None, None, Some(UserId("alice".into())));
-            // Bob sets b=1
+            // Bob sets b=1.
             state.doc.put(&ROOT, "b", 1).unwrap();
             state.commit_action_authored(None, None, Some(UserId("bob".into())));
 
@@ -1452,8 +1331,8 @@ mod tests {
             state.undo_as(Some(&bob), None, None).unwrap();
             assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
 
-            // Alice hits Ctrl+Y. There is nothing of hers to redo, and Bob's
-            // undone action must stay undone.
+            // Alice hits Ctrl+Y. There is nothing of hers to redo, and Bob's undone
+            // action must stay undone.
             assert!(
                 state.redo_as(Some(&alice), None, None).is_none(),
                 "alice has nothing to redo"
@@ -1519,15 +1398,9 @@ mod tests {
                 state.undo_as(Some(&bob()), None, None).is_none(),
                 "and undo declines for Bob — the query must match"
             );
-            // With no identity at all the history is plain LIFO, and the query
-            // follows that too.
             assert!(state.can_undo_as(None));
         }
     }
-
-    // ================================================================
-    // What a widget is told about the history
-    // ================================================================
 
     fn alice() -> crate::permissions::UserId {
         crate::permissions::UserId("alice".into())
@@ -1537,9 +1410,6 @@ mod tests {
         crate::permissions::UserId("bob".into())
     }
 
-    /// Type `text` into a fresh text field and commit it as one action by
-    /// `author` — a real edit through the real commit path, so the summary
-    /// under test describes a change that actually happened.
     fn type_action(state: &mut State, key: &str, text: &str, author: &crate::permissions::UserId) {
         let obj = state
             .doc
@@ -1557,7 +1427,6 @@ mod tests {
         );
     }
 
-    /// The entry [`type_action`] commits its edit with.
     fn typed() -> tilo_actions::ActionContext {
         tilo_actions::ActionContext::for_resource("note", "note", "Note").with_described(
             tilo_actions::Described::new(tilo_actions::Did::verb(
@@ -1632,9 +1501,8 @@ mod tests {
             let after_redo = state.history_revision();
             assert_ne!(after_redo, after_undo, "redo moves it");
 
-            // An event that changes nothing must NOT move it, or the host
-            // re-derives the summaries every frame — and each derivation closes
-            // the open transaction.
+            // An event that changes nothing must NOT move it, or the host re-derives the
+            // summaries every frame — and each derivation closes the open transaction.
             assert!(!state.commit_action_authored(None, None, Some(a.clone())));
             assert_eq!(
                 state.history_revision(),
@@ -1642,8 +1510,6 @@ mod tests {
                 "an empty commit is not a history change"
             );
 
-            // The author-less paths are separate methods with their own stack
-            // handling; walk them too, or a missing bump there ships unseen.
             let mut anon = State::new();
             anon.doc.put(&automerge::ROOT, "k", 1).unwrap();
             anon.commit_action(None, None);
@@ -1658,8 +1524,8 @@ mod tests {
                 "plain redo moves the revision"
             );
 
-            // Swapping the document resets the stacks; the revision must still
-            // move, so a status cached against the old document is not reused.
+            // Swapping the document resets the stacks; the revision must still move, so a
+            // status cached against the old document is not reused.
             let mut other = automerge::AutoCommit::new();
             other.put(&automerge::ROOT, "k", 1).unwrap();
             state.adopt_doc(other);
@@ -1794,7 +1660,6 @@ mod tests {
             .unwrap();
         state.commit_action(None, None);
         let before = state.doc.marks(&text).unwrap();
-        // One action: insert inside the bold run, then delete on both sides.
         state.doc.splice_text(&text, 9, 0, "Osprey").unwrap();
         state.doc.splice_text(&text, 8, 1, "").unwrap();
         state.doc.splice_text(&text, 14, 5, "").unwrap();
@@ -1878,7 +1743,6 @@ mod tests {
             let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
             doc.splice_text(&text, 0, 0, "a🦀b").unwrap();
             let before = doc.get_heads();
-            // Insert after the crab, then delete the character before it.
             doc.splice_text(&text, width("a🦀"), 0, "XY").unwrap();
             doc.splice_text(&text, 0, 1, "").unwrap();
             let after = doc.get_heads();
@@ -1894,9 +1758,6 @@ mod tests {
         }
     }
 
-    /// Undoing the action that created a paragraph keeps the paragraph when a
-    /// collaborator has written in it since: their words are not the undoing
-    /// author's to take back.
     #[test]
     fn undo_keeps_a_created_paragraph_a_collaborator_wrote_in() {
         fn paragraph(state: &mut State, blocks: &ObjId, id: &str) -> ObjId {
@@ -1919,7 +1780,6 @@ mod tests {
         let blocks = state.doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
         let first = paragraph(&mut state, &blocks, "a");
         state.commit_action(None, None);
-        // Type a word, then press Enter: a new paragraph after it.
         state.doc.splice_text(&first, 0, 0, "hello").unwrap();
         state.commit_action(None, None);
         paragraph(&mut state, &blocks, "b");

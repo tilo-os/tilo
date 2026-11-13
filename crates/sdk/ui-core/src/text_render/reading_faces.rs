@@ -11,7 +11,6 @@ fn reading(face: ReadingFace) -> TextStyle {
         .style(TextRole::Reading)
 }
 
-/// `(family, glyph id)` of every glyph `text` shapes to in `style`.
 fn shaped(renderer: &mut TextRenderer, text: &str, style: &TextStyle) -> Vec<(String, u16)> {
     let buffer = renderer.shape_buffer(text, None, style).buffer;
     let db = renderer.font_system.db();
@@ -60,7 +59,6 @@ fn new_computer_modern_is_set_in_the_cut_each_size_calls_for() {
         &style.clone().with_content_size(10.0).with_italic(true),
     );
     assert_eq!(families(&glyphs), ["New Computer Modern Book"]);
-    // The generic serif is the default reading face, by cut too.
     let generic = TextStyle::content(48.0).with_family(FontChoice::Serif);
     assert_eq!(
         families(&shaped(&mut renderer, "Chapter", &generic)),
@@ -68,9 +66,9 @@ fn new_computer_modern_is_set_in_the_cut_each_size_calls_for() {
     );
 }
 
-/// The SDK's standalone catalog (next to a third-party app's build) has only
-/// New Computer Modern's GUST-licensed cuts: Book sets titles there too,
-/// while the Tilo OS catalog sets them in Regular.
+/// The SDK's standalone catalog (next to a third-party app's build) has only New Computer
+/// Modern's GUST-licensed cuts: Book sets titles there too, while the Tilo OS catalog
+/// sets them in Regular.
 #[cfg(unix)]
 #[test]
 fn the_standalone_catalog_sets_titles_in_book() {
@@ -107,7 +105,6 @@ fn the_standalone_catalog_sets_titles_in_book() {
         let glyphs = shaped(&mut renderer, "Chapter", &title);
         assert_eq!(families(&glyphs), [cut], "{}", root.display());
         assert!(glyphs.iter().all(|(_, id)| *id != 0));
-        // Body text, footnotes and large italics are the same everywhere.
         for (style, cut) in [
             (style.clone(), "New Computer Modern Book"),
             (
@@ -182,8 +179,6 @@ fn reading_figures_are_old_style_until_a_kind_asks_for_lining() {
                 .with_numeric_style(NumericStyle::ProportionalLining),
         );
         assert_ne!(oldstyle, lining, "{face:?}: numeric text is lining");
-        // EB Garamond's default figures are old-style; every other face's
-        // are lining, which the role turns old-style.
         if face != ReadingFace::Garamond {
             assert_ne!(oldstyle, plain, "{face:?}: running text is old-style");
         }

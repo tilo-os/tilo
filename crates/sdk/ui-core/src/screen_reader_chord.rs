@@ -1,13 +1,9 @@
-//! The chord that turns the screen reader on and off on every screen: Ctrl +
-//! Super + Enter, and on a device without a keyboard both volume keys held
-//! for three seconds (docs/security/sign-in.md §3.4).
-//!
-//! One recognizer for every host, so no screen can lack the chord or read it
-//! differently: toolkit apps feed it winit's key events ([`ChordKey::from_winit`]),
-//! the compositor and the KMS/libinput host feed it xkbcommon keysyms
-//! ([`ChordKey::from_keysym`]). It is pure: the host passes the time of
-//! each event and arms a timer for [`ScreenReaderChord::deadline`], then
-//! calls [`ScreenReaderChord::tick`] when it fires.
+//! The chord that turns the screen reader on and off on every screen: Ctrl + Super +
+//! Enter, and on a device without a keyboard both volume keys held for three seconds
+//! (docs/security/sign-in.md §3.4). One recognizer for every host, so no screen can lack
+//! the chord or read it differently: toolkit apps feed it winit's key events
+//! ([`ChordKey::from_winit`]), the compositor and the KMS/libinput host feed it xkbcommon
+//! keysyms ([`ChordKey::from_keysym`]).
 
 use crate::i18n::widget_text;
 use crate::time::{Duration, Instant};
@@ -18,14 +14,12 @@ pub const VOLUME_HOLD: Duration = Duration::from_secs(3);
 /// The keys the chord is made of; every other key is [`ChordKey::Other`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChordKey {
-    /// Enter or the keypad's Enter.
     Enter,
     VolumeUp,
     VolumeDown,
     Other,
 }
 
-/// xkbcommon keysyms the chord is made of.
 const XKB_KEY_RETURN: u32 = 0xff0d;
 const XKB_KEY_KP_ENTER: u32 = 0xff8d;
 const XKB_KEY_XF86_AUDIO_RAISE_VOLUME: u32 = 0x1008_ff13;
@@ -43,8 +37,8 @@ impl ChordKey {
         }
     }
 
-    /// The key a winit key event is, by its physical position first (the
-    /// layout cannot move Enter or the volume keys), then by what it types.
+    /// The key a winit key event is, by its physical position first (the layout cannot
+    /// move Enter or the volume keys), then by what it types.
     #[must_use]
     pub fn from_winit(event: &winit::event::KeyEvent) -> Self {
         use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
@@ -63,7 +57,7 @@ impl ChordKey {
     }
 }
 
-/// The modifiers held with a key. The chord wants exactly Ctrl and Super.
+/// The modifiers held with a key.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -77,7 +71,6 @@ pub struct ChordModifiers {
 }
 
 impl ChordModifiers {
-    /// winit's modifier state.
     #[must_use]
     pub fn from_winit(state: winit::keyboard::ModifiersState) -> Self {
         Self {
@@ -93,13 +86,11 @@ impl ChordModifiers {
     }
 }
 
-/// One key going down or up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChordEvent {
     pub key: ChordKey,
     pub modifiers: ChordModifiers,
     pub pressed: bool,
-    /// The key is held and auto-repeating.
     pub repeat: bool,
     pub at: Instant,
 }
@@ -109,7 +100,6 @@ pub struct ChordEvent {
 pub struct ScreenReaderChord {
     volume_up: bool,
     volume_down: bool,
-    /// When both volume keys became held; `None` once this hold toggled.
     both_since: Option<Instant>,
 }
 
@@ -119,9 +109,6 @@ impl ScreenReaderChord {
         Self::default()
     }
 
-    /// Feed one key event. `true` when it toggles the screen reader: the
-    /// press of Enter under exactly Ctrl + Super, or the event that finds
-    /// both volume keys held for [`VOLUME_HOLD`].
     pub fn key(&mut self, event: ChordEvent) -> bool {
         match event.key {
             ChordKey::Enter => event.pressed && !event.repeat && event.modifiers.is_ctrl_super(),
@@ -148,8 +135,8 @@ impl ScreenReaderChord {
         }
     }
 
-    /// When the volume hold toggles if both keys stay down; the host arms a
-    /// timer for it and calls [`Self::tick`] then.
+    /// When the volume hold toggles if both keys stay down; the host arms a timer for it
+    /// and calls [`Self::tick`] then.
     #[must_use]
     pub fn deadline(&self) -> Option<Instant> {
         self.both_since.map(|since| since + VOLUME_HOLD)
@@ -164,15 +151,15 @@ impl ScreenReaderChord {
         false
     }
 
-    /// Forget held keys, as when the host loses keyboard focus and will not
-    /// see their release.
+    /// Forget held keys, as when the host loses keyboard focus and will not see their
+    /// release.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 }
 
-/// What is said when the chord turns the screen reader on or off, in the
-/// interface language; English when no catalog is loaded.
+/// What is said when the chord turns the screen reader on or off, in the interface
+/// language; English when no catalog is loaded.
 #[must_use]
 pub fn state_words(on: bool) -> String {
     let (key, english) = if on {
@@ -263,7 +250,6 @@ mod tests {
         assert!(!chord.key(event(ChordKey::VolumeDown, none, true, both)));
         assert_eq!(chord.deadline(), Some(both + VOLUME_HOLD));
         assert!(!chord.tick(both + Duration::from_millis(2_999)));
-        // Auto-repeat of a held key does not restart the hold.
         assert!(!chord.key(ChordEvent {
             repeat: true,
             ..event(
@@ -276,7 +262,6 @@ mod tests {
         assert!(chord.tick(both + VOLUME_HOLD));
         assert_eq!(chord.deadline(), None);
         assert!(!chord.tick(both + Duration::from_secs(10)), "once per hold");
-        // Releasing one key and pressing it again starts a new hold.
         let again = both + Duration::from_secs(11);
         assert!(!chord.key(event(ChordKey::VolumeDown, none, false, again)));
         assert!(!chord.key(event(ChordKey::VolumeDown, none, true, again)));

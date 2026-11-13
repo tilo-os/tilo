@@ -1,12 +1,8 @@
 //! A theme bundle: a theme document and the painter modules it names
-//! (`docs/architecture/theming.md`, "Theme bundles").
-//!
-//! A bundle is a directory holding `theme.json` and one `<set>.wasm` for
-//! each painter set the document names that is not built in. Loading it
-//! loads each module ([`crate::part_paint::wasm`]), registers it under its
-//! name, and then reads the document, which may name those sets like the
-//! built-in ones. A bundle is never trusted: each module is held to the
-//! wasm host's limits, and the document is validated like any other.
+//! (`docs/architecture/theming.md`, "Theme bundles"). A bundle is a directory holding
+//! `theme.json` and one `<set>.wasm` for each painter set the document names that is not
+//! built in. A bundle is never trusted: each module is held to the wasm host's limits,
+//! and the document is validated like any other.
 
 use crate::part_paint::{self, builtin, wasm};
 use crate::theme::Theme;
@@ -14,25 +10,17 @@ use crate::theme::Theme;
 /// The document's file in a bundle directory.
 pub const DOCUMENT: &str = "theme.json";
 
-/// The surface roles a document's `material` names a painter set for.
 const ROLES: [&str; 4] = ["window", "control", "floating", "bar"];
 
-/// Longest painter set name a bundle may carry.
 const MAX_SET_NAME: usize = 64;
 
 /// Why a bundle is not a theme.
 #[derive(Debug)]
 pub enum BundleError {
-    /// The document or a module could not be read.
     Read(String),
-    /// The document is not a theme document, or not a valid one.
     Document(String),
-    /// A set name is not one a bundle may use: empty, too long, or not of
-    /// lowercase letters, digits, `-`, `_` and `.`.
     SetName(String),
-    /// The document names a set the bundle does not carry.
     Missing(String),
-    /// A module is not a painter set the host runs.
     Painter { set: String, refusal: wasm::Refusal },
 }
 
@@ -62,8 +50,6 @@ fn set_name_ok(name: &str) -> bool {
         && !name.starts_with('.')
 }
 
-/// The painter sets `document` names that are not built in, each once, in
-/// role order.
 fn named_sets(document: &serde_json::Value) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for role in ROLES {
@@ -80,13 +66,9 @@ fn named_sets(document: &serde_json::Value) -> Vec<String> {
     names
 }
 
-/// The theme of the bundle whose document is `document`, taking each
-/// painter module it names from `module` (by set name). Each module is
-/// loaded and registered before the document is read.
-///
-/// # Errors
-/// The bundle is not a theme ([`BundleError`]); sets loaded before the
-/// failure stay registered.
+/// The theme of the bundle whose document is `document`, taking each painter module it
+/// names from `module` (by set name). The bundle is not a theme ([`BundleError`]); sets
+/// loaded before the failure stay registered.
 pub fn load(
     document: &str,
     mut module: impl FnMut(&str) -> Result<Option<Vec<u8>>, BundleError>,

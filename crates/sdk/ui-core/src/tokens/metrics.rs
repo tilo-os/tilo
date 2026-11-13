@@ -1,224 +1,123 @@
-//! Density metrics: the control heights, hit targets, panel widths and icon
-//! sizes HIG §9.6 fixes so two panels built by two people come out the same
-//! size. Spacing says how far apart things sit; metrics say how big the things
-//! are.
-//!
-//! Like [`super::Spacing`] these are logical pixels multiplied by
-//! [`crate::Theme::with_ui_scale`]. A custom theme's `spacing_px` does **not**
-//! touch them: a denser gutter preference must not shrink a pointer target.
-//!
-//! [`Metrics::BASE`] is the unscaled reference, readable from a `const`
-//! context so a shell constant that has to be compile-time (`const PAD`, a
-//! default breakpoint) names the token instead of restating its number.
+//! Density metrics: the control heights, hit targets, panel widths and icon sizes HIG
+//! §9.6 fixes so two panels built by two people come out the same size. Spacing says how
+//! far apart things sit; metrics say how big the things are. A custom theme's
+//! `spacing_px` does **not** touch them: a denser gutter preference must not shrink a
+//! pointer target.
 
-/// Reference density (HIG §9.6), unscaled. Read live values from
-/// `theme.tokens.metrics`.
+/// Reference density (HIG §9.6), unscaled.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
-    /// A top bar, toolbar or status strip. Also the default height of the
-    /// shared `Button` and `Dropdown` controls.
     pub bar_height: f32,
     /// A control living inside a 40 px bar (segmented switch, bar button).
     pub bar_control_height: f32,
-    /// One row of a Panel — a settings toggle row, a roster entry.
     pub panel_row_height: f32,
-    /// One row of a menu (context menu, dropdown list).
     pub menu_row_height: f32,
-    /// The narrowest a menu stands, however short its labels: a menu of one
-    /// short item still reads as a menu, not as a button.
     pub menu_min_width: f32,
-    /// Room a scroll view keeps on its trailing edge for its scroll bar
-    /// while its content overflows, so the bar never covers content: the
-    /// thumb ([`Metrics::scroll_thumb`]) plus `s1` on each side.
+    /// Room a scroll view keeps on its trailing edge for its scroll bar while its content
+    /// overflows, so the bar never covers content: the thumb ([`Metrics::scroll_thumb`])
+    /// plus `s1` on each side.
     pub scrollbar_gutter: f32,
-    /// A compact selector (chip, tab pill, dropdown trigger in a Panel).
     pub selector_height: f32,
-    /// No pointer target is smaller than this, whatever glyph it shows.
     pub min_pointer_target: f32,
-    /// A utility Panel such as quick settings.
     pub panel_width_utility: f32,
     pub panel_width_list: f32,
-    /// A sheet carrying a form.
     pub panel_width_sheet: f32,
-    /// Compact glyph: tab leading icon, inline status mark.
     pub icon_sm: f32,
     /// The standard 20 px glyph that sits in a 32 px hit rect.
     pub icon_md: f32,
-    /// Large glyph: empty-state mark, list leading icon.
     pub icon_lg: f32,
-    /// Between an icon and the label it belongs to (`Button`, `Tabs`).
     pub icon_label_gap: f32,
     /// Thickness of the rule under a toolbar and along a status bar.
-    /// `1` is the hairline. `0` draws no rule. A heavier value is a
-    /// stronger chrome edge. `ui_scale` multiplies it; a theme's spacing
-    /// preference does not.
     pub chrome_rule_px: f32,
-    /// The edge a display wears while a call rings on another one.
     pub call_edge_px: f32,
-    /// The edge every display wears for a visual alert: obvious without a
-    /// full-screen flash.
     pub alert_edge_px: f32,
-    /// A genuine navigation sidebar (HIG §1a) when docked.
     pub sidebar_width: f32,
-    /// An overlay drawer; equal to [`Metrics::panel_width_utility`] so a
-    /// docked utility panel and a slid-in drawer are one width.
     pub drawer_width: f32,
-    /// The overview column of an overview + detail pair (HIG §1b).
     pub overview_width: f32,
-    /// The widest the overview column grows to fit what it lists: a row's
-    /// title beside its facts, whole. Past it the title elides, and the
-    /// detail keeps the room.
     pub overview_max_width: f32,
-    /// A generic "wide window" width for painted apps that pick a compact
-    /// chrome by width: `sidebar_width` plus [`Metrics::content_min_width`].
-    /// `NavShell` and `SidebarDrawer` dock by the content's real minimum
-    /// instead.
+    /// A generic "wide window" width for painted apps that pick a compact chrome by
+    /// width: `sidebar_width` plus [`Metrics::content_min_width`].
     pub compact_breakpoint: f32,
-    /// One row of a navigation list (`NavList`, `paint_nav_row`) at the
-    /// default text scale; it grows with the body line like any shell
-    /// control that carries one line of text.
     pub nav_row_height: f32,
-    /// The one header row a `NavShell` draws across the top of the window:
-    /// a `min_pointer_target` control in an `s3` inset (32 + 2 × 12).
+    /// The one header row a `NavShell` draws across the top of the window: a
+    /// `min_pointer_target` control in an `s3` inset (32 + 2 × 12).
     pub header_height: f32,
-    /// A compact icon-over-label navigation rail (`NavList::rail`).
     pub rail_width: f32,
-    /// The widest a rail grows as the text grows, to fit its longest single
-    /// word ([`crate::chrome::rail_width_fitting`]); past it a word elides.
     pub rail_max_width: f32,
-    /// The inspector column at the trailing edge of a window.
     pub inspector_width: f32,
-    /// Narrowest a person can drag a docked sidebar; dragging it below this
-    /// hides it. The same width a docked panel keeps beside a content column
-    /// before it floats over it ([`Self::panel_min_width`]).
     pub sidebar_min_width: f32,
-    /// The narrowest a sidebar or panel works at beside a painted app's own
-    /// content column, as a split of the app's window: a name beside its
-    /// value, a destination's label whole. Beside a content *kind*'s minimum
-    /// a shell panel shrinks toward this first
-    /// (`SidebarDrawer::content_kind`) and stops docking there.
+    /// The narrowest a sidebar or panel works at beside a painted app's own content
+    /// column, as a split of the app's window: a name beside its value, a destination's
+    /// label whole.
     pub panel_min_width: f32,
-    /// Widest a person can drag a docked sidebar.
     pub sidebar_max_width: f32,
-    /// A generous content column: the width of a sheet
-    /// ([`Metrics::panel_width_sheet`]). Painted apps that split their own
-    /// window use it; `NavShell` docks by the content's real minimum
-    /// instead (the `*_min_width` metrics of its `ContentKind`).
+    /// A generous content column: the width of a sheet ([`Metrics::panel_width_sheet`]).
     pub content_min_width: f32,
-    /// Narrowest a detail column beside a list may become in a painted
-    /// app's own split. `NavShell` uses its content kind's minimum.
+    /// Narrowest a detail column beside a list may become in a painted app's own split.
     pub detail_min_width: f32,
-    /// Narrowest a Tilo app's window becomes: its compact layout, one screen
-    /// at a time, at phone width. Resizing a window stops its edge here
-    /// (`widget::edge_resize`), so every app's compact layout must fit it.
+    /// Narrowest a Tilo app's window becomes: its compact layout, one screen at a time,
+    /// at phone width. Resizing a window stops its edge here (`widget::edge_resize`), so
+    /// every app's compact layout must fit it.
     pub window_min_width: f32,
-    /// The narrowest a list or table of items (files, messages, tracks)
-    /// still works at: name, a line of detail, a trailing value.
     pub list_min_width: f32,
-    /// The narrowest a reading column (a message, an article) still works
-    /// at: about 45 characters of body text.
+    /// The narrowest a reading column (a message, an article) still works at: about 45
+    /// characters of body text.
     pub reading_min_width: f32,
-    /// The narrowest a page of settings, a form or a page of facts still
-    /// works at: a label above its control.
     pub page_min_width: f32,
-    /// The narrowest a grid of media tiles still works at: two tiles.
     pub grid_min_width: f32,
-    /// A board lane's reading width: a card and its facts on one comfortable
-    /// measure, the same on every board at every window width. Lanes stand
-    /// left-aligned, as wide as this; the room a wider pane leaves stands
-    /// open beside them instead of stretching every card across it.
     pub board_lane_width: f32,
-    /// How much wider than its threshold a window must grow before a
-    /// layout that switched away switches back, so a window resized near a
-    /// threshold does not flicker between two layouts.
+    /// How much wider than its threshold a window must grow before a layout that switched
+    /// away switches back, so a window resized near a threshold does not flicker between
+    /// two layouts.
     pub layout_hysteresis: f32,
-    /// The widest a form, a settings page or a page of facts grows
-    /// (`FormPage`, `Page`, `PropertyList`, `Container::readable`). Wider
-    /// windows leave the extra room beside it.
     pub readable_width: f32,
-    /// The line length of long-form reading text (documents, books, notes):
-    /// about 66 characters of the `Reading` role at the stock text size.
+    /// The line length of long-form reading text (documents, books, notes): about 66
+    /// characters of the `Reading` role at the stock text size.
     pub reading_measure: f32,
-    /// The longest line a short message runs to (an empty state's title and
-    /// message), so a wide window wraps it under its title instead of
-    /// stretching one sentence across the whole width.
     pub message_measure: f32,
-    /// The width a compact chooser (dropdown, segmented switch, single-line
-    /// entry) keeps beside its label in a form row.
     pub chooser_width: f32,
-    /// The narrowest a text field stands where nothing else sets its width:
-    /// a row that wraps or a run that hugs its items lays a field out at its
-    /// own width, which is this, grown with the text. Never zero, so a field
-    /// always has room for a few words of what is typed.
+    /// The narrowest a text field stands where nothing else sets its width: a row that
+    /// wraps or a run that hugs its items lays a field out at its own width, which is
+    /// this, grown with the text.
     pub field_min_width: f32,
-    /// How far one notch of a line-stepping wheel scrolls.
     pub wheel_line: f32,
-    /// Thickness of a scroll bar's thumb at rest; the bar's gutter is the
-    /// thumb plus `s1` on each side.
     pub scroll_thumb: f32,
-    /// How far a row must be swiped sideways before letting go commits its
-    /// swipe action rather than springing back.
+    /// How far a row must be swiped sideways before letting go commits its swipe action
+    /// rather than springing back.
     pub swipe_commit: f32,
-    /// A one-line list row ([`super::Density::rows`]).
     pub row_single: f32,
-    /// A list row with a title and a secondary line.
     pub row_double: f32,
     /// A list row led by a 40 px avatar or icon.
     pub row_avatar: f32,
     /// A glyph in a row or a control: Lucide at 16.
     pub icon_control: f32,
-    /// The leading app or location icon of a bar.
     pub icon_bar: f32,
     pub avatar_inline: f32,
-    /// An avatar leading a two-line row: the row grows to
-    /// [`Self::row_avatar`].
     pub avatar_row: f32,
-    /// A bar's location field narrower than this is not shown: the bar
-    /// keeps its buttons.
     pub location_min_width: f32,
-    /// A bar's actions move into its overflow menu, last first, while its
-    /// location field would be narrower than this.
+    /// A bar's actions move into its overflow menu, last first, while its location field
+    /// would be narrower than this.
     pub location_comfortable_width: f32,
-    /// Widest a short explanatory sentence (an arrival note, a hint under a heading) runs before it wraps.
     pub note_wrap_width: f32,
-    /// The tallest a listing sheet (a directory of workspaces) grows.
     pub sheet_max_height: f32,
     /// A listing's row: a 40 px mark beside a title, a line and who is there.
     pub listing_row_height: f32,
-    /// One face in a row's stack of who is here now.
     pub face_stack: f32,
-    /// How far each face in a row's stack stands past the one before.
     pub face_stack_step: f32,
-    /// The overview's panel of workspaces beside the picture of the windows.
     pub overview_panel_width: f32,
-    /// The narrowest picture of the windows worth placing beside the overview's panel; a narrower display holds it inside the panel.
     pub overview_picture_min_width: f32,
-    /// A row's named action button at its trailing end.
     pub row_action_width: f32,
-    /// A small arrow button in a row (a placement step).
     pub row_arrow: f32,
-    /// A slider at a row's trailing end (an app's volume).
     pub row_slider_width: f32,
     pub row_slider_min_width: f32,
-    /// A row's slider with its value beside it (the output volume).
     pub row_slider_valued_width: f32,
-    /// A level meter's bar, at the default text size.
     pub meter_height: f32,
-    /// A pane's chart (charge history), at the default text size.
     pub chart_height: f32,
-    /// The narrowest a list beside a figure gets before it moves under it.
     pub aside_min_width: f32,
-    /// A pane's figure (the time-zone globe), at the default text size.
     pub figure_size: f32,
-    /// The narrowest picture tile a chooser shows (a theme or wallpaper
-    /// preview) before its grid drops a column.
     pub picture_tile_min_width: f32,
-    /// The width a picture tile asks for when nothing bounds its grid.
     pub picture_tile_width: f32,
-    /// How far a press may move and still be a click.
     pub click_slop: f32,
-    /// The line a drag draws where the dragged item would land, and the
-    /// outline of the ghost it carries under the pointer.
     pub drag_line_px: f32,
 }
 
@@ -304,17 +203,11 @@ impl Metrics {
         drag_line_px: 2.0,
     };
 
-    /// The factor a **text-sized** width or breakpoint grows by at a given
-    /// accessibility text scale: `text_scale.max(1.0)`.
-    ///
-    /// A destination list, an overview column and the window width at which
-    /// two panes still fit side by side are all sized by the text they hold,
-    /// so they grow with the text — but never shrink below their authored
-    /// 1× geometry, where the rows, hit targets and paddings were designed.
-    /// This is the one rule the responsive shells (`NavShell`,
-    /// `SidebarDrawer`) apply to their inputs
-    /// (`crate::Theme::responsive_scale`), so an app never restates it.
-    /// A non-finite scale counts as 1×.
+    /// The factor a **text-sized** width or breakpoint grows by at a given accessibility
+    /// text scale: `text_scale.max(1.0)`. A destination list, an overview column and the
+    /// window width at which two panes still fit side by side are all sized by the text
+    /// they hold, so they grow with the text — but never shrink below their authored 1×
+    /// geometry, where the rows, hit targets and paddings were designed.
     #[must_use]
     pub fn text_growth(text_scale: f32) -> f32 {
         if text_scale.is_finite() {
@@ -324,13 +217,8 @@ impl Metrics {
         }
     }
 
-    /// The factor the glyph metrics (`icon_sm`, `icon_md`, `icon_lg`) grow
-    /// by at a given accessibility text scale: the square root of
-    /// [`Self::text_growth`]. A glyph sits beside the text it labels, so it
-    /// grows with it, as symbols follow Dynamic Type; it grows less than the
-    /// letters, since a glyph already reads at a smaller size than a word and
-    /// still has to fit the control the text has grown. 2x text gives
-    /// glyphs about 1.41x. Never below 1.
+    /// The factor the glyph metrics (`icon_sm`, `icon_md`, `icon_lg`) grow by at a given
+    /// accessibility text scale: the square root of [`Self::text_growth`].
     #[must_use]
     pub fn icon_growth(text_scale: f32) -> f32 {
         Self::text_growth(text_scale).sqrt()
@@ -348,8 +236,8 @@ impl Metrics {
         self
     }
 
-    /// Every metric multiplied by `factor`. Used by `ui_scale`; never by a
-    /// custom theme's spacing preference.
+    /// Every metric multiplied by `factor`. Used by `ui_scale`; never by a custom theme's
+    /// spacing preference.
     #[must_use]
     pub fn scaled(&self, factor: f32) -> Self {
         Self {

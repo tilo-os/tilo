@@ -12,15 +12,14 @@ use std::sync::Arc;
 use super::protocol::{self, MAX_PACKET, invalid};
 use crate::webview::{Frame, FrameDamage, PixelRect};
 
-/// The most rects one damage packet carries: the host sends at most 16, an
-/// owner passing a slow client's on folds several into one.
+/// The most rects one damage packet carries: the host sends at most 16, an owner passing
+/// a slow client's on folds several into one.
 const MAX_RECTS: usize = 256;
 
-/// Generations of rects a frame carries for a view that missed some.
 const RECENT: usize = 8;
 
-/// The rects of a tab's frame that changed, as the host sends them: BGRA,
-/// each rect's rows in turn, for the frame of these dimensions it sent last.
+/// The rects of a tab's frame that changed, as the host sends them: BGRA, each rect's
+/// rows in turn, for the frame of these dimensions it sent last.
 pub(super) struct WireDamage {
     pub(super) width: u32,
     pub(super) height: u32,
@@ -29,8 +28,8 @@ pub(super) struct WireDamage {
 }
 
 impl WireDamage {
-    /// Writes the rects, in turn, into `frame`, a whole frame of the same
-    /// dimensions and pixel format.
+    /// Writes the rects, in turn, into `frame`, a whole frame of the same dimensions and
+    /// pixel format.
     pub(super) fn apply_to(&self, frame: &mut [u8]) {
         let stride = self.width as usize * 4;
         let mut at = 0;
@@ -49,7 +48,6 @@ impl WireDamage {
         }
     }
 
-    /// Whether `frame` already shows every rect as it is here.
     fn shown_in(&self, frame: &[u8]) -> bool {
         let stride = self.width as usize * 4;
         let mut at = 0;
@@ -64,9 +62,7 @@ impl WireDamage {
         })
     }
 
-    /// `later` folded into this, as applying both in turn would change the
-    /// frame. Hands it back, and leaves this as it was, when they are for
-    /// frames of other dimensions or together pass a whole frame's size.
+    /// `later` folded into this, as applying both in turn would change the frame.
     pub(super) fn absorb(&mut self, later: Self) -> Result<(), Self> {
         let whole = self.width as usize * self.height as usize * 4;
         if (later.width, later.height) != (self.width, self.height)
@@ -81,8 +77,8 @@ impl WireDamage {
     }
 }
 
-/// Reads the body of a damage packet whose length (counting its kind byte)
-/// is `length`: the tab, the frame's dimensions, the rects and their pixels.
+/// Reads the body of a damage packet whose length (counting its kind byte) is `length`:
+/// the tab, the frame's dimensions, the rects and their pixels.
 pub(super) fn read_body(reader: &mut impl Read, length: u32) -> io::Result<(u32, WireDamage)> {
     let truncated = || invalid("Truncated Chromium damage packet");
     let mut header = [0; 16];
@@ -148,8 +144,7 @@ pub(super) fn read_body(reader: &mut impl Read, length: u32) -> io::Result<(u32,
     ))
 }
 
-/// Writes `damage` as the host would: a damage packet for `tab`, its pixels
-/// as they are.
+/// Writes `damage` as the host would: a damage packet for `tab`, its pixels as they are.
 pub(super) fn write(writer: &mut impl Write, tab: u32, damage: &WireDamage) -> io::Result<()> {
     let length = 1 + 16 + damage.rects.len() * 16 + damage.pixels.len();
     let length = u32::try_from(length)
@@ -171,13 +166,13 @@ pub(super) fn write(writer: &mut impl Write, tab: u32, damage: &WireDamage) -> i
     writer.flush()
 }
 
-/// A tab's frame as the host last painted it, kept whole so the rects it
-/// sends change only themselves.
+/// A tab's frame as the host last painted it, kept whole so the rects it sends change
+/// only themselves.
 #[derive(Default)]
 pub(super) struct FrameStore {
     whole: Option<Whole>,
-    /// Rises with every frame, across whole ones too, so a view never takes
-    /// one frame's rects for another's.
+    /// Rises with every frame, across whole ones too, so a view never takes one frame's
+    /// rects for another's.
     generation: u64,
 }
 
@@ -185,27 +180,21 @@ struct Whole {
     width: u32,
     height: u32,
     rgba: Arc<Vec<u8>>,
-    /// What each recent generation changed, newest first.
     recent: VecDeque<(u64, Arc<[PixelRect]>)>,
-    /// An earlier generation's pixels, reused for the next frame once no
-    /// view holds them, so a small change copies only what changed since.
+    /// An earlier generation's pixels, reused for the next frame once no view holds them,
+    /// so a small change copies only what changed since.
     spare: Option<(Arc<Vec<u8>>, u64)>,
 }
 
 /// What a damage packet did to a [`FrameStore`].
 pub(super) enum Applied {
-    /// The frame changed: the frame to show.
     Changed(Frame),
-    /// Every rect already showed what it carries.
     Unchanged,
-    /// There is no frame of its dimensions to change: the host has to send
-    /// the frame whole.
     Missing,
 }
 
 impl FrameStore {
     /// Makes `frame`, a whole frame, the store's, and gives it its damage.
-    /// Returns `false` when it shows exactly what the store has.
     pub(super) fn replace(&mut self, frame: &mut Frame) -> bool {
         if let Some(whole) = &self.whole
             && (whole.width, whole.height) == (frame.width, frame.height)
@@ -285,8 +274,8 @@ impl FrameStore {
 }
 
 impl Whole {
-    /// Pixels to write generation `current + 1` into: the spare brought up
-    /// to `current` when no view holds it any more, a copy otherwise.
+    /// Pixels to write generation `current + 1` into: the spare brought up to `current`
+    /// when no view holds it any more, a copy otherwise.
     fn take_spare(&mut self, current: u64) -> Vec<u8> {
         if let Some((spare, at)) = self.spare.take()
             && let Some(changed) = crate::webview::changed_since(&self.recent, current, at)
@@ -391,14 +380,13 @@ mod tests {
         );
         assert_eq!(pixel(&first, 20, 10), [30, 20, 10, 255]);
 
-        // The same caret again is no change at all.
         assert!(matches!(
             store.apply(3, damage(64, 48, vec![caret], [0, 0, 0])),
             Applied::Unchanged
         ));
 
-        // Off again, once no view holds the first frame: its pixels are
-        // reused, and a view that missed a frame repaints both changes.
+        // Off again, once no view holds the first frame: its pixels are reused, and a
+        // view that missed a frame repaints both changes.
         let reused = first.rgba.as_ptr();
         drop(first);
         let other = rect(40, 30, 4, 4);
@@ -438,7 +426,6 @@ mod tests {
             store.apply(1, damage(8, 9, vec![rect(0, 0, 1, 1)], [0, 0, 0])),
             Applied::Missing
         ));
-        // A whole frame says nothing of what changed before it.
         let mut second = whole(8, 8, [9, 9, 9]);
         assert!(store.replace(&mut second));
         let drawn = first.damage.unwrap().generation;
@@ -471,7 +458,6 @@ mod tests {
         no_tab[5..9].copy_from_slice(&0u32.to_le_bytes());
         assert!(protocol::read_packet(&mut Cursor::new(no_tab)).is_err());
 
-        // Two packets folded give what applying both in turn gives.
         let mut earlier = damage(4, 4, vec![rect(0, 0, 2, 2)], [1, 1, 1]);
         earlier
             .absorb(damage(4, 4, vec![rect(1, 1, 2, 2)], [2, 2, 2]))
