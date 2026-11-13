@@ -336,78 +336,258 @@ impl SelectionModel {
 mod tests {
     use super::*;
 
-    #[test]
-    fn keyed_selection_tracks_keys_through_reorder_select_all_and_ranges() {
+    tilo_test_env::scenario! {
+        fn a_selection_follows_clicks_keys_and_reordering;
+
+        phase keyed_selection_tracks_keys_through_reorder_select_all_and_ranges;
         {
-            let mut selection = KeySelection::new();
-            selection.select_only("beta");
-            selection.select_range("delta", ["beta", "gamma", "delta"], false);
+            {
+                let mut selection = KeySelection::new();
+                selection.select_only("beta");
+                selection.select_range("delta", ["beta", "gamma", "delta"], false);
 
-            let reordered = ["delta", "alpha", "gamma", "beta"];
-            assert!(selection.is_selected(&reordered[0]));
-            assert!(selection.is_selected(&reordered[2]));
-            assert_eq!(selection.primary(), Some(&"delta"));
+                let reordered = ["delta", "alpha", "gamma", "beta"];
+                assert!(selection.is_selected(&reordered[0]));
+                assert!(selection.is_selected(&reordered[2]));
+                assert_eq!(selection.primary(), Some(&"delta"));
 
-            selection.reconcile(|key| *key != "gamma");
-            assert!(!selection.is_selected(&"gamma"));
-            assert_eq!(selection.len(3), 2);
+                selection.reconcile(|key| *key != "gamma");
+                assert!(!selection.is_selected(&"gamma"));
+                assert_eq!(selection.len(3), 2);
+            }
+
+            {
+                let mut selection = KeySelection::new();
+                selection.select_all();
+                assert!(selection.is_select_all());
+                assert_eq!(selection.stored_keys().count(), 0);
+                assert_eq!(selection.len(100_000_000), 100_000_000);
+
+                selection.toggle(42_u64);
+                assert!(!selection.is_selected(&42));
+                assert!(selection.is_selected(&43));
+                assert_eq!(
+                    selection.stored_keys().copied().collect::<Vec<_>>(),
+                    vec![42]
+                );
+                assert_eq!(selection.len(100_000_000), 99_999_999);
+
+                selection.toggle(42);
+                assert!(selection.is_selected(&42));
+                assert_eq!(selection.stored_keys().count(), 0);
+            }
+
+            {
+                let mut selection = KeySelection::new();
+                selection.select_all();
+                selection.toggle(2_u64);
+                selection.toggle(3_u64);
+                selection.select_range(3, [1, 2, 3], true);
+
+                assert!(selection.is_select_all());
+                assert!(selection.is_selected(&2));
+                assert!(selection.is_selected(&3));
+                assert_eq!(selection.primary(), Some(&3));
+            }
         }
 
+        phase remapping_selection_preserves_an_unselected_cursor_and_drops_missing_items;
         {
-            let mut selection = KeySelection::new();
-            selection.select_all();
-            assert!(selection.is_select_all());
-            assert_eq!(selection.stored_keys().count(), 0);
-            assert_eq!(selection.len(100_000_000), 100_000_000);
-
-            selection.toggle(42_u64);
-            assert!(!selection.is_selected(&42));
-            assert!(selection.is_selected(&43));
+            let mut selection = SelectionModel::new();
+            selection.apply_click(0, false, false);
+            selection.apply_click(2, true, false);
+            selection.apply_click(2, true, false);
+            selection.remap_indices(|index| [Some(3), None, Some(1)].get(index).copied().flatten());
+            assert_eq!(selection.selected(), vec![3]);
+            assert_eq!(selection.primary(), Some(1));
             assert_eq!(
-                selection.stored_keys().copied().collect::<Vec<_>>(),
-                vec![42]
+                selection.anchor(),
+                Some(3),
+                "the anchor is where the choice began, not where the modified click moved the cursor"
             );
-            assert_eq!(selection.len(100_000_000), 99_999_999);
-
-            selection.toggle(42);
-            assert!(selection.is_selected(&42));
-            assert_eq!(selection.stored_keys().count(), 0);
+            selection.apply_click(2, false, true);
+            assert_eq!(selection.selected(), vec![2, 3]);
+            selection.remap_indices(|index| (index == 2).then_some(0));
+            assert_eq!(selection.selected(), vec![0]);
+            assert_eq!(selection.primary(), Some(0));
+            assert_eq!(selection.anchor(), None);
         }
 
+        phase click_sequences_replace_toggle_and_extend_from_the_anchor;
         {
-            let mut selection = KeySelection::new();
-            selection.select_all();
-            selection.toggle(2_u64);
-            selection.toggle(3_u64);
-            selection.select_range(3, [1, 2, 3], true);
+            let m = SelectionModel::new();
+            assert!(m.is_empty());
+            assert_eq!(m.len(), 0);
+            assert_eq!(m.primary(), None);
+            assert_eq!(m.anchor(), None);
+            assert!(m.selected().is_empty());
 
-            assert!(selection.is_select_all());
-            assert!(selection.is_selected(&2));
-            assert!(selection.is_selected(&3));
-            assert_eq!(selection.primary(), Some(&3));
+            let cases: [(&str, Vec<Click>); 5] = [
+                (
+                    // A second plain click drops the first.
+                    "plain click replaces",
+                    vec![
+                        click(3, false, false)
+                            .selects(&[3])
+                            .anchor(Some(3))
+                            .primary(Some(3)),
+                        click(7, false, false).selects(&[7]).anchor(Some(7)),
+                    ],
+                ),
+                (
+                    "ctrl click toggles and keeps others",
+                    vec![
+                        click(1, false, false),
+                        click(4, true, false),
+                        click(6, true, false).selects(&[1, 4, 6]),
+                        click(4, true, false).selects(&[1, 6]).primary(Some(4)),
+                    ],
+                ),
+                (
+                    "shift click selects an inclusive range from the anchor",
+                    vec![
+                        click(2, false, false),
+                        click(5, false, true)
+                            .selects(&[2, 3, 4, 5])
+                            .anchor(Some(2))
+                            .primary(Some(5)),
+                        click(0, false, true).selects(&[0, 1, 2]).anchor(Some(2)),
+                    ],
+                ),
+                (
+                    "ctrl shift click adds a range",
+                    vec![
+                        click(0, false, false),
+                        click(1, false, true),
+                        click(5, true, false).anchor(Some(0)),
+                        click(7, true, true)
+                            .selects(&[0, 1, 2, 3, 4, 5, 6, 7])
+                            .anchor(Some(0)),
+                    ],
+                ),
+                (
+                    "shift without an anchor is a single select",
+                    vec![click(4, false, true).selects(&[4]).anchor(Some(4))],
+                ),
+            ];
+            for (case, clicks) in cases {
+                let mut m = SelectionModel::new();
+                for (step, c) in clicks.iter().enumerate() {
+                    m.apply_click(c.index, c.ctrl, c.shift);
+                    for expect in &c.expect {
+                        match *expect {
+                            Expect::Selected(selected) => {
+                                assert_eq!(
+                                    m.selected(),
+                                    selected,
+                                    "case {case}, step {step}: selected"
+                                );
+                            }
+                            Expect::Anchor(anchor) => {
+                                assert_eq!(m.anchor(), anchor, "case {case}, step {step}: anchor");
+                            }
+                            Expect::Primary(primary) => {
+                                assert_eq!(m.primary(), primary, "case {case}, step {step}: primary");
+                            }
+                        }
+                    }
+                }
+            }
         }
-    }
 
-    #[test]
-    fn remapping_selection_preserves_an_unselected_cursor_and_drops_missing_items() {
-        let mut selection = SelectionModel::new();
-        selection.apply_click(0, false, false);
-        selection.apply_click(2, true, false);
-        selection.apply_click(2, true, false);
-        selection.remap_indices(|index| [Some(3), None, Some(1)].get(index).copied().flatten());
-        assert_eq!(selection.selected(), vec![3]);
-        assert_eq!(selection.primary(), Some(1));
-        assert_eq!(
-            selection.anchor(),
-            Some(3),
-            "the anchor is where the choice began, not where the modified click moved the cursor"
-        );
-        selection.apply_click(2, false, true);
-        assert_eq!(selection.selected(), vec![2, 3]);
-        selection.remap_indices(|index| (index == 2).then_some(0));
-        assert_eq!(selection.selected(), vec![0]);
-        assert_eq!(selection.primary(), Some(0));
-        assert_eq!(selection.anchor(), None);
+        phase keyboard_select_all_clamp_and_refresh_keep_anchor_and_primary_consistent;
+        {
+            {
+                let mut m = SelectionModel::new();
+                m.select_only(3);
+                m.move_to(4, false); // arrow down, no shift
+                assert_eq!(m.selected(), vec![4]);
+                assert_eq!(m.anchor(), Some(4));
+                m.move_to(6, true); // shift+down twice worth
+                assert_eq!(m.selected(), vec![4, 5, 6]);
+                assert_eq!(m.anchor(), Some(4));
+                assert_eq!(m.primary(), Some(6));
+            }
+
+            {
+                let mut m = SelectionModel::new();
+                m.select_all(4);
+                assert_eq!(m.selected(), vec![0, 1, 2, 3]);
+                assert_eq!(m.anchor(), Some(0));
+                assert_eq!(m.primary(), Some(3));
+                m.clear();
+                assert!(m.is_empty());
+                assert_eq!(m.primary(), None);
+
+                let mut empty = SelectionModel::new();
+                empty.select_all(0);
+                assert!(empty.is_empty());
+                assert_eq!(empty.primary(), None);
+            }
+
+            {
+                let mut m = SelectionModel::new();
+                m.apply_click(1, false, false);
+                m.apply_click(5, true, false);
+                m.apply_click(8, true, false);
+                // List shrinks to 6 items (valid indices 0..=5).
+                let pruned = m.clamp_to(6);
+                assert!(pruned);
+                assert_eq!(m.selected(), vec![1, 5]);
+                // The cursor at 8 is gone with the item; the anchor at 1 still stands.
+                assert_eq!(m.anchor(), Some(1));
+                assert_eq!(m.primary(), None);
+                assert!(!m.clamp_to(6));
+            }
+
+            {
+                let mut m = SelectionModel::new();
+                m.replace_indices([2, 7, 4], Some(4));
+                assert_eq!(m.selected(), vec![2, 4, 7]);
+                assert_eq!(m.primary(), Some(4));
+                assert_eq!(m.anchor(), Some(4));
+
+                m.replace_indices([3, 8], Some(99));
+                assert_eq!(m.selected(), vec![3, 8]);
+                assert_eq!(m.primary(), Some(3));
+            }
+        }
+
+        phase the_walk_extends_the_choice_modified_clicks_gathered;
+        {
+            {
+                let mut m = SelectionModel::new();
+                m.apply_click(0, false, false);
+                m.apply_click(1, true, false);
+                assert_eq!(m.selected(), vec![0, 1]);
+                m.move_to(2, true);
+                assert_eq!(m.selected(), vec![0, 1, 2]);
+                assert_eq!(m.anchor(), Some(0));
+                assert_eq!(m.primary(), Some(2));
+                m.move_to(1, true);
+                assert_eq!(m.selected(), vec![0, 1]);
+            }
+
+            {
+                let mut selection = KeySelection::new();
+                selection.select_only("a");
+                selection.toggle("b");
+                selection.select_range("c", ["a", "b", "c"], false);
+                let mut held: Vec<&str> = selection.stored_keys().copied().collect();
+                held.sort_unstable();
+                assert_eq!(held, ["a", "b", "c"]);
+                assert_eq!(selection.anchor(), Some(&"a"));
+                assert_eq!(selection.primary(), Some(&"c"));
+            }
+
+            {
+                let mut m = SelectionModel::new();
+                m.apply_click(4, true, false);
+                assert_eq!(m.anchor(), Some(4));
+                m.move_to(5, true);
+                assert_eq!(m.selected(), vec![4, 5]);
+            }
+        }
     }
 
     /// What must hold after one click of a scripted sequence.
@@ -445,182 +625,6 @@ mod tests {
         fn primary(mut self, primary: Option<usize>) -> Self {
             self.expect.push(Expect::Primary(primary));
             self
-        }
-    }
-
-    #[test]
-    fn click_sequences_replace_toggle_and_extend_from_the_anchor() {
-        let m = SelectionModel::new();
-        assert!(m.is_empty());
-        assert_eq!(m.len(), 0);
-        assert_eq!(m.primary(), None);
-        assert_eq!(m.anchor(), None);
-        assert!(m.selected().is_empty());
-
-        let cases: [(&str, Vec<Click>); 5] = [
-            (
-                // A second plain click drops the first.
-                "plain click replaces",
-                vec![
-                    click(3, false, false)
-                        .selects(&[3])
-                        .anchor(Some(3))
-                        .primary(Some(3)),
-                    click(7, false, false).selects(&[7]).anchor(Some(7)),
-                ],
-            ),
-            (
-                "ctrl click toggles and keeps others",
-                vec![
-                    click(1, false, false),
-                    click(4, true, false),
-                    click(6, true, false).selects(&[1, 4, 6]),
-                    click(4, true, false).selects(&[1, 6]).primary(Some(4)),
-                ],
-            ),
-            (
-                "shift click selects an inclusive range from the anchor",
-                vec![
-                    click(2, false, false),
-                    click(5, false, true)
-                        .selects(&[2, 3, 4, 5])
-                        .anchor(Some(2))
-                        .primary(Some(5)),
-                    click(0, false, true).selects(&[0, 1, 2]).anchor(Some(2)),
-                ],
-            ),
-            (
-                "ctrl shift click adds a range",
-                vec![
-                    click(0, false, false),
-                    click(1, false, true),
-                    click(5, true, false).anchor(Some(0)),
-                    click(7, true, true)
-                        .selects(&[0, 1, 2, 3, 4, 5, 6, 7])
-                        .anchor(Some(0)),
-                ],
-            ),
-            (
-                "shift without an anchor is a single select",
-                vec![click(4, false, true).selects(&[4]).anchor(Some(4))],
-            ),
-        ];
-        for (case, clicks) in cases {
-            let mut m = SelectionModel::new();
-            for (step, c) in clicks.iter().enumerate() {
-                m.apply_click(c.index, c.ctrl, c.shift);
-                for expect in &c.expect {
-                    match *expect {
-                        Expect::Selected(selected) => {
-                            assert_eq!(
-                                m.selected(),
-                                selected,
-                                "case {case}, step {step}: selected"
-                            );
-                        }
-                        Expect::Anchor(anchor) => {
-                            assert_eq!(m.anchor(), anchor, "case {case}, step {step}: anchor");
-                        }
-                        Expect::Primary(primary) => {
-                            assert_eq!(m.primary(), primary, "case {case}, step {step}: primary");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn keyboard_select_all_clamp_and_refresh_keep_anchor_and_primary_consistent() {
-        {
-            let mut m = SelectionModel::new();
-            m.select_only(3);
-            m.move_to(4, false); // arrow down, no shift
-            assert_eq!(m.selected(), vec![4]);
-            assert_eq!(m.anchor(), Some(4));
-            m.move_to(6, true); // shift+down twice worth
-            assert_eq!(m.selected(), vec![4, 5, 6]);
-            assert_eq!(m.anchor(), Some(4));
-            assert_eq!(m.primary(), Some(6));
-        }
-
-        {
-            let mut m = SelectionModel::new();
-            m.select_all(4);
-            assert_eq!(m.selected(), vec![0, 1, 2, 3]);
-            assert_eq!(m.anchor(), Some(0));
-            assert_eq!(m.primary(), Some(3));
-            m.clear();
-            assert!(m.is_empty());
-            assert_eq!(m.primary(), None);
-
-            let mut empty = SelectionModel::new();
-            empty.select_all(0);
-            assert!(empty.is_empty());
-            assert_eq!(empty.primary(), None);
-        }
-
-        {
-            let mut m = SelectionModel::new();
-            m.apply_click(1, false, false);
-            m.apply_click(5, true, false);
-            m.apply_click(8, true, false);
-            // List shrinks to 6 items (valid indices 0..=5).
-            let pruned = m.clamp_to(6);
-            assert!(pruned);
-            assert_eq!(m.selected(), vec![1, 5]);
-            // The cursor at 8 is gone with the item; the anchor at 1 still stands.
-            assert_eq!(m.anchor(), Some(1));
-            assert_eq!(m.primary(), None);
-            assert!(!m.clamp_to(6));
-        }
-
-        {
-            let mut m = SelectionModel::new();
-            m.replace_indices([2, 7, 4], Some(4));
-            assert_eq!(m.selected(), vec![2, 4, 7]);
-            assert_eq!(m.primary(), Some(4));
-            assert_eq!(m.anchor(), Some(4));
-
-            m.replace_indices([3, 8], Some(99));
-            assert_eq!(m.selected(), vec![3, 8]);
-            assert_eq!(m.primary(), Some(3));
-        }
-    }
-
-    #[test]
-    fn the_walk_extends_the_choice_modified_clicks_gathered() {
-        {
-            let mut m = SelectionModel::new();
-            m.apply_click(0, false, false);
-            m.apply_click(1, true, false);
-            assert_eq!(m.selected(), vec![0, 1]);
-            m.move_to(2, true);
-            assert_eq!(m.selected(), vec![0, 1, 2]);
-            assert_eq!(m.anchor(), Some(0));
-            assert_eq!(m.primary(), Some(2));
-            m.move_to(1, true);
-            assert_eq!(m.selected(), vec![0, 1]);
-        }
-
-        {
-            let mut selection = KeySelection::new();
-            selection.select_only("a");
-            selection.toggle("b");
-            selection.select_range("c", ["a", "b", "c"], false);
-            let mut held: Vec<&str> = selection.stored_keys().copied().collect();
-            held.sort_unstable();
-            assert_eq!(held, ["a", "b", "c"]);
-            assert_eq!(selection.anchor(), Some(&"a"));
-            assert_eq!(selection.primary(), Some(&"c"));
-        }
-
-        {
-            let mut m = SelectionModel::new();
-            m.apply_click(4, true, false);
-            assert_eq!(m.anchor(), Some(4));
-            m.move_to(5, true);
-            assert_eq!(m.selected(), vec![4, 5]);
         }
     }
 }

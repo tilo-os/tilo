@@ -161,81 +161,85 @@ mod tests {
     use super::*;
     use winit::keyboard::{Key, NamedKey};
 
-    #[test]
-    fn chords_name_the_shell_tab_requests_and_nothing_else() {
-        let t = Key::Character("t".into());
-        let w = Key::Character("W".into());
-        assert_eq!(
-            chord_request(&t, true, false, false),
-            Some(TabRequest::OpenBeside {
-                target: None,
-                background: false
-            })
-        );
-        assert_eq!(
-            chord_request(&t, true, true, false),
-            Some(TabRequest::ReopenClosed)
-        );
-        assert_eq!(
-            chord_request(&w, true, false, false),
-            Some(TabRequest::CloseThis)
-        );
-        assert_eq!(chord_request(&w, true, true, false), None);
-        assert_eq!(
-            chord_request(&t, false, false, false),
-            None,
-            "plain t types"
-        );
-        assert_eq!(
-            chord_request(&t, true, false, true),
-            None,
-            "Alt/Super chords"
-        );
-        let tab = Key::Named(NamedKey::Tab);
-        assert_eq!(
-            chord_request(&tab, true, false, false),
-            Some(TabRequest::CycleTab { forward: true }),
-            "Ctrl+Tab the app left alone shows the next tab"
-        );
-        assert_eq!(
-            chord_request(&tab, true, true, false),
-            Some(TabRequest::CycleTab { forward: false })
-        );
-        assert_eq!(chord_request(&tab, false, false, false), None, "plain Tab");
-        assert_eq!(
-            chord_request(&tab, true, false, true),
-            None,
-            "Super+Ctrl+Tab is the shell's own, never the app's"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn tab_chords_become_requests_that_queue_in_order;
 
-    #[test]
-    fn requests_queue_in_order_and_stay_bounded() {
-        let _ = take_requests();
-        open_beside(Some("https://example.test/".into()), true);
-        close_this();
-        reopen_closed();
-        place_next_window_beside(false);
-        open_floated("chat.channels:1".into());
-        assert_eq!(
-            take_requests(),
-            vec![
-                TabRequest::OpenBeside {
-                    target: Some("https://example.test/".into()),
-                    background: true
-                },
-                TabRequest::CloseThis,
-                TabRequest::ReopenClosed,
-                TabRequest::PlaceNextWindowBeside { background: false },
-                TabRequest::OpenFloated {
-                    anchor: "chat.channels:1".into()
-                },
-            ]
-        );
-        for _ in 0..(MAX_PENDING * 2) {
-            open_beside(None, false);
+        phase chords_name_the_shell_tab_requests_and_nothing_else;
+        {
+            let t = Key::Character("t".into());
+            let w = Key::Character("W".into());
+            assert_eq!(
+                chord_request(&t, true, false, false),
+                Some(TabRequest::OpenBeside {
+                    target: None,
+                    background: false
+                })
+            );
+            assert_eq!(
+                chord_request(&t, true, true, false),
+                Some(TabRequest::ReopenClosed)
+            );
+            assert_eq!(
+                chord_request(&w, true, false, false),
+                Some(TabRequest::CloseThis)
+            );
+            assert_eq!(chord_request(&w, true, true, false), None);
+            assert_eq!(
+                chord_request(&t, false, false, false),
+                None,
+                "plain t types"
+            );
+            assert_eq!(
+                chord_request(&t, true, false, true),
+                None,
+                "Alt/Super chords"
+            );
+            let tab = Key::Named(NamedKey::Tab);
+            assert_eq!(
+                chord_request(&tab, true, false, false),
+                Some(TabRequest::CycleTab { forward: true }),
+                "Ctrl+Tab the app left alone shows the next tab"
+            );
+            assert_eq!(
+                chord_request(&tab, true, true, false),
+                Some(TabRequest::CycleTab { forward: false })
+            );
+            assert_eq!(chord_request(&tab, false, false, false), None, "plain Tab");
+            assert_eq!(
+                chord_request(&tab, true, false, true),
+                None,
+                "Super+Ctrl+Tab is the shell's own, never the app's"
+            );
         }
-        assert_eq!(take_requests().len(), MAX_PENDING);
-        assert!(take_requests().is_empty());
+
+        phase requests_queue_in_order_and_stay_bounded;
+        {
+            let _ = take_requests();
+            open_beside(Some("https://example.test/".into()), true);
+            close_this();
+            reopen_closed();
+            place_next_window_beside(false);
+            open_floated("chat.channels:1".into());
+            assert_eq!(
+                take_requests(),
+                vec![
+                    TabRequest::OpenBeside {
+                        target: Some("https://example.test/".into()),
+                        background: true
+                    },
+                    TabRequest::CloseThis,
+                    TabRequest::ReopenClosed,
+                    TabRequest::PlaceNextWindowBeside { background: false },
+                    TabRequest::OpenFloated {
+                        anchor: "chat.channels:1".into()
+                    },
+                ]
+            );
+            for _ in 0..(MAX_PENDING * 2) {
+                open_beside(None, false);
+            }
+            assert_eq!(take_requests().len(), MAX_PENDING);
+            assert!(take_requests().is_empty());
+        }
     }
 }

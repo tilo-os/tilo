@@ -105,34 +105,38 @@ pub fn snap_point(point: Point, targets: &[Rect], tolerance: f64) -> Snap {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_box_snaps_its_edges_and_centre_to_others() {
-        let others = [Rect::new(0.0, 0.0, 100.0, 100.0)];
-        let snap = snap_rect(Rect::new(103.0, 48.0, 153.0, 98.0), &others, 5.0);
-        assert_eq!(snap.offset, Vec2::new(-3.0, 2.0));
-        assert!(
-            snap.guides
-                .iter()
-                .any(|guide| guide.vertical && (guide.at - 100.0).abs() < 1e-9)
-        );
-        assert!(
-            snap.guides
-                .iter()
-                .any(|guide| !guide.vertical && (guide.at - 100.0).abs() < 1e-9)
-        );
-        let free = snap_rect(Rect::new(120.0, 300.0, 140.0, 320.0), &others, 5.0);
-        assert_eq!(free.offset, Vec2::ZERO);
-        assert!(free.guides.is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn a_dragged_box_or_point_snaps_to_edges_and_centres;
 
-    #[test]
-    fn a_point_snaps_to_a_centre() {
-        let snap = snap_point(
-            Point::new(52.0, 200.0),
-            &[Rect::new(0.0, 0.0, 100.0, 100.0)],
-            4.0,
-        );
-        assert_eq!(snap.offset, Vec2::new(-2.0, 0.0));
-        assert_eq!(snap.guides.len(), 1);
+        phase a_box_snaps_its_edges_and_centre_to_others;
+        {
+            let others = [Rect::new(0.0, 0.0, 100.0, 100.0)];
+            let snap = snap_rect(Rect::new(103.0, 48.0, 153.0, 98.0), &others, 5.0);
+            assert_eq!(snap.offset, Vec2::new(-3.0, 2.0));
+            assert!(
+                snap.guides
+                    .iter()
+                    .any(|guide| guide.vertical && (guide.at - 100.0).abs() < 1e-9)
+            );
+            assert!(
+                snap.guides
+                    .iter()
+                    .any(|guide| !guide.vertical && (guide.at - 100.0).abs() < 1e-9)
+            );
+            let free = snap_rect(Rect::new(120.0, 300.0, 140.0, 320.0), &others, 5.0);
+            assert_eq!(free.offset, Vec2::ZERO);
+            assert!(free.guides.is_empty());
+        }
+
+        phase a_point_snaps_to_a_centre;
+        {
+            let snap = snap_point(
+                Point::new(52.0, 200.0),
+                &[Rect::new(0.0, 0.0, 100.0, 100.0)],
+                4.0,
+            );
+            assert_eq!(snap.offset, Vec2::new(-2.0, 0.0));
+            assert_eq!(snap.guides.len(), 1);
+        }
     }
 }

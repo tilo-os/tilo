@@ -242,111 +242,115 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reorder_drag_separates_clicks_and_emits_one_validated_drop() {
+    tilo_test_env::scenario! {
+        fn a_reorder_drag_drops_once_scrolls_and_expands;
+
+        phase reorder_drag_separates_clicks_and_emits_one_validated_drop;
         {
-            let now = crate::time::now();
-            let mut reorder = ReorderController::new();
-            reorder.begin(1, Point::new(10.0, 10.0));
-            reorder.update(
-                Point::new(12.0, 12.0),
-                Some(candidate(2, DropPlacement::Before, 20.0)),
-                now,
-                |_, _| true,
-            );
-            assert!(!reorder.is_active());
-            assert_eq!(reorder.finish(), None);
+            {
+                let now = crate::time::now();
+                let mut reorder = ReorderController::new();
+                reorder.begin(1, Point::new(10.0, 10.0));
+                reorder.update(
+                    Point::new(12.0, 12.0),
+                    Some(candidate(2, DropPlacement::Before, 20.0)),
+                    now,
+                    |_, _| true,
+                );
+                assert!(!reorder.is_active());
+                assert_eq!(reorder.finish(), None);
+            }
+
+            {
+                let now = crate::time::now();
+                let mut reorder = ReorderController::new().with_drag_threshold(0.0);
+                reorder.begin(1, Point::ZERO);
+                reorder.update(
+                    Point::new(0.0, 20.0),
+                    Some(candidate(2, DropPlacement::After, 30.0)),
+                    now,
+                    |_, _| false,
+                );
+                assert_eq!(reorder.preview(), None);
+                assert_eq!(reorder.finish(), None);
+            }
+
+            {
+                let now = crate::time::now();
+                let mut reorder = ReorderController::new().with_drag_threshold(0.0);
+                reorder.begin(1, Point::ZERO);
+                reorder.update(
+                    Point::new(0.0, 20.0),
+                    Some(candidate(2, DropPlacement::After, 30.0)),
+                    now,
+                    |source, target| *source != target.key,
+                );
+                assert_eq!(reorder.preview(), Some(Rect::new(0.0, 30.0, 100.0, 32.0)));
+                assert_eq!(
+                    reorder.finish(),
+                    Some(ReorderDrop {
+                        source: 1,
+                        target: DropTarget::new(2, DropPlacement::After)
+                    })
+                );
+                assert_eq!(reorder.finish(), None);
+            }
         }
 
+        phase reorder_drag_scrolls_toward_edges_and_expands_hovered_containers_once;
         {
-            let now = crate::time::now();
-            let mut reorder = ReorderController::new().with_drag_threshold(0.0);
-            reorder.begin(1, Point::ZERO);
-            reorder.update(
-                Point::new(0.0, 20.0),
-                Some(candidate(2, DropPlacement::After, 30.0)),
-                now,
-                |_, _| false,
-            );
-            assert_eq!(reorder.preview(), None);
-            assert_eq!(reorder.finish(), None);
-        }
+            {
+                let now = crate::time::now();
+                let mut reorder = ReorderController::new().with_drag_threshold(0.0);
+                reorder.begin(1, Point::new(10.0, 50.0));
+                reorder.update(Point::new(10.0, 5.0), None, now, |_, _| true);
+                let top = reorder.tick(
+                    Rect::new(0.0, 0.0, 100.0, 200.0),
+                    Duration::from_millis(100),
+                    now,
+                );
+                assert!(top.scroll_delta < -50.0);
+                reorder.update(Point::new(10.0, 195.0), None, now, |_, _| true);
+                let bottom = reorder.tick(
+                    Rect::new(0.0, 0.0, 100.0, 200.0),
+                    Duration::from_millis(100),
+                    now,
+                );
+                assert!(bottom.scroll_delta > 50.0);
+            }
 
-        {
-            let now = crate::time::now();
-            let mut reorder = ReorderController::new().with_drag_threshold(0.0);
-            reorder.begin(1, Point::ZERO);
-            reorder.update(
-                Point::new(0.0, 20.0),
-                Some(candidate(2, DropPlacement::After, 30.0)),
-                now,
-                |source, target| *source != target.key,
-            );
-            assert_eq!(reorder.preview(), Some(Rect::new(0.0, 30.0, 100.0, 32.0)));
-            assert_eq!(
-                reorder.finish(),
-                Some(ReorderDrop {
-                    source: 1,
-                    target: DropTarget::new(2, DropPlacement::After)
-                })
-            );
-            assert_eq!(reorder.finish(), None);
-        }
-    }
-
-    #[test]
-    fn reorder_drag_scrolls_toward_edges_and_expands_hovered_containers_once() {
-        {
-            let now = crate::time::now();
-            let mut reorder = ReorderController::new().with_drag_threshold(0.0);
-            reorder.begin(1, Point::new(10.0, 50.0));
-            reorder.update(Point::new(10.0, 5.0), None, now, |_, _| true);
-            let top = reorder.tick(
-                Rect::new(0.0, 0.0, 100.0, 200.0),
-                Duration::from_millis(100),
-                now,
-            );
-            assert!(top.scroll_delta < -50.0);
-            reorder.update(Point::new(10.0, 195.0), None, now, |_, _| true);
-            let bottom = reorder.tick(
-                Rect::new(0.0, 0.0, 100.0, 200.0),
-                Duration::from_millis(100),
-                now,
-            );
-            assert!(bottom.scroll_delta > 50.0);
-        }
-
-        {
-            let now = crate::time::now();
-            let mut reorder = ReorderController::new()
-                .with_drag_threshold(0.0)
-                .with_hover_expand_delay(Duration::from_millis(500));
-            reorder.begin(1, Point::ZERO);
-            reorder.update(
-                Point::new(10.0, 10.0),
-                Some(candidate(2, DropPlacement::Inside, 10.0)),
-                now,
-                |_, _| true,
-            );
-            let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
-            assert_eq!(
-                reorder
-                    .tick(viewport, Duration::ZERO, now + Duration::from_millis(499))
-                    .hover_expand,
-                None
-            );
-            assert_eq!(
-                reorder
-                    .tick(viewport, Duration::ZERO, now + Duration::from_millis(500))
-                    .hover_expand,
-                Some(2)
-            );
-            assert_eq!(
-                reorder
-                    .tick(viewport, Duration::ZERO, now + Duration::from_secs(1))
-                    .hover_expand,
-                None
-            );
+            {
+                let now = crate::time::now();
+                let mut reorder = ReorderController::new()
+                    .with_drag_threshold(0.0)
+                    .with_hover_expand_delay(Duration::from_millis(500));
+                reorder.begin(1, Point::ZERO);
+                reorder.update(
+                    Point::new(10.0, 10.0),
+                    Some(candidate(2, DropPlacement::Inside, 10.0)),
+                    now,
+                    |_, _| true,
+                );
+                let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
+                assert_eq!(
+                    reorder
+                        .tick(viewport, Duration::ZERO, now + Duration::from_millis(499))
+                        .hover_expand,
+                    None
+                );
+                assert_eq!(
+                    reorder
+                        .tick(viewport, Duration::ZERO, now + Duration::from_millis(500))
+                        .hover_expand,
+                    Some(2)
+                );
+                assert_eq!(
+                    reorder
+                        .tick(viewport, Duration::ZERO, now + Duration::from_secs(1))
+                        .hover_expand,
+                    None
+                );
+            }
         }
     }
 }

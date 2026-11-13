@@ -196,149 +196,153 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ctrl_super_enter_toggles_on_the_press_only() {
-        let now = crate::time::now();
-        let mut chord = ScreenReaderChord::new();
-        assert!(chord.key(event(ChordKey::Enter, CTRL_SUPER, true, now)));
-        assert!(!chord.key(ChordEvent {
-            repeat: true,
-            ..event(ChordKey::Enter, CTRL_SUPER, true, now)
-        }));
-        assert!(!chord.key(event(ChordKey::Enter, CTRL_SUPER, false, now)));
-        assert!(!chord.key(event(ChordKey::Other, CTRL_SUPER, true, now)));
-    }
+    tilo_test_env::scenario! {
+        fn the_screen_reader_chord_toggles_once_per_press_or_hold;
 
-    #[test]
-    fn the_modifiers_must_be_exactly_ctrl_and_super() {
-        let now = crate::time::now();
-        let mut chord = ScreenReaderChord::new();
-        for modifiers in [
-            ChordModifiers::default(),
-            ChordModifiers {
-                ctrl: true,
-                ..ChordModifiers::default()
-            },
-            ChordModifiers {
-                super_key: true,
-                ..ChordModifiers::default()
-            },
-            ChordModifiers {
-                shift: true,
-                ..CTRL_SUPER
-            },
-            ChordModifiers {
-                alt: true,
-                ..CTRL_SUPER
-            },
-        ] {
-            assert!(
-                !chord.key(event(ChordKey::Enter, modifiers, true, now)),
-                "{modifiers:?}"
-            );
+        phase ctrl_super_enter_toggles_on_the_press_only;
+        {
+            let now = crate::time::now();
+            let mut chord = ScreenReaderChord::new();
+            assert!(chord.key(event(ChordKey::Enter, CTRL_SUPER, true, now)));
+            assert!(!chord.key(ChordEvent {
+                repeat: true,
+                ..event(ChordKey::Enter, CTRL_SUPER, true, now)
+            }));
+            assert!(!chord.key(event(ChordKey::Enter, CTRL_SUPER, false, now)));
+            assert!(!chord.key(event(ChordKey::Other, CTRL_SUPER, true, now)));
         }
-    }
 
-    #[test]
-    fn both_volume_keys_held_three_seconds_toggle_once() {
-        let start = crate::time::now();
-        let none = ChordModifiers::default();
-        let mut chord = ScreenReaderChord::new();
-        assert!(!chord.key(event(ChordKey::VolumeUp, none, true, start)));
-        assert_eq!(chord.deadline(), None, "one key is not the chord");
-        let both = start + Duration::from_millis(200);
-        assert!(!chord.key(event(ChordKey::VolumeDown, none, true, both)));
-        assert_eq!(chord.deadline(), Some(both + VOLUME_HOLD));
-        assert!(!chord.tick(both + Duration::from_millis(2_999)));
-        assert!(!chord.key(ChordEvent {
-            repeat: true,
-            ..event(
+        phase the_modifiers_must_be_exactly_ctrl_and_super;
+        {
+            let now = crate::time::now();
+            let mut chord = ScreenReaderChord::new();
+            for modifiers in [
+                ChordModifiers::default(),
+                ChordModifiers {
+                    ctrl: true,
+                    ..ChordModifiers::default()
+                },
+                ChordModifiers {
+                    super_key: true,
+                    ..ChordModifiers::default()
+                },
+                ChordModifiers {
+                    shift: true,
+                    ..CTRL_SUPER
+                },
+                ChordModifiers {
+                    alt: true,
+                    ..CTRL_SUPER
+                },
+            ] {
+                assert!(
+                    !chord.key(event(ChordKey::Enter, modifiers, true, now)),
+                    "{modifiers:?}"
+                );
+            }
+        }
+
+        phase both_volume_keys_held_three_seconds_toggle_once;
+        {
+            let start = crate::time::now();
+            let none = ChordModifiers::default();
+            let mut chord = ScreenReaderChord::new();
+            assert!(!chord.key(event(ChordKey::VolumeUp, none, true, start)));
+            assert_eq!(chord.deadline(), None, "one key is not the chord");
+            let both = start + Duration::from_millis(200);
+            assert!(!chord.key(event(ChordKey::VolumeDown, none, true, both)));
+            assert_eq!(chord.deadline(), Some(both + VOLUME_HOLD));
+            assert!(!chord.tick(both + Duration::from_millis(2_999)));
+            assert!(!chord.key(ChordEvent {
+                repeat: true,
+                ..event(
+                    ChordKey::VolumeUp,
+                    none,
+                    true,
+                    both + Duration::from_secs(1)
+                )
+            }));
+            assert!(chord.tick(both + VOLUME_HOLD));
+            assert_eq!(chord.deadline(), None);
+            assert!(!chord.tick(both + Duration::from_secs(10)), "once per hold");
+            let again = both + Duration::from_secs(11);
+            assert!(!chord.key(event(ChordKey::VolumeDown, none, false, again)));
+            assert!(!chord.key(event(ChordKey::VolumeDown, none, true, again)));
+            assert!(chord.key(ChordEvent {
+                repeat: true,
+                ..event(ChordKey::VolumeUp, none, true, again + VOLUME_HOLD)
+            }));
+        }
+
+        phase releasing_either_volume_key_cancels_the_hold;
+        {
+            let start = crate::time::now();
+            let none = ChordModifiers::default();
+            let mut chord = ScreenReaderChord::new();
+            chord.key(event(ChordKey::VolumeDown, none, true, start));
+            chord.key(event(ChordKey::VolumeUp, none, true, start));
+            chord.key(event(
                 ChordKey::VolumeUp,
                 none,
-                true,
-                both + Duration::from_secs(1)
-            )
-        }));
-        assert!(chord.tick(both + VOLUME_HOLD));
-        assert_eq!(chord.deadline(), None);
-        assert!(!chord.tick(both + Duration::from_secs(10)), "once per hold");
-        let again = both + Duration::from_secs(11);
-        assert!(!chord.key(event(ChordKey::VolumeDown, none, false, again)));
-        assert!(!chord.key(event(ChordKey::VolumeDown, none, true, again)));
-        assert!(chord.key(ChordEvent {
-            repeat: true,
-            ..event(ChordKey::VolumeUp, none, true, again + VOLUME_HOLD)
-        }));
-    }
+                false,
+                start + Duration::from_secs(2),
+            ));
+            assert_eq!(chord.deadline(), None);
+            assert!(!chord.tick(start + Duration::from_secs(5)));
+            chord.key(event(ChordKey::VolumeUp, none, true, start));
+            chord.reset();
+            assert_eq!(chord.deadline(), None);
+        }
 
-    #[test]
-    fn releasing_either_volume_key_cancels_the_hold() {
-        let start = crate::time::now();
-        let none = ChordModifiers::default();
-        let mut chord = ScreenReaderChord::new();
-        chord.key(event(ChordKey::VolumeDown, none, true, start));
-        chord.key(event(ChordKey::VolumeUp, none, true, start));
-        chord.key(event(
-            ChordKey::VolumeUp,
-            none,
-            false,
-            start + Duration::from_secs(2),
-        ));
-        assert_eq!(chord.deadline(), None);
-        assert!(!chord.tick(start + Duration::from_secs(5)));
-        chord.key(event(ChordKey::VolumeUp, none, true, start));
-        chord.reset();
-        assert_eq!(chord.deadline(), None);
-    }
+        phase the_new_state_is_said_in_words;
+        {
+            assert_eq!(state_words(true), "Screen reader on");
+            assert_eq!(state_words(false), "Screen reader off");
+        }
 
-    #[test]
-    fn the_new_state_is_said_in_words() {
-        assert_eq!(state_words(true), "Screen reader on");
-        assert_eq!(state_words(false), "Screen reader off");
-    }
+        phase keysyms_and_winit_keys_name_the_same_keys;
+        {
+            assert_eq!(ChordKey::from_keysym(0xff0d), ChordKey::Enter);
+            assert_eq!(ChordKey::from_keysym(0xff8d), ChordKey::Enter);
+            assert_eq!(ChordKey::from_keysym(0x1008_ff13), ChordKey::VolumeUp);
+            assert_eq!(ChordKey::from_keysym(0x1008_ff11), ChordKey::VolumeDown);
+            assert_eq!(ChordKey::from_keysym(u32::from('a')), ChordKey::Other);
 
-    #[test]
-    fn keysyms_and_winit_keys_name_the_same_keys() {
-        assert_eq!(ChordKey::from_keysym(0xff0d), ChordKey::Enter);
-        assert_eq!(ChordKey::from_keysym(0xff8d), ChordKey::Enter);
-        assert_eq!(ChordKey::from_keysym(0x1008_ff13), ChordKey::VolumeUp);
-        assert_eq!(ChordKey::from_keysym(0x1008_ff11), ChordKey::VolumeDown);
-        assert_eq!(ChordKey::from_keysym(u32::from('a')), ChordKey::Other);
-
-        use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
-        let key = |physical, logical| {
-            let mut event = crate::synthetic_input::key_event(
-                logical,
-                None,
-                winit::event::ElementState::Pressed,
+            use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+            let key = |physical, logical| {
+                let mut event = crate::synthetic_input::key_event(
+                    logical,
+                    None,
+                    winit::event::ElementState::Pressed,
+                );
+                event.physical_key = physical;
+                ChordKey::from_winit(&event)
+            };
+            assert_eq!(
+                key(
+                    PhysicalKey::Code(KeyCode::NumpadEnter),
+                    Key::Named(NamedKey::Enter)
+                ),
+                ChordKey::Enter
             );
-            event.physical_key = physical;
-            ChordKey::from_winit(&event)
-        };
-        assert_eq!(
-            key(
-                PhysicalKey::Code(KeyCode::NumpadEnter),
-                Key::Named(NamedKey::Enter)
-            ),
-            ChordKey::Enter
-        );
-        assert_eq!(
-            key(
-                PhysicalKey::Code(KeyCode::AudioVolumeUp),
-                Key::Named(NamedKey::AudioVolumeUp)
-            ),
-            ChordKey::VolumeUp
-        );
-        assert_eq!(
-            key(
-                PhysicalKey::Code(KeyCode::AudioVolumeDown),
-                Key::Named(NamedKey::AudioVolumeDown)
-            ),
-            ChordKey::VolumeDown
-        );
-        assert_eq!(
-            key(PhysicalKey::Code(KeyCode::KeyA), Key::Character("a".into())),
-            ChordKey::Other
-        );
+            assert_eq!(
+                key(
+                    PhysicalKey::Code(KeyCode::AudioVolumeUp),
+                    Key::Named(NamedKey::AudioVolumeUp)
+                ),
+                ChordKey::VolumeUp
+            );
+            assert_eq!(
+                key(
+                    PhysicalKey::Code(KeyCode::AudioVolumeDown),
+                    Key::Named(NamedKey::AudioVolumeDown)
+                ),
+                ChordKey::VolumeDown
+            );
+            assert_eq!(
+                key(PhysicalKey::Code(KeyCode::KeyA), Key::Character("a".into())),
+                ChordKey::Other
+            );
+        }
     }
 }

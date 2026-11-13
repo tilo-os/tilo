@@ -487,184 +487,274 @@ pub fn take_recipients(request: u64) -> Option<Vec<Recipient>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_selection_travels_as_json_without_its_local_kind_hint() {
-        let selection = SharedSelection::of_text("late results")
-            .at(SelectionPlace::range("block-2", 4, 16))
-            .in_kind("rich-text");
-        let wire = serde_json::to_value(&selection).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({
-                "anchor": {
-                    "place": {"item": "block-2", "start": 4, "end": 16},
-                    "excerpt": "late results"
-                }
-            })
-        );
-        let back: SharedSelection = serde_json::from_value(wire).unwrap();
-        assert_eq!(back.anchor, selection.anchor);
-        assert_eq!(back.resource_kind, None);
-        assert!(
-            serde_json::from_value::<SharedSelection>(serde_json::json!({
-                "anchor": {}, "authority": "admin"
-            }))
-            .is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_selection_names_the_record_part_and_place_it_is_about;
 
-    #[test]
-    fn a_selection_becomes_the_record_and_part_it_names() {
-        use tilo_reference::{Anchor, Attached, ResourceAt, ResourceRef, Span};
-
-        let page = ActionResource {
-            id: "notes.page:1".into(),
-            kind: "notes.page".into(),
-            label: "Plan".into(),
-        };
-        // A run inside one item travels as that item and the characters, in the app's own
-        // unit, so the app can address the run again.
-        let run = SharedSelection::of_text("late results")
-            .at(SelectionPlace::range("block-2", 4, 16))
-            .in_resource(page.clone());
-        let at = ResourceAt {
-            app: "so.tilo.notes".into(),
-            record: Some("uuid:7".into()),
-            reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
-        };
-        let sent = run.to_attached(Some("so.tilo.notes"), Some("uuid:7"));
-        let run_at = ResourceAt {
-            reference: ResourceRef::ranged(
-                "notes.page",
-                "notes.page:1",
-                "Plan",
-                Span::chars(4, 16),
-            ),
-            ..at.clone()
-        };
-        assert_eq!(
-            sent,
-            Some(Attached::resource(
-                run_at,
-                Some(Anchor::item("block-2")),
-                "late results"
-            )),
-            "the chip reads the words picked, as the box's chip did, not the page they are in"
-        );
-        let Some(Attached::Resource { at, anchor, .. }) = &sent else {
-            panic!("a resource attachment: {sent:?}");
-        };
-        assert_eq!(
-            at.reference.span,
-            Some(Span::chars(4, 16)),
-            "the run inside the item, in the app's own unit"
-        );
-        assert_eq!(anchor, &Some(Anchor::item("block-2")));
-
-        let rows = SharedSelection::of_items([("row-1", "One"), ("row-2", "Two")])
-            .in_resource(page.clone());
-        assert_eq!(
-            rows.to_attached(Some("so.tilo.tasks"), None),
-            Some(Attached::resource(
-                ResourceAt {
-                    app: "so.tilo.tasks".into(),
-                    record: None,
-                    reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
-                },
-                Some(Anchor::items(["row-1", "row-2"])),
-                "One +1"
-            )),
-            "rows read as the first row and how many more, never only the list"
-        );
-
-        let words = SharedSelection::of_text("ship on Friday");
-        assert_eq!(
-            words.to_attached(Some("so.tilo.terminal"), None),
-            Some(Attached::Text {
-                text: "ship on Friday".into(),
-                from: None,
-            })
-        );
-
-        let unplaced = SharedSelection::of_text("ship on Friday").in_resource(page);
-        assert_eq!(
-            unplaced.to_attached(Some("so.tilo.notes"), Some("uuid:7")),
-            Some(Attached::Text {
-                text: "ship on Friday".into(),
-                from: Some(ResourceAt {
-                    app: "so.tilo.notes".into(),
-                    record: Some("uuid:7".into()),
-                    reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
-                }),
-            })
-        );
-
-        let unowned = SharedSelection::of_text("One").in_resource(ActionResource {
-            id: "row-1".into(),
-            kind: "tasks.issue".into(),
-            label: "One".into(),
-        });
-        assert_eq!(
-            unowned.to_attached(None, None),
-            Some(Attached::Text {
-                text: "One".into(),
-                from: None,
-            })
-        );
-
-        assert_eq!(
-            SharedSelection::default().to_attached(Some("a.b"), None),
-            None
-        );
-    }
-
-    #[test]
-    fn where_a_selection_is_drawn_stays_with_the_shell_and_out_of_the_selection() {
-        let drawn = vello::kurbo::Rect::new(10.0, 20.0, 300.0, 60.0);
-        let selection = SharedSelection::of_text("late results")
-            .at(SelectionPlace::range("block-2", 4, 16))
-            .within(drawn);
-        assert_eq!(selection.protocol_bounds(), Some([10.0, 20.0, 300.0, 60.0]));
-        let wire = serde_json::to_value(&selection).unwrap();
-        assert!(
-            wire.get("bounds").is_none(),
-            "geometry is no part of what an agent is told: {wire}"
-        );
-        let back: SharedSelection = serde_json::from_value(wire).unwrap();
-        assert_eq!(back.bounds, None);
-        for empty in [
-            vello::kurbo::Rect::ZERO,
-            vello::kurbo::Rect::new(10.0, 20.0, 10.0, 60.0),
-            vello::kurbo::Rect::new(f64::NAN, 0.0, 1.0, 1.0),
-        ] {
-            assert_eq!(selection.clone().within(empty).protocol_bounds(), None);
+        phase a_selection_travels_as_json_without_its_local_kind_hint;
+        {
+            let selection = SharedSelection::of_text("late results")
+                .at(SelectionPlace::range("block-2", 4, 16))
+                .in_kind("rich-text");
+            let wire = serde_json::to_value(&selection).unwrap();
+            assert_eq!(
+                wire,
+                serde_json::json!({
+                    "anchor": {
+                        "place": {"item": "block-2", "start": 4, "end": 16},
+                        "excerpt": "late results"
+                    }
+                })
+            );
+            let back: SharedSelection = serde_json::from_value(wire).unwrap();
+            assert_eq!(back.anchor, selection.anchor);
+            assert_eq!(back.resource_kind, None);
+            assert!(
+                serde_json::from_value::<SharedSelection>(serde_json::json!({
+                    "anchor": {}, "authority": "admin"
+                }))
+                .is_err()
+            );
         }
-    }
 
-    #[test]
-    fn the_resource_is_the_published_one_of_the_items_kind() {
-        let published = vec![
-            tilo_actions::ResourceSpec::new("settings", "app.settings", "Settings"),
-            tilo_actions::ResourceSpec::new("doc:1", "notebook", "Notebook").with_child(
-                tilo_actions::ResourceSpec::new("page:7", "rich-text", "Monday notes"),
-            ),
-        ];
-        let mut selection = SharedSelection::of_text("x").in_kind("rich-text");
-        selection.resolve_resource(&published);
-        assert_eq!(
-            selection.resource,
-            Some(ActionResource {
-                id: "page:7".into(),
-                kind: "rich-text".into(),
-                label: "Monday notes".into(),
-            })
-        );
-        let mut unknown = SharedSelection::of_text("x").in_kind("sheet");
-        unknown.resolve_resource(&published);
-        assert_eq!(
-            unknown.resource.map(|resource| resource.id),
-            Some("settings".into())
-        );
+        phase a_selection_becomes_the_record_and_part_it_names;
+        {
+            use tilo_reference::{Anchor, Attached, ResourceAt, ResourceRef, Span};
+
+            let page = ActionResource {
+                id: "notes.page:1".into(),
+                kind: "notes.page".into(),
+                label: "Plan".into(),
+            };
+            // A run inside one item travels as that item and the characters, in the app's own
+            // unit, so the app can address the run again.
+            let run = SharedSelection::of_text("late results")
+                .at(SelectionPlace::range("block-2", 4, 16))
+                .in_resource(page.clone());
+            let at = ResourceAt {
+                app: "so.tilo.notes".into(),
+                record: Some("uuid:7".into()),
+                reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
+            };
+            let sent = run.to_attached(Some("so.tilo.notes"), Some("uuid:7"));
+            let run_at = ResourceAt {
+                reference: ResourceRef::ranged(
+                    "notes.page",
+                    "notes.page:1",
+                    "Plan",
+                    Span::chars(4, 16),
+                ),
+                ..at.clone()
+            };
+            assert_eq!(
+                sent,
+                Some(Attached::resource(
+                    run_at,
+                    Some(Anchor::item("block-2")),
+                    "late results"
+                )),
+                "the chip reads the words picked, as the box's chip did, not the page they are in"
+            );
+            let Some(Attached::Resource { at, anchor, .. }) = &sent else {
+                panic!("a resource attachment: {sent:?}");
+            };
+            assert_eq!(
+                at.reference.span,
+                Some(Span::chars(4, 16)),
+                "the run inside the item, in the app's own unit"
+            );
+            assert_eq!(anchor, &Some(Anchor::item("block-2")));
+
+            let rows = SharedSelection::of_items([("row-1", "One"), ("row-2", "Two")])
+                .in_resource(page.clone());
+            assert_eq!(
+                rows.to_attached(Some("so.tilo.tasks"), None),
+                Some(Attached::resource(
+                    ResourceAt {
+                        app: "so.tilo.tasks".into(),
+                        record: None,
+                        reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
+                    },
+                    Some(Anchor::items(["row-1", "row-2"])),
+                    "One +1"
+                )),
+                "rows read as the first row and how many more, never only the list"
+            );
+
+            let words = SharedSelection::of_text("ship on Friday");
+            assert_eq!(
+                words.to_attached(Some("so.tilo.terminal"), None),
+                Some(Attached::Text {
+                    text: "ship on Friday".into(),
+                    from: None,
+                })
+            );
+
+            let unplaced = SharedSelection::of_text("ship on Friday").in_resource(page);
+            assert_eq!(
+                unplaced.to_attached(Some("so.tilo.notes"), Some("uuid:7")),
+                Some(Attached::Text {
+                    text: "ship on Friday".into(),
+                    from: Some(ResourceAt {
+                        app: "so.tilo.notes".into(),
+                        record: Some("uuid:7".into()),
+                        reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
+                    }),
+                })
+            );
+
+            let unowned = SharedSelection::of_text("One").in_resource(ActionResource {
+                id: "row-1".into(),
+                kind: "tasks.issue".into(),
+                label: "One".into(),
+            });
+            assert_eq!(
+                unowned.to_attached(None, None),
+                Some(Attached::Text {
+                    text: "One".into(),
+                    from: None,
+                })
+            );
+
+            assert_eq!(
+                SharedSelection::default().to_attached(Some("a.b"), None),
+                None
+            );
+        }
+
+        phase where_a_selection_is_drawn_stays_with_the_shell_and_out_of_the_selection;
+        {
+            let drawn = vello::kurbo::Rect::new(10.0, 20.0, 300.0, 60.0);
+            let selection = SharedSelection::of_text("late results")
+                .at(SelectionPlace::range("block-2", 4, 16))
+                .within(drawn);
+            assert_eq!(selection.protocol_bounds(), Some([10.0, 20.0, 300.0, 60.0]));
+            let wire = serde_json::to_value(&selection).unwrap();
+            assert!(
+                wire.get("bounds").is_none(),
+                "geometry is no part of what an agent is told: {wire}"
+            );
+            let back: SharedSelection = serde_json::from_value(wire).unwrap();
+            assert_eq!(back.bounds, None);
+            for empty in [
+                vello::kurbo::Rect::ZERO,
+                vello::kurbo::Rect::new(10.0, 20.0, 10.0, 60.0),
+                vello::kurbo::Rect::new(f64::NAN, 0.0, 1.0, 1.0),
+            ] {
+                assert_eq!(selection.clone().within(empty).protocol_bounds(), None);
+            }
+        }
+
+        phase the_resource_is_the_published_one_of_the_items_kind;
+        {
+            let published = vec![
+                tilo_actions::ResourceSpec::new("settings", "app.settings", "Settings"),
+                tilo_actions::ResourceSpec::new("doc:1", "notebook", "Notebook").with_child(
+                    tilo_actions::ResourceSpec::new("page:7", "rich-text", "Monday notes"),
+                ),
+            ];
+            let mut selection = SharedSelection::of_text("x").in_kind("rich-text");
+            selection.resolve_resource(&published);
+            assert_eq!(
+                selection.resource,
+                Some(ActionResource {
+                    id: "page:7".into(),
+                    kind: "rich-text".into(),
+                    label: "Monday notes".into(),
+                })
+            );
+            let mut unknown = SharedSelection::of_text("x").in_kind("sheet");
+            unknown.resolve_resource(&published);
+            assert_eq!(
+                unknown.resource.map(|resource| resource.id),
+                Some("settings".into())
+            );
+        }
+
+        phase a_focused_editors_selection_is_derived_in_characters_from_what_it_publishes;
+        {
+            let editor = Editor {
+                text: "Grüße, late results",
+                selected: (9, 13),
+                protected: false,
+            };
+            let selection = selection_of(&editor).expect("a selection");
+            assert_eq!(
+                selection.anchor.place,
+                Some(SelectionPlace::range("para-3", 7, 11)),
+                "byte offsets 9..13 are characters 7..11 after the umlaut and eszett"
+            );
+            assert_eq!(selection.anchor.excerpt.as_deref(), Some("late"));
+            assert_eq!(selection.resource_kind.as_deref(), Some("rich-text"));
+            assert_eq!(
+                subtree_selection(&editor).map(|found| found.anchor),
+                Some(selection.anchor)
+            );
+            let secret = Editor {
+                protected: true,
+                ..editor
+            };
+            assert_eq!(selection_of(&secret), None);
+        }
+
+        phase a_right_click_outside_the_selection_is_not_about_it;
+        {
+            let inside = vello::kurbo::Point::new(20.0, 10.0);
+            let outside = vello::kurbo::Point::new(400.0, 300.0);
+            let selected =
+                SharedSelection::of_text("late").within(vello::kurbo::Rect::new(0.0, 0.0, 100.0, 20.0));
+            assert_eq!(
+                pointed_selection(Some(selected.clone()), Some(inside)),
+                Some(selected.clone())
+            );
+            assert_eq!(
+                pointed_selection(Some(selected.clone()), Some(outside)),
+                None
+            );
+            assert_eq!(
+                pointed_selection(Some(selected.clone()), None),
+                Some(selected),
+                "the Menu key is about the selection"
+            );
+            assert_eq!(
+                pointed_selection(Some(SharedSelection::of_text("nowhere")), Some(inside)),
+                None,
+                "a selection that says not where it is is not pointed inside"
+            );
+        }
+
+        phase the_reference_resolves_the_window_when_nothing_is_selected;
+        {
+            let at = vello::kurbo::Point::new(200.0, 300.0);
+            let focused = SharedSelection::of_text("elsewhere")
+                .within(vello::kurbo::Rect::new(0.0, 0.0, 50.0, 20.0));
+            let (about, bounds) =
+                resolve_selection(None, Some(at), Some(focused.clone()), &published());
+            let about = about.expect("the window");
+            assert_eq!(
+                about.resource.as_ref().map(|resource| resource.id.as_str()),
+                Some("doc:1")
+            );
+            assert_eq!(about.anchor.place, Some(SelectionPlace::item("doc:1")));
+            assert_eq!(bounds, Some([199.5, 299.5, 200.5, 300.5]));
+            let (about, bounds) = resolve_selection(
+                None,
+                Some(vello::kurbo::Point::new(10.0, 10.0)),
+                Some(focused),
+                &published(),
+            );
+            let about = about.expect("the selection");
+            assert_eq!(about.anchor.excerpt.as_deref(), Some("elsewhere"));
+            assert_eq!(
+                about.resource.map(|resource| resource.id),
+                Some("doc:1".into())
+            );
+            assert_eq!(bounds, Some([0.0, 0.0, 50.0, 20.0]));
+            // An app that publishes nothing has only its window to point at.
+            assert_eq!(
+                resolve_selection(None, Some(at), None, &[]),
+                (None, Some([199.5, 299.5, 200.5, 300.5]))
+            );
+        }
     }
 
     /// A focused editor keyed to resource items, describing itself to assistive
@@ -707,32 +797,6 @@ mod tests {
                 },
             ))
         }
-    }
-
-    #[test]
-    fn a_focused_editors_selection_is_derived_in_characters_from_what_it_publishes() {
-        let editor = Editor {
-            text: "Grüße, late results",
-            selected: (9, 13),
-            protected: false,
-        };
-        let selection = selection_of(&editor).expect("a selection");
-        assert_eq!(
-            selection.anchor.place,
-            Some(SelectionPlace::range("para-3", 7, 11)),
-            "byte offsets 9..13 are characters 7..11 after the umlaut and eszett"
-        );
-        assert_eq!(selection.anchor.excerpt.as_deref(), Some("late"));
-        assert_eq!(selection.resource_kind.as_deref(), Some("rich-text"));
-        assert_eq!(
-            subtree_selection(&editor).map(|found| found.anchor),
-            Some(selection.anchor)
-        );
-        let secret = Editor {
-            protected: true,
-            ..editor
-        };
-        assert_eq!(selection_of(&secret), None);
     }
 
     fn right_press() -> winit::event::WindowEvent {
@@ -812,66 +876,6 @@ mod tests {
             Some(SelectionPlace::range("para-3", 0, 4))
         );
         set_send_host_available(false);
-    }
-
-    #[test]
-    fn a_right_click_outside_the_selection_is_not_about_it() {
-        let inside = vello::kurbo::Point::new(20.0, 10.0);
-        let outside = vello::kurbo::Point::new(400.0, 300.0);
-        let selected =
-            SharedSelection::of_text("late").within(vello::kurbo::Rect::new(0.0, 0.0, 100.0, 20.0));
-        assert_eq!(
-            pointed_selection(Some(selected.clone()), Some(inside)),
-            Some(selected.clone())
-        );
-        assert_eq!(
-            pointed_selection(Some(selected.clone()), Some(outside)),
-            None
-        );
-        assert_eq!(
-            pointed_selection(Some(selected.clone()), None),
-            Some(selected),
-            "the Menu key is about the selection"
-        );
-        assert_eq!(
-            pointed_selection(Some(SharedSelection::of_text("nowhere")), Some(inside)),
-            None,
-            "a selection that says not where it is is not pointed inside"
-        );
-    }
-
-    #[test]
-    fn the_reference_resolves_the_window_when_nothing_is_selected() {
-        let at = vello::kurbo::Point::new(200.0, 300.0);
-        let focused = SharedSelection::of_text("elsewhere")
-            .within(vello::kurbo::Rect::new(0.0, 0.0, 50.0, 20.0));
-        let (about, bounds) =
-            resolve_selection(None, Some(at), Some(focused.clone()), &published());
-        let about = about.expect("the window");
-        assert_eq!(
-            about.resource.as_ref().map(|resource| resource.id.as_str()),
-            Some("doc:1")
-        );
-        assert_eq!(about.anchor.place, Some(SelectionPlace::item("doc:1")));
-        assert_eq!(bounds, Some([199.5, 299.5, 200.5, 300.5]));
-        let (about, bounds) = resolve_selection(
-            None,
-            Some(vello::kurbo::Point::new(10.0, 10.0)),
-            Some(focused),
-            &published(),
-        );
-        let about = about.expect("the selection");
-        assert_eq!(about.anchor.excerpt.as_deref(), Some("elsewhere"));
-        assert_eq!(
-            about.resource.map(|resource| resource.id),
-            Some("doc:1".into())
-        );
-        assert_eq!(bounds, Some([0.0, 0.0, 50.0, 20.0]));
-        // An app that publishes nothing has only its window to point at.
-        assert_eq!(
-            resolve_selection(None, Some(at), None, &[]),
-            (None, Some([199.5, 299.5, 200.5, 300.5]))
-        );
     }
 
     fn published() -> Vec<tilo_actions::ResourceSpec> {
