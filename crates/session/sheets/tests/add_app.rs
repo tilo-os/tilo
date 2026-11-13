@@ -134,6 +134,15 @@ fn not_adding_and_closing_both_decline_the_file() {
         [AddAppEffect::Decline],
         "closing it is an answer too: that file is not asked about again"
     );
+
+    let (mut app, seat) = seated(appimage());
+    app.harness().click_at(10.0, 10.0);
+    app.settle();
+    assert_eq!(
+        seat.take_asked(),
+        [AddAppEffect::Decline],
+        "and so is a press beside the question"
+    );
 }
 
 #[test]

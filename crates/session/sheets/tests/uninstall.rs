@@ -190,28 +190,43 @@ fn a_part_of_the_system_only_leaves_the_persons_apps() {
     }
 }
 
-#[test]
-fn cancel_and_closing_leave_the_app_where_it_is() {
-    let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
-    press(&mut app, "uninstall.secondary");
-    assert_eq!(seat.take_asked(), [UninstallEffect::Cancel]);
-
-    let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
-    app.harness().key("Escape");
-    app.settle();
-    assert_eq!(seat.take_asked(), [UninstallEffect::Cancel]);
+/// One way out of the question that is not its uninstall button.
+#[derive(Clone, Copy, Debug)]
+enum WayOut {
+    /// A key, pressed as the sheet comes up.
+    Key(&'static str),
+    /// A press on the button with this id.
+    Press(&'static str),
+    /// A press beside the dialog, on the dimmed desktop.
+    PressBeside,
 }
 
+/// Each way out, on a question of its own: Cancel and closing leave the app
+/// where it is, and the keyboard starts on the safe answer of a deletion, so
+/// Enter does too.
 #[test]
-fn enter_keeps_an_uninstall() {
-    let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(
-        seat.take_asked(),
-        [UninstallEffect::Cancel],
-        "the keyboard starts on the safe answer of a deletion"
-    );
+fn cancel_closing_and_enter_leave_the_app_where_it_is() {
+    let ways = [
+        WayOut::Press("uninstall.secondary"),
+        WayOut::Key("Escape"),
+        WayOut::Key("Enter"),
+        WayOut::PressBeside,
+    ];
+    for way in ways {
+        let (mut app, seat) = seated(downloaded(&["/home/ute/Downloads/tilo-imager"]));
+        match way {
+            WayOut::Key(key) => {
+                app.harness().key(key);
+                app.settle();
+            }
+            WayOut::Press(id) => press(&mut app, id),
+            WayOut::PressBeside => {
+                app.harness().click_at(10.0, 10.0);
+                app.settle();
+            }
+        }
+        assert_eq!(seat.take_asked(), [UninstallEffect::Cancel], "{way:?}");
+    }
 }
 
 #[test]
