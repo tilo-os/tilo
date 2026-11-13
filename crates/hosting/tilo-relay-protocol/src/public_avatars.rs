@@ -34,20 +34,24 @@ pub fn is_avatar_name(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn images_are_recognised_by_their_magic_bytes_only() {
-        assert_eq!(sniff(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
-        assert_eq!(sniff(b"\xff\xd8\xff\xe0...."), Some("image/jpeg"));
-        assert_eq!(sniff(b"GIF89a...."), Some("image/gif"));
-        assert_eq!(sniff(b"RIFF\x10\x00\x00\x00WEBPVP8 "), Some("image/webp"));
-        assert_eq!(sniff(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), None);
-        assert_eq!(sniff(b""), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_public_avatar_is_an_image_named_by_its_digest;
 
-    #[test]
-    fn an_avatar_name_is_a_blake3_hex_digest() {
-        assert!(is_avatar_name(&"ab".repeat(32)));
-        assert!(!is_avatar_name("../etc/passwd"));
-        assert!(!is_avatar_name(&"AB".repeat(32)));
+        phase images_are_recognised_by_their_magic_bytes_only;
+        {
+            assert_eq!(sniff(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
+            assert_eq!(sniff(b"\xff\xd8\xff\xe0...."), Some("image/jpeg"));
+            assert_eq!(sniff(b"GIF89a...."), Some("image/gif"));
+            assert_eq!(sniff(b"RIFF\x10\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+            assert_eq!(sniff(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), None);
+            assert_eq!(sniff(b""), None);
+        }
+
+        phase an_avatar_name_is_a_blake3_hex_digest;
+        {
+            assert!(is_avatar_name(&"ab".repeat(32)));
+            assert!(!is_avatar_name("../etc/passwd"));
+            assert!(!is_avatar_name(&"AB".repeat(32)));
+        }
     }
 }

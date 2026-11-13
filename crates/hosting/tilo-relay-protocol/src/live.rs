@@ -696,81 +696,243 @@ mod tests {
         })
     }
 
-    #[test]
-    fn semantic_events_are_versioned_bounded_record_ops_not_pointers() {
-        let frame = semantic();
-        assert_eq!(frame.seal_tags(), Some((LiveKind::Ops, 42, &record())));
-        assert_eq!(LiveFrame::decode(&frame.encode().unwrap()).unwrap(), frame);
-        let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
-        assert_eq!(
-            SealedLiveFrame::decode(&bytes).unwrap().open(open).unwrap(),
-            frame
-        );
-        let LiveFrame::Ops(OpsFrame::Semantic { mut event, .. }) = frame else {
-            panic!("semantic fixture");
-        };
-        event.version = 2;
-        assert!(event.validate().is_err());
-        event.version = 1;
-        event.execution = uuid::Uuid::nil();
-        assert!(event.validate().is_err());
-        event.execution = uuid::Uuid::from_bytes([1; 16]);
-        event.interaction_json = "null".into();
-        assert!(event.validate().is_err());
-        event.interaction_json = " ".repeat(MAX_SEMANTIC_INTERACTION_BYTES + 1);
-        assert!(event.validate().is_err());
-        assert_eq!(
-            LiveFrame::Ops(OpsFrame::End { record: record() })
-                .encode()
-                .unwrap(),
-            b"\x01\x01\x0dso.tilo.notes\x02r1"
-        );
+    tilo_test_env::scenario! {
+        fn live_frames_have_one_bounded_canonical_encoding;
+
+        phase semantic_events_are_versioned_bounded_record_ops_not_pointers;
+        {
+            let frame = semantic();
+            assert_eq!(frame.seal_tags(), Some((LiveKind::Ops, 42, &record())));
+            assert_eq!(LiveFrame::decode(&frame.encode().unwrap()).unwrap(), frame);
+            let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
+            assert_eq!(
+                SealedLiveFrame::decode(&bytes).unwrap().open(open).unwrap(),
+                frame
+            );
+            let LiveFrame::Ops(OpsFrame::Semantic { mut event, .. }) = frame else {
+                panic!("semantic fixture");
+            };
+            event.version = 2;
+            assert!(event.validate().is_err());
+            event.version = 1;
+            event.execution = uuid::Uuid::nil();
+            assert!(event.validate().is_err());
+            event.execution = uuid::Uuid::from_bytes([1; 16]);
+            event.interaction_json = "null".into();
+            assert!(event.validate().is_err());
+            event.interaction_json = " ".repeat(MAX_SEMANTIC_INTERACTION_BYTES + 1);
+            assert!(event.validate().is_err());
+            assert_eq!(
+                LiveFrame::Ops(OpsFrame::End { record: record() })
+                    .encode()
+                    .unwrap(),
+                b"\x01\x01\x0dso.tilo.notes\x02r1"
+            );
+        }
+
+        phase frames_round_trip_canonically;
+        {
+            for frame in [
+                named(),
+                LiveFrame::Ops(OpsFrame::Preview {
+                    seq: 1,
+                    record: record(),
+                    ops: vec![PreviewOp::Insert {
+                        at: LiveAnchor { cursor: vec![1] },
+                        text: "hi".into(),
+                    }],
+                }),
+                LiveFrame::RetiredPresence,
+            ] {
+                let bytes = frame.encode().unwrap();
+                assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
+            }
+        }
+
+        phase out_of_bounds_frames_are_refused;
+        {
+            let empty = LiveFrame::Ops(OpsFrame::Preview {
+                seq: 1,
+                record: record(),
+                ops: Vec::new(),
+            });
+            assert_eq!(empty.encode(), Err(LiveWireError::Invalid));
+            let mut trailing = named().encode().unwrap();
+            trailing.push(0);
+            assert_eq!(LiveFrame::decode(&trailing), Err(LiveWireError::Codec));
+            assert_eq!(LiveFrame::decode(&[]), Err(LiveWireError::Codec));
+        }
     }
 
-    #[test]
-    fn opening_for_a_mounted_record_refuses_a_different_record_or_channel() {
-        let expected = record();
-        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let channel = collab_types::document_channel_id(&expected.app, workspace, &expected.record);
-        let bytes = SealedLiveFrame::seal(&semantic(), |_, retention, cleartext: &[u8]| {
-            Ok::<_, String>((
-                EncryptionMetadata::content_key(3, channel, retention),
-                cleartext.to_vec(),
-            ))
-        })
-        .unwrap();
-        let sealed = SealedLiveFrame::decode(&bytes).unwrap();
-        let opened = sealed.open_in_record(workspace, &expected, |_, _, bytes| {
-            Ok::<_, String>(bytes.to_vec())
-        });
-        assert_eq!(opened.unwrap(), semantic());
-        let other = LiveRecord {
-            record: "other".into(),
-            ..expected.clone()
-        };
-        for (workspace, record) in [(workspace, other), ("another-room", expected.clone())] {
+    tilo_test_env::scenario! {
+        fn a_live_frame_is_sealed_to_its_record_and_opens_nowhere_else;
+
+        phase opening_for_a_mounted_record_refuses_a_different_record_or_channel;
+        {
+            let expected = record();
+            let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+            let channel = collab_types::document_channel_id(&expected.app, workspace, &expected.record);
+            let bytes = SealedLiveFrame::seal(&semantic(), |_, retention, cleartext: &[u8]| {
+                Ok::<_, String>((
+                    EncryptionMetadata::content_key(3, channel, retention),
+                    cleartext.to_vec(),
+                ))
+            })
+            .unwrap();
+            let sealed = SealedLiveFrame::decode(&bytes).unwrap();
+            let opened = sealed.open_in_record(workspace, &expected, |_, _, bytes| {
+                Ok::<_, String>(bytes.to_vec())
+            });
+            assert_eq!(opened.unwrap(), semantic());
+            let other = LiveRecord {
+                record: "other".into(),
+                ..expected.clone()
+            };
+            for (workspace, record) in [(workspace, other), ("another-room", expected.clone())] {
+                assert!(matches!(
+                    sealed.open_in_record(
+                        workspace,
+                        &record,
+                        |_, _, _| -> std::result::Result<Vec<u8>, String> {
+                            panic!("a different mounted audience must be refused before opening")
+                        }
+                    ),
+                    Err(LiveSealError::Mismatch)
+                ));
+            }
+            // A valid record claim sealed under another record's held key is not
+            // authority for this record, even when its clear digest agrees.
+            let mut wrong_channel = sealed;
+            wrong_channel.channel = [9; 16];
+            assert!(
+                wrong_channel
+                    .open_in_record(workspace, &expected, |_, _, _| {
+                        Err::<Vec<u8>, String>("must not open".into())
+                    })
+                    .is_err()
+            );
+        }
+
+        phase a_live_frame_is_sealed_and_bound_to_its_exact_record;
+        {
+            let primary = LiveRecord {
+                app: "so.tilo.chat".into(),
+                record: String::new(),
+            };
+            let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+            let channel = collab_types::document_channel_id(&primary.app, workspace, &primary.record);
+            let frame = LiveFrame::Ops(OpsFrame::Preview {
+                seq: 1,
+                record: primary.clone(),
+                ops: vec![PreviewOp::Insert {
+                    at: LiveAnchor {
+                        cursor: vec![ANCHOR_TAG_SCOPED, 4, 0],
+                    },
+                    text: "hi".into(),
+                }],
+            });
+            let bytes = SealedLiveFrame::seal(&frame, |_, retention, cleartext: &[u8]| {
+                Ok::<_, String>((
+                    EncryptionMetadata::content_key(3, channel, retention),
+                    cleartext.to_vec(),
+                ))
+            })
+            .unwrap();
+            let sealed = SealedLiveFrame::decode(&bytes).unwrap();
+            assert_eq!(
+                sealed
+                    .open_in_record(workspace, &primary, |_, _, bytes| {
+                        Ok::<_, String>(bytes.to_vec())
+                    })
+                    .unwrap(),
+                frame
+            );
+            let named = LiveRecord {
+                record: "other".into(),
+                ..primary
+            };
             assert!(matches!(
                 sealed.open_in_record(
                     workspace,
-                    &record,
+                    &named,
                     |_, _, _| -> std::result::Result<Vec<u8>, String> {
-                        panic!("a different mounted audience must be refused before opening")
+                        panic!("a different record must be refused before opening")
                     }
                 ),
                 Err(LiveSealError::Mismatch)
             ));
-        }
-        // A valid record claim sealed under another record's held key is not
-        // authority for this record, even when its clear digest agrees.
-        let mut wrong_channel = sealed;
-        wrong_channel.channel = [9; 16];
-        assert!(
-            wrong_channel
-                .open_in_record(workspace, &expected, |_, _, _| {
-                    Err::<Vec<u8>, String>("must not open".into())
-                })
+            assert!(
+                LiveRecord {
+                    app: String::new(),
+                    record: String::new()
+                }
+                .validate()
                 .is_err()
-        );
+            );
+        }
+
+        phase a_live_frame_travels_sealed_and_opens_only_under_its_tags;
+        {
+            let frame = named();
+            let cleartext = frame.encode().unwrap();
+            let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
+            let sealed = SealedLiveFrame::decode(&bytes).unwrap();
+            assert_eq!(
+                (sealed.kind, sealed.seq, sealed.record, sealed.channel_id()),
+                (LiveKind::Ops, 0, record().digest(), channel())
+            );
+            assert!(
+                !bytes
+                    .windows(cleartext.len())
+                    .any(|window| window == cleartext),
+                "the frame's content is never in the clear"
+            );
+            assert_eq!(sealed.open(open).unwrap(), frame);
+
+            // Tags are bound into the seal: another sequence, record or kind
+            // does not open.
+            for tampered in [
+                SealedLiveFrame {
+                    seq: 10,
+                    ..sealed.clone()
+                },
+                SealedLiveFrame {
+                    record: [1; 32],
+                    ..sealed.clone()
+                },
+                SealedLiveFrame {
+                    kind: LiveKind::RetiredPresence,
+                    ..sealed
+                },
+            ] {
+                assert!(tampered.open(open).is_err());
+            }
+        }
+
+        phase a_live_frame_without_a_record_or_cipher_is_never_sealed;
+        {
+            // A presence frame is retired: it names no record, so it is dropped.
+            assert_eq!(
+                SealedLiveFrame::seal(&LiveFrame::RetiredPresence, seal),
+                Err(LiveSealError::NoRecord)
+            );
+            let refused = SealedLiveFrame::seal(&named(), |_, _, _| {
+                Err::<(EncryptionMetadata, Vec<u8>), _>("no key")
+            });
+            assert!(matches!(refused, Err(LiveSealError::Crypto(_))));
+            let mls = SealedLiveFrame::seal(&named(), |_, _, cleartext: &[u8]| {
+                Ok::<_, String>((
+                    EncryptionMetadata::mls_application(1, channel()),
+                    cleartext.to_vec(),
+                ))
+            });
+            assert!(matches!(mls, Err(LiveSealError::Crypto(_))));
+        }
+
+        phase a_cleartext_live_frame_is_not_a_sealed_one;
+        {
+            assert!(SealedLiveFrame::decode(&named().encode().unwrap()).is_err());
+        }
     }
 
     /// A stand-in content cipher that authenticates the artifact it was
@@ -807,159 +969,5 @@ mod tests {
     /// A frame that names [`record`], the way a preview does.
     fn named() -> LiveFrame {
         LiveFrame::Ops(OpsFrame::End { record: record() })
-    }
-
-    #[test]
-    fn a_live_frame_is_sealed_and_bound_to_its_exact_record() {
-        let primary = LiveRecord {
-            app: "so.tilo.chat".into(),
-            record: String::new(),
-        };
-        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let channel = collab_types::document_channel_id(&primary.app, workspace, &primary.record);
-        let frame = LiveFrame::Ops(OpsFrame::Preview {
-            seq: 1,
-            record: primary.clone(),
-            ops: vec![PreviewOp::Insert {
-                at: LiveAnchor {
-                    cursor: vec![ANCHOR_TAG_SCOPED, 4, 0],
-                },
-                text: "hi".into(),
-            }],
-        });
-        let bytes = SealedLiveFrame::seal(&frame, |_, retention, cleartext: &[u8]| {
-            Ok::<_, String>((
-                EncryptionMetadata::content_key(3, channel, retention),
-                cleartext.to_vec(),
-            ))
-        })
-        .unwrap();
-        let sealed = SealedLiveFrame::decode(&bytes).unwrap();
-        assert_eq!(
-            sealed
-                .open_in_record(workspace, &primary, |_, _, bytes| {
-                    Ok::<_, String>(bytes.to_vec())
-                })
-                .unwrap(),
-            frame
-        );
-        let named = LiveRecord {
-            record: "other".into(),
-            ..primary
-        };
-        assert!(matches!(
-            sealed.open_in_record(
-                workspace,
-                &named,
-                |_, _, _| -> std::result::Result<Vec<u8>, String> {
-                    panic!("a different record must be refused before opening")
-                }
-            ),
-            Err(LiveSealError::Mismatch)
-        ));
-        assert!(
-            LiveRecord {
-                app: String::new(),
-                record: String::new()
-            }
-            .validate()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn a_live_frame_travels_sealed_and_opens_only_under_its_tags() {
-        let frame = named();
-        let cleartext = frame.encode().unwrap();
-        let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
-        let sealed = SealedLiveFrame::decode(&bytes).unwrap();
-        assert_eq!(
-            (sealed.kind, sealed.seq, sealed.record, sealed.channel_id()),
-            (LiveKind::Ops, 0, record().digest(), channel())
-        );
-        assert!(
-            !bytes
-                .windows(cleartext.len())
-                .any(|window| window == cleartext),
-            "the frame's content is never in the clear"
-        );
-        assert_eq!(sealed.open(open).unwrap(), frame);
-
-        // Tags are bound into the seal: another sequence, record or kind
-        // does not open.
-        for tampered in [
-            SealedLiveFrame {
-                seq: 10,
-                ..sealed.clone()
-            },
-            SealedLiveFrame {
-                record: [1; 32],
-                ..sealed.clone()
-            },
-            SealedLiveFrame {
-                kind: LiveKind::RetiredPresence,
-                ..sealed
-            },
-        ] {
-            assert!(tampered.open(open).is_err());
-        }
-    }
-
-    #[test]
-    fn a_live_frame_without_a_record_or_cipher_is_never_sealed() {
-        // A presence frame is retired: it names no record, so it is dropped.
-        assert_eq!(
-            SealedLiveFrame::seal(&LiveFrame::RetiredPresence, seal),
-            Err(LiveSealError::NoRecord)
-        );
-        let refused = SealedLiveFrame::seal(&named(), |_, _, _| {
-            Err::<(EncryptionMetadata, Vec<u8>), _>("no key")
-        });
-        assert!(matches!(refused, Err(LiveSealError::Crypto(_))));
-        let mls = SealedLiveFrame::seal(&named(), |_, _, cleartext: &[u8]| {
-            Ok::<_, String>((
-                EncryptionMetadata::mls_application(1, channel()),
-                cleartext.to_vec(),
-            ))
-        });
-        assert!(matches!(mls, Err(LiveSealError::Crypto(_))));
-    }
-
-    #[test]
-    fn a_cleartext_live_frame_is_not_a_sealed_one() {
-        assert!(SealedLiveFrame::decode(&named().encode().unwrap()).is_err());
-    }
-
-    #[test]
-    fn frames_round_trip_canonically() {
-        for frame in [
-            named(),
-            LiveFrame::Ops(OpsFrame::Preview {
-                seq: 1,
-                record: record(),
-                ops: vec![PreviewOp::Insert {
-                    at: LiveAnchor { cursor: vec![1] },
-                    text: "hi".into(),
-                }],
-            }),
-            LiveFrame::RetiredPresence,
-        ] {
-            let bytes = frame.encode().unwrap();
-            assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
-        }
-    }
-
-    #[test]
-    fn out_of_bounds_frames_are_refused() {
-        let empty = LiveFrame::Ops(OpsFrame::Preview {
-            seq: 1,
-            record: record(),
-            ops: Vec::new(),
-        });
-        assert_eq!(empty.encode(), Err(LiveWireError::Invalid));
-        let mut trailing = named().encode().unwrap();
-        trailing.push(0);
-        assert_eq!(LiveFrame::decode(&trailing), Err(LiveWireError::Codec));
-        assert_eq!(LiveFrame::decode(&[]), Err(LiveWireError::Codec));
     }
 }

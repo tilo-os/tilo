@@ -281,48 +281,52 @@ pub fn color_hex(color: [u8; 3]) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn status_uses_the_browser_spelling() {
-        let status = AgentsStatus {
-            version: 1,
-            cancel_task: true,
-            agents: vec![AgentInfo {
-                id: "writer".into(),
-                label: "Writer helper".into(),
-                color: color_hex([0x7c, 0x3a, 0xed]),
-                device: "00".into(),
-                status: AgentStatus::Running,
-                activity: None,
-                tasks: vec![AgentTask {
-                    id: "t1".into(),
-                    text: "tidy".into(),
-                    state: TaskState::Running,
-                    steps: Vec::new(),
-                    error: None,
-                }],
-                workspace: None,
-                conversation: Vec::new(),
-                delegation: String::new(),
-            }],
-            grants: Vec::new(),
-        };
-        let json = serde_json::to_value(&status).unwrap();
-        assert_eq!(json["cancelTask"], true);
-        let mut legacy = json.clone();
-        legacy.as_object_mut().unwrap().remove("cancelTask");
-        assert!(
-            !serde_json::from_value::<AgentsStatus>(legacy)
-                .unwrap()
-                .cancel_task
-        );
-        assert_eq!(json["agents"][0]["status"], "running");
-        assert_eq!(json["agents"][0]["color"], "#7c3aed");
-        assert_eq!(json["agents"][0]["tasks"][0]["state"], "running");
-    }
+    tilo_test_env::scenario! {
+        fn agents_travel_in_the_browsers_spelling;
 
-    #[test]
-    fn colors_use_the_css_hex_spelling() {
-        assert_eq!(parse_color_hex("#7c3aed"), Some([0x7c, 0x3a, 0xed]));
-        assert_eq!(parse_color_hex("7c3aed"), None);
+        phase status_uses_the_browser_spelling;
+        {
+            let status = AgentsStatus {
+                version: 1,
+                cancel_task: true,
+                agents: vec![AgentInfo {
+                    id: "writer".into(),
+                    label: "Writer helper".into(),
+                    color: color_hex([0x7c, 0x3a, 0xed]),
+                    device: "00".into(),
+                    status: AgentStatus::Running,
+                    activity: None,
+                    tasks: vec![AgentTask {
+                        id: "t1".into(),
+                        text: "tidy".into(),
+                        state: TaskState::Running,
+                        steps: Vec::new(),
+                        error: None,
+                    }],
+                    workspace: None,
+                    conversation: Vec::new(),
+                    delegation: String::new(),
+                }],
+                grants: Vec::new(),
+            };
+            let json = serde_json::to_value(&status).unwrap();
+            assert_eq!(json["cancelTask"], true);
+            let mut legacy = json.clone();
+            legacy.as_object_mut().unwrap().remove("cancelTask");
+            assert!(
+                !serde_json::from_value::<AgentsStatus>(legacy)
+                    .unwrap()
+                    .cancel_task
+            );
+            assert_eq!(json["agents"][0]["status"], "running");
+            assert_eq!(json["agents"][0]["color"], "#7c3aed");
+            assert_eq!(json["agents"][0]["tasks"][0]["state"], "running");
+        }
+
+        phase colors_use_the_css_hex_spelling;
+        {
+            assert_eq!(parse_color_hex("#7c3aed"), Some([0x7c, 0x3a, 0xed]));
+            assert_eq!(parse_color_hex("7c3aed"), None);
+        }
     }
 }

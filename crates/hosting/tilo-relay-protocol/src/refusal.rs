@@ -135,91 +135,95 @@ mod tests {
     use super::*;
     use collab_types::ReceiptRefusal;
 
-    #[test]
-    fn a_busy_refusal_says_its_wait_through_any_wrapping() {
-        let reason = format!(
-            "{BACKPRESSURE}: {}",
-            too_many_changes(Duration::from_millis(480))
-        );
-        assert_eq!(busy_wait(&reason), Some(Duration::from_millis(480)));
-        assert_eq!(
-            busy_wait(&format!("remote actions are unavailable: {reason}")),
-            Some(Duration::from_millis(480))
-        );
-        // A relay that says no wait: a second.
-        assert_eq!(
-            busy_wait("remote actions are unavailable: backpressure: too many changes; slow down"),
-            Some(BUSY_WAIT_UNSAID)
-        );
-        assert_eq!(busy_wait(TOO_MANY_CHANGES), None);
-        assert_eq!(busy_wait("offline: the device left"), None);
-    }
+    tilo_test_env::scenario! {
+        fn refusals_read_as_what_the_reader_should_do;
 
-    #[test]
-    fn budgets_read_as_what_to_do() {
-        assert_eq!(plain_reason(TOO_MANY_CHANGES), PLAIN_TOO_FAST);
-        assert_eq!(plain_reason(TOO_MUCH_CONTENT), PLAIN_TOO_MUCH);
-        assert_eq!(
-            plain_reason(
-                r#"{"reason":{"storage_full":{"limit_bytes":1,"used_bytes":2}},"message":"m","next":[]}"#
-            ),
-            PLAIN_FULL
-        );
-    }
-
-    #[test]
-    fn receipt_refusals_read_as_not_allowed() {
-        for refusal in [
-            ReceiptRefusal::NotPublished("org.tilo.Chat/chat.workspace/post".into()),
-            ReceiptRefusal::OutsideFootprint {
-                action: "post".into(),
-                unit: "messages".into(),
-            },
-            ReceiptRefusal::Unclaimed,
-            ReceiptRefusal::OtherSurface,
-            ReceiptRefusal::Unnamed("change".into()),
-            ReceiptRefusal::UnclaimedUnit("comments.c1".into()),
-            ReceiptRefusal::Appearance {
-                actor: "ada".into(),
-                reason: "not a bot".into(),
-            },
-        ] {
+        phase a_busy_refusal_says_its_wait_through_any_wrapping;
+        {
+            let reason = format!(
+                "{BACKPRESSURE}: {}",
+                too_many_changes(Duration::from_millis(480))
+            );
+            assert_eq!(busy_wait(&reason), Some(Duration::from_millis(480)));
             assert_eq!(
-                plain_reason(&refusal.to_string()),
-                PLAIN_NOT_ALLOWED,
-                "{refusal}"
+                busy_wait(&format!("remote actions are unavailable: {reason}")),
+                Some(Duration::from_millis(480))
+            );
+            // A relay that says no wait: a second.
+            assert_eq!(
+                busy_wait("remote actions are unavailable: backpressure: too many changes; slow down"),
+                Some(BUSY_WAIT_UNSAID)
+            );
+            assert_eq!(busy_wait(TOO_MANY_CHANGES), None);
+            assert_eq!(busy_wait("offline: the device left"), None);
+        }
+
+        phase budgets_read_as_what_to_do;
+        {
+            assert_eq!(plain_reason(TOO_MANY_CHANGES), PLAIN_TOO_FAST);
+            assert_eq!(plain_reason(TOO_MUCH_CONTENT), PLAIN_TOO_MUCH);
+            assert_eq!(
+                plain_reason(
+                    r#"{"reason":{"storage_full":{"limit_bytes":1,"used_bytes":2}},"message":"m","next":[]}"#
+                ),
+                PLAIN_FULL
             );
         }
-    }
 
-    #[test]
-    fn a_verb_not_granted_reads_as_not_allowed() {
-        // `ReceiptRefusal::NotGranted`'s wording.
-        assert_eq!(
-            plain_reason("the author is not granted Undoable on /rooms/r/apps/a/post"),
-            PLAIN_NOT_ALLOWED
-        );
-    }
+        phase receipt_refusals_read_as_not_allowed;
+        {
+            for refusal in [
+                ReceiptRefusal::NotPublished("org.tilo.Chat/chat.workspace/post".into()),
+                ReceiptRefusal::OutsideFootprint {
+                    action: "post".into(),
+                    unit: "messages".into(),
+                },
+                ReceiptRefusal::Unclaimed,
+                ReceiptRefusal::OtherSurface,
+                ReceiptRefusal::Unnamed("change".into()),
+                ReceiptRefusal::UnclaimedUnit("comments.c1".into()),
+                ReceiptRefusal::Appearance {
+                    actor: "ada".into(),
+                    reason: "not a bot".into(),
+                },
+            ] {
+                assert_eq!(
+                    plain_reason(&refusal.to_string()),
+                    PLAIN_NOT_ALLOWED,
+                    "{refusal}"
+                );
+            }
+        }
 
-    #[test]
-    fn access_and_session_refusals() {
-        assert_eq!(
-            plain_reason("workspace membership changed"),
-            PLAIN_NOT_A_MEMBER
-        );
-        assert_eq!(
-            plain_reason("device not in workspace membership"),
-            PLAIN_NOT_A_MEMBER
-        );
-        assert_eq!(
-            plain_reason("commit sent before subscribing to workspace"),
-            PLAIN_NOT_READY
-        );
-        assert_eq!(
-            plain_reason("workspace not bound on this relay"),
-            PLAIN_NOT_READY
-        );
-        assert_eq!(plain_reason("something new"), PLAIN_REFUSED);
+        phase a_verb_not_granted_reads_as_not_allowed;
+        {
+            // `ReceiptRefusal::NotGranted`'s wording.
+            assert_eq!(
+                plain_reason("the author is not granted Undoable on /rooms/r/apps/a/post"),
+                PLAIN_NOT_ALLOWED
+            );
+        }
+
+        phase access_and_session_refusals;
+        {
+            assert_eq!(
+                plain_reason("workspace membership changed"),
+                PLAIN_NOT_A_MEMBER
+            );
+            assert_eq!(
+                plain_reason("device not in workspace membership"),
+                PLAIN_NOT_A_MEMBER
+            );
+            assert_eq!(
+                plain_reason("commit sent before subscribing to workspace"),
+                PLAIN_NOT_READY
+            );
+            assert_eq!(
+                plain_reason("workspace not bound on this relay"),
+                PLAIN_NOT_READY
+            );
+            assert_eq!(plain_reason("something new"), PLAIN_REFUSED);
+        }
     }
 }
 

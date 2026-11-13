@@ -268,33 +268,37 @@ mod tests {
     const PRELUDE: &str =
         "identity_root = \"/var/lib/tilo\"\nstate_root = \"/var/lib/tilo-relay\"\n";
 
-    #[test]
-    fn relay_config_defaults_and_toml_decoding() {
-        let cfg = RelayConfig::default();
-        assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
-        assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-relay"));
-        assert_eq!(cfg.iroh_listen.port(), 0);
-        assert_eq!(cfg.work, WorkSetting::own_person());
-        assert!(cfg.services.workspace_replication);
-        assert!(cfg.services.inbound_relay);
-        assert!(!cfg.services.full_content_replication);
-        assert!(cfg.services.remote_control_relay);
-        assert!(!cfg.services.app_serving);
-        assert!(!cfg.services.compute);
+    tilo_test_env::scenario! {
+        fn relay_config_defaults_decodes_and_persists;
 
-        // A minimal file names only the two roots.
-        let _: RelayConfig = toml::from_str(PRELUDE).unwrap();
+        phase relay_config_defaults_and_toml_decoding;
+        {
+            let cfg = RelayConfig::default();
+            assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
+            assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-relay"));
+            assert_eq!(cfg.iroh_listen.port(), 0);
+            assert_eq!(cfg.work, WorkSetting::own_person());
+            assert!(cfg.services.workspace_replication);
+            assert!(cfg.services.inbound_relay);
+            assert!(!cfg.services.full_content_replication);
+            assert!(cfg.services.remote_control_relay);
+            assert!(!cfg.services.app_serving);
+            assert!(!cfg.services.compute);
 
-        // An unknown field is rejected rather than ignored.
-        assert!(toml::from_str::<RelayConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
-    }
+            // A minimal file names only the two roots.
+            let _: RelayConfig = toml::from_str(PRELUDE).unwrap();
 
-    #[test]
-    fn relay_config_edits_are_idempotent_and_persist() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("relay.toml");
-        let cfg = RelayConfig::default();
-        cfg.save(&path).unwrap();
-        assert_eq!(cfg, RelayConfig::load(&path).unwrap());
+            // An unknown field is rejected rather than ignored.
+            assert!(toml::from_str::<RelayConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
+        }
+
+        phase relay_config_edits_are_idempotent_and_persist;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("relay.toml");
+            let cfg = RelayConfig::default();
+            cfg.save(&path).unwrap();
+            assert_eq!(cfg, RelayConfig::load(&path).unwrap());
+        }
     }
 }

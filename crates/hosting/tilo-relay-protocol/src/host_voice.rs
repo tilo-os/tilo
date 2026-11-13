@@ -260,133 +260,137 @@ mod tests {
         (said, host.sign(&signed).to_bytes())
     }
 
-    #[test]
-    fn a_device_takes_its_hosts_word_for_a_run() {
-        let host = key(1);
-        let frame = said(
-            &host,
-            Payload::Shell(Box::new(face())),
-            Some("agent-run:abc"),
-        );
-        let (bytes, signature) = sign(&host, &frame);
-        let opened = HostSaid::open(
-            &bytes,
-            &signature,
-            WorkspaceId::from_u128(7),
-            &host.verifying_key().to_bytes(),
-        )
-        .unwrap();
-        assert_eq!(opened, frame);
-    }
+    tilo_test_env::scenario! {
+        fn a_device_takes_only_its_hosts_word_and_only_for_runs;
 
-    #[test]
-    fn another_devices_word_is_not_the_hosts() {
-        let host = key(1);
-        let other = key(2);
-        // Signed by another device, under its own name: not the host's.
-        let frame = said(&other, Payload::Arrived, Some("agent-run:abc"));
-        let (bytes, signature) = sign(&other, &frame);
-        assert_eq!(
-            HostSaid::open(
+        phase a_device_takes_its_hosts_word_for_a_run;
+        {
+            let host = key(1);
+            let frame = said(
+                &host,
+                Payload::Shell(Box::new(face())),
+                Some("agent-run:abc"),
+            );
+            let (bytes, signature) = sign(&host, &frame);
+            let opened = HostSaid::open(
                 &bytes,
                 &signature,
                 WorkspaceId::from_u128(7),
-                &host.verifying_key().to_bytes()
-            ),
-            Err(HostSaidError::Signature)
-        );
-        // Signed by another device, under the host's name: not the host's.
-        let frame = said(&host, Payload::Arrived, Some("agent-run:abc"));
-        let (bytes, _) = sign(&host, &frame);
-        let forged = other.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
-        assert_eq!(
-            HostSaid::open(
-                &bytes,
-                &forged,
-                WorkspaceId::from_u128(7),
-                &host.verifying_key().to_bytes()
-            ),
-            Err(HostSaidError::Signature)
-        );
-    }
+                &host.verifying_key().to_bytes(),
+            )
+            .unwrap();
+            assert_eq!(opened, frame);
+        }
 
-    #[test]
-    fn a_frame_is_read_only_in_its_workspace_and_version() {
-        let host = key(1);
-        let frame = said(&host, Payload::Left, Some("agent-run:abc"));
-        let (bytes, signature) = sign(&host, &frame);
-        let pinned = host.verifying_key().to_bytes();
-        assert_eq!(
-            HostSaid::open(&bytes, &signature, WorkspaceId::from_u128(8), &pinned),
-            Err(HostSaidError::Workspace)
-        );
-        let mut later = frame;
-        later.version = HOST_VOICE_VERSION + 1;
-        let bytes = later.encode().unwrap();
-        let signature = host.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
-        assert_eq!(
-            HostSaid::open(&bytes, &signature, WorkspaceId::from_u128(7), &pinned),
-            Err(HostSaidError::Version)
-        );
-    }
-
-    #[test]
-    fn the_host_speaks_only_for_runs_and_says_no_more_than_their_word() {
-        let host = key(1);
-        // Of itself: the host's own presence rides the plane, never this.
-        assert_eq!(
-            said(&host, Payload::Arrived, None).signing_bytes(),
-            Err(HostSaidError::NotARunsWord)
-        );
-        assert_eq!(
-            said(&host, Payload::Arrived, Some("not-a-run")).signing_bytes(),
-            Err(HostSaidError::NotARunsWord)
-        );
-        // A person's own words: chat beside a pointer, a status, the windows
-        // of a desktop.
-        let mut chatty = face();
-        chatty.chat = Some(ShellChat {
-            text: "the record's text".into(),
-            sent: true,
-        });
-        let mut desktop = face();
-        desktop.windows = vec![
-            ShellWindow {
-                app: "so.tilo.notes".into(),
-                record: [1; 8],
-                rect: [0, 0, 1, 1],
-                focused: true,
-            };
-            2
-        ];
-        let mut person = face();
-        person.agent = false;
-        for view in [chatty, desktop, person] {
+        phase another_devices_word_is_not_the_hosts;
+        {
+            let host = key(1);
+            let other = key(2);
+            // Signed by another device, under its own name: not the host's.
+            let frame = said(&other, Payload::Arrived, Some("agent-run:abc"));
+            let (bytes, signature) = sign(&other, &frame);
             assert_eq!(
-                said(&host, Payload::Shell(Box::new(view)), Some("agent-run:abc")).signing_bytes(),
+                HostSaid::open(
+                    &bytes,
+                    &signature,
+                    WorkspaceId::from_u128(7),
+                    &host.verifying_key().to_bytes()
+                ),
+                Err(HostSaidError::Signature)
+            );
+            // Signed by another device, under the host's name: not the host's.
+            let frame = said(&host, Payload::Arrived, Some("agent-run:abc"));
+            let (bytes, _) = sign(&host, &frame);
+            let forged = other.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
+            assert_eq!(
+                HostSaid::open(
+                    &bytes,
+                    &forged,
+                    WorkspaceId::from_u128(7),
+                    &host.verifying_key().to_bytes()
+                ),
+                Err(HostSaidError::Signature)
+            );
+        }
+
+        phase a_frame_is_read_only_in_its_workspace_and_version;
+        {
+            let host = key(1);
+            let frame = said(&host, Payload::Left, Some("agent-run:abc"));
+            let (bytes, signature) = sign(&host, &frame);
+            let pinned = host.verifying_key().to_bytes();
+            assert_eq!(
+                HostSaid::open(&bytes, &signature, WorkspaceId::from_u128(8), &pinned),
+                Err(HostSaidError::Workspace)
+            );
+            let mut later = frame;
+            later.version = HOST_VOICE_VERSION + 1;
+            let bytes = later.encode().unwrap();
+            let signature = host.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
+            assert_eq!(
+                HostSaid::open(&bytes, &signature, WorkspaceId::from_u128(7), &pinned),
+                Err(HostSaidError::Version)
+            );
+        }
+
+        phase the_host_speaks_only_for_runs_and_says_no_more_than_their_word;
+        {
+            let host = key(1);
+            // Of itself: the host's own presence rides the plane, never this.
+            assert_eq!(
+                said(&host, Payload::Arrived, None).signing_bytes(),
+                Err(HostSaidError::NotARunsWord)
+            );
+            assert_eq!(
+                said(&host, Payload::Arrived, Some("not-a-run")).signing_bytes(),
+                Err(HostSaidError::NotARunsWord)
+            );
+            // A person's own words: chat beside a pointer, a status, the windows
+            // of a desktop.
+            let mut chatty = face();
+            chatty.chat = Some(ShellChat {
+                text: "the record's text".into(),
+                sent: true,
+            });
+            let mut desktop = face();
+            desktop.windows = vec![
+                ShellWindow {
+                    app: "so.tilo.notes".into(),
+                    record: [1; 8],
+                    rect: [0, 0, 1, 1],
+                    focused: true,
+                };
+                2
+            ];
+            let mut person = face();
+            person.agent = false;
+            for view in [chatty, desktop, person] {
+                assert_eq!(
+                    said(&host, Payload::Shell(Box::new(view)), Some("agent-run:abc")).signing_bytes(),
+                    Err(HostSaidError::NotARunsWord)
+                );
+            }
+            let status = Payload::Status {
+                text: "a record's text".into(),
+                automatic: false,
+            };
+            assert_eq!(
+                said(&host, status, Some("agent-run:abc")).signing_bytes(),
+                Err(HostSaidError::NotARunsWord)
+            );
+            // A frame a forging host signed anyway is still not taken.
+            let frame = said(&host, Payload::Arrived, None);
+            let bytes = frame.encode().unwrap();
+            let signature = host.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
+            assert_eq!(
+                HostSaid::open(
+                    &bytes,
+                    &signature,
+                    WorkspaceId::from_u128(7),
+                    &host.verifying_key().to_bytes()
+                ),
                 Err(HostSaidError::NotARunsWord)
             );
         }
-        let status = Payload::Status {
-            text: "a record's text".into(),
-            automatic: false,
-        };
-        assert_eq!(
-            said(&host, status, Some("agent-run:abc")).signing_bytes(),
-            Err(HostSaidError::NotARunsWord)
-        );
-        // A frame a forging host signed anyway is still not taken.
-        let frame = said(&host, Payload::Arrived, None);
-        let bytes = frame.encode().unwrap();
-        let signature = host.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
-        assert_eq!(
-            HostSaid::open(
-                &bytes,
-                &signature,
-                WorkspaceId::from_u128(7),
-                &host.verifying_key().to_bytes()
-            ),
-            Err(HostSaidError::NotARunsWord)
-        );
     }
 }

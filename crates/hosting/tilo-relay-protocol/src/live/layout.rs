@@ -136,32 +136,101 @@ impl LiveRecord {
 mod tests {
     use super::*;
 
-    /// A layout names each window by its app and record digest: what a
-    /// receiver can match against what it holds, and nothing more.
-    #[test]
-    fn a_layout_names_windows_by_app_and_digest() {
-        let area = [0.0, 0.0, 1440.0, 852.0];
-        let layout = LiveLayout::place(
-            area,
-            &[
-                (record("r1"), [0.0, 0.0, 500.0, 10_000.0], false),
-                (record("r2"), [720.0, 0.0, 1440.0, 852.0], true),
-            ],
-        )
-        .expect("a screen has a size");
-        assert_eq!(layout.size, [1440, 852]);
-        let named: Vec<_> = layout
-            .windows
-            .iter()
-            .map(|window| (window.app.as_str(), window.record, window.focused))
-            .collect();
-        assert_eq!(
-            named,
-            [
-                ("so.tilo.notes", record("r1").short_digest(), false),
-                ("so.tilo.notes", record("r2").short_digest(), true),
-            ]
-        );
+    tilo_test_env::scenario! {
+        fn a_layout_names_and_places_the_windows_a_viewer_shows;
+
+        phase a_layout_names_windows_by_app_and_digest;
+        // A layout names each window by its app and record digest: what a
+        // receiver can match against what it holds, and nothing more.
+        {
+            let area = [0.0, 0.0, 1440.0, 852.0];
+            let layout = LiveLayout::place(
+                area,
+                &[
+                    (record("r1"), [0.0, 0.0, 500.0, 10_000.0], false),
+                    (record("r2"), [720.0, 0.0, 1440.0, 852.0], true),
+                ],
+            )
+            .expect("a screen has a size");
+            assert_eq!(layout.size, [1440, 852]);
+            let named: Vec<_> = layout
+                .windows
+                .iter()
+                .map(|window| (window.app.as_str(), window.record, window.focused))
+                .collect();
+            assert_eq!(
+                named,
+                [
+                    ("so.tilo.notes", record("r1").short_digest(), false),
+                    ("so.tilo.notes", record("r2").short_digest(), true),
+                ]
+            );
+        }
+
+        phase windows_are_placed_in_the_content_area_in_hundredths;
+        {
+            let area = [0.0, 40.0, 1000.0, 540.0];
+            let layout = LiveLayout::place(
+                area,
+                &[
+                    (record("r1"), [0.0, 40.0, 503.0, 540.0], false),
+                    // Panned partly out of view: clipped to what shows.
+                    (record("r2"), [750.0, 40.0, 1250.0, 540.0], true),
+                    // Wholly out of view, or of an app the wire cannot carry.
+                    (record("r3"), [1100.0, 40.0, 1500.0, 540.0], false),
+                    (
+                        LiveRecord {
+                            app: "a".repeat(MAX_LAYOUT_APP_BYTES + 1),
+                            record: "r4".into(),
+                        },
+                        [0.0, 40.0, 100.0, 100.0],
+                        false,
+                    ),
+                ],
+            )
+            .unwrap();
+            assert_eq!(
+                layout,
+                LiveLayout {
+                    size: [1000, 500],
+                    windows: vec![
+                        LiveWindow {
+                            app: "so.tilo.notes".into(),
+                            record: record("r1").short_digest(),
+                            rect: [0, 0, 5000, 10_000],
+                            focused: false,
+                        },
+                        LiveWindow {
+                            app: "so.tilo.notes".into(),
+                            record: record("r2").short_digest(),
+                            rect: [7500, 0, 10_000, 10_000],
+                            focused: true,
+                        },
+                    ],
+                }
+            );
+            assert_eq!(LiveLayout::place([0.0, 0.0, 0.0, 10.0], &[]), None);
+        }
+
+        phase the_focused_window_is_kept_when_there_are_too_many;
+        {
+            let windows: Vec<_> = (1..=12)
+                .map(|k| (record(&format!("r{k}")), [0.0, 0.0, 10.0, 10.0], k == 12))
+                .collect();
+            let layout = LiveLayout::place([0.0, 0.0, 1000.0, 500.0], &windows).unwrap();
+            assert_eq!(layout.windows.len(), MAX_LAYOUT_WINDOWS);
+            assert!(layout.windows.last().unwrap().focused);
+            assert_eq!(layout.windows.iter().filter(|w| w.focused).count(), 1);
+        }
+
+        phase a_short_digest_is_the_head_of_the_digest;
+        {
+            let record = LiveRecord {
+                app: "so.tilo.notes".into(),
+                record: "r1".into(),
+            };
+            assert_eq!(record.short_digest()[..], record.digest()[..8]);
+        }
     }
 
     fn record(name: &str) -> LiveRecord {
@@ -169,70 +238,5 @@ mod tests {
             app: "so.tilo.notes".into(),
             record: name.into(),
         }
-    }
-
-    #[test]
-    fn windows_are_placed_in_the_content_area_in_hundredths() {
-        let area = [0.0, 40.0, 1000.0, 540.0];
-        let layout = LiveLayout::place(
-            area,
-            &[
-                (record("r1"), [0.0, 40.0, 503.0, 540.0], false),
-                // Panned partly out of view: clipped to what shows.
-                (record("r2"), [750.0, 40.0, 1250.0, 540.0], true),
-                // Wholly out of view, or of an app the wire cannot carry.
-                (record("r3"), [1100.0, 40.0, 1500.0, 540.0], false),
-                (
-                    LiveRecord {
-                        app: "a".repeat(MAX_LAYOUT_APP_BYTES + 1),
-                        record: "r4".into(),
-                    },
-                    [0.0, 40.0, 100.0, 100.0],
-                    false,
-                ),
-            ],
-        )
-        .unwrap();
-        assert_eq!(
-            layout,
-            LiveLayout {
-                size: [1000, 500],
-                windows: vec![
-                    LiveWindow {
-                        app: "so.tilo.notes".into(),
-                        record: record("r1").short_digest(),
-                        rect: [0, 0, 5000, 10_000],
-                        focused: false,
-                    },
-                    LiveWindow {
-                        app: "so.tilo.notes".into(),
-                        record: record("r2").short_digest(),
-                        rect: [7500, 0, 10_000, 10_000],
-                        focused: true,
-                    },
-                ],
-            }
-        );
-        assert_eq!(LiveLayout::place([0.0, 0.0, 0.0, 10.0], &[]), None);
-    }
-
-    #[test]
-    fn the_focused_window_is_kept_when_there_are_too_many() {
-        let windows: Vec<_> = (1..=12)
-            .map(|k| (record(&format!("r{k}")), [0.0, 0.0, 10.0, 10.0], k == 12))
-            .collect();
-        let layout = LiveLayout::place([0.0, 0.0, 1000.0, 500.0], &windows).unwrap();
-        assert_eq!(layout.windows.len(), MAX_LAYOUT_WINDOWS);
-        assert!(layout.windows.last().unwrap().focused);
-        assert_eq!(layout.windows.iter().filter(|w| w.focused).count(), 1);
-    }
-
-    #[test]
-    fn a_short_digest_is_the_head_of_the_digest() {
-        let record = LiveRecord {
-            app: "so.tilo.notes".into(),
-            record: "r1".into(),
-        };
-        assert_eq!(record.short_digest()[..], record.digest()[..8]);
     }
 }

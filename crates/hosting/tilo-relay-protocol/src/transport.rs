@@ -832,158 +832,162 @@ mod tests {
         bytes
     }
 
-    #[test]
-    fn frozen_v1_envelope_bytes() {
-        // Literal ABI fixtures: changing an existing discriminant or field
-        // ordering would strand deployed readers and retained state.
-        let cases = [
-            (
-                Envelope::Subscribe {
-                    workspace_id: WorkspaceId::from_u128(7),
-                },
-                [vec![0], id(7)].concat(),
-            ),
-            (
-                Envelope::Unsubscribe {
-                    workspace_id: WorkspaceId::from_u128(7),
-                },
-                [vec![1], id(7)].concat(),
-            ),
-            (
+    tilo_test_env::scenario! {
+        fn the_transport_wire_is_frozen_and_frames_name_their_workspace;
+
+        phase frozen_v1_envelope_bytes;
+        {
+            // Literal ABI fixtures: changing an existing discriminant or field
+            // ordering would strand deployed readers and retained state.
+            let cases = [
+                (
+                    Envelope::Subscribe {
+                        workspace_id: WorkspaceId::from_u128(7),
+                    },
+                    [vec![0], id(7)].concat(),
+                ),
+                (
+                    Envelope::Unsubscribe {
+                        workspace_id: WorkspaceId::from_u128(7),
+                    },
+                    [vec![1], id(7)].concat(),
+                ),
+                (
+                    Envelope::RetiredPresence {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        payload: vec![9, 8],
+                    },
+                    [vec![3], id(7), vec![2, 9, 8]].concat(),
+                ),
+                (
+                    Envelope::Ready {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        pending_deltas: 2,
+                        records_when_opened: true,
+                    },
+                    [vec![4], id(7), vec![2, 1]].concat(),
+                ),
+                (
+                    Envelope::NotAuthorised {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        reason: "no".into(),
+                    },
+                    [vec![5], id(7), vec![2, 110, 111]].concat(),
+                ),
+                (Envelope::Ping, vec![6]),
+                (Envelope::Pong, vec![7]),
+                (
+                    Envelope::PeerRelayHello {
+                        hosted_workspaces: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
+                    },
+                    [vec![8, 2], id(7), id(8)].concat(),
+                ),
+                (
+                    Envelope::SyncRequest {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        have_heads: vec![[9; 32]],
+                    },
+                    [vec![9], id(7), vec![1], vec![9; 32]].concat(),
+                ),
+                (
+                    Envelope::SyncResponse {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        delta_since: vec![9, 8],
+                    },
+                    [vec![10], id(7), vec![2, 9, 8]].concat(),
+                ),
+                (
+                    Envelope::Delta {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        author_device_public_key: [1; 32],
+                        authored_at_ns: 8,
+                        delta: vec![9],
+                        signature: [2; 64],
+                    },
+                    [vec![2], id(7), vec![1; 32], vec![8, 1, 9, 64], vec![2; 64]].concat(),
+                ),
+            ];
+            // The frame codec (length prefix) lives in `tilo-relay-client`; the
+            // payload bytes it carries are these postcard encodings.
+            for (envelope, payload) in cases {
+                assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+                assert_eq!(
+                    postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                    envelope
+                );
+            }
+        }
+
+        phase frozen_voice_envelope_bytes;
+        {
+            let cases = [
+                (
+                    Envelope::VoiceJoin {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        call: [1; 32],
+                        participation: None,
+                    },
+                    [vec![27], id(7), vec![1; 32], vec![0]].concat(),
+                ),
+                (
+                    Envelope::VoiceJoin {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        call: [1; 32],
+                        participation: Some([2; 32]),
+                    },
+                    [vec![27], id(7), vec![1; 32], vec![1], vec![2; 32]].concat(),
+                ),
+                (
+                    Envelope::VoiceLeave {
+                        workspace_id: WorkspaceId::from_u128(7),
+                        call: [1; 32],
+                        participation: [2; 32],
+                    },
+                    [vec![30], id(7), vec![1; 32], vec![2; 32]].concat(),
+                ),
+            ];
+            for (envelope, payload) in cases {
+                assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+                assert_eq!(
+                    postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                    envelope
+                );
+            }
+        }
+
+        phase frames_name_their_workspace_and_connection_frames_none;
+        {
+            let delta = Envelope::Delta {
+                workspace_id: WorkspaceId::from_u128(9),
+                author_device_public_key: [1; 32],
+                authored_at_ns: 2,
+                delta: vec![3],
+                signature: [0; 64],
+            };
+            assert_eq!(delta.workspace_id(), Some(WorkspaceId::from_u128(9)));
+            assert_eq!(
                 Envelope::RetiredPresence {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    payload: vec![9, 8],
-                },
-                [vec![3], id(7), vec![2, 9, 8]].concat(),
-            ),
-            (
-                Envelope::Ready {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    pending_deltas: 2,
-                    records_when_opened: true,
-                },
-                [vec![4], id(7), vec![2, 1]].concat(),
-            ),
-            (
-                Envelope::NotAuthorised {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    reason: "no".into(),
-                },
-                [vec![5], id(7), vec![2, 110, 111]].concat(),
-            ),
-            (Envelope::Ping, vec![6]),
-            (Envelope::Pong, vec![7]),
-            (
+                    workspace_id: WorkspaceId::from_u128(4),
+                    payload: Vec::new(),
+                }
+                .workspace_id(),
+                Some(WorkspaceId::from_u128(4))
+            );
+            assert_eq!(Envelope::Ping.workspace_id(), None);
+            assert_eq!(
                 Envelope::PeerRelayHello {
-                    hosted_workspaces: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
-                },
-                [vec![8, 2], id(7), id(8)].concat(),
-            ),
-            (
-                Envelope::SyncRequest {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    have_heads: vec![[9; 32]],
-                },
-                [vec![9], id(7), vec![1], vec![9; 32]].concat(),
-            ),
-            (
-                Envelope::SyncResponse {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    delta_since: vec![9, 8],
-                },
-                [vec![10], id(7), vec![2, 9, 8]].concat(),
-            ),
-            (
-                Envelope::Delta {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    author_device_public_key: [1; 32],
-                    authored_at_ns: 8,
-                    delta: vec![9],
-                    signature: [2; 64],
-                },
-                [vec![2], id(7), vec![1; 32], vec![8, 1, 9, 64], vec![2; 64]].concat(),
-            ),
-        ];
-        // The frame codec (length prefix) lives in `tilo-relay-client`; the
-        // payload bytes it carries are these postcard encodings.
-        for (envelope, payload) in cases {
-            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
-            assert_eq!(
-                postcard::from_bytes::<Envelope>(&payload).unwrap(),
-                envelope
+                    hosted_workspaces: vec![WorkspaceId::from_u128(1)]
+                }
+                .workspace_id(),
+                None
             );
         }
-    }
 
-    #[test]
-    fn frozen_voice_envelope_bytes() {
-        let cases = [
-            (
-                Envelope::VoiceJoin {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    call: [1; 32],
-                    participation: None,
-                },
-                [vec![27], id(7), vec![1; 32], vec![0]].concat(),
-            ),
-            (
-                Envelope::VoiceJoin {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    call: [1; 32],
-                    participation: Some([2; 32]),
-                },
-                [vec![27], id(7), vec![1; 32], vec![1], vec![2; 32]].concat(),
-            ),
-            (
-                Envelope::VoiceLeave {
-                    workspace_id: WorkspaceId::from_u128(7),
-                    call: [1; 32],
-                    participation: [2; 32],
-                },
-                [vec![30], id(7), vec![1; 32], vec![2; 32]].concat(),
-            ),
-        ];
-        for (envelope, payload) in cases {
-            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
-            assert_eq!(
-                postcard::from_bytes::<Envelope>(&payload).unwrap(),
-                envelope
-            );
+        phase alpn_is_stable;
+        {
+            assert_eq!(ALPN, b"tilo-relay/1");
+            assert_eq!(DISCOVERY_ALPN, b"tilo-relay-discovery/2");
+            assert_eq!(MANAGEMENT_ALPN, b"tilo-home-peer-management/1");
         }
-    }
-
-    #[test]
-    fn frames_name_their_workspace_and_connection_frames_none() {
-        let delta = Envelope::Delta {
-            workspace_id: WorkspaceId::from_u128(9),
-            author_device_public_key: [1; 32],
-            authored_at_ns: 2,
-            delta: vec![3],
-            signature: [0; 64],
-        };
-        assert_eq!(delta.workspace_id(), Some(WorkspaceId::from_u128(9)));
-        assert_eq!(
-            Envelope::RetiredPresence {
-                workspace_id: WorkspaceId::from_u128(4),
-                payload: Vec::new(),
-            }
-            .workspace_id(),
-            Some(WorkspaceId::from_u128(4))
-        );
-        assert_eq!(Envelope::Ping.workspace_id(), None);
-        assert_eq!(
-            Envelope::PeerRelayHello {
-                hosted_workspaces: vec![WorkspaceId::from_u128(1)]
-            }
-            .workspace_id(),
-            None
-        );
-    }
-
-    #[test]
-    fn alpn_is_stable() {
-        assert_eq!(ALPN, b"tilo-relay/1");
-        assert_eq!(DISCOVERY_ALPN, b"tilo-relay-discovery/2");
-        assert_eq!(MANAGEMENT_ALPN, b"tilo-home-peer-management/1");
     }
 }

@@ -114,31 +114,35 @@ mod tests {
     use super::*;
     use ed25519_dalek::Signer as _;
 
-    #[test]
-    fn a_statement_verifies_only_for_its_device_and_bytes() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let device = key.verifying_key().to_bytes();
-        let statement = CoverageStatement {
-            workspace_id: WorkspaceId::from_u128(7),
-            channel: [1; 32],
-            request: [2; 16],
-            snapshot: vec![[4; 32]],
-            covered: vec![entry_id(b"a"), entry_id(b"b")],
-            heads: vec![[5; 32]],
-        }
-        .encode()
-        .unwrap();
-        let signature = key.sign(&signing_bytes(&statement)).to_bytes();
-        assert!(verify(&device, &statement, &signature));
-        assert!(!verify(&[9; 32], &statement, &signature));
-        let mut tampered = statement.clone();
-        tampered[0] ^= 1;
-        assert!(!verify(&device, &tampered, &signature));
-        assert!(CoverageStatement::decode(&[statement.as_slice(), &[0]].concat()).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_coverage_statement_binds_its_device_bytes_and_entries;
 
-    #[test]
-    fn entry_ids_bind_the_whole_body() {
-        assert_ne!(entry_id(b"body"), entry_id(b"body "));
+        phase a_statement_verifies_only_for_its_device_and_bytes;
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+            let device = key.verifying_key().to_bytes();
+            let statement = CoverageStatement {
+                workspace_id: WorkspaceId::from_u128(7),
+                channel: [1; 32],
+                request: [2; 16],
+                snapshot: vec![[4; 32]],
+                covered: vec![entry_id(b"a"), entry_id(b"b")],
+                heads: vec![[5; 32]],
+            }
+            .encode()
+            .unwrap();
+            let signature = key.sign(&signing_bytes(&statement)).to_bytes();
+            assert!(verify(&device, &statement, &signature));
+            assert!(!verify(&[9; 32], &statement, &signature));
+            let mut tampered = statement.clone();
+            tampered[0] ^= 1;
+            assert!(!verify(&device, &tampered, &signature));
+            assert!(CoverageStatement::decode(&[statement.as_slice(), &[0]].concat()).is_err());
+        }
+
+        phase entry_ids_bind_the_whole_body;
+        {
+            assert_ne!(entry_id(b"body"), entry_id(b"body "));
+        }
     }
 }

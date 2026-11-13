@@ -317,24 +317,152 @@ mod tests {
         }
     }
 
-    /// A device of the person whose work is at stake may hand it work; another person's device
-    /// only where the setting names the workspace it acts in or takes anyone's.
-    #[test]
-    fn work_is_admitted_by_person_and_named_workspace() {
-        let workspace = WorkspaceId::from_u128(7);
-        let mine = whose("ada", Some(workspace));
-        let theirs = whose("bea", Some(workspace));
+    tilo_test_env::scenario! {
+        fn a_work_setting_says_whose_work_a_device_takes;
 
-        assert!(!WorkFrom::Nobody.admits(&mine));
-        assert!(WorkFrom::OwnDevices.admits(&whose("ada", None)));
-        assert!(!WorkFrom::OwnDevices.admits(&theirs));
-        let named = WorkFrom::Workspaces([workspace].into_iter().collect());
-        assert!(named.admits(&theirs));
-        assert!(!named.admits(&whose("bea", None)));
-        assert!(WorkFrom::Anyone.admits(&theirs));
-        assert_eq!(WorkSetting::own_person().from, WorkFrom::OwnDevices);
-        assert!(WorkSetting::none().takes_nothing());
-        assert!(!WorkSetting::own_person().takes_nothing());
+        phase work_is_admitted_by_person_and_named_workspace;
+        // A device of the person whose work is at stake may hand it work; another person's device
+        // only where the setting names the workspace it acts in or takes anyone's.
+        {
+            let workspace = WorkspaceId::from_u128(7);
+            let mine = whose("ada", Some(workspace));
+            let theirs = whose("bea", Some(workspace));
+
+            assert!(!WorkFrom::Nobody.admits(&mine));
+            assert!(WorkFrom::OwnDevices.admits(&whose("ada", None)));
+            assert!(!WorkFrom::OwnDevices.admits(&theirs));
+            let named = WorkFrom::Workspaces([workspace].into_iter().collect());
+            assert!(named.admits(&theirs));
+            assert!(!named.admits(&whose("bea", None)));
+            assert!(WorkFrom::Anyone.admits(&theirs));
+            assert_eq!(WorkSetting::own_person().from, WorkFrom::OwnDevices);
+            assert!(WorkSetting::none().takes_nothing());
+            assert!(!WorkSetting::own_person().takes_nothing());
+        }
+
+        phase a_device_answers_with_the_first_limit_its_setting_sets;
+        // A device answers with the first thing its setting says no about.
+        {
+            assert_eq!(
+                WorkSetting::none()
+                    .answer(&own(), roomy(), true, None, Vec::new())
+                    .verdict,
+                Err(Decline::NotTakingWork),
+                "a device that takes nothing says so"
+            );
+            assert_eq!(
+                WorkSetting::own_person()
+                    .answer(&whose("bea", None), roomy(), true, None, Vec::new())
+                    .verdict,
+                Err(Decline::NotTakingWork),
+                "a device that takes its own person's work declines another person's"
+            );
+            let mut no_actions = WorkSetting::own_person();
+            no_actions.kinds.actions = false;
+            assert_eq!(
+                no_actions
+                    .answer(&own(), roomy(), true, None, Vec::new())
+                    .verdict,
+                Err(Decline::NotTakingWork)
+            );
+            assert_eq!(
+                WorkSetting::own_person()
+                    .answer(&own(), roomy(), false, None, Vec::new())
+                    .verdict,
+                Err(Decline::AppNotInstalled)
+            );
+            assert_eq!(
+                WorkSetting::own_person()
+                    .answer(&own(), roomy(), true, Some(0), Vec::new())
+                    .verdict,
+                Err(Decline::AtCapacity)
+            );
+
+            let charging = WorkSetting {
+                when: super::WorkWhen {
+                    charging_only: true,
+                    ..super::WorkWhen::always()
+                },
+                ..WorkSetting::own_person()
+            };
+            assert_eq!(
+                charging
+                    .answer(
+                        &own(),
+                        Machine {
+                            power: Power::Battery,
+                            ..roomy()
+                        },
+                        true,
+                        None,
+                        Vec::new()
+                    )
+                    .verdict,
+                Err(Decline::OnBattery),
+                "a device that takes work only while charging is on its battery"
+            );
+            assert!(
+                charging
+                    .answer(
+                        &own(),
+                        Machine {
+                            power: Power::Charging,
+                            ..roomy()
+                        },
+                        true,
+                        None,
+                        Vec::new()
+                    )
+                    .verdict
+                    .is_ok()
+            );
+        }
+
+        phase a_setting_that_wants_room_is_turned_away_where_it_has_none;
+        // The room a setting wants is the room it gets, and a device told nothing about its states
+        // takes work whatever the machine is doing.
+        {
+            let room_kept = WorkSetting {
+                when: super::WorkWhen {
+                    free_cpu_percent: 20,
+                    free_memory_percent: 20,
+                    ..super::WorkWhen::always()
+                },
+                ..WorkSetting::own_person()
+            };
+            let busy = Machine {
+                busy_permille: 900,
+                ..roomy()
+            };
+            assert_eq!(busy.free_cpu_percent(), 10);
+            assert_eq!(
+                room_kept
+                    .answer(&own(), busy, true, None, Vec::new())
+                    .verdict,
+                Err(Decline::LowResources),
+                "20 percent of the processors is what the setting wants free"
+            );
+            let full = Machine {
+                free_memory_percent: Some(2),
+                ..roomy()
+            };
+            assert_eq!(
+                room_kept
+                    .answer(&own(), full, true, None, Vec::new())
+                    .verdict,
+                Err(Decline::LowResources)
+            );
+            assert!(
+                WorkSetting::own_person()
+                    .answer(&own(), busy, true, None, Vec::new())
+                    .verdict
+                    .is_ok(),
+                "a device told nothing about the states it takes work in takes it whatever its load"
+            );
+            let answer = WorkSetting::own_person().answer(&own(), roomy(), true, None, vec![[7; 32]]);
+            assert!(answer.verdict.is_ok(), "a machine with room takes the work");
+            assert_eq!(answer.holds, vec![[7; 32]]);
+        }
     }
 
     /// The person's own work.
@@ -348,129 +476,5 @@ mod tests {
             busy_permille: 100,
             free_memory_percent: Some(80),
         }
-    }
-
-    /// A device answers with the first thing its setting says no about.
-    #[test]
-    fn a_device_answers_with_the_first_limit_its_setting_sets() {
-        assert_eq!(
-            WorkSetting::none()
-                .answer(&own(), roomy(), true, None, Vec::new())
-                .verdict,
-            Err(Decline::NotTakingWork),
-            "a device that takes nothing says so"
-        );
-        assert_eq!(
-            WorkSetting::own_person()
-                .answer(&whose("bea", None), roomy(), true, None, Vec::new())
-                .verdict,
-            Err(Decline::NotTakingWork),
-            "a device that takes its own person's work declines another person's"
-        );
-        let mut no_actions = WorkSetting::own_person();
-        no_actions.kinds.actions = false;
-        assert_eq!(
-            no_actions
-                .answer(&own(), roomy(), true, None, Vec::new())
-                .verdict,
-            Err(Decline::NotTakingWork)
-        );
-        assert_eq!(
-            WorkSetting::own_person()
-                .answer(&own(), roomy(), false, None, Vec::new())
-                .verdict,
-            Err(Decline::AppNotInstalled)
-        );
-        assert_eq!(
-            WorkSetting::own_person()
-                .answer(&own(), roomy(), true, Some(0), Vec::new())
-                .verdict,
-            Err(Decline::AtCapacity)
-        );
-
-        let charging = WorkSetting {
-            when: super::WorkWhen {
-                charging_only: true,
-                ..super::WorkWhen::always()
-            },
-            ..WorkSetting::own_person()
-        };
-        assert_eq!(
-            charging
-                .answer(
-                    &own(),
-                    Machine {
-                        power: Power::Battery,
-                        ..roomy()
-                    },
-                    true,
-                    None,
-                    Vec::new()
-                )
-                .verdict,
-            Err(Decline::OnBattery),
-            "a device that takes work only while charging is on its battery"
-        );
-        assert!(
-            charging
-                .answer(
-                    &own(),
-                    Machine {
-                        power: Power::Charging,
-                        ..roomy()
-                    },
-                    true,
-                    None,
-                    Vec::new()
-                )
-                .verdict
-                .is_ok()
-        );
-    }
-
-    /// The room a setting wants is the room it gets, and a device told nothing about its states
-    /// takes work whatever the machine is doing.
-    #[test]
-    fn a_setting_that_wants_room_is_turned_away_where_it_has_none() {
-        let room_kept = WorkSetting {
-            when: super::WorkWhen {
-                free_cpu_percent: 20,
-                free_memory_percent: 20,
-                ..super::WorkWhen::always()
-            },
-            ..WorkSetting::own_person()
-        };
-        let busy = Machine {
-            busy_permille: 900,
-            ..roomy()
-        };
-        assert_eq!(busy.free_cpu_percent(), 10);
-        assert_eq!(
-            room_kept
-                .answer(&own(), busy, true, None, Vec::new())
-                .verdict,
-            Err(Decline::LowResources),
-            "20 percent of the processors is what the setting wants free"
-        );
-        let full = Machine {
-            free_memory_percent: Some(2),
-            ..roomy()
-        };
-        assert_eq!(
-            room_kept
-                .answer(&own(), full, true, None, Vec::new())
-                .verdict,
-            Err(Decline::LowResources)
-        );
-        assert!(
-            WorkSetting::own_person()
-                .answer(&own(), busy, true, None, Vec::new())
-                .verdict
-                .is_ok(),
-            "a device told nothing about the states it takes work in takes it whatever its load"
-        );
-        let answer = WorkSetting::own_person().answer(&own(), roomy(), true, None, vec![[7; 32]]);
-        assert!(answer.verdict.is_ok(), "a machine with room takes the work");
-        assert_eq!(answer.holds, vec![[7; 32]]);
     }
 }

@@ -614,63 +614,67 @@ pub struct WaitListEntry {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_mailed_invitation_is_on_the_door() {
-        let door = "https://tilo.example/";
-        assert!(invitation_on_door(
-            door,
-            "https://tilo.example/#/room?invite=signed-invitation"
-        ));
-        assert!(invitation_on_door(
-            door,
-            "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
-        ));
-        for elsewhere in [
-            "https://tilo.example/i/#",
-            "https://tilo.example/i/handle",
-            "https://tilo.example/i/handle#",
-            "https://tilo.example//i/handle#key",
-            "https://tilo.example/i/han dle#key",
-            "https://elsewhere.example/i/handle#key",
-        ] {
-            assert!(!invitation_on_door(door, elsewhere), "{elsewhere:?}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_mailed_invitation_has_a_link_on_the_door_and_one_address;
 
-    #[test]
-    fn a_contact_is_one_email_address_however_it_was_typed() {
-        assert_eq!(
-            contact_address("  Ada@Example.ORG "),
-            Ok("Ada@Example.ORG".to_owned())
-        );
-        assert_eq!(contact_key("Ada@Example.ORG"), "ada@example.org");
-        assert_eq!(mail_language("de-AT"), "de");
-        assert_eq!(mail_language("en-US"), "en");
-        assert_eq!(mail_language("fr"), "en");
-        assert_eq!(
-            contact_key(" ada@example.org"),
-            contact_key("ADA@example.org")
-        );
-        assert_eq!(
-            contact_address("ada+tilo@mail.example.co.uk"),
-            Ok("ada+tilo@mail.example.co.uk".to_owned())
-        );
-        for typed in [
-            "",
-            "ada",
-            "ada@",
-            "@example.org",
-            "ada@example",
-            "ada@example.",
-            "ada@.org",
-            "ada@@example.org",
-            "a da@example.org",
-            "ada@example.org, bob@example.org",
-            "Ada <ada@example.org>",
-        ] {
-            assert!(contact_address(typed).is_err(), "{typed:?}");
+        phase a_mailed_invitation_is_on_the_door;
+        {
+            let door = "https://tilo.example/";
+            assert!(invitation_on_door(
+                door,
+                "https://tilo.example/#/room?invite=signed-invitation"
+            ));
+            assert!(invitation_on_door(
+                door,
+                "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
+            ));
+            for elsewhere in [
+                "https://tilo.example/i/#",
+                "https://tilo.example/i/handle",
+                "https://tilo.example/i/handle#",
+                "https://tilo.example//i/handle#key",
+                "https://tilo.example/i/han dle#key",
+                "https://elsewhere.example/i/handle#key",
+            ] {
+                assert!(!invitation_on_door(door, elsewhere), "{elsewhere:?}");
+            }
         }
-        let long = format!("{}@example.org", "a".repeat(MAX_CONTACT_CHARS));
-        assert!(contact_address(&long).is_err());
+
+        phase a_contact_is_one_email_address_however_it_was_typed;
+        {
+            assert_eq!(
+                contact_address("  Ada@Example.ORG "),
+                Ok("Ada@Example.ORG".to_owned())
+            );
+            assert_eq!(contact_key("Ada@Example.ORG"), "ada@example.org");
+            assert_eq!(mail_language("de-AT"), "de");
+            assert_eq!(mail_language("en-US"), "en");
+            assert_eq!(mail_language("fr"), "en");
+            assert_eq!(
+                contact_key(" ada@example.org"),
+                contact_key("ADA@example.org")
+            );
+            assert_eq!(
+                contact_address("ada+tilo@mail.example.co.uk"),
+                Ok("ada+tilo@mail.example.co.uk".to_owned())
+            );
+            for typed in [
+                "",
+                "ada",
+                "ada@",
+                "@example.org",
+                "ada@example",
+                "ada@example.",
+                "ada@.org",
+                "ada@@example.org",
+                "a da@example.org",
+                "ada@example.org, bob@example.org",
+                "Ada <ada@example.org>",
+            ] {
+                assert!(contact_address(typed).is_err(), "{typed:?}");
+            }
+            let long = format!("{}@example.org", "a".repeat(MAX_CONTACT_CHARS));
+            assert!(contact_address(&long).is_err());
+        }
     }
 }

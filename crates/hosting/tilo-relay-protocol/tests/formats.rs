@@ -230,57 +230,60 @@ fn json_encodings_are_pinned() {
     assert!(serde_json::from_str::<SealedInvitations::Stored>(r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl","extra":1}"#).is_err());
 }
 
-#[test]
-fn postcard_wire_encodings_and_shard_ids_are_pinned() {
-    // Management responses and compute worker adverts carry these fields in
-    // postcard frames.
-    assert_postcard(&ServiceCapabilities::personal_server(), "010101010101");
+tilo_test_env::scenario! {
+    fn postcard_toml_and_certification_encodings_are_pinned;
 
-    // Mesh enums.
-    assert_postcard(
-        &[
-            PowerAvailability::Unknown,
-            PowerAvailability::External,
-            PowerAvailability::Charging(80),
-            PowerAvailability::Battery(15),
-        ],
-        "00010250030f",
-    );
-    assert_eq!(postcard_hex(&ComputeAccelerator::Gpu), "00");
+    phase postcard_wire_encodings_and_shard_ids_are_pinned;
+    {
+        // Management responses and compute worker adverts carry these fields in
+        // postcard frames.
+        assert_postcard(&ServiceCapabilities::personal_server(), "010101010101");
 
-    // Mesh profiles may travel in postcard frames as well as JSON.
-    let profile = DeviceMeshProfile {
-        device: [1; 32],
-        services: ServiceCapabilities::home_peer(),
-        filesystem_endpoints: Vec::new(),
-    };
-    let bytes = postcard::to_stdvec(&profile).unwrap();
-    assert_eq!(
-        postcard::from_bytes::<DeviceMeshProfile>(&bytes).unwrap(),
-        profile
-    );
-}
+        // Mesh enums.
+        assert_postcard(
+            &[
+                PowerAvailability::Unknown,
+                PowerAvailability::External,
+                PowerAvailability::Charging(80),
+                PowerAvailability::Battery(15),
+            ],
+            "00010250030f",
+        );
+        assert_eq!(postcard_hex(&ComputeAccelerator::Gpu), "00");
 
-#[test]
-fn toml_encodings_are_pinned() {
-    let config = RelayConfig {
-        identity_root: PathBuf::from("/var/lib/tilo"),
-        state_root: PathBuf::from("/var/lib/tilo-relay"),
-        full_replica_status: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
-        home_peer_bundle: PathBuf::from("/etc/tilo/home-peer.toml"),
-        iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
-        packet_relay: None,
-        packet_relay_url: None,
-        trust_policy: TrustPolicy::AllowList {
-            users: vec!["ab".repeat(32)],
-        },
-        work: WorkSetting::own_person(),
-        services: ServiceCapabilities::home_peer(),
-        web_entry: None,
-        member_limits: None,
-        max_workspace_grants: None,
-    };
-    let encoded = r#"identity_root = "/var/lib/tilo"
+        // Mesh profiles may travel in postcard frames as well as JSON.
+        let profile = DeviceMeshProfile {
+            device: [1; 32],
+            services: ServiceCapabilities::home_peer(),
+            filesystem_endpoints: Vec::new(),
+        };
+        let bytes = postcard::to_stdvec(&profile).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<DeviceMeshProfile>(&bytes).unwrap(),
+            profile
+        );
+    }
+
+    phase toml_encodings_are_pinned;
+    {
+        let config = RelayConfig {
+            identity_root: PathBuf::from("/var/lib/tilo"),
+            state_root: PathBuf::from("/var/lib/tilo-relay"),
+            full_replica_status: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
+            home_peer_bundle: PathBuf::from("/etc/tilo/home-peer.toml"),
+            iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
+            packet_relay: None,
+            packet_relay_url: None,
+            trust_policy: TrustPolicy::AllowList {
+                users: vec!["ab".repeat(32)],
+            },
+            work: WorkSetting::own_person(),
+            services: ServiceCapabilities::home_peer(),
+            web_entry: None,
+            member_limits: None,
+            max_workspace_grants: None,
+        };
+        let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-relay"
 full_replica_status = "/var/lib/tilo/full-replica/status.json"
 home_peer_bundle = "/etc/tilo/home-peer.toml"
@@ -312,72 +315,73 @@ remote_control_relay = true
 app_serving = false
 compute = false
 "#;
-    assert_eq!(toml::to_string_pretty(&config).unwrap(), encoded);
-    assert_eq!(toml::from_str::<RelayConfig>(encoded).unwrap(), config);
+        assert_eq!(toml::to_string_pretty(&config).unwrap(), encoded);
+        assert_eq!(toml::from_str::<RelayConfig>(encoded).unwrap(), config);
 
-    // Trust policies.
-    for (policy, encoded) in [
-        (
-            TrustPolicy::AllowMatchingUser,
-            "kind = \"allow_matching_user\"\n",
-        ),
-        (TrustPolicy::AllowAny, "kind = \"allow_any\"\n"),
-    ] {
-        assert_eq!(toml::to_string(&policy).unwrap(), encoded);
-        assert_eq!(toml::from_str::<TrustPolicy>(encoded).unwrap(), policy);
+        // Trust policies.
+        for (policy, encoded) in [
+            (
+                TrustPolicy::AllowMatchingUser,
+                "kind = \"allow_matching_user\"\n",
+            ),
+            (TrustPolicy::AllowAny, "kind = \"allow_any\"\n"),
+        ] {
+            assert_eq!(toml::to_string(&policy).unwrap(), encoded);
+            assert_eq!(toml::from_str::<TrustPolicy>(encoded).unwrap(), policy);
+        }
     }
-}
 
-#[test]
-fn certification_openers_keep_their_tags() {
-    use tilo_relay_protocol::auth::Hello;
-    use tilo_relay_protocol::certify::{ApproverRequest, CertifyOpen, MemberApproval};
-    use tilo_user_identity::{
-        CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
-    };
+    phase certification_openers_keep_their_tags;
+    {
+        use tilo_relay_protocol::auth::Hello;
+        use tilo_relay_protocol::certify::{ApproverRequest, CertifyOpen, MemberApproval};
+        use tilo_user_identity::{
+            CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
+        };
 
-    // The certification protocol tells its connections apart by the first
-    // frame's variant: a device asking to be certified (0), a certified
-    // approver (1), a member's root asking one command (2). Openers are only
-    // ever added after these, so a host reads each one's tag as it always
-    // has, and a host that predates an opener refuses it.
-    let request = CertificationRequest {
-        version: CERTIFICATION_SCHEMA_VERSION,
-        user_public_key: [1; 32],
-        device_public_key: [2; 32],
-        device_label: "Phone".into(),
-        requested: DeviceCapabilities::member(),
-        nonce: [3; 16],
-        invite: [0; 16],
-        issued_at_ns: 4,
-        expires_at_ns: 5,
-        signature: [6; 64],
-    };
-    assert!(postcard_hex(&CertifyOpen::Request(request)).starts_with("00"));
-    let cert = DeviceCert {
-        user_public_key: [1; 32],
-        device_public_key: [2; 32],
-        device_label: "Laptop".into(),
-        capabilities: DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    assert!(postcard_hex(&CertifyOpen::Approver(Hello::new(cert, [7; 32]))).starts_with("01"));
+        // The certification protocol tells its connections apart by the first
+        // frame's variant: a device asking to be certified (0), a certified
+        // approver (1), a member's root asking one command (2). Openers are only
+        // ever added after these, so a host reads each one's tag as it always
+        // has, and a host that predates an opener refuses it.
+        let request = CertificationRequest {
+            version: CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            device_label: "Phone".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: [3; 16],
+            invite: [0; 16],
+            issued_at_ns: 4,
+            expires_at_ns: 5,
+            signature: [6; 64],
+        };
+        assert!(postcard_hex(&CertifyOpen::Request(request)).starts_with("00"));
+        let cert = DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            device_label: "Laptop".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        assert!(postcard_hex(&CertifyOpen::Approver(Hello::new(cert, [7; 32]))).starts_with("01"));
 
-    // A member's approval, whole: the tag, the root, the time, the command
-    // and the root's signature as 64 bytes.
-    let member = MemberApproval {
-        user_public_key: [1; 32],
-        issued_at_ns: 2,
-        request: ApproverRequest::ListPending,
-        signature: [3; 64],
-    };
-    let encoded = format!("02{}0200{}{}", "01".repeat(32), "40", "03".repeat(64));
-    assert_eq!(postcard_hex(&CertifyOpen::Member(member.clone())), encoded);
-    let CertifyOpen::Member(decoded) = from_postcard_hex::<CertifyOpen>(&encoded) else {
-        panic!("a member's opener decodes as one");
-    };
-    assert_eq!(decoded, member);
+        // A member's approval, whole: the tag, the root, the time, the command
+        // and the root's signature as 64 bytes.
+        let member = MemberApproval {
+            user_public_key: [1; 32],
+            issued_at_ns: 2,
+            request: ApproverRequest::ListPending,
+            signature: [3; 64],
+        };
+        let encoded = format!("02{}0200{}{}", "01".repeat(32), "40", "03".repeat(64));
+        assert_eq!(postcard_hex(&CertifyOpen::Member(member.clone())), encoded);
+        let CertifyOpen::Member(decoded) = from_postcard_hex::<CertifyOpen>(&encoded) else {
+            panic!("a member's opener decodes as one");
+        };
+        assert_eq!(decoded, member);
+    }
 }
