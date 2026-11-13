@@ -1,11 +1,9 @@
-//! Export settings + the (gated) render pipeline.
+//! Export settings and the render pipeline.
 //!
-//! Real encode/decode runs through `GStreamer`, linked by the default `gst`
-//! feature and by the shipped image build. A deliberately minimal
-//! `--no-default-features` developer build keeps the export UI testable without
-//! `GStreamer` and reports that encoding is unavailable; it is not the product
-//! configuration. Headless screenshots remain hermetic because they never
-//! start an encoder, not because the shipped app replaces export with a stub.
+//! The encode runs through `GStreamer`, linked by the default `gst` feature. A
+//! `--no-default-features` developer build keeps the export UI testable without it and
+//! reports that encoding is unavailable. Headless screenshots stay hermetic because they
+//! never start an encoder.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,8 +43,6 @@ impl Resolution {
             Resolution::P2160 => (3840, 2160),
         }
     }
-    /// Rough target video bitrate in megabits/sec — drives the size
-    /// estimate shown in the dialog.
     pub fn target_mbps(self) -> f64 {
         match self {
             Resolution::P720 => 8.0,
@@ -147,26 +143,16 @@ impl Default for ExportSettings {
 }
 
 impl ExportSettings {
-    /// Estimated output size in megabytes for a `duration`-second project,
-    /// muxing audio or not.
+    /// The sum of what the two encoders are *asked* for: [`Resolution::target_mbps`] for the
+    /// picture and [`AUDIO_BITRATE_BPS`] for the sound, the numbers
+    /// [`pipeline_desc_with_audio`] writes into the graph.
     ///
-    /// This is the sum of what the two encoders are *asked* for:
-    /// [`Resolution::target_mbps`] for the picture and [`AUDIO_BITRATE_BPS`]
-    /// for the sound, both being the numbers [`pipeline_desc_with_audio`]
-    /// writes into the graph — so the figure describes the encode that
-    /// actually runs rather than a guess about it.
+    /// `with_audio` is whether this export muxes an audio track at all
+    /// ([`crate::audio::has_audio`]); quoting the allowance for a video-only timeline bills for
+    /// a track the file never carries.
     ///
-    /// `with_audio` is not a preference; it is whether this export will mux an
-    /// audio track at all ([`crate::audio::has_audio`]). Quoting the audio
-    /// allowance for a video-only timeline would bill for a track the file
-    /// never carries — which is what this estimate used to do, charging
-    /// 0.256 Mbit/s for stereo back when the pipeline had no audio branch to
-    /// encode it with.
-    ///
-    /// How closely the file lands on the total is the encoders' business, and
-    /// they differ. [`Self::estimate_label`] is what a dialog should show: it
-    /// declines to quote a size at all where the selected encoder is known not
-    /// to track the rate it is given.
+    /// How closely the file lands on the total is the encoders' business.
+    /// [`Self::estimate_label`] is what a dialog should show.
     pub fn estimated_mb(&self, duration: f64, with_audio: bool) -> f64 {
         let audio_mbps = if with_audio {
             AUDIO_BITRATE_BPS as f64 / 1_000_000.0
@@ -176,32 +162,20 @@ impl ExportSettings {
         (self.resolution.target_mbps() + audio_mbps) * duration / 8.0
     }
 
-    /// The size line for the export dialog: either an approximate megabyte
-    /// figure, or — where one cannot honestly be given — the rate that was
+    /// Either an approximate megabyte figure, or — where one cannot honestly be given — the rate
     /// requested and a plain statement that the size does not follow from it.
     ///
-    /// The distinction is [`media::encode::Selection::bitrate_is_predictive`],
-    /// false for an encoder measured to ignore its bitrate and for a build
-    /// that could not confirm any encoder at all. Which of those a machine
-    /// lands in depends on what it has installed: `x264enc` and the hardware
-    /// encoders carry no such measurement against them, while `openh264enc`
-    /// asked for 1 Mbit/s of noise writes 59 and `vp8enc` writes 14, and
-    /// eight times the request moves either by nothing worth counting. A box
-    /// with only those two — which is the fallback case, and this one — gets
-    /// no megabyte figure, because there it would be a guess dressed as a
-    /// measurement.
+    /// The distinction is [`media::encode::Selection::bitrate_is_predictive`], false for an
+    /// encoder measured to ignore its bitrate: `openh264enc` asked for 1 Mbit/s of noise writes
+    /// 59 and `vp8enc` writes 14. A box with only those gets no figure, which there would be a
+    /// guess dressed as a measurement.
     pub fn estimate_label(&self, project: &Project) -> String {
         let (video, _, _) = encode_chain(self.container);
         self.estimate_label_for(project, &video)
     }
 
-    /// [`Self::estimate_label`] against a given encoder choice rather than
-    /// this machine's.
-    ///
-    /// Split out so both branches can be exercised wherever the tests run: a
-    /// box with no hardware encoder resolves every container to an encoder
-    /// that ignores its bitrate, so the megabyte branch would otherwise go
-    /// unexecuted exactly where it most needs checking.
+    /// Split out so both branches can be exercised wherever the tests run: a box with no hardware
+    /// encoder resolves every container to an encoder that ignores its bitrate.
     pub fn estimate_label_for(
         &self,
         project: &Project,
@@ -264,8 +238,6 @@ pub fn audio_codec(container: Container) -> AudioCodec {
     }
 }
 
-/// The parser + muxer for a container. Fixed by the container format, so
-/// unlike the encoder these do not vary with the machine.
 pub fn mux_chain(container: Container) -> (Option<&'static str>, &'static str) {
     match container {
         Container::Mp4 => (Some("h264parse"), "mp4mux"),
@@ -290,20 +262,12 @@ fn registry_available(_name: &str) -> bool {
     false
 }
 
-/// The `GStreamer` element chain that encodes the export, per container: the
-/// (video encoder, optional parser, muxer) triple.
+/// The `GStreamer` chain per container: the (video encoder, optional parser, muxer) triple.
 ///
-/// The encoder is **chosen against the machine's real `GStreamer` registry**,
-/// not hard-coded. For H.264 that means a VA-API, NVENC or QSV encoder when
-/// one is installed — covering AMD, Intel and NVIDIA, integrated and discrete
-/// — then `x264enc`, then `openh264enc`, which is the baseline this workspace
-/// can always count on but also the weakest (Baseline profile only). The
-/// returned [`Selection`] carries which of those it is, and reports hardware
-/// only when the registry actually confirmed one.
-///
-/// The muxer half stays fixed by the container:
-///   * MP4 / MOV — `… ! h264parse ! (mp4mux|qtmux)`
-///   * `WebM` — `… ! webmmux`
+/// The encoder is chosen against the machine's real registry — VA-API, NVENC or QSV when
+/// installed, then `x264enc`, then `openh264enc` — and the returned [`Selection`] reports
+/// hardware only when the registry confirmed one. The muxer stays fixed by the container:
+/// MP4 / MOV to `mp4mux` / `qtmux`, `WebM` to `webmmux`.
 pub fn encode_chain(container: Container) -> (Selection, Option<&'static str>, &'static str) {
     let (parse, mux) = mux_chain(container);
     let sel = media::encode::select_video(
@@ -338,18 +302,10 @@ pub fn selected_encoders(container: Container) -> EncodeReport {
     }
 }
 
-/// The rate the export asks its audio encoder for, in bits per second.
-///
-/// 128 kbit/s is the ordinary transparent-enough setting for stereo AAC and
-/// comfortably so for Opus, and it is set explicitly rather than left to each
-/// encoder's default — those disagree (`opusenc` starts at 64 kbit/s,
-/// `avenc_aac` at 128, `fdkaacenc` at "auto"), so the same project would land
-/// at a different rate depending on which encoder the machine happened to
-/// have.
-///
-/// It is also what [`ExportSettings::estimated_mb`] charges for the audio
-/// track, which is only meaningful because it is the number written into the
-/// pipeline rather than an assumption about it.
+/// 128 kbit/s is transparent enough for stereo AAC and comfortable for Opus, and it is set
+/// explicitly because the encoders' defaults disagree (`opusenc` starts at 64, `avenc_aac` at
+/// 128, `fdkaacenc` at auto), so the same project would land at a different rate depending on
+/// what the machine has. [`ExportSettings::estimated_mb`] charges for this same number.
 pub const AUDIO_BITRATE_BPS: u64 = 128_000;
 
 /// The audio half of the graph: a raw-PCM `appsrc` fed the mixed timeline,
@@ -371,15 +327,10 @@ pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<Strin
     ))
 }
 
-/// Whether the muxer is still writing the file out.
-///
-/// The flush after the last frame is real work — on a long timeline the
-/// muxer has an index to write — and it used to be bounded by a flat two
-/// minutes from when the flush began. That is a duration a big export can
-/// legitimately exceed, and exceeding it deleted the file, throwing away a
-/// render that had taken minutes. What actually distinguishes a wedged
-/// pipeline from a slow one is whether anything is *happening*, so this
-/// watches for the output growing and gives up only on silence.
+/// The flush after the last frame is real work — a long timeline has an index to write — and a
+/// flat two-minute bound deleted renders that had legitimately taken longer. What distinguishes
+/// a wedged pipeline from a slow one is whether anything is happening, so this watches for the
+/// output growing.
 #[cfg(any(feature = "gst", test))]
 #[derive(Debug)]
 struct FlushWatch {
@@ -481,13 +432,7 @@ pub fn output_dims(settings: &ExportSettings, project: &Project) -> (u32, u32) {
     (w.max(2), h)
 }
 
-/// How many frames a render writes, and where on the timeline it starts.
-///
-/// Split out of the encode loop so what gets rendered can be asserted without
-/// an encoder: the loop reads its frame count and every frame's timeline time
-/// from here and decides neither itself. Before the timeline had in / out
-/// marks the loop ran `0..total` unconditionally, so checking a ten-second
-/// fix meant re-rendering the whole project.
+/// Split out of the encode loop so what gets rendered can be asserted without an encoder.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderPlan {
     /// Timeline seconds of the render's first frame.
@@ -566,13 +511,8 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
     dir.join(settings.suggested_filename(&project.name))
 }
 
-/// A render running on a worker thread.
-///
-/// Export used to run inline on the UI thread — the whole encode plus a
-/// two-minute bus wait — so the window was frozen for the duration and
-/// `ExportStatus::Rendering` was constructed nowhere, leaving the dialog's
-/// progress bar as dead code. A job owns the thread, publishes progress as
-/// it encodes, and can be told to stop.
+/// Export used to run inline on the UI thread, freezing the window for the whole encode. A job
+/// owns the thread, publishes progress as it encodes, and can be told to stop.
 pub struct ExportJob {
     shared: Arc<JobState>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -691,8 +631,6 @@ impl ExportJob {
 
 impl Drop for ExportJob {
     fn drop(&mut self) {
-        // A dropped handle must not leave an encoder running against a file
-        // nobody is waiting for.
         self.shared.cancel.store(true, Ordering::Relaxed);
     }
 }
@@ -711,10 +649,8 @@ impl JobState {
     }
 }
 
-/// Render `project` to `destination` on the calling thread, for a caller
-/// that runs its own job: `report` is told each frame written and how many
-/// there are, and setting `cancel` stops the render as [`ExportJob::cancel`]
-/// does.
+/// `report` is told each frame written and how many there are, and setting `cancel` stops the
+/// render as [`ExportJob::cancel`] does.
 ///
 /// # Errors
 /// Why no file was written, as [`ExportStatus::Failed`] says it.
@@ -809,18 +745,14 @@ fn start_export_with_patience(
     }
 }
 
-/// Run the encode. Split out so [`start_export`] reads as the threading it is.
-/// Media a clip places on the timeline whose bytes cannot be read.
+/// Split out so [`start_export`] reads as the threading it is.
+/// Media a clip places whose bytes cannot be read.
 ///
-/// The compositor treats an unresolved source as normal and draws the
-/// layer's representative fill — right for a preview of a reference whose
-/// bytes are still arriving, and wrong for an export, which would write a
-/// file of stand-ins and call it finished. So the render asks this first
-/// and refuses by name.
+/// The compositor draws a representative fill for an unresolved source — right for a preview of
+/// a reference still arriving, and wrong for an export, which would write a file of stand-ins
+/// and call it finished. So the render asks first and refuses by name.
 ///
-/// Titles are excluded: a title's picture is drawn from the document, so it
-/// has no bytes to be missing. Media sitting in the bin but not placed on
-/// any clip is excluded too — it is not in the file either way.
+/// Titles are excluded, having no bytes to miss, and so is media sitting in the bin unplaced.
 pub fn unreadable_sources(project: &Project) -> Vec<(String, crate::media::Hydration)> {
     let mut out: Vec<(String, crate::media::Hydration)> = Vec::new();
     let (start, end) = project.export_range();
@@ -834,8 +766,6 @@ pub fn unreadable_sources(project: &Project) -> Vec<(String, crate::media::Hydra
             continue;
         }
         let src = item.source();
-        // A copy kept by an earlier visit is read back from where it was
-        // kept on first ask; until then it is not here.
         let kept = renders_by_steps()
             && (crate::files::kept_here(&item.path)
                 || crate::files::kept_source(&item.path).is_some());
@@ -966,14 +896,9 @@ fn audio_frame_at(i: u64, fps: f64) -> u64 {
     at
 }
 
-/// How many audio frames belong to video frame `i`.
-///
-/// The sample rate is not a whole multiple of most frame rates — 48000 at
-/// 30fps is 1600 exactly, but at 24fps it is 2000 and at 29.97 it is not
-/// an integer at all. Deriving each frame's count from the difference
-/// between two cumulative totals means the rounding error never
-/// accumulates, so an hour of audio still ends where the video does
-/// instead of drifting seconds out of sync.
+/// The sample rate is not a whole multiple of most frame rates, and deriving each frame's count
+/// from the difference between two cumulative totals means the rounding error never
+/// accumulates: an hour of audio still ends where the video does.
 #[cfg(any(feature = "gst", not(feature = "decode")))]
 fn audio_frames_for(i: u64, fps: f64) -> usize {
     let frames = audio_frame_at(i + 1, fps).saturating_sub(audio_frame_at(i, fps));
@@ -985,13 +910,9 @@ fn audio_frames_for(i: u64, fps: f64) -> usize {
 #[cfg(any(not(feature = "gst"), test))]
 const UNAVAILABLE: &str = "Exporting video isn't available here yet";
 
-/// Kick off an export. Returns the status the dialog should show next.
-///
-/// With `--features gst` this runs a real `GStreamer` pipeline — a raw-RGBA
-/// `appsrc` fed the composited timeline frames (the same grade/fade math the
-/// preview shows), encoded and muxed to a real file on disk. The default build
-/// has no encoder linked, so it is honest — an "unavailable" status, never a
-/// faked progress bar or a success for a file that was never written.
+/// With `--features gst` this runs a real pipeline — a raw-RGBA `appsrc` fed the composited
+/// frames the preview shows — encoded and muxed to a real file. With no encoder linked it is
+/// honest: an "unavailable" status, never a faked progress bar.
 pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatus {
     start_export(project, settings, output_path(settings, project)).join()
 }
@@ -1025,8 +946,6 @@ impl Output<'_> {
         }
     }
 
-    /// Throw away what a failed render wrote, so nothing half-written looks
-    /// like a render.
     fn discard(&self) {
         match self {
             Self::Path(path) => crate::files::remove(path),
@@ -1046,10 +965,8 @@ pub(crate) struct Encode<'a> {
     pub output: Output<'a>,
 }
 
-/// Run `encode` over `project` on the calling thread, for a caller with a
-/// graph of its own (an agent's render, [`crate::agent_render::render_video`]): `report` is told
-/// each frame written and how many there are, and `cancel` stops it.
-/// Returns how many frames were written.
+/// `report` is told each frame written and how many there are, and `cancel` stops it. Returns
+/// how many frames were written.
 ///
 /// # Errors
 /// Why no file was written; the output is discarded then.
@@ -1086,18 +1003,9 @@ mod gst_pipeline {
 
     use media::encode::graph::Graph;
 
-    /// How long the flush may go without progress before the export gives up.
-    ///
-    /// An **inactivity** timeout, not a total one. This used to be a flat
-    /// two minutes from the start of the flush, which is a duration a long
-    /// 4K mux can legitimately exceed — and exceeding it deleted the file,
-    /// throwing away a render that had taken minutes. "Nothing has
-    /// happened for two minutes" is a wedged pipeline; "this has taken two
-    /// minutes" is just a big timeline.
-    ///
-    /// Progress is the muxer's own output growing, which is the direct
-    /// evidence it is still working, plus any bus traffic. Both reset the
-    /// clock.
+    /// An **inactivity** timeout, not a total one: a long 4K mux takes minutes, and a flat bound
+    /// deleted a render that had already succeeded. Progress is the muxer's own output growing
+    /// plus any bus traffic.
     const QUIET_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
     /// Build + run the real export graph for a file a person chose: the
@@ -1118,8 +1026,6 @@ mod gst_pipeline {
         }
         let out_str = out.to_string_lossy().into_owned();
 
-        // Only ask for an audio branch when there is something to put in it:
-        // a muxer left holding an empty pad never finishes the file.
         let with_audio = crate::audio::has_audio(project);
         // State which encoders this machine actually resolved to, so a slow
         // export is diagnosable — "it fell back to openh264enc because no
@@ -1173,19 +1079,12 @@ mod gst_pipeline {
         let out = &encode.output;
         let graph = Graph::start(&encode.desc, with_audio, fps)?;
 
-        // The frames come off the very same GPU compositor the preview
-        // canvas draws through — layer stack, grade, effect chain,
-        // envelope and transitions — fed by the same media sessions, so
-        // the file cannot disagree with what was on screen.
+        // The very same GPU compositor the preview draws through, fed by the same media
+        // sessions, so the file cannot disagree with what was on screen.
         //
-        // `Exact` because an export has no interactive deadline to miss
-        // and every frame must be the right one; the preview asks the
-        // same sources for `Responsive` instead. `strict` because the
-        // preview's stand-ins (the representative fill, the last picture a
-        // source produced) are never written into the file: a frame is
-        // composited again until every source has given its real picture,
-        // and the export fails, naming the source, if one has not within
-        // the frame's patience.
+        // `Exact` because an export has no deadline to miss and every frame must be the right
+        // one, and `strict` because a stand-in is never written into the file: a frame is
+        // composited again until every source has given its real picture.
         let mut compositor =
             crate::gpu::HeadlessCompositor::new().map_err(|e| format!("export compositor: {e}"))?;
         let mut sources = crate::gpu::MediaFrameSource::new(project, crate::gpu::Fetch::Exact)
@@ -1224,8 +1123,6 @@ mod gst_pipeline {
                 }
             };
             debug_assert_eq!(rgba.len(), frame_bytes);
-            // One frame's worth of mixed audio, pushed alongside the picture
-            // so the two streams stay in step without a separate clock.
             let sound = with_audio.then(|| {
                 let block = crate::audio::mix_block(project, t, audio_frames_for(i, fps), &mut pcm);
                 crate::audio::to_s16le(&block)
@@ -1275,14 +1172,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn render_jobs_report_progress_or_failure_without_hanging() {
-        // Case `a_muxer_still_writing_is_not_given_up_on`:
-        // A muxer that is still writing is never given up on, however long it
-        // takes; one that has gone quiet is.
-        //
-        // The old rule was a flat two minutes from the start of the flush, and
-        // it deleted the file on expiry — so a long export whose mux genuinely
-        // took longer lost a render that had already succeeded. What separates a
-        // wedged pipeline from a slow one is whether anything is happening.
         {
             use ui::time::Duration;
 
@@ -1305,21 +1194,15 @@ mod tests {
                 );
             }
 
-            // Then it stops. Short of the limit it is still given the benefit of
-            // the doubt; past it, it is not.
             let quiet = now;
             assert!(!w.observe_len(16_000_000, quiet + Duration::from_secs(60)));
             assert!(!w.stalled(quiet + Duration::from_secs(119), limit));
             assert!(w.stalled(quiet + Duration::from_secs(121), limit));
 
-            // Bus traffic counts as being alive even with the file unchanged —
-            // a muxer can work for a while before its next write lands.
             w.observe_activity(quiet + Duration::from_secs(121));
             assert!(!w.stalled(quiet + Duration::from_secs(122), limit));
         }
         {
-            // With no encoder linked the job still resolves, promptly, with the
-            // same reason the dialog shows.
             let p = Project::new("t");
             let job = start_export(
                 &p,
@@ -1376,8 +1259,6 @@ mod tests {
             );
         }
         {
-            // The refusal must not catch a project that legitimately has no
-            // bytes to read: a title's picture comes from the document.
             use crate::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
             use uuid::Uuid;
             let mut p = Project::new("title only");
@@ -1405,8 +1286,6 @@ mod tests {
             );
         }
         {
-            // Importing a file and then not using it must not make the whole
-            // project unexportable — it is not in the render either way.
             use crate::model::{MediaItem, MediaKind};
             use uuid::Uuid;
             let mut p = one_clip_over("no/such/definitely-not-here-42.mp4");
@@ -1566,8 +1445,6 @@ mod tests {
                 break 'case;
             }
             let clip = demo_clip();
-            // Long enough that the cancel lands mid-encode rather than after it:
-            // twenty seconds of timeline, the whole source played five times.
             let mut project = project_over(&clip, 0.0, generated_clip::DURATION_SECS);
             let (track, media) = (project.tracks[0].id, project.media[0].id);
             for n in 1..5 {
@@ -1603,8 +1480,6 @@ mod tests {
                 !out.exists(),
                 "a cancelled render leaves no half-written file behind",
             );
-            // And it stopped between frames rather than encoding the whole
-            // 20 seconds of timeline first.
             let (done, total) = (
                 state.done.load(Ordering::Relaxed),
                 state.total.load(Ordering::Relaxed),
@@ -1642,8 +1517,6 @@ mod tests {
                 other => panic!("the export must write a file, got {other:?}"),
             }
 
-            // Decode the audio back out of what was written. A container check
-            // cannot tell a real stream from a missing one.
             let pcm = decoded_audio(&out);
             assert!(
                 pcm.len() > crate::audio::SAMPLE_RATE as usize,
@@ -1658,15 +1531,8 @@ mod tests {
             std::fs::remove_file(&out).ok();
             std::fs::remove_file(&tone).ok();
         }
-        // Case `a_file_with_no_audio_track_cannot_be_asked_for_its_level`:
-        // The peak helper has to be able to say "I could not read this". While it
-        // answered `0.0` for an unreadable file, every level assertion below was
-        // one decode hiccup away from reporting a working export as a silent one
-        // -- which is precisely how this file's audio tests flaked under load,
-        // and the failure then named the wrong thing as broken.
-        //
-        // A deliberately video-only encoded fixture has no level to read, and
-        // asking for one has to fail rather than come back with a number.
+        // The peak helper must be able to say "I could not read this": answering `0.0` for an
+        // unreadable file is one decode hiccup away from reporting a working export as silent.
         'case: {
             if !generated_clip::media_stack() {
                 break 'case;
@@ -1836,15 +1702,9 @@ mod tests {
         p
     }
 
-    /// The decoded audio of a media file.
-    ///
-    /// Fails rather than handing back silence when the file cannot be read. A
-    /// helper that answers `0.0` both for "this is quiet" and for "I could not
-    /// look" turns a failure to observe into a claim about the subject: the
-    /// assertions below would then report an export that had carried audio
-    /// perfectly well as one that had produced none, naming the wrong thing as
-    /// broken. That is exactly how this test flaked under a full suite run --
-    /// the decode came back empty, and "empty" read as "silent".
+    /// Fails rather than handing back silence when the file cannot be read: answering `0.0` for
+    /// both "this is quiet" and "I could not look" turns a failure to observe into a claim about
+    /// the subject.
     #[cfg(feature = "gst")]
     fn decoded_audio(path: &std::path::Path) -> Vec<f32> {
         let pcm =
@@ -1897,9 +1757,6 @@ mod tests {
                     voiced.contains(enc),
                     "{container:?} encodes audio with {enc}: {voiced}"
                 );
-                // The branch has to end at the same muxer the video goes to, or
-                // it would be a second file's worth of graph going nowhere — and
-                // it carries the rate the size estimate quotes on the way there.
                 let arg = selected.spec.bitrate_arg(AUDIO_BITRATE_BPS);
                 assert!(
                     voiced.contains("name=tilo_mux")
@@ -1985,8 +1842,6 @@ mod tests {
                     "the report names a real element: {}",
                     report.describe(),
                 );
-                // The honesty rule, stated as an assertion: a selection that no
-                // registry confirmed can never come back as hardware.
                 if !video.confirmed {
                     assert!(
                         !report.is_hardware(),
@@ -1994,8 +1849,6 @@ mod tests {
                         report.describe(),
                     );
                 }
-                // Whatever ran, the description says which family it was, so a
-                // caller states it rather than assuming it.
                 let d = report.describe();
                 assert!(d.contains("video: "), "{d}");
                 assert!(d.contains("audio: "), "{d}");
@@ -2005,16 +1858,12 @@ mod tests {
             let p = Project::new("t");
             let s = ExportSettings::default();
             match (unavailable_reason(), begin_export(&p, &s)) {
-                // No encoder linked: the reason given to the dialog is the same
-                // one the attempt fails with.
                 (Some(reason), ExportStatus::Failed { reason: got }) => {
                     assert_eq!(
                         reason, got,
                         "the dialog and the attempt must say the same thing"
                     );
                 }
-                // An encoder is linked, so nothing may claim otherwise. The
-                // empty project has no clips but still renders a black frame.
                 (None, status) => assert!(
                     !matches!(&status, ExportStatus::Failed { reason } if reason == UNAVAILABLE),
                     "a gst build must not report export unavailable, got {status:?}",
@@ -2038,13 +1887,9 @@ mod tests {
                 d.contains("format=RGBA,width=1920,height=1080"),
                 "caps match the frames: {d}"
             );
-            // Which H.264 encoder this is depends on the machine — a VA-API,
-            // NVENC or QSV one where the registry has it, openh264enc where it
-            // does not — so the assertion is against the encoder that was actually
-            // selected, at the bitrate the size estimate quotes, in that encoder's
-            // own units. (`media::encode` proves the fallback lands on openh264enc
-            // when nothing else is installed, against a registry it fabricates,
-            // which is a check no real machine can weaken.)
+            // Which H.264 encoder this is depends on the machine, so the assertion is against
+            // the encoder actually selected, at the bitrate the estimate quotes, in that
+            // encoder's own units.
             let (sel, _, _) = encode_chain(Container::Mp4);
             assert!(
                 !sel.spec.kind.is_hardware() || sel.confirmed,
@@ -2105,23 +1950,11 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn export_sizes_filenames_and_dimensions_are_predictable() {
-        // Case `the_size_line_quotes_a_size_only_where_one_can_be_predicted`:
-        // The dialog's size line must not quote a megabyte figure the encoder
-        // cannot deliver.
-        //
-        // The estimate has been wrong in both directions: it once charged
-        // 0.256 Mbit/s for a stereo track the pipeline had no branch to encode,
-        // and once — after that allowance was removed — went on quoting a
-        // video-only figure while the pipeline muxed real audio. Both were
-        // confident numbers about something else. So this asserts on the two
-        // things that make the figure mean anything: it accounts for audio when
-        // and only when audio will be muxed, and it is withheld entirely where
-        // the selected encoder is [not
-        // rate-controlling](media::encode::Selection::bitrate_is_predictive).
-        //
-        // Which branch each container takes is a fact about this machine, so the
-        // test asks the selection rather than assuming — and covers both branches
-        // wherever the machine has one predictive encoder and one that is not.
+        // The estimate has been wrong in both directions: it once charged for a stereo track the
+        // pipeline had no branch to encode, and once quoted a video-only figure while the
+        // pipeline muxed audio. So this asserts on the two things that make the figure mean
+        // anything: it accounts for audio when and only when audio is muxed, and it is withheld
+        // where the selected encoder does not follow its bitrate.
         {
             use crate::model::TrackKind;
             let silent = project_of("silent", TrackKind::Video);
@@ -2200,8 +2033,6 @@ mod tests {
                             a.contains("MB") && b.contains("MB"),
                             "a size is quoted: {a:?} / {b:?}"
                         );
-                        // The audio track has to cost something, or the figure is
-                        // still describing a video-only file.
                         let mb = |label: &str| {
                             label
                                 .trim_start_matches(['≈', ' '])
@@ -2220,8 +2051,6 @@ mod tests {
                             "{} does not track its bitrate, so no size may be quoted: {a:?} / {b:?}",
                             video.spec.element,
                         );
-                        // What *is* known — the rate that was asked for — is still
-                        // said, so the line is informative rather than merely blank.
                         let mbps = format!("{:.0} Mbit/s", s.resolution.target_mbps());
                         assert!(a.contains(&mbps) && b.contains(&mbps), "{a:?} / {b:?}");
                         assert!(
@@ -2282,8 +2111,6 @@ mod tests {
 
     #[test]
     fn the_size_estimate_matches_the_bitrate_the_encoder_is_given() {
-        // The estimate is only honest if it describes the encode that
-        // actually runs.
         for container in Container::ALL {
             for resolution in Resolution::ALL {
                 let s = ExportSettings {
@@ -2311,8 +2138,6 @@ mod tests {
                     (s.estimated_mb(10.0, false) - want).abs() < 1e-9,
                     "a silent export quotes exactly the encoded video bitrate, nothing more",
                 );
-                // And with audio, exactly that plus the rate the audio branch
-                // is given — which is written into the same graph.
                 let audio_branch = audio_branch_desc(container, "tilo_mux").expect("audio branch");
                 assert!(
                     audio_branch.contains(&format!("={AUDIO_BITRATE_BPS} !")),
@@ -2328,13 +2153,10 @@ mod tests {
         }
     }
 
-    /// One ten-second clip on a track of `kind`. Nothing here decodes — the
-    /// estimate reads the document, not the media.
+    /// Nothing here decodes: the estimate reads the document, not the media.
     ///
-    /// The two kinds give a silent and a voiced project of **identical
-    /// duration**, which is what lets the two size labels be compared: with
-    /// different durations the audio allowance would be lost inside the
-    /// difference in length.
+    /// The two kinds give a silent and a voiced project of **identical duration**, so the two
+    /// size labels can be compared.
     fn project_of(name: &str, kind: crate::model::TrackKind) -> Project {
         use crate::model::{MediaItem, MediaKind, Track};
         use uuid::Uuid;
@@ -2382,8 +2204,6 @@ mod tests {
         match begin_export(&p, &s) {
             ExportStatus::Failed { reason } => {
                 assert_eq!(reason, UNAVAILABLE);
-                // Build details are for developers; a person only learns
-                // what they cannot do here.
                 for internal in ["gstreamer", "--features", "build", "`"] {
                     assert!(
                         !reason.to_lowercase().contains(internal),
@@ -2433,17 +2253,9 @@ mod tests {
     #[cfg(feature = "gst")]
     #[serial_test::serial(video_editor_gst)]
     fn real_export_encodes_footage_grades_and_transitions() {
-        // Case `real_export_writes_a_playable_mp4`:
-        // Real export through GStreamer: encodes a short two-frame project to a
-        // real file and asserts a valid, non-empty container was written. Only
-        // compiled under `--features gst`; the encoder/mux plugins must be present.
-        //
-        // The clip is a **title**, whose picture is drawn from the document. It
-        // used to be a video reference whose bytes were not on this machine —
-        // which the export now refuses, correctly: that project could only ever
-        // have encoded stand-in fills. A title needs no decoder, so the encode
-        // and mux path this test is about still runs end to end, over a picture
-        // that is genuinely the one the timeline holds.
+        // A title, whose picture is drawn from the document: a video reference whose bytes are
+        // not here would now be refused, correctly. This runs the encode and mux end to end over
+        // a picture the timeline really holds.
         'case: {
             use crate::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
             use uuid::Uuid;
@@ -2520,8 +2332,6 @@ mod tests {
                 break 'case;
             }
             let clip = demo_clip();
-            // A second and a half of real video, from a second in — far enough
-            // past the head that the picture has content.
             let project = project_over(&clip, 1.0, 1.5);
             let out =
                 std::env::temp_dir().join(format!("tilo-ve-footage-{}.mp4", std::process::id()));
@@ -2530,8 +2340,6 @@ mod tests {
                 other => panic!("the export must write a file, got {other:?}"),
             }
 
-            // Three instants across the exported clip, each compared with the
-            // source picture it was cut from.
             let mut matched = 0;
             for (timeline_t, source_t) in [(0.2, 1.2), (0.7, 1.7), (1.2, 2.2)] {
                 let exported = luma_grid(&out, timeline_t, 12);
@@ -2570,8 +2378,6 @@ mod tests {
             }
             assert_eq!(matched, 3);
 
-            // Distinct instants of the timeline must be distinct pictures —
-            // an export stuck on one frame would still correlate above.
             let early = luma_grid(&out, 0.2, 12);
             let late = luma_grid(&out, 1.2, 12);
             assert!(
@@ -2625,8 +2431,6 @@ mod tests {
              {neutral_luma:.3} → {bright_luma:.3}",
             );
 
-            // ...and the structure survives, so it is the same footage graded,
-            // not a different picture entirely.
             assert!(
                 correlation(&luma_grid(&a, 0.3, 12), &luma_grid(&b, 0.3, 12)) > 0.9,
                 "the brightened export is the same footage, graded",
@@ -2664,8 +2468,6 @@ mod tests {
                 break 'case;
             }
             let clip = demo_clip();
-            // Two clips over one source, the incoming one inverted so the two
-            // pictures are unmistakably different whatever the footage does.
             let build = |kind: Transition| {
                 let mut p = project_over(&clip, 2.0, 1.0);
                 let track = p.tracks[0].id;
@@ -2700,8 +2502,6 @@ mod tests {
                     ExportStatus::Done { .. } => {}
                     other => panic!("{kind:?} export failed: {other:?}"),
                 }
-                // Mid-transition: the incoming clip starts at 1.0s and the
-                // transition runs for TRANSITION_SECS.
                 let at = 1.0 + crate::preview::TRANSITION_SECS * 0.5;
                 grids.push((kind, luma_grid(&out, at, 12)));
                 std::fs::remove_file(&out).ok();

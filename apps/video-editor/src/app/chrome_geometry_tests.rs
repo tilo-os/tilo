@@ -1,11 +1,10 @@
-//! The alignment the editor's chrome promises, read back from the production
-//! layout functions rather than from a copy of their arithmetic: a control
-//! cluster shares one centre line, the two pane headings share one band, and
-//! a sibling row keeps the clearance its neighbours have.
+//! The alignment the editor's chrome promises, read back from the production layout
+//! functions rather than from a copy of their arithmetic: a control cluster shares one
+//! centre line, the two pane headings share one band, and a sibling row keeps its
+//! neighbours' clearance.
 //!
-//! A child module of `app` so it can reach the private geometry — `regions`,
-//! `transport_buttons`, `inspector_layout` — which is exactly what the draw
-//! pass and the hit-test consume.
+//! A child module of `app`, so it can reach the private geometry the draw pass and the
+//! hit-test consume.
 
 use super::*;
 
@@ -89,10 +88,8 @@ fn transport_and_go_to_field_share_centre_lines_and_steps() {
             assert_close(top + height, foot, "readout part foot at large text");
         }
     }
-    // Case `the_go_to_field_stacks_its_three_lines_above_the_transport`:
-    // The go-to field is three measured lines — caption, timecode, hint — one
-    // step apart, anchored above the transport whose playhead it moves; at 2×
-    // the timecode no longer draws through the hint.
+    // Three measured lines one step apart, anchored above the transport whose playhead it
+    // moves; at 2× the timecode no longer draws through the hint.
     {
         for scale in [1.0, 2.0] {
             let (mut tr, theme) = scaled(scale);
@@ -158,9 +155,7 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
         let opacity = l.opacity.expect("a video clip is selected");
         let brightness = l.brightness.expect("a video clip has a grade");
         let fade = l.fade_in.expect("every clip has a fade row");
-        // A slider's label and the transition's caption are both drawn a line
-        // and a step above their control: equal advances from the row above
-        // mean equal clearance over that row's knobs.
+        // Equal advances from the row above mean equal clearance over that row's knobs.
         assert_close(
             l.transition_y - fade.y1,
             brightness.y0 - opacity.y1,
@@ -229,9 +224,8 @@ fn x_gap(left: Rect, right: Rect) -> f64 {
     right.x0 - left.x1
 }
 
-/// A renderer and theme at `scale`, the way the host pairs them: the theme
-/// carries the text scale in its tokens and the renderer applies the same
-/// factor to every base size it is handed.
+/// The theme carries the text scale in its tokens and the renderer applies the same factor
+/// to every base size.
 fn scaled(scale: f32) -> (TextRenderer, Theme) {
     let mut tr = TextRenderer::new();
     tr.set_text_scale(scale);
@@ -248,12 +242,8 @@ fn line(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
 fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
-    // Case `the_export_dialog_stacks_its_body_without_overlap_at_every_text_scale`:
-    // The export dialog's body is a stack of measured lines: at 1× and at 2×
-    // alike, every part ends before the next begins, the option rows stay
-    // pointer-sized, and the whole stack ends before the action row. This is
-    // the dialog whose failure reason used to share its slot with the flow
-    // notice and end a pixel above the buttons.
+    // At 1× and 2× alike every part ends before the next begins, the option rows stay
+    // pointer-sized, and the stack ends before the action row.
     {
         for (w, h, scale) in [
             (1280.0, 800.0, 1.0),
@@ -347,9 +337,6 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             );
         }
     }
-    // Case `the_shortcut_sheet_rows_grow_with_the_text`:
-    // The shortcut sheet's rows are measured from their lines, so they grow
-    // with the text instead of drawing through each other at 2×.
     {
         let (mut tr1, theme1) = scaled(1.0);
         let (mut tr2, theme2) = scaled(2.0);
@@ -389,13 +376,9 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             }
         }
     }
-    // Case `the_export_footer_stays_on_the_card_when_the_window_cannot_hold_the_dialog`:
-    // A window too short for the export dialog's natural stack gets a card the
-    // frame clamps to the window; the footer — size line, status slot, notice —
-    // stays on the card, anchored to the body's foot, and the option groups
-    // give up their gaps and height above it. The first version of this dialog
-    // clipped the footer away instead, so a failure reason disappeared exactly
-    // when the window was small.
+    // A window too short for the natural stack gets a card clamped to the window; the footer
+    // stays on the card, anchored to the body's foot, and the option groups give up their gaps
+    // above it.
     {
         for (w, h, scale) in [(1280.0, 720.0, 2.0), (1280.0, 440.0, 1.0)] {
             let (mut tr, theme) = scaled(scale);
@@ -475,11 +458,8 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             }
         }
     }
-    // Case `the_shortcut_sheet_falls_back_to_one_column_and_scrolls_at_large_text`:
-    // On a window whose text-scaled width has no room for two columns the
-    // sheet lays one out — so every description keeps the width it needs to
-    // be read — and, when the table is taller than the body, the body scrolls
-    // rather than dropping rows.
+    // On a window whose text-scaled width has no room for two columns the sheet lays one
+    // out, and a table taller than the body scrolls rather than dropping rows.
     {
         let (mut tr, theme) = scaled(2.0);
         let mut app = app_sized(800.0, 900.0);

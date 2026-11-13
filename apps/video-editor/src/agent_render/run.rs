@@ -1,8 +1,7 @@
-//! An agent's renders themselves: the timeline encoded through
-//! [`pipeline_desc`] into a file the caller was handed, one still as PNG,
-//! and the warm-up that loads every shader and font a render draws with.
-//! The agent host's render helper (`tilo-video-render`, a platform crate)
-//! runs them confined; this is only what they draw and encode.
+//! An agent's renders: the timeline encoded through [`pipeline_desc`] into a file the caller was
+//! handed, one still as PNG, and the warm-up that loads every shader and font a render draws
+//! with. The agent host's render helper runs them confined; this is only what they draw and
+//! encode.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,15 +16,13 @@ use crate::model::Project;
 /// How long a still waits for every source's real picture.
 const STILL_PATIENCE: Duration = Duration::from_secs(30);
 
-/// Encode `project` as an agent's video into `output`, the file the graph's
-/// `sink` (a `GStreamer` sink element on that file) writes, telling
-/// `report` each frame written and how many there are.
+/// The file the graph's `sink` writes. `report` is told each frame written and how many there
+/// are.
 ///
 /// # Errors
 ///
-/// Why nothing was rendered: this host lacks [`AGENT_VIDEO_ENCODER`], a
-/// placed source cannot be read, or the encode failed (`output` is
-/// discarded then).
+/// This host lacks [`AGENT_VIDEO_ENCODER`], a placed source cannot be read, or the encode
+/// failed (`output` is discarded then).
 pub fn render_video(
     project: &Project,
     settings: &AgentExportSettings,
@@ -51,13 +48,12 @@ pub fn render_video(
     })
 }
 
-/// Draw the timeline at `frame.at` as PNG, waiting for every source's real
-/// picture rather than a stand-in.
+/// Waiting for every source's real picture rather than a stand-in.
 ///
 /// # Errors
 ///
-/// A placed source cannot be read or gave no picture in time, there is no
-/// GPU, or the PNG could not be encoded.
+/// A placed source cannot be read or gave no picture in time, there is no GPU, or the PNG could
+/// not be encoded.
 pub fn render_still(project: &Project, frame: &AgentFrameSettings) -> Result<Vec<u8>, String> {
     let missing = crate::export::unreadable_sources(project);
     if let Some((name, _)) = missing.first() {
@@ -86,11 +82,9 @@ pub fn render_still(project: &Project, frame: &AgentFrameSettings) -> Result<Vec
     .ok_or_else(|| "the still could not be encoded as PNG".to_owned())
 }
 
-/// Draw a title over a picture decoded as YUV at `width` x `height`, so the
-/// GPU device, every pipeline the compositor, the YUV converter and the
-/// title raster build, and the fonts, are made: a helper does this before
-/// it confines itself, after which it loads no code, compiles no shader and
-/// opens no font.
+/// So the device, every pipeline the compositor, the YUV converter and the title raster build,
+/// and the fonts, are made before a helper confines itself — after which it loads no code,
+/// compiles no shader and opens no font.
 pub fn warm_up(width: u32, height: u32) -> Result<(), String> {
     let mut compositor = crate::gpu::HeadlessCompositor::new()
         .map_err(|error| format!("the render helper has no GPU: {error}"))?;

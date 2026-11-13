@@ -34,14 +34,10 @@
     reason = "pixel-fidelity fixture uses checked test data and direct assertion failures"
 )]
 
-//! End-to-end acceptance test for the export: what lands in the file has
-//! to be the user's footage.
+//! End-to-end acceptance for the export: what lands in the file has to be the user's footage, so
+//! the test decodes the exported file and compares pixels with the source.
 //!
-//! The test decodes the exported file and compares pixels with the source;
-//! container checks alone cannot verify footage fidelity.
-//!
-//! It lives in `tests/` rather than beside the export so it exercises the
-//! crate exactly as a caller would, through the public API.
+//! It lives in `tests/` so it exercises the crate through the public API, as a caller would.
 #![cfg(feature = "gst")]
 
 use gstreamer as gst;
@@ -75,11 +71,10 @@ fn demo_clip() -> std::path::PathBuf {
     generated_clip::encoded_video()
 }
 
-/// A project holding `path` untrimmed at t=0 for `len` seconds, at the
-/// source's own frame size.
+/// At the source's own frame size.
 ///
-/// `name` decides the output filename, so each test writes somewhere of
-/// its own and the two can run concurrently without an env-var race.
+/// `name` decides the output filename, so each test writes somewhere of its own and the two can
+/// run concurrently without an env-var race.
 fn project_over(path: &std::path::Path, len: f64, name: &str) -> Project {
     let mut p = Project::new(name);
     p.width = 1920;
@@ -252,11 +247,8 @@ fn decode_frame(path: &std::path::Path, at_secs: f64) -> Vec<[u8; 3]> {
     out.unwrap_or_else(|| panic!("decoded no frame from {} at {at_secs}s", path.display()))
 }
 
-/// Mean horizontal neighbour variation.
-///
-/// The synthesized fill the export used to encode is built from vertical
-/// bands, so it is constant along every row and this collapses toward
-/// zero. Real footage never does.
+/// The synthesized fill is built from vertical bands, so it is constant along every row and this
+/// collapses toward zero. Real footage never does.
 fn horizontal_detail(px: &[[u8; 3]]) -> f64 {
     let mut total = 0.0;
     for y in 0..GRID_H {
@@ -271,12 +263,9 @@ fn horizontal_detail(px: &[[u8; 3]]) -> f64 {
     total / (GRID_W * GRID_H) as f64
 }
 
-/// Asserts that `pixels` shows source frame `expected`: of the source
-/// frames around it, that one is the nearest, and near enough to be the
-/// same picture. A bound on the expected frame alone says little about a
-/// repeated frame: the stripes scroll two pixels a frame, so a neighbour
-/// differs by only a few times the encoding noise, and naming the nearest
-/// frame in the message tells a repeat from a bad encode at a glance.
+/// Of the source frames around it, that one is the nearest, and near enough to be the same
+/// picture. Naming the nearest frame in the message tells a repeat from a bad encode at a
+/// glance.
 fn assert_shows_source_frame(
     pixels: &[[u8; 3]],
     source_frames: &[(u64, Vec<[u8; 3]>)],
@@ -569,18 +558,8 @@ fn a_good_first_clip_cannot_hide_a_broken_later_clip_in_an_mp4_export() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn exported_files_carry_the_real_source_footage_and_grade() {
-    // Case `the_webm_chain_encodes_the_real_footage_too`:
-    // The WebM chain, end to end.
-    //
-    // Every other test here exports MP4, so until now nothing decoded a file
-    // produced by the *other* encoder — a different element, a differently named
-    // bitrate property (`target-bitrate`, not `bitrate`) and a different muxer.
-    // A mistake anywhere in that branch would have reached a user before it
-    // reached a test.
-    //
-    // The checks are the ones the MP4 test makes, for the same reason: a
-    // container-shaped file full of synthesized bands passes a magic-byte check
-    // and fails this one.
+    // The WebM chain end to end: a different element, a differently named bitrate property and a
+    // different muxer, which no other test here exercises.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -723,13 +702,9 @@ fn exported_files_carry_the_real_source_footage_and_grade() {
         tidy(&plain);
         tidy(&lifted);
     }
-    // Case `a_relative_media_path_is_resolved_or_refused_never_stood_in_for`:
-    // A project whose media path is relative — what a hand-built project or a
-    // `.qvp` copied next to its footage looks like — must either find the
-    // footage or refuse. What it must never do is encode the compositor's
-    // stand-in fill and report `Done`: that produced a valid MP4 of a flat
-    // gradient, 14 KB for sixty frames of 1080p, indistinguishable from a
-    // successful render to everything except a decoder.
+    // A relative media path must either find the footage or refuse. It must never encode the
+    // compositor's stand-in and report `Done`, which is a valid MP4 of a flat gradient,
+    // indistinguishable from a successful render to everything except a decoder.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -806,15 +781,9 @@ fn exported_files_carry_the_real_source_footage_and_grade() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
-    // Case `a_wipe_reaches_the_encoded_file_as_geometry`:
-    // A wipe has to reach the encoded file as *geometry*: halfway across,
-    // one side of the frame is the incoming clip and the other is still the
-    // outgoing one.
-    //
-    // The transition this replaced was a flat full-frame flash that rendered
-    // identically for a dissolve, a fade and a wipe. Comparing whole-frame
-    // averages cannot tell those apart, so this asserts on the split between
-    // the two halves — which is the thing a wipe has and a dissolve does not.
+    // A wipe has to reach the file as *geometry*: halfway across, one side of the frame is the
+    // incoming clip and the other the outgoing one, which whole-frame averages cannot tell from a
+    // dissolve.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -1012,10 +981,8 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
 // ---------------------------------------------------------------------------
 // Geometry, titles and time-remap in the encoded file.
 //
-// These need no source footage: a title's picture is generated from the
-// document, so the whole pipeline — compose, encode, mux, decode back — can
-// be exercised against a picture whose every pixel is known in advance.
-// That is a stronger check than comparing against a decoded source, because
+// These need no source footage: a title's picture is generated from the document, so compose,
+// encode, mux and decode back can be exercised against a picture whose every pixel is known, and
 // there is nothing to blame a mismatch on but the export.
 // ---------------------------------------------------------------------------
 
@@ -1079,13 +1046,10 @@ fn bright_centre(px: &[[u8; 3]]) -> Option<(f64, f64)> {
 }
 
 // ---------------------------------------------------------------------------
-// Audio: proving the export's second branch writes a real, correct track.
+// Audio: the export's second branch writing a real, correct track.
 //
-// The encoded source has its own verified AAC track, but the mixer needs an
-// input whose exact samples are known before anything encodes them. A length
-// check against silence can pass, which is how an "audio" test once went
-// green over a file with no audio in it. So this second fixture is generated
-// as PCM and known sample by sample.
+// A length check against silence can pass, which is how an "audio" test once went green over a
+// file with no audio in it, so this fixture is generated as PCM and known sample by sample.
 // ---------------------------------------------------------------------------
 
 /// Everything mixes and muxes at this rate; the fixture is written at it so
@@ -1117,10 +1081,7 @@ fn fixture_sample(channel: usize, t: f64) -> f64 {
     (std::f64::consts::TAU * hz * t).sin() * TONE_AMPLITUDE
 }
 
-/// Write the fixture as a 16-bit stereo PCM WAV.
-///
-/// Written by hand rather than encoded, so the file's contents are decided
-/// here and not by whatever an encoder felt like doing — the point of a
+/// Written by hand rather than encoded, so the file's contents are decided here: the point of a
 /// fixture is that its signal is known before the code under test sees it.
 fn write_fixture_wav(path: &std::path::Path) {
     let frames = (FIXTURE_SECS * FIXTURE_RATE as f64).round() as usize;
@@ -1152,13 +1113,9 @@ fn write_fixture_wav(path: &std::path::Path) {
     std::fs::write(path, &out).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }
 
-/// The fixture on disk, generated once per test process and **verified**.
-///
-/// The verification is the whole point: a fixture that turns out to be silent
-/// makes every assertion downstream vacuous, and this file has already been
-/// fooled once by exactly that. So the written file is decoded back through
-/// the same path the editor's mixer uses and checked to carry the tones it was
-/// built from — before any test is allowed to draw a conclusion from it.
+/// A fixture that turns out to be silent makes every assertion downstream vacuous, so the written
+/// file is decoded back through the mixer's own path and checked to carry the tones it was built
+/// from.
 fn audio_fixture() -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("tilo-ve-tone-{}.wav", std::process::id()));
     if !path.exists() {
@@ -1205,11 +1162,8 @@ fn peak(block: &[f32]) -> f64 {
     block.iter().fold(0.0f64, |m, s| m.max(s.abs() as f64))
 }
 
-/// Energy at `hz` in `block`, by Goertzel.
-///
-/// One bin of a DFT, which is all that is wanted here: the fixture's tones are
-/// known in advance, so the question is only how much of each one is present.
-/// Normalised by length so windows of different sizes compare directly.
+/// One bin of a DFT, which is all that is wanted: the fixture's tones are known in advance.
+/// Normalised by length, so windows of different sizes compare directly.
 fn goertzel(block: &[f32], hz: f64) -> f64 {
     if block.is_empty() {
         return 0.0;
@@ -1251,12 +1205,8 @@ fn decode_audio(path: &std::path::Path) -> Vec<f32> {
     decode_audio_full(path).pcm
 }
 
-/// Decode `path`'s **audio** track to interleaved stereo `f32` at
-/// [`FIXTURE_RATE`], reporting the rate and channel count the file declares.
-///
-/// The video counterpart of this is [`decode_frame`]; the two are deliberately
-/// separate so a file can be found to have a picture and no sound, which is
-/// exactly the state the export used to leave every file in.
+/// The video counterpart is [`decode_frame`], and they are separate so a file can be found to have
+/// a picture and no sound.
 fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
     gst::init().expect("gstreamer init");
     let uri = format!("file://{}", path.display());
@@ -1317,22 +1267,13 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
     pipeline.set_state(gst::State::Playing).expect("play");
 
     let mut out: Vec<f32> = Vec::new();
-    // A file with no audio stream never links the sink, so nothing is ever
-    // pulled and `pull_sample` would block. Bounded pulls turn that into an
-    // empty result — "this file has no audio" — rather than a hang.
+    // A file with no audio stream never links the sink, so `pull_sample` would block; bounded
+    // pulls turn that into an empty result.
     //
-    // But an empty pull is only evidence of that *after* the decoder has
-    // finished finding streams. `uridecodebin` has to typefind the container
-    // and autoplug a decoder first, and on a loaded machine that takes longer
-    // than one 500ms pull — so treating the first empty pull as proof of
-    // silence reported "no audio" for files that had plenty. It made this
-    // test pass on an idle box and fail beside a build, which is the worst
-    // way for a test to be wrong: it looks like the code broke.
-    //
-    // `no-more-pads` is the decoder saying it has finished. Until it fires,
-    // "the sink produced nothing" is a statement about the clock, not about
-    // the file. The production decoder learned this already; this is its
-    // copy of the same loop.
+    // An empty pull is only evidence of that after the decoder has finished finding streams:
+    // `uridecodebin` has to typefind and autoplug first, and on a loaded machine that outlasts one
+    // 500ms pull. `no-more-pads` is the decoder saying it is done, and until it fires "the sink
+    // produced nothing" is a statement about the clock.
     let settled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let settled_in = settled.clone();
     src.connect_no_more_pads(move |_| {
@@ -1387,11 +1328,8 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
     DecodedAudio { pcm: out, native }
 }
 
-/// A project with generated footage on a video track and the generated tone on
-/// an audio track, both running from t=0 for [`FIXTURE_SECS`].
-///
-/// Both branches of the export graph therefore have real content to carry,
-/// which is the configuration the audio branch exists for.
+/// Both branches of the export graph therefore have real content to carry, which is the
+/// configuration the audio branch exists for.
 fn av_project(name: &str, video: &std::path::Path, audio: &std::path::Path) -> Project {
     let mut p = project_over(video, FIXTURE_SECS, name);
     let aid = uuid::Uuid::new_v4();
@@ -1421,11 +1359,8 @@ fn av_project(name: &str, video: &std::path::Path, audio: &std::path::Path) -> P
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn exported_audio_is_real_audible_and_placed() {
-    // Case `the_generated_footage_and_mixer_fixture_are_audible`:
-    // The generated source itself is a genuine audiovisual container, and the
-    // separate WAV used by mixer tests is independently verified too. This keeps
-    // source decoding and known-signal mixer assertions from depending on private
-    // footage or accidentally testing silence.
+    // The generated source is a genuine container and the WAV is independently verified, so
+    // decoding and known-signal assertions depend on neither private footage nor silence.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
@@ -1468,21 +1403,15 @@ fn exported_audio_is_real_audible_and_placed() {
         }
         assert_audio_round_trip(Container::Mp4);
     }
-    // Case `a_webm_export_carries_the_timelines_real_audio`:
-    // The same for WebM, whose audio is a different encoder into a different
-    // muxer — `opusenc` into `webmmux`, not AAC into `mp4mux`. The WebM *video*
-    // chain went unproven until recently for exactly this reason; its audio chain
-    // shares none of MP4's elements either.
+    // `opusenc` into `webmmux`, not AAC into `mp4mux`: the WebM audio chain shares none of MP4's
+    // elements.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;
         }
         assert_audio_round_trip(Container::WebM);
     }
-    // Case `the_encoded_sources_audio_survives_mp4_and_webm_export`:
-    // The source fixture's AAC track must survive the same import/mix/export
-    // path as user footage, not merely prove decodable in isolation. Exercise
-    // both output muxers because their timestamp and encoder-delay handling are
+    // Exercised through both output muxers, because their timestamp and encoder-delay handling are
     // independent.
     'case: {
         if !generated_clip::media_stack() {
@@ -1516,31 +1445,18 @@ fn exported_audio_is_real_audible_and_placed() {
             tidy(&output);
         }
     }
-    // Case `the_exported_audio_sits_where_the_timeline_puts_it`:
-    // Where the sound sits in time relative to the picture.
+    // The fixture's right channel changes tone at a known instant, so the exported audio can be
+    // asked where that instant ended up; audio landing at the wrong second is the two streams
+    // disagreeing.
     //
-    // The fixture's right channel changes tone at a known instant, so the
-    // exported audio can be asked where that instant ended up. A video frame's
-    // timeline position is fixed by the frame clock the export counts with, so
-    // audio landing at the wrong second *is* the two streams disagreeing.
+    // Opus in WebM is delay-compensated end to end: the landmark comes back at exactly the second
+    // the fixture put it, and reinstating the half-block read offset `mix_block` once had moves it
+    // from +0 ms to -15 ms, which this catches. AAC in MP4 cannot be read that way — its priming is
+    // not compensated, so a 2s timeline comes back 2.048s long with the landmark 45 ms late — so it
+    // gets a band wide enough for that and catches only gross displacement.
     //
-    // Measured in **both** containers, because they can see different things.
-    //
-    // Opus in WebM is delay-compensated end to end: the landmark comes back at
-    // exactly the second the fixture put it, and the track at exactly 2.000s, so
-    // its reading is the export's own placement with nothing added. That is the
-    // instrument here, and it is sharp — reinstating the half-block read offset
-    // `mix_block` once had moves it from +0 ms to -15 ms, which this catches.
-    //
-    // AAC in MP4 cannot be read that way. Its priming is not compensated on this
-    // round trip: the track comes back 2.048s long for a 2s timeline and the
-    // landmark lands 45 ms late with everything working correctly. So it gets a
-    // band wide enough for that, and catches gross displacement only.
-    //
-    // The spread between the two is asserted as well. It says nothing about a
-    // shift they share — that is what the Opus reading is for — but a container
-    // whose audio is placed differently from the other's, when both are fed by
-    // one mixer through one set of timestamps, has something wrong with it that
+    // The spread between the two is asserted as well: a container placing its audio differently from
+    // the other, when both are fed by one mixer and one set of timestamps, has something wrong that
     // neither absolute reading need show.
     'case: {
         if !generated_clip::media_stack() {
@@ -1580,12 +1496,8 @@ fn exported_audio_is_real_audible_and_placed() {
 
         for (container, at, secs) in &found {
             let offset_ms = (at - SWITCH_SECS) * 1000.0;
-            // Opus adds no delay of its own, so its band is tight: measured at
-            // +0 ms working and -15 ms with the mixer's old half-block read
-            // offset put back, and 10 ms sits between those with two of the 5 ms
-            // detection windows to spare. AAC's own priming puts its landmark
-            // 45 ms late when everything is right, so its band has to cover that
-            // and it catches only gross displacement.
+            // Opus adds no delay of its own, so its band is tight; AAC's priming puts its landmark
+            // 45 ms late when everything is right.
             let (limit_ms, limit_len) = match container {
                 Container::WebM => (10.0, 0.02),
                 _ => (80.0, 0.08),
@@ -1618,17 +1530,12 @@ fn exported_audio_is_real_audible_and_placed() {
     }
 }
 
-/// The export's audio branch, end to end, for one container.
+/// Decodes the written file's **audio track** back and checks it against the signal that went in:
+/// that there is one, at the declared rate and channel count, running the length of the timeline,
+/// carrying the fixture's tones.
 ///
-/// Decodes the written file's **audio track** back and checks it against the
-/// signal that went in: that there is one at all, at the declared rate and
-/// channel count, running the length of the timeline, and carrying the tones
-/// the fixture holds in the channels it holds them in.
-///
-/// Until now nothing did this. The branch's unit tests measure the mixer, and
-/// `volume_and_mute_reach_the_encoded_audio` measures peaks, but no test had
-/// opened an exported file and found real sound inside it — so an audio branch
-/// that muxed an empty or a silent track would have passed everything.
+/// The branch's unit tests measure the mixer, so nothing else opens an exported file and finds
+/// real sound in it.
 fn assert_audio_round_trip(container: Container) {
     let video = demo_clip();
     let audio = audio_fixture();
@@ -1708,15 +1615,9 @@ fn assert_audio_round_trip(container: Container) {
     tidy(&out);
 }
 
-/// Where in the decoded audio the right channel changes tone, in seconds, or
-/// `None` when it never does.
-///
-/// The window that best splits the track into "early tone before, late tone
-/// after" — the boundary maximising how many windows fall on the side they
-/// should. Taking the last early-dominant window instead would be at the
-/// mercy of a single flipped window in a codec's padding at the tail, which
-/// is not a hypothetical: AAC's trailing frames read as late-dominant and
-/// put the landmark a whole second out.
+/// The boundary maximising how many windows fall on the side they should: the last early-dominant
+/// window would be at the mercy of one flipped window in a codec's padding, and AAC's trailing
+/// frames put the landmark a whole second out.
 fn tone_switch_secs(right: &[f32]) -> Option<f64> {
     let win = (FIXTURE_RATE as f64 * 0.005) as usize; // 5ms
     let late: Vec<bool> = right
@@ -1749,17 +1650,11 @@ fn tone_switch_secs(right: &[f32]) -> Option<f64> {
 // ---------------------------------------------------------------------------
 // Chroma key and shape mask in the encoded file.
 //
-// Both are compositing features, so what has to reach the file is not a
-// colour shift but the *layer underneath* becoming visible where the top one
-// was cut. Every test here stacks two clips of a generated plate — the lower
-// one inverted, so the two sides are unmistakable — and reads the decoded
-// export back.
-//
-// This purpose-built plate exists because the general footage has no green
-// screen in it, and a key asserted against footage that was never keyed
-// proves nothing. It is verified before it is used, for the same reason the
-// audio fixture is: a fixture that turns out to be the wrong colour makes
-// every assertion below a statement about nothing.
+// What has to reach the file is not a colour shift but the *layer underneath* becoming visible
+// where the top one was cut. Every test stacks two clips of a generated plate — the lower one
+// inverted — and reads the decoded export back. The general footage has no green screen in it, and
+// the plate is verified before use, since a wrong-coloured fixture makes every assertion a
+// statement about nothing.
 // ---------------------------------------------------------------------------
 
 /// The plate colour, matching the editor's own "Green" key preset.
@@ -1781,12 +1676,8 @@ fn plate_pixel(v: f64) -> [u8; 3] {
     }
 }
 
-/// Encode the green-screen plate to `path`.
-///
-/// Written frame by frame from [`plate_pixel`], so the file's contents are
-/// decided here and not by whatever a test-pattern generator felt like
-/// producing. The encoder is the one this machine actually resolves to, so
-/// the fixture builds wherever the export itself runs.
+/// Written frame by frame from [`plate_pixel`], so the contents are decided here. The encoder is
+/// the one this machine resolves to, so the fixture builds wherever the export itself runs.
 fn write_plate(path: &std::path::Path) {
     gst::init().expect("gstreamer init");
     let (enc, parse, mux) = encode_chain(Container::Mp4);
@@ -1850,11 +1741,8 @@ fn write_plate(path: &std::path::Path) {
     let _ = pipeline.set_state(gst::State::Null);
 }
 
-/// The plate on disk, generated once per test process and **verified**.
-///
-/// The verification is the point: if the generated file is not actually a
-/// green plate with an orange band on it, every key assertion below becomes
-/// a statement about nothing.
+/// Verified, because a fixture that is not a green plate with an orange band makes every key
+/// assertion below a statement about nothing.
 fn green_plate() -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("tilo-ve-plate-{}.mp4", std::process::id()));
     if !path.exists() {
@@ -1967,13 +1855,8 @@ fn is_magentaish(q: [u8; 3]) -> bool {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn exported_keys_masks_and_curves_reach_the_encoded_file() {
-    // Case `a_chroma_key_reaches_the_encoded_file_as_compositing`:
-    // The key has to reach the encoded file as *compositing*: where the plate
-    // was, the layer underneath is now visible, and the subject standing on the
-    // plate is still there.
-    //
-    // Read against the same stack exported with the key off, so what the
-    // difference proves is the key and not the fixture.
+    // Read against the same stack exported with the key off, so what the difference proves is the key
+    // and not the fixture.
     'case: {
         if !generated_clip::media_stack() {
             break 'case;

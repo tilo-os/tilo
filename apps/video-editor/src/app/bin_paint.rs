@@ -6,8 +6,6 @@ use super::*;
 use ui::widget::DrawChild;
 
 impl VideoEditorApp {
-    /// The bin's ground — the sidebar region docked, the floating drawer as an
-    /// overlay — and the theme for what is drawn on it.
     pub(super) fn paint_bin_panel(
         scene: &mut Scene,
         tf: Affine,
@@ -100,8 +98,8 @@ impl VideoEditorApp {
         );
         let radius = f64::from(ctx.theme.tokens.radii.detail);
         let base = clip_color(ctx.theme, media.palette);
-        // The source's own picture on the media ground, as footage is shown
-        // everywhere else; audio draws its waveform there in its label colour.
+        // The source's own picture, as footage is shown everywhere else; audio draws its
+        // waveform there in its label colour.
         fill_round(
             ctx.scene,
             ctx.transform,
@@ -194,8 +192,6 @@ impl VideoEditorApp {
         let sub_h = line_height(ctx.text, &sub_style);
         let block_top = rect.y0 + (rect.height() - (name_h + S1 + sub_h)) / 2.0;
         let sub_top = block_top + name_h + S1;
-        // The source's length, trailing on the secondary line, so the name
-        // above it has the row's whole width.
         let length = VideoEditorApp::bin_length(media);
         let length_w = text_width(ctx.text, &length, &meta_style);
         let meta_top = sub_top + (sub_h - line_height(ctx.text, &meta_style)) / 2.0;
@@ -225,8 +221,6 @@ impl VideoEditorApp {
             );
         }
         let right = right - length_w - S2;
-        // One secondary fact — what the source is — or, when its bytes cannot
-        // be used, a warning badge saying why in its place.
         let problem = if self.media_is_unreadable(media_id) {
             Some((MEDIA_UNREADABLE, MEDIA_UNREADABLE_SHORT))
         } else if self.media_is_projected(media_id) {
@@ -242,8 +236,8 @@ impl VideoEditorApp {
         });
         if let Some((long, short)) = problem {
             let room = right - text_x;
-            // The phrase where the column can hold it, the short form where
-            // it cannot — never nothing, because the badge is the disclosure.
+            // The phrase where the column holds it, the short form where it cannot — never
+            // nothing, because the badge is the disclosure.
             let label = [&long, &short]
                 .into_iter()
                 .find(|l| ui::widget::BadgeFace::intrinsic_width(l, ctx.text, ctx.theme) <= room)
@@ -367,8 +361,6 @@ impl VideoEditorApp {
         scene.pop_layer();
     }
 
-    /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
-    /// the insertion point at the drop time, and float a ghost chip at the cursor.
     #[expect(
         clippy::many_single_char_names,
         reason = "the paint pass's shorthands: colours c, regions r, pointer p, drop time t and its x"
@@ -387,8 +379,6 @@ impl VideoEditorApp {
         }
         let c = &theme.tokens.colors;
         let p = self.last_mouse;
-        // Drop-lane highlight + insertion marker at the snapped drop time: an
-        // insertion indicator, in your colour.
         if let Some((_, _, lane)) = self.bin_drop_lane(r) {
             fill_rect(
                 scene,
@@ -455,9 +445,6 @@ impl VideoEditorApp {
     }
 }
 
-/// The floating surface a drawer or a summoned side panel stands on: the
-/// floating shadow, then the floating material with its edge at the panel
-/// radius. Returns the theme for what is drawn on it.
 pub(super) fn paint_floating_panel(
     scene: &mut Scene,
     tf: Affine,

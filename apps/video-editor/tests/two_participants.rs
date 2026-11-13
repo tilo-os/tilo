@@ -8,27 +8,19 @@
     reason = "collaboration integration fixture asserts setup failures directly"
 )]
 
-//! Two people in one edit.
+//! Two people in one edit: every assertion crosses between two independent editors.
 //!
-//! Every assertion here crosses between two independent editors. One drives —
-//! through real keyboard events, so its playhead and selection move the way a
-//! person's would — and hands over only what
-//! [`Widget::presence_payload`](ui::presence::capability::presence_payload) offers
-//! the host. Those frames go into the other editor through
-//! [`PresenceCtx::apply_remote_presence`], the one decoder every inbound frame
-//! passes through, and the second editor then *draws*.
+//! One drives through real keyboard events and hands over only what
+//! [`Widget::presence_payload`](ui::presence::capability::presence_payload) offers the host;
+//! the frames go into the other through [`PresenceCtx::apply_remote_presence`], the decoder
+//! every inbound frame passes through, and the second editor then draws.
 //!
-//! The point of doing it this way is the bug it catches. A test that publishes
-//! presence and reads it back out of the same context proves the two ends of
-//! one function agree with themselves. The failure that actually happens is
-//! that the publisher keys a frame one way and the renderer looks for it
-//! another way — and then everything passes, nothing is drawn, and the ctx
-//! looks empty. So nothing below ever names a key: the driver's own output is
-//! relayed verbatim, and what the other participant renders has to be a
-//! consequence of it.
+//! Nothing below names a key: a test that publishes and reads back through the same context
+//! proves only that one function agrees with itself, while the failure that happens is a
+//! publisher and a renderer keying a frame differently.
 //!
-//! The two editors share one record, because collaborators do: the second
-//! merges the first's document, which is what a late joiner receives.
+//! The two editors share one record, as collaborators do: the second merges the first's
+//! document, which is what a late joiner receives.
 
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::UserId;
@@ -103,12 +95,8 @@ impl Participant {
         self.app.harness().key(key);
     }
 
-    /// Drain everything this editor currently wants to say about where its
-    /// user is, and deliver it to `to` under `as_user`.
-    ///
-    /// The host offers one frame per poll and only sends what has changed, so
-    /// draining is what a few frames of a live session do. Nothing here
-    /// inspects or rebuilds a key — whatever comes out goes straight in.
+    /// The host offers one frame per poll and only sends what has changed, so draining is what a
+    /// few frames of a live session do. Nothing here inspects or rebuilds a key.
     fn relay(&mut self, to: &mut PresenceCtx, as_user: &str) -> usize {
         let mut sent: usize = 0;
         let mut last = None;
@@ -129,9 +117,8 @@ impl Participant {
     }
 }
 
-/// The clips a participant's document holds, in a stable order — read from
-/// the document rather than from the editor, because that is the thing the
-/// two of them actually share.
+/// Read from the document rather than from the editor, because that is what the two actually
+/// share.
 fn clip_ids(p: &Participant) -> Vec<ClipId> {
     let mut ids: Vec<ClipId> = p.project().clips.iter().map(|c| c.id).collect();
     ids.sort();
@@ -168,13 +155,8 @@ fn pixels_of_colour(rgba: &[u8], rgb: (u8, u8, u8)) -> usize {
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
 fn participants_locate_and_track_each_other() {
-    // Case `one_participant_moves_and_the_other_can_say_where_they_are`:
-    // The whole feature in one pass: one participant moves, the other sees it.
-    //
-    // The driver's playhead is moved with `End` and its selection widened with
-    // Ctrl+A — real key presses through the real handler, not fields poked from
-    // a test — and the other participant is then asked, through the ordinary
-    // reader functions, where that person is.
+    // The driver's playhead is moved with `End` and its selection widened with Ctrl+A, real keys
+    // through the real handler, and the other participant is then asked where that person is.
     {
         let mut ada = Participant::opening();
         let bo = Participant::joining(&ada);
@@ -220,9 +202,8 @@ fn participants_locate_and_track_each_other() {
             held[0].span,
         );
     }
-    // Case `the_other_participant_tracks_a_moving_playhead`:
-    // Moving is not a one-off. Ada steps her playhead repeatedly and Bo tracks
-    // it each time, with no trail of the instants she passed through.
+    // Ada steps her playhead repeatedly and Bo tracks it each time, with no trail of the instants
+    // she passed through.
     {
         let mut ada = Participant::opening();
         let mut ctx = PresenceCtx::empty();
@@ -255,9 +236,7 @@ fn participants_locate_and_track_each_other() {
             "each step should have advanced Bo's picture of Ada: {seen:?}",
         );
     }
-    // Case `two_other_participants_stay_distinct`:
-    // Two other participants at once — the case the feature exists for. They
-    // must not be merged into one, and they must not be drawn in one colour.
+    // They must not be merged into one, and not drawn in one colour.
     {
         let mut ada = Participant::opening();
         let mut ctx = PresenceCtx::empty();
@@ -282,14 +261,7 @@ fn participants_locate_and_track_each_other() {
             "two people must not be drawn in one colour",
         );
     }
-    // Case `a_participant_typing_in_a_field_is_keyed_to_a_shared_object`:
-    // Typing is the third thing a participant can be doing, and it moves their
-    // point off the ruler and into the words — one person, one caret.
-    //
-    // What matters on the wire is that the caret is keyed to something the other
-    // participant can resolve. A field caret keyed to a local-only handle would
-    // publish perfectly and land nowhere, and the workspace would look as though
-    // nobody was typing.
+    // A field caret keyed to a local-only handle would publish perfectly and land nowhere.
     {
         let mut ada = Participant::opening();
 
@@ -341,14 +313,8 @@ fn participants_locate_and_track_each_other() {
 
 #[test]
 fn participants_presence_reaches_the_other_screen() {
-    // Case `a_participant_is_visible_on_the_other_persons_screen`:
-    // The half that makes it a feature: it has to reach the screen.
-    //
-    // Bo draws the same frame twice — once with Ada in the ctx and once
-    // without — and the only difference between the two runs is Ada. So a
-    // difference in the pixels *is* Ada, and her own colour appearing in the
-    // first and not the second is her, specifically, rather than a stray
-    // relayout.
+    // Bo draws the same frame twice, once with Ada in the ctx, so a difference in the pixels is
+    // Ada, and her colour in the first and not the second is her rather than a stray relayout.
     {
         let mut ada = Participant::opening();
         let mut bo = Participant::joining(&ada);
@@ -389,9 +355,6 @@ fn participants_presence_reaches_the_other_screen() {
          her ({with}px), so the assertion is measuring the app's own palette",
         );
     }
-    // Case `a_participants_playhead_alone_reaches_the_screen`:
-    // A participant with nothing selected is still somewhere, and that somewhere
-    // has to be on screen.
     {
         let mut ada = Participant::opening();
         let mut bo = Participant::joining(&ada);
@@ -415,9 +378,7 @@ fn participants_presence_reaches_the_other_screen() {
             with.saturating_sub(without),
         );
     }
-    // Case `a_participants_selected_clip_alone_reaches_the_screen`:
-    // And a participant holding a clip has to be on it, whatever their playhead
-    // is doing.
+    // A participant holding a clip has to be on it, whatever their playhead is doing.
     {
         let ada = Participant::opening();
         let mut bo = Participant::joining(&ada);
@@ -448,10 +409,7 @@ fn participants_presence_reaches_the_other_screen() {
             with.saturating_sub(without),
         );
     }
-    // Case `a_deselection_reaches_the_other_screen`:
-    // Leaving has to be visible too. Ada deselects, and her outline comes off
-    // Bo's screen — through a published frame, because there is no other way to
-    // retract one.
+    // Through a published frame, because there is no other way to retract an outline.
     {
         let mut ada = Participant::opening();
         let mut ctx = PresenceCtx::empty();
@@ -474,14 +432,9 @@ fn participants_presence_reaches_the_other_screen() {
     }
 }
 
-/// The two things a participant shows up as are drawn by two different calls,
-/// and the test above is satisfied by either one of them: with a selection on
-/// screen, a peer's colour is plentiful whether or not their playhead is drawn.
-/// So each render is proved on its own, by a workspace in which the peer has only
-/// that one thing.
-///
-/// Both workspaces are built from the very functions the editor publishes itself
-/// with, so a key that stopped matching would empty them.
+/// With a selection on screen a peer's colour is plentiful whether or not their playhead is
+/// drawn, so each render is proved on its own, by a workspace in which the peer has only that
+/// one thing.
 fn colour_on_screen(bo: &mut Participant, ctx: &PresenceCtx, who: &str) -> (usize, usize) {
     let with = bo.frame(ctx);
     let without = bo.frame(&PresenceCtx::empty());

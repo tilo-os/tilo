@@ -1,6 +1,5 @@
-//! What just happened to the media and to project files, as the window
-//! bar's notice ([`ui::window_toolbar::notify`]): an import's outcome, a
-//! chooser waiting for an answer, a project file opened or exported.
+//! What just happened to the media and to project files, as the window bar's notice
+//! ([`ui::window_toolbar::notify`]).
 
 use ui::time::Instant;
 use ui::window_toolbar::{ToolbarAction, ToolbarNotice};
@@ -49,8 +48,7 @@ impl Notice {
 }
 
 impl VideoEditorApp {
-    /// Run the action pressed beside a notice in the bar: a refused
-    /// import's "Choose media…", an Open's "Undo". Whether one was pressed.
+    /// Whether one was pressed.
     pub(super) fn take_notice_actions(&mut self) -> bool {
         let mut pressed = false;
         if ui::window_toolbar::take_notice_press(CHOOSE_MEDIA_ACTION) {
@@ -65,8 +63,7 @@ impl VideoEditorApp {
         pressed
     }
 
-    /// Say what just happened in the window's bar while it lasts: a media
-    /// chooser's prompt stays while the chooser is open, anything else for a
+    /// A media chooser's prompt stays while the chooser is open, anything else for a
     /// notice's lifetime.
     pub(super) fn publish_notices(&mut self) {
         let choosing_media = self.import_rx.is_some() || self.import_contents_rx.is_some();
@@ -77,8 +74,7 @@ impl VideoEditorApp {
         self.project_notice.publish(Notice::bar_notice);
     }
 
-    /// When a notice in the bar next leaves by itself. A notice that stays
-    /// while something holds it does not leave by the clock.
+    /// A notice that stays while something holds it does not leave by the clock.
     pub(super) fn notice_deadline(&self) -> Option<Instant> {
         let project = self
             .project_notice

@@ -1,20 +1,14 @@
-//! Building and reading a cut by name, for a caller with no screen and no
-//! files: an agent in a workspace.
+//! Building and reading a cut by name, for a caller with no screen and no files: an agent in
+//! a workspace.
 //!
-//! A person imports a file through a chooser, drags a source onto a lane and
-//! reads the timeline off the screen. An agent has none of those, so the
-//! project offers the same edits by what they name instead: workspace content
-//! brought into the bin ([`effect`] answering `import-content`), a bin
-//! source placed by its id or name (`add-clip`), a placed clip moved, set or
-//! removed, a title added and restyled, and the timeline read back as JSON
-//! (`read`, and `export-timeline-content` keeping it as content). The verbs
-//! live on [`Project`] in [`crate::resource`] and run the editing math here,
-//! so they replicate, undo and replay like a person's edits; [`answer`] tells
-//! the caller what each did.
+//! Where a person imports through a chooser and drags clips, an agent names what it means:
+//! workspace content brought into the bin, a source placed by id or name, a clip moved, set
+//! or removed, a title added, and the timeline read back as JSON. The verbs live on
+//! [`Project`] in [`crate::resource`] and run the editing math here, so they replicate, undo
+//! and replay like a person's edits; [`answer`] tells the caller what each did.
 //!
-//! A source imported from content stores the reference that opens it
-//! (`tilo.content:<reference>`) as its path: what a render on the workspace's
-//! host reads its bytes by, where a file path would mean nothing.
+//! A source imported from content stores the reference that opens it as its path, which is
+//! what a render on the workspace's host reads its bytes by.
 
 use std::io::Read as _;
 
@@ -190,11 +184,9 @@ impl Project {
         }
     }
 
-    /// The clip `named` names: its id, or its source (by id, by name, or a
-    /// title by its words; case and spacing aside) when that source is on
-    /// the timeline once, or once starting at the time written after it
-    /// (`shot-b.mp4@3`). A picture and the sound linked to it are one
-    /// placement, named by the picture: every linked edit takes both.
+    /// Its id, or its source (by id, by name, or a title by its words) when that source is on
+    /// the timeline once, or once starting at the time written after it (`shot-b.mp4@3`). A
+    /// picture and the sound linked to it are one placement, named by the picture.
     pub(crate) fn clip_named(&self, named: &str) -> Result<ClipId, Refusal> {
         let named = named.trim();
         if let Ok(id) = named.parse::<Uuid>()
@@ -323,11 +315,9 @@ impl Project {
         }
     }
 
-    /// The track `named`, by id or name, which must carry `kind`; with no
-    /// name, the lowest unlocked track of `kind` (V1: the cut, under the
-    /// titles and overlays on the tracks above it). A name no track has
-    /// that reads as a lane, V1 or A2, makes that track, as no name makes
-    /// the first: a new project has none, and its first clip names V1.
+    /// By id or name, which must carry `kind`; with no name, the lowest unlocked track of that
+    /// kind (V1: the cut, under the titles and overlays). A name no track has that reads as a
+    /// lane, V1 or A2, makes that track: a new project has none.
     fn lane_for(&mut self, named: Option<&str>, kind: TrackKind) -> Result<TrackId, Refusal> {
         let Some(named) = named.map(str::trim).filter(|named| !named.is_empty()) else {
             let lowest = self
@@ -1106,8 +1096,7 @@ pub fn facts(project: &Project) -> Result<Value, String> {
     Ok(facts_json(project))
 }
 
-/// `read`: the timeline, or one clip, source or track (by id, or a track or
-/// source by name) the caller names.
+/// `read`: the timeline, or one clip, source or track the caller names.
 ///
 /// # Errors
 /// Returns that `item` names nothing in the project.
@@ -1265,13 +1254,9 @@ pub fn effect<H: 'static>(
     }
 }
 
-/// The bin source the content `named` makes in `project`: the one already
-/// imported from it, else a new one from its container's metadata.
-///
-/// The content is read through the reference `named` carries, so a workspace
-/// that keeps content sealed is read as the media it holds, never as the
-/// ciphertext stored under its address; the source's path is that same
-/// reference, so a render on the workspace's host opens it as well.
+/// The content is read through the reference it carries, so a workspace that keeps content
+/// sealed is read as the media it holds, never as the ciphertext under its address; the
+/// source's path is that same reference, so a render on the host opens it too.
 pub fn imported(
     project: &Project,
     store: &ContentStore,

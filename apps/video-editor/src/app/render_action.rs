@@ -1,10 +1,8 @@
-//! The `render-timeline` effect: the timeline rendered on this device into a video
-//! kept as content, with the render's progress reported to its caller.
+//! The `render-timeline` effect: the timeline rendered on this device into a video kept as
+//! content, with the render's progress reported to its caller.
 //!
-//! A person's Export writes a file they chose; this writes nothing of
-//! theirs. The video goes into the content store the host lent the window,
-//! and the caller gets its address, which an action that takes content
-//! (attaching it, saving it to a file) then uses under its own permission.
+//! The video goes into the content store the host lent the window, and the caller gets its
+//! address, which an action that takes content then uses under its own permission.
 
 use ui::framework::content::ContentStore;
 use ui::framework::{EffectAnswer, Effected};
@@ -85,8 +83,7 @@ impl VideoEditorApp {
     }
 }
 
-/// The export settings `request` names: its format and size, at 30 frames
-/// a second.
+/// At 30 frames a second.
 fn settings(request: &RenderRequest) -> Result<ExportSettings, String> {
     let mut settings = ExportSettings::default();
     if let Some(format) = &request.format {
@@ -104,8 +101,7 @@ fn settings(request: &RenderRequest) -> Result<ExportSettings, String> {
     Ok(settings)
 }
 
-/// `project` with its render range set to `start..end`, each defaulting to
-/// the range it has.
+/// Each defaulting to the range it has.
 fn ranged(project: &Project, start: Option<f64>, end: Option<f64>) -> Result<Project, String> {
     if project.clips.is_empty() {
         return Err("the timeline is empty: there is nothing to render".into());

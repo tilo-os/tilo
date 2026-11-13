@@ -1,49 +1,13 @@
-//! The editor's **project file**: a copy of the project a person exports,
-//! hands to someone else, and opens back in.
+//! The project file: a copy of the project a person exports, hands to someone else, and opens
+//! back in. The project itself is the app's resource, so the file is a projection of it, and
+//! opening one is one undoable edit.
 //!
-//! The project itself is the app's resource, kept, versioned and synced
-//! like any other; nothing has to be saved for work to be safe. The file is
-//! a projection of it: Export project file writes one, and Open project
-//! file brings one in as the project, one undoable edit.
+//! A file is a header followed by a serialised Automerge document holding the [`Project`]
+//! model exactly as the editor stores it, so it round-trips losslessly, merges and applies
+//! like any document, and gains each new model field from the document layer's defaults.
 //!
-//! ## The payload is the CRDT document
-//!
-//! A project file is a header followed by a serialized Automerge document
-//! holding the [`Project`] model exactly as the editor stores it. That
-//! choice is not incidental:
-//!
-//!   * **It round-trips losslessly.** The document shape *is* the editor's
-//!     storage shape, so saving is not a lossy projection into some other
-//!     schema that then has to be kept in step.
-//!   * **It stays collaborative and undoable.** What comes back out of a
-//!     file is a document, merges like a document, and is applied through
-//!     the ordinary action pipeline — so opening a project is one undo
-//!     boundary and replicates to a peer like any other edit.
-//!   * **It absorbs model growth for free.** The project's reader,
-//!     [`Project`]'s own read, reads
-//!     every field with an explicit default for "this document predates the
-//!     field". The model grew
-//!     repeatedly in a single day — `solo`, `transition_duration`, `text`,
-//!     `Transform`, `speed`, keyframes, markers — and every one of those
-//!     additions is already backward-compatible at the document layer. The
-//!     file inherits that for nothing.
-//!
-//! ## What is deliberately *not* in the file
-//!
-//! **Media bytes.** A clip references its source ([`crate::media`]); the
-//! bytes live on the FUSE workspace or on local disk. Copying gigabytes of
-//! footage into a project file would defeat the whole projection/hydration
-//! design — and a second collaborator resolves the same reference against
-//! *their* mount. So a project stays small, and a moved or not-yet-hydrated
-//! source is a normal state the app discloses rather than an error (see
-//! [`missing_sources`]).
-//!
-//! **Session state.** Recent-file lists, view state, the playhead: none of
-//! it is project content, and a recents list in particular must not ride
-//! along inside a file handed to somebody else. The writer builds the
-//! document from the project model, so only project content can reach it.
-//!
-//! ## Versioning
+//! Media bytes and session state are deliberately absent: a clip references its source, which
+//! another peer resolves against its own mount.
 //!
 //! ```text
 //! offset  size  field
@@ -54,20 +18,10 @@
 //! 17      N     payload        Automerge document bytes
 //! ```
 //!
-//! Two version numbers, because the two questions are different. `version`
-//! records what wrote the file, for diagnostics. `min_reader` is the
-//! compatibility contract: a writer that only *adds* fields — the ordinary
-//! case, since the document layer defaults absent fields — leaves it at 1,
-//! so a build from today still opens a file from a much later one. A writer
-//! that changes the *structure*, renaming a root map or rekeying clips,
-//! raises it, and older builds then refuse the file instead of quietly
-//! loading half a project.
-//!
-//! Refusing is the point. The record store already learned this for its
-//! documents: a document it cannot understand is left alone rather
-//! than opened empty and saved back over the top. A file this module cannot
-//! understand gets [`ProjectFileError::TooNew`], carrying both versions, and
-//! the caller says so on screen.
+//! `version` records what wrote the file, for diagnostics. `min_reader` is the compatibility
+//! contract: a writer that only adds fields leaves it at 1, so today's build opens a much later
+//! file, while one that changes the structure raises it and older builds refuse the file
+//! ([`ProjectFileError::TooNew`]) rather than loading half a project.
 
 use std::path::Path;
 
@@ -142,17 +96,12 @@ impl std::fmt::Display for ProjectFileError {
 
 impl std::error::Error for ProjectFileError {}
 
-/// Serialize `project` into project-file bytes.
-///
-/// The document is built fresh from the model rather than cloned from the
-/// live session, which is what keeps session-only root keys (recents, view
-/// state) and the whole local edit history — including the paths of sources
-/// since deleted — out of a file the user may hand to someone else.
+/// The document is built from the model rather than cloned from the live session, which keeps
+/// session-only root keys and the local edit history out of a file handed to someone else.
 ///
 /// # Errors
 ///
-/// [`ProjectFileError::Corrupt`] when the project does not apply to a fresh
-/// document.
+/// [`ProjectFileError::Corrupt`] when the project does not apply to a fresh document.
 pub fn encode(project: &Project) -> Result<Vec<u8>, ProjectFileError> {
     let mut replica = Replica::<Project>::new();
     replica
@@ -187,14 +136,12 @@ fn header_fields(bytes: &[u8]) -> Result<(u16, u16, u32), ProjectFileError> {
     ))
 }
 
-/// Read project-file `bytes` back into the model.
-///
 /// # Errors
 ///
 /// [`ProjectFileError::NotAProject`] without a project header,
 /// [`ProjectFileError::TooNew`] when the file needs a newer reader,
-/// [`ProjectFileError::Truncated`] when the payload is shorter than the header
-/// declares, and [`ProjectFileError::Corrupt`] when the payload does not load.
+/// [`ProjectFileError::Truncated`] when the payload is shorter than the header declares, and
+/// [`ProjectFileError::Corrupt`] when the payload does not load.
 pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
     let (_version, min_reader, declared) = header_fields(bytes)?;
     if min_reader > MIN_READER_VERSION {
@@ -213,12 +160,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))
 }
 
-/// Read a project from `path`.
-///
 /// # Errors
 ///
-/// [`ProjectFileError::Io`] when the file cannot be read, otherwise whatever
-/// [`decode`] reports for its contents.
+/// [`ProjectFileError::Io`] when the file cannot be read, otherwise whatever [`decode`] reports.
 pub fn load(path: &Path) -> Result<Project, ProjectFileError> {
     let bytes = crate::files::read(path)
         .map_err(|e| ProjectFileError::Io(format!("Could not open: {e}")))?;
@@ -254,18 +198,12 @@ pub fn name_from_path(path: &Path) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
-/// The sources in `project` whose bytes are not readable on this device
-/// right now, split into the two states the editor already has words for.
+/// Split into the two states the editor already has words for: [`crate::media::Hydration::Projected`]
+/// means the bytes are not here yet, while a source resolving to a real file nothing can decode
+/// will not be fixed by fetching it again.
 ///
-/// A project file carries references, so this is a normal thing to find
-/// after opening one somewhere else — or after the footage moved. The two
-/// halves are genuinely different and the editor must not blur them:
-/// [`crate::media::Hydration::Projected`] means the bytes are simply not
-/// here yet (fetching them, or finding the file again, fixes it), while a
-/// source that resolves to a real file nothing can decode will not be fixed
-/// by fetching it again.
-///
-/// Text titles are excluded: they have no bytes to be missing.
+/// A project file carries references, so this is normal after opening one elsewhere or after the
+/// footage moved. Titles are excluded, having no bytes to miss.
 pub fn missing_sources(project: &Project) -> Vec<(String, crate::media::Hydration)> {
     project
         .media
@@ -278,16 +216,10 @@ pub fn missing_sources(project: &Project) -> Vec<(String, crate::media::Hydratio
         .collect()
 }
 
-/// Point `project`'s media that sit beside the file it came from, in `dir`,
-/// at their place there.
-///
-/// A `.qvp` can be copied somewhere with its footage beside it, and a
-/// project built by hand (a script, the export probe) can carry a path
-/// relative to where it was written. Neither is a workspace reference: once
-/// the project is this app's resource the file's directory is gone, so a
-/// relative path that only resolves beside the file is made absolute as the
-/// file comes in. A path the workspace or this device already resolves is
-/// left alone.
+/// A `.qvp` can be copied somewhere with its footage beside it, and a script-built project can
+/// carry a path relative to where it was written. Neither is a workspace reference, and once the
+/// project is the resource the file's directory is gone, so a path only the file's directory
+/// resolves is made absolute as it comes in.
 pub fn anchor_media(project: &mut Project, dir: &Path) {
     for media in &mut project.media {
         let relative = Path::new(&media.path);
@@ -425,11 +357,10 @@ mod tests {
             std::fs::remove_file(&path).ok();
         }
         {
-            // The other half of the contract, and the reason there are two
-            // version numbers. A future build that adds an optional field bumps
-            // `version` and leaves `min_reader` alone; this build must open that
-            // file, because the document layer already defaults what it cannot
-            // see. Without this, every field addition would orphan old files.
+            // A future build that adds an optional field bumps `version` and leaves
+            // `min_reader` alone: the document layer already defaults what it cannot see, so this
+            // build must open that file. Without this, every field addition would orphan old
+            // files.
             let mut bytes = encode(&rich_project()).expect("the project encodes");
             bytes[9..11].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
             let back = decode(&bytes).expect("a compatible newer file still opens");

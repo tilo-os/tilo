@@ -1,13 +1,10 @@
-//! Sound for a build without the `GStreamer` sessions — a browser page,
-//! whose one thread may never wait.
+//! Sound for a build without the `GStreamer` sessions — a browser page, whose one thread may
+//! never wait.
 //!
-//! [`PagePcm`] is the mixer's [`PcmSource`] there: each source's sound is
-//! decoded once by the page's own audio decoding ([`media::edit::PcmDecoder`])
-//! from the copy kept by its bytes, and mixes as silence until it is in.
-//! [`PageMonitor`] plays the mix while the transport runs: a frame at a time
-//! it mixes the next stretch of the timeline and hands it to the output to
-//! play at the time it belongs to, re-anchoring when the playhead jumps. The
-//! export mixes through the same source, so the file sounds as the preview.
+//! [`PagePcm`] is the mixer's [`PcmSource`] there: each source's sound is decoded once by the
+//! page's own audio decoding from the copy kept by its bytes, and mixes as silence until it is
+//! in. [`PageMonitor`] plays the mix while the transport runs, re-anchoring when the playhead
+//! jumps. The export mixes through the same source, so the file sounds as the preview.
 
 use std::collections::HashMap;
 

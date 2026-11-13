@@ -6,9 +6,8 @@
 )]
 use super::*;
 
-/// Computed region rectangles for one frame, derived purely from the root
-/// rect. Recomputed in both `draw` and `handle_event` so the two never
-/// disagree about where anything is.
+/// Recomputed in both `draw` and `handle_event`, so the two never disagree about where
+/// anything is.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Regions {
     pub(super) bin: Rect,
@@ -20,20 +19,17 @@ pub(super) struct Regions {
     pub(super) ruler: Rect,
     pub(super) gutter: Rect,
     pub(super) lanes: Rect,
-    /// Full-bounds dimming scrim drawn under the open overlay bin. Zero-sized
-    /// while docked or while the flap is fully closed.
+    /// Zero-sized while docked or while the flap is fully closed.
     pub(super) scrim: Rect,
     /// `true` when the bin is collapsed to an overlay flap (narrow window).
     pub(super) bin_overlay: bool,
-    /// `true` when the inspector is collapsed to an overlay flap. It slides
-    /// from the right and paints no scrim — see [`INSPECTOR_BREAKPOINT`].
+    /// It slides from the right and paints no scrim — see [`INSPECTOR_BREAKPOINT`].
     pub(super) inspector_overlay: bool,
 }
 
 impl VideoEditorApp {
-    /// Where the preview starts and ends across the editor: after the
-    /// docked bin's shown width and before the docked inspector's, or the
-    /// whole width where either floats over it.
+    /// After the docked bin's shown width and before the docked inspector's, or the whole
+    /// width where either floats over it.
     fn preview_span(&self) -> (f64, f64) {
         let r = self.rect;
         let x0 = if self.bin_layout() == SplitLayout::Overlay {
@@ -54,9 +50,7 @@ impl VideoEditorApp {
         S2 * self.chrome_scale()
     }
 
-    /// The tallest the preview can use: the picture as wide as the preview
-    /// allows, its inset around it, and the transport under it. Taller
-    /// would only add empty bands above and below the picture.
+    /// Taller would only add empty bands above and below the picture.
     pub(super) fn preview_fill_height(&self) -> f64 {
         let (x0, x1) = self.preview_span();
         let inset = self.preview_inset();
@@ -77,34 +71,22 @@ impl VideoEditorApp {
         let timeline = Rect::new(r.x0, timeline_top, r.x1, r.y1);
         let mid_top = r.y0;
         let mid_bot = timeline.y0;
-        // Docked: the inspector holds its column and the preview ends at it.
-        // Overlay: the preview reclaims the column and the inspector slides in
-        // over it from the right by the eased reveal. `preview_x1` is where
-        // the preview (and so the transport) actually ends, which is the whole
-        // window's edge in the overlay case — that is what gives the transport
-        // room for its five buttons and its timecode on a narrow window.
+        // Overlay: the preview reclaims the column and the inspector slides in over it, so
+        // `preview_x1` is the window's edge — which is what gives the transport room for its
+        // buttons on a narrow window.
         let inspector_overlay = self.inspector_split() == SplitLayout::Overlay;
         let inspector_w = self.inspector_width();
         let (preview_x0, preview_x1) = self.preview_span();
         let inspector = if inspector_overlay {
-            // Summoned, it floats a step inside the window on the floating
-            // material, and slides in by the eased reveal.
             let reveal = self.inspector_flap.reveal();
             let w = inspector_w.min((r.width() - 2.0 * S2).max(0.0));
             let x1 = r.x1 - S2 + (w + S2) * (1.0 - reveal);
             Rect::new(x1 - w, mid_top + S2, x1, r.y1 - S2)
         } else {
-            // Docked, it holds its column while shown and gives it back to
-            // the preview as it is hidden.
             Rect::new(preview_x1, mid_top, r.x1, mid_bot)
         };
-        // Docked: the bin occupies its column and the preview starts after it.
-        // Overlay: the preview reclaims the bin's column (full editor width)
-        // and the bin slides in from the left over a scrim by the eased
-        // reveal — exactly the flap kernel's overlay geometry.
+        // Overlay: the preview reclaims the bin's column and the bin slides in over a scrim.
         let (bin, scrim) = if overlay {
-            // A drawer: the floating material a step inside the window,
-            // sliding in from the leading edge by the eased reveal.
             let reveal = self.bin_flap.reveal();
             let bin_w = self.bin_width().min((r.width() - 2.0 * S2).max(0.0));
             let bin_x0 = r.x0 + S2 - (bin_w + S2) * (1.0 - reveal);

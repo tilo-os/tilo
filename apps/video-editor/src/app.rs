@@ -108,8 +108,6 @@ const VIDEO_LANE_H: f64 = 62.0;
 const AUDIO_LANE_H: f64 = crate::layout::MIN_LANE_H;
 const TRIM_HIT: f64 = 8.0;
 const PAD: f64 = S3;
-/// Overlay-scrollbar geometry, matching [`ui::widget::DocumentViewport`] so
-/// the timeline's bar is the same object the rest of the fleet shows.
 const SCROLLBAR_THICKNESS: f64 = 8.0;
 const SCROLLBAR_INSET: f64 = 3.0;
 /// Below this (logical px, either axis) the letterboxed preview canvas has no
@@ -762,8 +760,6 @@ enum Drag {
         origin: Point,
         additive: bool,
     },
-    /// Dragging a scrollbar thumb. The variant names which pane's bar, so
-    /// one drag arm serves the timeline, the inspector and the bin.
     Scrollbar(ScrollPane),
     Opacity,
     Volume,
@@ -908,8 +904,6 @@ pub struct VideoEditorApp {
     published: std::rc::Rc<std::cell::RefCell<hosting::Published>>,
     /// The inspector's switches, sliding as a click turns them.
     faces: ui::widget::FaceMotions,
-    /// The content store the host lent the window: where a render made for
-    /// a caller is kept.
     content: Option<ui::framework::content::ContentStore>,
     /// Optimistic actions diff this against the local result, then check only those
     /// old values against the live record. Diffing a stale local result against a
@@ -942,8 +936,6 @@ pub struct VideoEditorApp {
     inspector_bar: ui::widget::Scrollbar,
     bin_bar: ui::widget::Scrollbar,
     lanes_bar: ui::widget::Scrollbar,
-    /// Vertical scroll offset of the timeline's lanes (px): a project with
-    /// more tracks than the timeline holds scrolls them under the ruler.
     lane_scroll: f64,
     /// The divider between the preview and the timeline.
     timeline_split: ui::widget::SplitHandle,
@@ -1032,8 +1024,6 @@ pub struct VideoEditorApp {
     /// inputs when the last one landed and nothing changed since.
     composite_later: Option<(Option<crate::gpu::PendingFrame>, CompositeInputs)>,
     drag: Option<Drag>,
-    /// Live rubber-band rect while a [`Drag::Marquee`] is past its threshold,
-    /// so `draw` can paint it. `None` until the press actually becomes a drag.
     marquee: Option<Rect>,
     /// Set whenever the playhead moves on its own (playback, shuttle, a
     /// transport button, a keyboard jump) so the next frame scrolls it back
@@ -1075,8 +1065,6 @@ pub struct VideoEditorApp {
     /// eased overlay flap behind a scrim on a narrow one. `open_when_docked`
     /// keeps the wide layout pixel-identical to before.
     bin_flap: FlapState,
-    /// The same kernel driving the inspector's docked-vs-overlay reveal from
-    /// the right edge. See [`INSPECTOR_BREAKPOINT`].
     inspector_flap: FlapState,
     // --- media-bin clip management ---
     /// Right-click context menu for a bin item (Add to timeline / Rename /
@@ -1085,8 +1073,6 @@ pub struct VideoEditorApp {
     bin_menu: ContextMenu,
     /// The segmented strips painted folded, and the one whose menu is open.
     strips: strip_menu::Strips,
-    /// What the open context menu (or a pending menu action) targets — a bin
-    /// media item or a timeline track header.
     menu_target: Option<MenuTarget>,
     /// Inspector sections the reader has folded away. Presentation, never in
     /// the document — see [`Section`]. Empty means everything is open.
@@ -1120,8 +1106,6 @@ pub struct VideoEditorApp {
     /// name and a free-text note; one inline editor serves both, because the
     /// row has room for one field at a time and the gesture is the same.
     marker_field: MarkerField,
-    /// Open keyframe menu: which parameter it belongs to, so choosing an item
-    /// knows what to key. The menu itself is the shared `ContextMenu`.
     key_menu_param: Option<Param>,
     /// In-flight inline rename of a bin item: the shared `EditableLabel` gives
     /// the edit real caret / selection / clipboard / a11y for free.
@@ -1183,8 +1167,6 @@ pub struct VideoEditorApp {
     /// opened with sources this device cannot read says which. Carries its
     /// own severity — see [`NoticeLevel`].
     project_notice: ui::widget::toast::Transient<Notice>,
-    /// The import or render job an effect started, answered through
-    /// `resource_reply` once it settles.
     resource_operation: Option<crate::actions::VideoEditorEffect>,
     resource_reply: Option<ui::framework::EffectReply>,
     /// The theme the chrome was last drawn with: the default theme until the
@@ -1201,8 +1183,6 @@ pub struct VideoEditorApp {
     /// comparison rather than a float one.
     project_format_from: (u32, u32, u64),
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -1364,8 +1344,6 @@ impl VideoEditorApp {
             chrome_theme: Theme::dark(),
             hit_text: std::cell::RefCell::new(None),
             help_scroll: 0.0,
-            // Filled on the first `sync`, from whatever project the document
-            // actually holds -- a blank one included.
             project_format_shown: String::new(),
             project_format_from: (0, 0, 0),
         }
@@ -1606,8 +1584,6 @@ impl VideoEditorApp {
         base * self.chrome_scale()
     }
 
-    /// Whether the inspector is on screen right now: always when docked,
-    /// only while the flap is open when it is an overlay.
     fn inspector_is_visible(&self, r: &Regions) -> bool {
         r.inspector.width() > 1.0
             && (!r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split()))
@@ -1632,8 +1608,6 @@ impl VideoEditorApp {
         self.project.duration() + self.visible_seconds(r) * 0.5
     }
 
-    /// Furthest left-edge time reachable by scrolling. Zero when everything
-    /// already fits.
     fn max_scroll(&self, r: &Regions) -> f64 {
         (self.content_seconds(r) - self.visible_seconds(r)).max(0.0)
     }
@@ -1687,8 +1661,6 @@ impl VideoEditorApp {
         if t < self.scroll + margin {
             self.scroll = t - margin;
         } else if t > self.scroll + visible - margin {
-            // Jump a page ahead rather than creeping, so playback scrolls in
-            // readable steps instead of smearing every frame.
             self.scroll = t - visible * 0.25;
         }
         self.clamp_scroll(r);
@@ -1751,8 +1723,6 @@ impl VideoEditorApp {
         ))
     }
 
-    /// Set the scroll offset from a scrollbar interaction, which works in
-    /// pixels; convert back to the seconds `scroll` is measured in.
     fn set_scroll_px(&mut self, px: f64, r: &Regions) {
         self.scroll = px / self.zoom.max(0.001);
         self.clamp_scroll(r);
@@ -2549,8 +2519,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Submit what the local project changed since `before`, field by field
-    /// and clip by clip.
     fn submit_changes(&self, before: &Project) {
         self.submit(
             ui::tilo_resource::Path::<Project, Project>::root().edits(before, &self.project),
@@ -2728,8 +2696,6 @@ impl VideoEditorApp {
             }
         }
         self.submit_changes(&before);
-        // The right-hand halves become the selection, matching the
-        // single-clip behaviour (S leaves you on the tail).
         if !right_halves.is_empty() {
             self.selection.set(right_halves);
         }
@@ -3467,8 +3433,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// The three-state reading a key control shows for `param` on the
-    /// selection right now.
     fn key_state(&self, param: Param) -> KeyState {
         let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
             return KeyState::Off;
@@ -3608,8 +3572,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Move the playhead to the next / previous marked instant, across the
-    /// project's markers and every clip's alike.
     fn jump_to_marker(&mut self, forward: bool) {
         let to = if forward {
             self.project.next_marker_at(self.playhead)
@@ -4216,14 +4178,10 @@ impl VideoEditorApp {
     /// Place `media` on `track` at timeline time `start` (a drag-drop from the
     /// bin), creating and selecting the clip. Returns the new clip id.
     fn place_media_at(&mut self, media: MediaId, track: TrackId, start: f64) -> Option<ClipId> {
-        // A drag from the bin is just as much "the project's first clip" as
-        // an append is, so it adopts the same way.
         self.adopt_project_format(media);
         let start = snap_to_frame(start.max(0.0), self.project.fps);
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(id);
-        // Dropping a source on a lane is just as much a placement as
-        // appending one, so it splits the sound off the same way.
         self.attach_linked_audio(id);
         self.selection.select_only(id);
         Some(id)
@@ -4490,8 +4448,6 @@ impl VideoEditorApp {
         false
     }
 
-    /// If the cursor is over a timeline track header (the gutter), open its
-    /// track context menu there.
     fn open_track_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
         if !r.gutter.contains(p) {
@@ -4982,8 +4938,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Answer the effect that started the running project file or render
-    /// job with `outcome`.
     fn settle_resource_job(&mut self, outcome: Result<(), String>) {
         self.resource_operation = None;
         if let Some(reply) = self.resource_reply.take() {
@@ -5103,8 +5057,6 @@ impl VideoEditorApp {
     /// Used by the `--shots`/preload placed-import path so the preview shows the
     /// clip; a normal portal import lands in the bin only.
     fn ensure_track_and_place(&mut self, media_id: MediaId) {
-        // `add_media_to_timeline` now creates a matching track when the project
-        // has none, so this just places and parks the playhead in the new clip.
         let Some(cid) = self.add_media_to_timeline(media_id) else {
             return;
         };
@@ -5332,8 +5284,6 @@ impl VideoEditorApp {
         );
         let line_sm = line_height(tr, &type_sizes.sm);
         let line_xs = line_height(tr, &type_sizes.xs);
-        // Every option is a pointer target: the theme's minimum, or taller
-        // when its label needs the room.
         let seg_target = f64::from(theme.tokens.metrics.min_pointer_target).max(line_sm + s3);
         let has_mix = self.mix_words().is_some();
         // The status slot holds a progress bar over its line, or two lines
@@ -5347,8 +5297,6 @@ impl VideoEditorApp {
         // control under the pointer that had just pressed one.
         let notice_h = s1 + line_xs;
 
-        // The natural stack, top to bottom, in the renderer's pixels; the
-        // frame takes it unscaled and applies the text scale itself.
         let header_h = line_sm + mix_h + s4;
         let groups_h = 3.0 * (line_xs + s1 + seg_target + s3);
         let footer_h = s1 + line_sm + s2 + status_h + notice_h;
@@ -5672,16 +5620,12 @@ struct DialogType {
     xl: TextStyle,
 }
 
-/// What the inspector's fixed header holds this frame; see
-/// [`VideoEditorApp::inspector_header`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct InspectorHeader {
     /// From the panel's top edge to where the scrolling body starts.
     pub(super) height: f64,
 }
 
-/// The four facts the inspector states about the selected clip, at the top
-/// of its body.
 fn inspector_property_rows(values: &[String; 4]) -> [ui::widget::PropertyRow<'_>; 4] {
     fn row<'a>(label: &'a str, value: &'a str) -> ui::widget::PropertyRow<'a> {
         ui::widget::PropertyRow::new(label, value).with_kind(ui::TextKind::Numeric)
@@ -5886,8 +5830,6 @@ impl Widget for VideoEditorApp {
             self.project = Project::clone(&self.stored);
             self.clip_edit_bases.clear();
             self.project_sync.reload_pending = false;
-            // A timeline with nothing on it has no time to be part-way
-            // through: the playhead waits at the start.
             if self.project.clips.is_empty() {
                 self.playhead = 0.0;
             }
@@ -5957,8 +5899,6 @@ impl Widget for VideoEditorApp {
                 self.waveforms.request(id, &src);
             }
         }
-        // Thumbnails for visual sources: a representative frame now (cached),
-        // and a real one off-thread under the decode feature.
         self.thumbnails.drain();
         let visual: Vec<(MediaId, u8, crate::media::MediaSource, f64)> = self
             .project
@@ -7414,8 +7354,6 @@ impl LinkAffordance {
     }
 }
 
-/// A focus stop in the inspector: a section header, or one control inside an
-/// open section.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum InspectorRow {
     Header(Section),

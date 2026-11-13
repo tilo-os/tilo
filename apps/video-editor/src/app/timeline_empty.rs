@@ -37,8 +37,8 @@ pub(super) struct TimelineEmpty {
     pub(super) action: Option<TimelineEmptyAction>,
 }
 
-/// The empty timeline's words, resolved from the catalogue for one frame: the
-/// state borrows them as it paints and as it names its node.
+/// Resolved from the catalogue for one frame: the state borrows them as it paints and as it
+/// names its node.
 pub(super) struct TimelineEmptyWords {
     title: String,
     message: String,
@@ -69,11 +69,8 @@ impl TimelineEmpty {
 }
 
 impl VideoEditorApp {
-    /// Where playheads and the ruler's grid lines end: at the last track
-    /// while there are clips to cross, clear of the add-track row under it
-    /// (and at the timeline's bottom when the tracks run past it); on an
-    /// empty timeline, at the ruler, clear of the add-track row and the
-    /// empty state under it.
+    /// At the last track while there are clips to cross, clear of the add-track row under
+    /// it; on an empty timeline, at the ruler.
     pub(super) fn playhead_bottom(&self, r: &Regions) -> f64 {
         if self.project.clips.is_empty() {
             return r.ruler.y1;
@@ -84,8 +81,6 @@ impl VideoEditorApp {
             .clamp(r.ruler.y1, r.timeline.y1)
     }
 
-    /// The tracks' content on an empty timeline: the lanes beside the
-    /// header column, under the add-track row.
     pub(super) fn timeline_content_area(&self, r: &Regions) -> Rect {
         let top = self
             .add_track_buttons(r)
@@ -96,15 +91,11 @@ impl VideoEditorApp {
         Rect::new(r.lanes.x0, top, r.lanes.x1, r.timeline.y1)
     }
 
-    /// Whether the person has the Media pane shown (or showing), at any
-    /// width: one button per job, so while it is, its own Import and its
-    /// list answer the empty timeline's words.
+    /// One button per job, so while the Media pane is shown its own Import answers.
     pub(super) fn media_pane_shown(&self) -> bool {
         self.bin_flap.is_open(self.bin_layout())
     }
 
-    /// The empty timeline, while no clip is on it. It carries a button
-    /// only while the Media pane, which does the job, is hidden.
     pub(super) fn timeline_empty(&self, r: &Regions) -> Option<TimelineEmpty> {
         if !self.project.clips.is_empty() {
             return None;
@@ -145,8 +136,6 @@ impl VideoEditorApp {
         Some((rect, action))
     }
 
-    /// Run the empty timeline's action: the same Import the Media pane's
-    /// button runs, or the Media pane shown.
     pub(super) fn run_timeline_empty_action(&mut self, action: TimelineEmptyAction) {
         match action {
             TimelineEmptyAction::Import => self.trigger_import(),
@@ -158,8 +147,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// The empty timeline in the semantic tree: its words, and its action
-    /// as a button where it is drawn.
     pub(super) fn a11y_timeline_empty(&self, r: &Regions) -> Option<AccessNode> {
         let empty = self.timeline_empty(r)?;
         let words = empty.words();
@@ -180,8 +167,6 @@ impl VideoEditorApp {
         Some(node)
     }
 
-    /// An assistive technology's action on the empty timeline (`rest`, the
-    /// path under its node).
     pub(super) fn a11y_timeline_empty_action(
         &mut self,
         action: &ui::a11y::Action,

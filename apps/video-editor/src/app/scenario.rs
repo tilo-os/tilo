@@ -73,10 +73,8 @@ pub enum ShotScenario {
     /// keyed, so the box, the channel chooser, the amount slider and its
     /// key control are all on screen at once.
     Curves,
-    /// Two other participants in the workspace: their playheads down the lanes
-    /// with their names on them, and the clips they have selected outlined
-    /// in their colours -- next to this participant's own selection, so the
-    /// capture shows the two reading as different people.
+    /// Their playheads and names down the lanes, and the clips they hold outlined in
+    /// their colours beside this participant's own selection.
     Collaborators,
     /// The export dialog open over the editor, before a render starts.
     ExportDialog,
@@ -105,17 +103,13 @@ pub enum ShotScenario {
     /// naming the direction and the rate, and the play button wearing the
     /// pause glyph because something is already moving.
     Shuttle,
-    /// Two shots whose sound was split onto its own lane: one pair selected,
-    /// so the anchor's outline, the other half's dashed one and the tie
-    /// between them are all on screen, and one pair left alone, so the quiet
-    /// chain a linked clip wears standing still can be judged next to it.
+    /// Two shots whose sound was split onto its own lane: one pair selected, so the
+    /// anchor's outline, the other half's dashed one and the tie between them are all on
+    /// screen, and one pair resting.
     LinkedAudio,
-    /// The mixer, on a mix that has been played and went over: lane faders
-    /// off unity and off centre, the meters showing it, the master strip's
-    /// standing CLIP warning, the marks on the ruler saying where, and the
-    /// inspector's MIX section open on the lane the selection sits on — with
-    /// the keyboard cursor resting on the button that puts that lane back, so
-    /// the walk through the section can be seen as well as read about.
+    /// A mix that has been played and went over: faders off unity, meters showing it, the
+    /// standing CLIP warning, the marks saying where, and the MIX section open with the
+    /// keyboard cursor on the button that puts the lane back.
     Mix,
 }
 
@@ -150,15 +144,11 @@ impl ShotScenario {
         )
     }
 
-    /// Parse a `--scenario <name>` selector. Returns `None` for an unknown
-    /// name so the caller can fall back to the plain editor rather than
-    /// silently capturing the wrong thing.
-    /// Every name [`Self::from_arg`] accepts.
-    ///
-    /// The launcher validates `--scenario` against a list, so it needs one;
-    /// `from_arg` is a match and cannot be enumerated. A test asserts every
-    /// name here parses and that the counts agree, so the two cannot drift
-    /// into "this scenario exists but the launcher rejects it".
+    /// `None` for an unknown name, so the caller falls back to the plain editor rather
+    /// than capturing the wrong thing.
+    /// The launcher validates `--scenario` against a list, and `from_arg` is a match that
+    /// cannot be enumerated; a test asserts every name here parses, so the two cannot
+    /// drift.
     pub const ALL_NAMES: &'static [&'static str] = &[
         "filters",
         "split",
@@ -240,10 +230,8 @@ pub const EMPTY_CAPTURE: &str = "empty";
 /// The capture of the collapsed media bin revealed at a narrow width.
 pub const NARROW_CAPTURE: &str = "narrow";
 
-/// The project the `composed` capture loads: the demo project with
-/// everything geometry made possible, arranged through the production model
-/// — an inset over the spine, a title in the lower third, and markers on the
-/// ruler.
+/// The demo project with an inset over the spine, a title in the lower third and markers
+/// on the ruler, arranged through the production model.
 pub(crate) fn composed_project() -> Project {
     let mut project = crate::seed::sample_project();
     if let Some(cid) = project.top_video_clip_at(23.0).map(|c| c.id)
@@ -303,12 +291,9 @@ pub(super) struct CaptureStaging {
 }
 
 impl VideoEditorApp {
-    /// Stage a `--shots` capture on the hosted editor. The scenario's
-    /// project has been loaded through the host already
-    /// ([`crate::VideoEditor`]'s `scenario`); this arranges the view state
-    /// around it — the selection, the open menu, the drag — on the editor's
-    /// next sync and draw, through the same one-shot lifecycle the scenario
-    /// table always used. `None` is the plain demo capture.
+    /// The scenario's project has been loaded through the host already; this arranges the
+    /// view state around it — selection, open menu, drag — on the next sync and draw.
+    /// `None` is the plain demo capture.
     pub fn stage_capture(&mut self, scenario: Option<&str>) {
         self.capture.scenario = match scenario {
             // The real live app on a blank project, as a fresh machine shows.
@@ -318,8 +303,6 @@ impl VideoEditorApp {
                 return;
             }
             Some(NARROW_CAPTURE) => {
-                // The collapsed bin revealed over the editor behind its scrim;
-                // the animation never runs in a one-shot render.
                 self.reconcile_flaps();
                 self.bin_flap.snap(true);
                 self.navigation.flap_settled = true;
@@ -364,14 +347,10 @@ impl VideoEditorApp {
         true
     }
 
-    /// Take in a block the mixer measured, as the monitor does.
-    ///
-    /// The one door meter data comes through, so a `--shots` capture and a
-    /// test exercise the same recording, latching and merging the live
-    /// monitor does rather than a drawing that imitates the result. The
-    /// signature is pinned to the project the block describes: without that
-    /// the next frame would read the staged report as one about a mix that
-    /// has since changed and throw it away.
+    /// The one door meter data comes through, so a capture and a test exercise the same
+    /// recording, latching and merging the live monitor does. The signature is pinned to
+    /// the project the block describes: otherwise the next frame would read the staged
+    /// report as one about a mix that has since changed and throw it away.
     fn stage_mix_block(&mut self, at: f64, report: &crate::audio::MixReport) {
         self.mix_meters.record(at, report);
         self.mix_sig = Some(crate::audio::mix_signature(&self.project));
@@ -413,10 +392,9 @@ impl VideoEditorApp {
                         .to_string(),
                 };
             }
-            // The keyboard cursor, which nothing painted at all until now.
-            // `has_focus` is what the host sets when it hands this widget the
-            // keyboard, and it is the gate the ring is drawn behind -- so a
-            // capture of the cursor has to stand in for that hand-over.
+            // `has_focus` is what the host sets when it hands this widget the keyboard,
+            // and the ring is drawn behind it, so a capture of the cursor stands in for
+            // that hand-over.
             ShotScenario::FocusBin => {
                 self.presentation.keyboard_focus = true;
                 self.focus.pane = Pane::Bin;
@@ -436,22 +414,18 @@ impl VideoEditorApp {
                 self.playhead = 12.0;
             }
             ShotScenario::Shuttle => {
-                // Three presses of L, through the production key path: 1x, 2x,
-                // then 4x... and a fourth for 8x, which is fast enough that a
-                // still with no readout would be indistinguishable from a
-                // stopped playhead.
+                // Three presses of L: 1×, 2×, 4×… and a fourth, fast enough that a still
+                // with no readout would look like a stopped playhead.
                 self.playhead = 8.0;
                 for _ in 0..4 {
                     self.shuttle_key(1.0);
                 }
             }
             ShotScenario::LinkedAudio => {
-                // Built through the production path — the same
-                // `attach_linked_audio` a real import runs — so the capture is
-                // of the feature and not of a hand-arranged imitation of it.
+                // Through the same `attach_linked_audio` a real import runs.
                 //
-                // The drone open (0..8) and the market cutaway (20..26) both
-                // sit over free A1 time, which is where their sound lands.
+                // The drone open (0..8) and the market cutaway (20..26) both sit over free
+                // A1 time, which is where their sound lands.
                 for name in ["Drone_Coastline.mov", "Cutaway_Market.mp4"] {
                     let Some(mid) = self
                         .project
@@ -477,11 +451,8 @@ impl VideoEditorApp {
                     };
                     self.attach_linked_audio(cid);
                 }
-                // Select the market pair's picture half, and park the playhead
-                // inside it, so one shot shows the selected state and the drone
-                // open — off to the left, unselected — shows the resting one.
-                // Picked by source rather than by "the top clip at 22s", which
-                // is the sunset insert on V2 and is not linked to anything.
+                // Picked by source rather than by "the top clip at 22s", which is the
+                // sunset insert on V2 and is not linked to anything.
                 if let Some(cid) = self
                     .project
                     .clips
@@ -506,10 +477,8 @@ impl VideoEditorApp {
                 self.zoom = 26.0;
             }
             ShotScenario::Mix => {
-                // Real faders, written through the same action a drag
-                // commits, so the capture is of the feature rather than of a
-                // hand-arranged imitation of it: A1 pushed up for a voice
-                // under music, A2 pulled down and opened out to the left.
+                // Written through the same action a drag commits: A1 pushed up for a
+                // voice under music, A2 pulled down and opened out to the left.
                 let lanes: Vec<(TrackId, f64, f64)> = self
                     .project
                     .display_tracks()
@@ -533,11 +502,9 @@ impl VideoEditorApp {
                         self.submit_track(&t);
                     }
                 }
-                // What a monitor would have measured playing this: a run of
-                // ordinary blocks, and three that went over. Staged through
-                // the production recording path, so the latch, the merge and
-                // the timeline positions are the real ones — a capture with
-                // no audio device is still a capture of the real meter.
+                // A run of ordinary blocks and three that went over, staged through the
+                // production recording path, so the latch, the merge and the positions are
+                // the real ones.
                 let audio_lanes: Vec<TrackId> = self
                     .project
                     .tracks
@@ -570,31 +537,20 @@ impl VideoEditorApp {
                 ] {
                     self.stage_mix_block(at, &block(l, r, &audio_lanes));
                 }
-                // Last, so the bars are showing a live level rather than only
-                // the holds — the resting state of a meter is not what a
-                // capture of a meter should show.
                 self.stage_mix_block(24.0, &block(0.74, 0.66, &audio_lanes));
                 self.playhead = 24.0;
             }
             ShotScenario::RenderRange => {
-                // A range that starts inside the timeline and ends well
-                // before its end, so both brackets and both scrims are on
-                // screen at once.
                 self.project.set_mark_out(19.0);
                 self.project.set_mark_in(6.5);
                 self.playhead = 11.0;
             }
             ShotScenario::SelectedFilters => {
-                // Select the graded drone clip on V1 and park the playhead a
-                // few seconds in (past its fade-in) so the inspector shows a
-                // graded clip with fades and the preview shows the grade.
                 if let Some(c) = self.project.top_video_clip_at(4.0) {
                     self.selection.select_only(c.id);
                     self.selected_media = Some(c.media);
                 }
                 self.playhead = 4.0;
-                // Push the saturation up a touch through the real edit path so
-                // the grade is unmistakable in the capture.
                 self.set_num(NumField::Saturation, 0.72);
                 if let Some(id) = self.selected() {
                     self.dispatch_clip(id);
@@ -602,8 +558,6 @@ impl VideoEditorApp {
                 self.zoom = 30.0;
             }
             ShotScenario::Composed => {
-                // The project the scenario loaded is composed already
-                // ([`composed_project`]); look at the inset under the title.
                 self.playhead = 23.0;
                 self.zoom = 26.0;
                 if let Some(c) = self.project.top_video_clip_at(23.0) {
@@ -611,8 +565,6 @@ impl VideoEditorApp {
                 }
             }
             ShotScenario::JustSplit => {
-                // Select the interview body clip and split it at the playhead,
-                // then select the right half — exactly what pressing S does.
                 if let Some(c) = self.project.top_video_clip_at(12.0) {
                     self.selection.select_only(c.id);
                 }
@@ -620,35 +572,24 @@ impl VideoEditorApp {
                 self.split_selected();
                 self.zoom = 40.0;
             }
-            // Rect-dependent interactions are arranged in `draw` (the layout
-            // rect is still zero here in `sync`).
             s if s.is_interaction() => {}
             _ => {}
         }
     }
 
-    /// Arrange a rect-dependent interaction scenario for a `--shots` capture,
-    /// once, from `draw` where the layout rect is known. Uses the same
-    /// production affordances a live interaction drives.
-    /// Stage two other participants for the `collaborators` capture.
-    ///
-    /// Their frames are built by [`crate::presence::point_frame`] and
-    /// [`crate::presence::range_frame`] -- the very functions this editor
-    /// publishes itself with -- and folded in through
-    /// [`PresenceCtx::apply_remote_presence`], the one decoder every inbound
-    /// frame goes through. So what the capture shows is what a real peer
-    /// produces; only the socket between them is missing.
+    /// Once, from `draw` where the layout rect is known, using the same production
+    /// affordances a live interaction drives.
+    /// Their frames come from [`crate::presence::point_frame`] and
+    /// [`crate::presence::range_frame`], the functions this editor publishes with, folded
+    /// in through [`PresenceCtx::apply_remote_presence`], the one decoder every inbound
+    /// frame goes through. What the capture shows is what a real peer produces.
     pub(super) fn seed_shot_collaborators(&mut self) {
         use ui::permissions::UserId;
         let mut ctx = PresenceCtx::empty();
-        // Clips to hand out, walked track by track from the top so the pick
-        // is the same on every run rather than whatever order a map iterated
-        // in -- and so the first peer lands on the topmost lane, where a name
-        // chip has no room above it and has to fall inside the clip instead.
-        // One per track, walked from the top, so two participants are never
-        // stacked on one lane -- and so the first lands on the topmost track,
-        // where a name chip has no room above it and has to fall inside the
-        // clip instead.
+        // Clips to hand out, one per track walked from the top, so the pick is the same on
+        // every run and two participants are never stacked on one lane. The first lands on
+        // the topmost track, where a name chip has no room above it and falls inside the
+        // clip.
         let clips: Vec<(ClipId, f64, f64)> = self
             .project
             .display_tracks()
@@ -669,8 +610,6 @@ impl VideoEditorApp {
             ctx.names.insert(UserId(id.to_string()), name.to_string());
             let (k, p) = crate::presence::point_frame(None, at);
             ctx.apply_remote_presence(id.to_string(), k, p);
-            // Each takes a different clip, and neither takes the one this
-            // participant has, so the three selections are distinguishable.
             if let Some((cid, start, end)) = clips.get(i).copied() {
                 let (k, p) = crate::presence::range_frame(Some((cid, start, end)));
                 ctx.apply_remote_presence(id.to_string(), k, p);
@@ -695,9 +634,6 @@ impl VideoEditorApp {
         reason = "the capture script: one arm per shot, each setting up exactly what it shows"
     )]
     pub(super) fn apply_shot_interaction(&mut self, r: &Regions) {
-        // A capture that is about the inspector has to show it, and on a
-        // narrow window it starts out of the way. Opening it here is what
-        // selecting a clip does in the live app.
         if matches!(
             self.capture.scenario,
             ShotScenario::Geometry
@@ -718,9 +654,6 @@ impl VideoEditorApp {
                 self.seed_shot_collaborators();
             }
             ShotScenario::Mix => {
-                // Select a clip on the lane the fader belongs to, and scroll
-                // the panel to its MIX section — a capture of a control
-                // nobody can see is a capture of nothing.
                 if let Some(cid) = self
                     .project
                     .clips
@@ -735,11 +668,9 @@ impl VideoEditorApp {
                     self.selection.select_only(cid);
                     self.selected_media = self.project.clip(cid).map(|c| c.media);
                 }
-                // Anchored on the MIX header rather than a guessed offset:
-                // measured from the layout the panel really draws, the whole
-                // section fits — the fader, the pan and the button under them.
-                // A fixed 150px put the button half off the bottom edge, and a
-                // capture of a control nobody can see is a capture of nothing.
+                // Anchored on the MIX header rather than a guessed offset: a fixed 150px
+                // put the button half off the bottom edge, and a capture of a control nobody
+                // can see is a capture of nothing.
                 self.inspector_scroll = 0.0;
                 let head = self
                     .inspector_layout(r)
@@ -751,11 +682,6 @@ impl VideoEditorApp {
                     let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
-                // …with the keyboard cursor on the button that puts the lane
-                // back. It is the newest stop on the walk and the one that
-                // spent longest as a pointer-only control, so a capture of the
-                // mixer that could not show a ring on it would be a capture of
-                // the half of the feature that already worked.
                 self.presentation.keyboard_focus = true;
                 self.focus.pane = Pane::Inspector;
                 self.focus.inspector = self
@@ -765,10 +691,6 @@ impl VideoEditorApp {
                     .unwrap_or(0);
             }
             ShotScenario::LinkedAudio => {
-                // Bring the link control into view. It is laid out under the
-                // label swatches, which on a panel this tall sits just past
-                // the bottom edge — and a capture of a control nobody can see
-                // is a capture of nothing.
                 self.inspector_scroll = 150.0_f64.min(self.inspector_max_scroll(r));
             }
             ShotScenario::FocusInspector => {
@@ -780,10 +702,6 @@ impl VideoEditorApp {
                 self.inspector_scroll = 0.0;
                 self.presentation.keyboard_focus = true;
                 self.focus.pane = Pane::Inspector;
-                // On one of the grade sliders: the block above the first
-                // section header, which is the part of the panel no keyboard
-                // could reach at all until recently, and the reason a cursor
-                // nobody can see matters more here than it used to.
                 self.focus.inspector = self
                     .a11y_inspector_rows()
                     .iter()
@@ -791,9 +709,6 @@ impl VideoEditorApp {
                     .unwrap_or(0);
             }
             ShotScenario::BinMenu => {
-                // A row is only pressed where it can be seen: on a window
-                // narrow enough to fold the bin away, the bin is summoned
-                // first, as a person would have to.
                 let r = &self.reveal_bin_for_capture(r);
                 if let Some((mid, row)) = self.bin_item_rects(r).into_iter().nth(2) {
                     let at = Point::new(row.center().x, row.center().y);
@@ -832,8 +747,6 @@ impl VideoEditorApp {
                     self.selected_media = Some(c.media);
                 }
                 self.playhead = 6.0;
-                // Scroll the inspector so the effects stack starts at the top
-                // of the body, its header and every row whole.
                 self.inspector_scroll = 0.0;
                 let top = self.inspector_viewport(r).y0;
                 let header = self
@@ -847,10 +760,6 @@ impl VideoEditorApp {
                     |y| (y - top - S2).clamp(0.0, self.inspector_max_scroll(r)),
                 );
             }
-            // A clip that has actually been placed, re-timed and keyframed,
-            // with the inspector scrolled to the controls that did it. Every
-            // value goes through the production model, so the capture is what
-            // the compositor is drawing rather than a posed panel.
             ShotScenario::Geometry => {
                 if let Some(c) = self.project.top_video_clip_at(6.0) {
                     let cid = c.id;
@@ -862,15 +771,10 @@ impl VideoEditorApp {
                         c.transform.crop_left = 0.08;
                         c.transform.crop_right = 0.08;
                         c.set_speed(2.0, false);
-                        // Two keys, so the row reads as animated and the clip
-                        // carries diamonds.
                         let start = c.start;
                         c.set_key_at(Param::PosX, start + 0.5, 0.30, Interp::Ease);
                         c.set_key_at(Param::PosX, start + 3.0, -0.30, Interp::Ease);
                     }
-                    // 2x halves the clip's length, so a playhead left where it
-                    // was would now sit past its end and the preview would go
-                    // black. Land it inside what the clip now occupies.
                     if let Some(c) = self.project.clip(cid) {
                         self.playhead = c.start + c.duration() * 0.45;
                     }
@@ -884,21 +788,15 @@ impl VideoEditorApp {
                     self.selection.select_only(cid);
                     self.playhead = 23.0;
                     if let Some(c) = self.project.clip_mut(cid) {
-                        // An S on the master and a lifted blue, so the
-                        // chooser's other channels are not empty either.
                         c.curves.master.set_point(0.28, 0.14);
                         c.curves.master.set_point(0.72, 0.88);
                         c.curves.blue.set_point(0.5, 0.62);
                         c.curves.mix = 0.8;
-                        // Keyed, so the amount row reads as animated and the
-                        // clip body carries its diamonds.
                         let start = c.start;
                         c.set_key_at(Param::CurveMix, start + 0.4, 0.0, Interp::Ease);
                         c.set_key_at(Param::CurveMix, start + 3.0, 0.8, Interp::Ease);
                     }
                 }
-                // The section sits at the top of the controls, so nothing has
-                // to be folded away for the whole of it to fit.
                 self.inspector_scroll = 0.0;
                 let head = self
                     .inspector_layout(r)
@@ -934,17 +832,11 @@ impl VideoEditorApp {
                             feather: 0.22,
                             invert: false,
                         };
-                        // Keyed, so the rows read as animated and the clip
-                        // body carries its diamonds.
                         let start = c.start;
                         c.set_key_at(Param::MaskX, start + 0.4, -0.2, Interp::Ease);
                         c.set_key_at(Param::MaskX, start + 3.0, 0.24, Interp::Ease);
                     }
                 }
-                // The two sections sit below the levels and the geometry.
-                // Fold what is above them away *and* scroll their header to
-                // the top of the panel, so the capture shows both whole
-                // rather than however much happened to fit.
                 self.collapsed.insert(Section::Transform);
                 self.collapsed.insert(Section::Speed);
                 self.inspector_scroll = 0.0;
@@ -961,9 +853,6 @@ impl VideoEditorApp {
                 }
             }
             ShotScenario::TitleClip => {
-                // Build the title through the model the app itself uses, then
-                // select it — so what the capture shows is a real title clip,
-                // not an inspector posed to look like one.
                 let item = MediaItem {
                     id: Uuid::new_v4(),
                     name: "Coastline".into(),
@@ -992,8 +881,6 @@ impl VideoEditorApp {
                     .into_iter()
                     .find(|t| t.kind == TrackKind::Video)
                     .map(|t| t.id);
-                // On the top lane's free stretch, after the logo bug and well
-                // before the sunset, so it shares the lane with nothing.
                 if let Some(track) = track
                     && let Some(cid) = self.project.add_clip(track, mid, 7.0)
                 {
@@ -1006,11 +893,8 @@ impl VideoEditorApp {
                 self.collapsed.insert(Section::Curves);
                 self.collapsed.insert(Section::Transform);
                 self.collapsed.insert(Section::Speed);
-                // Land the section's own header near the top of the panel
-                // rather than at a fraction of the scroll: the panel's height
-                // moves whenever a section is added, and a fraction that once
-                // framed the title would then frame whatever had taken its
-                // place.
+                // The panel's height moves whenever a section is added, and a fraction that
+                // once framed the title would then frame whatever took its place.
                 self.inspector_scroll = 0.0;
                 let head = self
                     .inspector_layout(r)
@@ -1030,10 +914,6 @@ impl VideoEditorApp {
                     self.selection.select_only(cid);
                     if let Some(c) = self.project.clip_mut(cid) {
                         let start = c.start;
-                        // Opacity ramps across the clip, with a key exactly
-                        // under the playhead so the control shows its
-                        // on-a-key state; brightness is animated but has no
-                        // key here, so it shows the between-keys state.
                         c.set_key_at(Param::Opacity, start + 1.0, 0.15, Interp::Linear);
                         c.set_key_at(Param::Opacity, 6.0, 1.0, Interp::Ease);
                         c.set_key_at(Param::Opacity, start + 8.0, 0.4, Interp::Hold);
@@ -1055,8 +935,6 @@ impl VideoEditorApp {
                         c.set_key_at(Param::Opacity, start + 8.0, 0.4, Interp::Linear);
                     }
                 }
-                // Open the menu on the key the playhead is sitting on, from
-                // the control's own rect — the same call the click makes.
                 let l = self.inspector_layout(r);
                 if let Some((_, rect)) = l.keys.iter().find(|(p, _)| *p == Param::Opacity).copied()
                 {
@@ -1068,9 +946,6 @@ impl VideoEditorApp {
                 self.project.add_marker(4.0, "cold open", 1);
                 let act_two = self.project.add_marker(9.5, "act two", 3);
                 self.project.add_marker(21.0, "sunset", 5);
-                // One marker carries a note, so the list shows both shapes a
-                // row takes: a name on its own, and a name with what it means
-                // under it.
                 if let Some(m) = self.project.marker_mut(act_two) {
                     m.note = "hold on the wide before the cut".into();
                 }
@@ -1080,8 +955,6 @@ impl VideoEditorApp {
                     self.selection.select_only(cid);
                     if let Some(c) = self.project.clip_mut(cid) {
                         c.add_marker(start + 1.5, "cutaway", 2);
-                        // Re-timed, so the folded SPEED header has something
-                        // to report — a fold must never hide state.
                         c.set_speed(2.0, true);
                     }
                 }
@@ -1091,21 +964,15 @@ impl VideoEditorApp {
                 self.inspector_scroll = self.inspector_max_scroll(r);
             }
             ShotScenario::ProjectFormat => {
-                // Nothing selected, so the panel is in its project-level
-                // state: the marker list and, under it, the format.
                 self.selection.clear();
                 self.selected_media = None;
                 self.project.add_marker(4.0, "cold open", 1);
-                // Vertical, which is the shape the editor could not previously
-                // be told about at all.
                 self.project.set_frame_size(1080, 1920);
                 self.project.set_fps(24.0);
                 self.collapsed.remove(&Section::Project);
                 self.inspector_scroll = self.inspector_max_scroll(r);
             }
             ShotScenario::MultiSelect => {
-                // Everything on the top video lane, plus an audio clip, so the
-                // capture shows a selection spanning tracks.
                 let mut ids: Vec<ClipId> = self
                     .lane_rects(r)
                     .into_iter()
@@ -1118,8 +985,6 @@ impl VideoEditorApp {
                 self.playhead = 8.0;
             }
             ShotScenario::LockedTrack => {
-                // Lock the first video track and select a clip on it, so both
-                // the lane hatch and the inspector's note are visible.
                 if let Some((tid, _, _)) = self.lane_rects(r).into_iter().next() {
                     if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                         t.locked = true;
@@ -1133,8 +998,6 @@ impl VideoEditorApp {
                 self.playhead = 8.0;
             }
             ShotScenario::Scrolled => {
-                // Zoom well in, then park the view in the middle of the
-                // timeline so the scrollbar thumb sits part-way along.
                 self.zoom = 120.0;
                 self.playhead = self.project.duration() * 0.5;
                 self.scroll_to_time(self.playhead, r);
@@ -1163,8 +1026,6 @@ impl VideoEditorApp {
                     self.marquee = Some(band);
                     self.last_mouse = Point::new(band.x1, band.y1);
                     self.release_marquee(Point::new(band.x0, band.y0), false, r);
-                    // Keep the band drawn: release_marquee only computes the
-                    // selection, and the capture wants both on screen.
                     self.marquee = Some(band);
                 }
             }

@@ -144,8 +144,6 @@ pub fn track_carries_sound(project: &Project, track: TrackId) -> bool {
         .any(|c| carries_sound(project, c, t.kind))
 }
 
-/// An export asks first, so a video-only timeline is muxed without an empty audio
-/// track.
 pub fn has_audio(project: &Project) -> bool {
     project.clips.iter().any(|c| {
         project
@@ -158,8 +156,6 @@ pub fn peak(block: &[f32]) -> f32 {
     block.iter().fold(0.0f32, |m, s| m.max(s.abs()))
 }
 
-/// [`peak`] over both channels answers "how loud", this answers "how loud on
-/// which side", which is what a stereo meter draws.
 pub fn channel_peak(block: &[f32], channel: usize) -> f32 {
     block
         .iter()
@@ -192,8 +188,6 @@ impl BlockMeter {
     }
 }
 
-/// The per-track numbers are what let a warning say *which* lane, rather than
-/// leaving a person to solo their way down the timeline.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MixReport {
     pub master: BlockMeter,
@@ -369,8 +363,6 @@ fn fetch_at_rate(
     Some(out)
 }
 
-/// Interleaved `f32` in -1..1 as little-endian signed 16-bit, which is what the
-/// export's audio `appsrc` is fed.
 pub fn to_s16le(block: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(block.len() * 2);
     for s in block {
@@ -393,8 +385,6 @@ pub struct DecodedPcm {
 
 #[cfg(any(feature = "gst", feature = "decode"))]
 impl DecodedPcm {
-    /// A reference that has not hydrated is absent, and its clips mix as
-    /// silence.
     pub fn new(project: &Project) -> Self {
         let sources = project
             .media
@@ -476,9 +466,6 @@ pub struct TrackLevel {
     pub track: TrackId,
     pub level: [f32; 2],
     pub hold: f32,
-    /// **Latched.** True from the first moment this lane's own contribution went
-    /// past full scale until the meter is cleared, so a one-frame flash is still
-    /// there to find afterwards.
     pub clipped: bool,
 }
 
@@ -489,14 +476,8 @@ pub struct MixSnapshot {
     pub master: [f32; 2],
     pub master_hold: f32,
     pub tracks: Vec<TrackLevel>,
-    /// The worst pre-clamp peak seen while over full scale: `1.6` means the mix
-    /// asked for 60% more than the format carries.
     pub worst: f32,
-    /// Timeline seconds where the mix went over, in the order they happened: the
-    /// answer to "where".
     pub overs: Vec<f64>,
-    /// Whether anything has been measured since the last clear. Telling a person
-    /// their levels are fine when nothing has played would be a lie.
     pub monitored: bool,
 }
 
@@ -517,8 +498,6 @@ impl MixSnapshot {
             .then(|| crate::model::linear_to_db(f64::from(self.master_hold)))
     }
 
-    /// Wrapping to the first one after the last, so pressing the warning walks the
-    /// list and starts again.
     pub fn next_over_after(&self, t: f64) -> Option<f64> {
         self.overs
             .iter()
@@ -613,8 +592,6 @@ impl MixMeters {
         }
     }
 
-    /// The bar falls at the same rate whether the mixer runs at 1024-sample blocks
-    /// or not at all.
     pub fn decay(&self, dt: f64) {
         if dt <= 0.0 {
             return;
@@ -697,12 +674,8 @@ pub fn mix_signature(project: &Project) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-/// Small enough that a pause or a scrub is acted on promptly, large enough that
-/// the mixing thread is not waking thousands of times a second.
 pub const MONITOR_BLOCK: usize = 1024;
 
-/// Abstracted so the transport logic — what plays, from where, what a seek does —
-/// is testable without an audio device, which no CI box has.
 pub trait MonitorSink: Send {
     /// Returning `false` stops the monitor: the device went away.
     fn push(&mut self, block: &[f32]) -> bool;
@@ -717,8 +690,6 @@ impl MonitorSink for NullSink {
     }
 }
 
-/// The system sink where one opens, [`NullSink`] where none does: a headless CI
-/// runner is a normal state, not a failure.
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub fn open_output() -> Box<dyn MonitorSink> {
     if let Some(s) = media::pcm::Playback::open() {
@@ -785,8 +756,6 @@ impl AudioMonitor {
                 if !state.playing.load(AtomicOrdering::Relaxed) {
                     #[cfg(test)]
                     state.paused_turns.fetch_add(1, AtomicOrdering::SeqCst);
-                    // Idle cheaply. Nothing is pushed while paused, so a
-                    // paused editor makes no sound at all.
                     let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
                     continue;
                 }
@@ -812,8 +781,6 @@ impl AudioMonitor {
         Self { shared, handle }
     }
 
-    /// Replace the timeline being monitored. Call it when the project changes
-    /// so an edit is heard on the next block rather than the next play.
     pub fn set_project(&self, project: &Project) {
         if let Ok(mut p) = self.shared.project.lock() {
             *p = project.clone();
@@ -831,8 +798,6 @@ impl AudioMonitor {
         self.shared.playing.store(false, AtomicOrdering::Relaxed);
     }
 
-    /// Move the playhead. Safe while playing — the next block comes from the
-    /// new position.
     pub fn seek(&self, secs: f64) {
         if let Ok(mut p) = self.shared.position.lock() {
             *p = secs.max(0.0);
@@ -848,8 +813,6 @@ impl AudioMonitor {
         self.shared.position.lock().map_or(0.0, |p| *p)
     }
 
-    /// Wait until the monitor thread has seen the transport paused: from
-    /// then on it pushes nothing until it is played again.
     #[cfg(test)]
     fn wait_paused(&self) {
         let seen = self.shared.paused_turns.load(AtomicOrdering::SeqCst);
@@ -954,8 +917,6 @@ mod tests {
     #[cfg(feature = "decode")]
     #[serial_test::serial(video_editor_gst)]
     fn a_source_that_carries_audio_decodes_to_real_samples() {
-        // A source that really carries audio must come back with it, or every "the
-        // export is silent" assertion here is vacuous.
         if !media_stack::media_stack() {
             return;
         }
@@ -969,8 +930,6 @@ mod tests {
         assert!(super::peak(&pcm) > 0.01, "and it is not silence");
     }
 
-    /// Frame `n` of a media is the sample value `n`, so a resampler's output reads
-    /// back as which source frames a block covered.
     struct RampSource {
         len: usize,
     }
@@ -984,8 +943,6 @@ mod tests {
                 if n >= self.len {
                     break;
                 }
-                // Normalised by the source length, so the ramp stays inside -1..1
-                // rather than being clamped (which would erase what it reports).
                 let v = n as f32 / self.len as f32;
                 out.push(v);
                 out.push(v);
@@ -1319,8 +1276,6 @@ mod tests {
         }
     }
 
-    /// Polling beats a fixed sleep: the monitor runs on its own thread and the box
-    /// is shared.
     fn eventually(mut cond: impl FnMut() -> bool) -> bool {
         let deadline = tilo_test_env::hang_deadline();
         while ui::time::now() < deadline {
@@ -1684,8 +1639,6 @@ mod tests {
             assert!(p.track(a1).unwrap().gain_db < 6.0 - 1e-9);
             assert!(p.track(a2).unwrap().gain_db < -2.0 - 1e-9);
         }
-        // Headroom is a real request: asking for three decibels under lands three
-        // decibels under.
         {
             let (mut p, a1, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1998,9 +1951,6 @@ mod tests {
                 after[0]
             );
         }
-        // Case `linking_a_bed_to_a_shot_leaves_the_shots_own_sound_alone`:
-        // A link is a general "these move together". Tying a music bed to a shot
-        // must not silence the shot.
         {
             use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
 
@@ -2016,8 +1966,6 @@ mod tests {
                     name: name.into(),
                     kind,
                     duration: 30.0,
-                    // The picture's container carries sound; so, obviously, does
-                    // the music.
                     has_audio: kind == MediaKind::Video,
                     ..Default::default()
                 });

@@ -86,10 +86,9 @@ impl VideoEditorApp {
             return true;
         }
         if self.bin_overlay_is_open() {
-            // The narrow bin paints a full-window scrim, so it owns keyboard
-            // input as well as pointer input. Keep the one useful pane walk
-            // inside the bin and give both Escape and B the visible toggle's
-            // close behaviour; no timeline edit may happen behind the veil.
+            // The narrow bin paints a full-window scrim, so it owns the keyboard too: one
+            // useful pane walk inside it, Escape and B close it, and no timeline edit
+            // happens behind the veil.
             return match key {
                 Key::Named(NamedKey::Escape) => {
                     self.close_bin_overlay();
@@ -183,10 +182,9 @@ impl VideoEditorApp {
                 let _ = r;
                 true
             }
-            // Ctrl+O opens a project file, as "open" does in every app;
-            // import keeps the same letter, one modifier along. There is no
-            // Ctrl+S: the project is kept as it is edited. Ctrl+Shift+S, a
-            // copy elsewhere, exports it as a project file.
+            // Ctrl+O opens a project file, as "open" does in every app; import keeps the
+            // letter one modifier along. There is no Ctrl+S: the project is kept as it is
+            // edited. Ctrl+Shift+S exports a copy.
             Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("o") => {
                 self.trigger_import();
                 true
@@ -240,11 +238,8 @@ impl VideoEditorApp {
                 self.shuttle_key(1.0);
                 true
             }
-            // Shift+I / Shift+O mark the timeline's render range; Shift+X
-            // drops both marks. Plain I / O keep trimming the selected clip,
-            // which is what they have always done and what every NLE does
-            // with them — the range is a property of the timeline, the trim
-            // one of a clip, and they are not the same decision.
+            // Shift+I / Shift+O mark the render range; Shift+X drops both. Plain I / O
+            // trim the selected clip, as every NLE does with them.
             Key::Character(c) if shift && !ctrl && c.eq_ignore_ascii_case("i") => {
                 self.mark_in_here();
                 true
@@ -297,13 +292,9 @@ impl VideoEditorApp {
                 self.jump_to_marker(true);
                 true
             }
-            // C walks the places the mix went over, the same walk the red CLIP
-            // chip does under the pointer. Without it the *only* route to the
-            // answer was clicking a 60-pixel chip: the warning told a keyboard
-            // user their mix was ruined and then gave them a whole timeline to
-            // scrub. Returns false when nothing has clipped, so the key falls
-            // through as unhandled rather than reporting a jump it did not
-            // make.
+            // The walk the red CLIP chip does under the pointer, so a keyboard has the
+            // same route. False when nothing has clipped, so the key falls through as
+            // unhandled.
             Key::Character(c) if c.eq_ignore_ascii_case("c") && !ctrl => self.go_to_next_clipping(),
             Key::Character(c) if c.eq_ignore_ascii_case("z") && !ctrl => {
                 self.zoom_to_fit(r);
@@ -317,11 +308,9 @@ impl VideoEditorApp {
                 self.zoom_by(1.0 / 1.25);
                 true
             }
-            // Tab moves between panes and the arrows move within the focused
-            // one. Tab used to toggle the inspector, but an editor whose only
-            // Tab stop is the whole application is one a keyboard-only user
-            // cannot navigate at all; the inspector toggle moved to Ctrl+I,
-            // which the shortcut sheet states.
+            // Tab moves between panes, the arrows within one: an editor whose only Tab
+            // stop is the whole application cannot be navigated by keyboard at all. The
+            // inspector toggle moved to Ctrl+I, which the shortcut sheet states.
             Key::Named(NamedKey::Tab) => {
                 self.focus_pane(shift);
                 true
@@ -371,11 +360,8 @@ impl VideoEditorApp {
         }
     }
 
-    /// The go-to-timecode card, for the painter and the hit test alike.
-    ///
-    /// Shared rather than derived twice: a click has to land on the card that
-    /// was actually drawn, or dismiss-on-click-away fires while the pointer
-    /// is over the field.
+    /// Shared rather than derived twice: a click has to land on the card that was drawn,
+    /// or dismiss-on-click-away fires while the pointer is over the field.
     pub(super) fn goto_layout(
         &self,
         r: &Regions,
@@ -430,13 +416,10 @@ impl VideoEditorApp {
             }
             return;
         }
-        // The shortcut sheet and the go-to-timecode field paint the same
-        // full-window scrim as the dialogs above, so they swallow clicks the
-        // same way. Before this, a click "on" the dimmed background reached
-        // the clip, slider or Export button underneath — a real edit, made
-        // invisibly, through a surface that said the editor was unavailable.
-        // Clicking away dismisses, which is what a scrim invites; the card
-        // itself keeps the click, as every modal card in the fleet does.
+        // They paint the same full-window scrim as the dialogs, so they swallow clicks
+        // the same way: a click on the dimmed background reached the clip, slider or
+        // Export button underneath, making a real edit through a surface that said the
+        // editor was unavailable. Clicking away dismisses; the card keeps the click.
         if self.navigation.help_open {
             let dismisses = self
                 .with_dialog_layout(|app, tr, theme| app.help_layout(tr, theme).modal.dismisses(p));
@@ -508,21 +491,17 @@ impl VideoEditorApp {
             for (mid, rect) in self.bin_item_rects(r) {
                 if rect.contains(p) {
                     self.selected_media = Some(mid);
-                    // How long ago this same item was last *clicked* (not
-                    // programmatically selected) — `None` for a different item
-                    // or a fresh one. Both the double-click and the rename are
-                    // gated on it, so a freshly-imported, auto-selected item is
-                    // never renamed on the first click.
+                    // When this same item was last *clicked*, not programmatically
+                    // selected: both the double-click and the rename are gated on it, so a
+                    // freshly imported, auto-selected item is never renamed on first click.
                     let since = self.last_click_media.and_then(|(m, t)| {
                         (m == mid).then(|| ui::time::now().saturating_duration_since(t).as_millis())
                     });
                     let dbl = matches!(since, Some(ms) if ms < BIN_DOUBLE_CLICK_MS);
-                    // The rename window is *bounded at both ends*: fast enough
-                    // and it is a double-click, slow enough and the earlier
-                    // click is stale and this is simply a new press. Without
-                    // the upper bound an item, once clicked, could never be
-                    // dragged to the timeline again — the name band covers
-                    // most of the row, which is exactly where you grab it.
+                    // Bounded at both ends: fast enough and it is a double-click, slow
+                    // enough and this is a new press. Without the upper bound a clicked item
+                    // could never be dragged to the timeline again, and the name band covers
+                    // most of the row.
                     let rename_window = matches!(
                         since,
                         Some(ms) if (BIN_DOUBLE_CLICK_MS..BIN_RENAME_WINDOW_MS).contains(&ms)
@@ -532,12 +511,8 @@ impl VideoEditorApp {
                         self.last_click_media = None;
                         self.pending_rename = None;
                     } else {
-                        // Always arm a potential bin→timeline drag. When the
-                        // press also falls in the rename window, the rename is
-                        // only an *intent*: it fires on release if the pointer
-                        // never moved, and is cancelled the moment the press
-                        // becomes a drag (see `update_bin_drag`). A drag
-                        // therefore always wins over a rename.
+                        // The rename is only an intent: it fires on release if the pointer
+                        // never moved, and is cancelled the moment the press becomes a drag.
                         self.bin_drag = Some(BinDrag {
                             media: mid,
                             origin: p,
@@ -584,20 +559,16 @@ impl VideoEditorApp {
             self.apply_scrubber(p, r);
             return;
         }
-        // The standing clipping warning, in the master strip. Pressing it
-        // walks the playhead through the places the mix went over, wrapping
-        // round — which is the difference between a warning you can act on
-        // and one you can only be annoyed by.
+        // Pressing it walks the playhead through the places the mix went over, wrapping
+        // round: the difference between a warning you can act on and one you can only be
+        // annoyed by.
         if self.mix.clipped() && self.clip_flag_rect(r).contains(p) {
             self.go_to_next_clipping();
             return;
         }
-        // Zoom readout / fit-to-window. **Before** the ruler scrub, because
-        // it now sits at the ruler's right end: a chip inside a region that
-        // scrubs has to be claimed before the region is, or pressing it just
-        // moves the playhead to the far right.
-        // The playhead's head keeps the ruler's right end even where the
-        // chip sits: a press on the head scrubs, as it does anywhere else.
+        // **Before** the ruler scrub: a chip inside a region that scrubs has to be claimed
+        // before the region is, or pressing it just moves the playhead to the far right.
+        // The playhead's head keeps the ruler's right end where the chip sits.
         if self.zoom_chip_rect(r).contains(p) && !self.playhead_head_rect(r).contains(p) {
             self.zoom_to_fit(r);
             return;
@@ -666,11 +637,9 @@ impl VideoEditorApp {
         false
     }
 
-    /// Finish a rubber-band drag. If the band ever opened, select every clip
-    /// it touches (extending the previous selection when `additive`).
-    /// Otherwise the press was a plain click on empty space: clear the
-    /// selection and scrub the playhead there, the behaviour a bare click on
-    /// the lanes has always had.
+    /// If the band ever opened, select every clip it touches (extending when
+    /// `additive`); otherwise the press was a click on empty space, which clears the
+    /// selection and scrubs the playhead there.
     pub(super) fn release_marquee(&mut self, origin: Point, additive: bool, r: &Regions) {
         let Some(band) = self.marquee else {
             if !additive {
@@ -718,11 +687,10 @@ impl VideoEditorApp {
         None
     }
 
-    /// Press inside the lane area. On a clip: select (shift extends), then arm
-    /// a trim or a move — unless its track is locked, in which case the clip
-    /// still selects (so the inspector can show it) but no edit drag begins.
-    /// On empty space: arm a rubber-band selection, which falls back to a
-    /// playhead scrub if the press never moves.
+    /// On a clip: select (shift extends), then arm a trim or a move — unless its track is
+    /// locked, in which case it still selects so the inspector can show it. On empty
+    /// space: arm a rubber band, which becomes a playhead scrub if the press never
+    /// moves.
     pub(super) fn press_timeline(&mut self, r: &Regions, p: Point, shift: bool) {
         if let Some((cid, lane)) = self.clip_at(r, p) {
             if shift {
@@ -741,10 +709,8 @@ impl VideoEditorApp {
                 return;
             };
             let cr = self.clip_rect(&clip, &lane, r);
-            // A key diamond on the clip's keyframe lane takes the playhead to
-            // that key. Checked before the trim handles and the move drag,
-            // because it is the smaller, more specific target inside the same
-            // body.
+            // Checked before the trim handles and the move drag: the smaller, more
+            // specific target inside the same body.
             if !shift
                 && p.y >= cr.y1 - 13.0
                 && let Some(t) = clip
@@ -989,10 +955,8 @@ impl VideoEditorApp {
             });
             return;
         }
-        // Key controls. An unkeyed parameter takes one click to start
-        // animating; a keyed one opens the menu that shapes, removes and
-        // steps between its keys, because "what do I do with this key" has
-        // more than one answer and a second click cannot express them all.
+        // An unkeyed parameter takes one click to start animating; a keyed one opens
+        // the menu, because "what do I do with this key" has more than one answer.
         for (param, rect) in &l.keys {
             if rect.contains(p) {
                 if self.key_state(*param) == KeyState::Off {
@@ -1172,13 +1136,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// A press inside the curve editor: grab the point under the pointer, or
-    /// put a new one there.
-    ///
-    /// Adding on a plain click is what makes the curve editable at all — a
-    /// separate "add point" button would need somewhere to add it, and the
-    /// answer is always "where I clicked". A click too close to an existing
-    /// point grabs that one instead, so points cannot be stacked.
+    /// Adding on a plain click is what makes the curve editable: a separate "add point"
+    /// button would need somewhere to add it, and the answer is always "where I
+    /// clicked". A click too close to a point grabs that one, so points cannot stack.
     pub(super) fn press_curve(&mut self, canvas: Rect, p: Point) {
         let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
             return;
@@ -1217,10 +1177,8 @@ impl VideoEditorApp {
         // see `chrome_theme`.
         let l = self.with_dialog_layout(super::VideoEditorApp::export_layout);
         match l.modal.hit(p) {
-            // The close control, or a click outside the card, dismisses. A
-            // render in flight is not abandoned by that: it keeps reporting
-            // from the window bar's Export and its own live region, and
-            // Export is the way back in here.
+            // A render in flight is not abandoned: it keeps reporting from the window
+            // bar's Export and its own live region, and Export is the way back in here.
             Some(ModalHit::Close | ModalHit::Scrim) => {
                 self.presentation.export_open = false;
             }

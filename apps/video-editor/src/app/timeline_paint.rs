@@ -11,15 +11,9 @@ fn caption(theme: &Theme) -> TextStyle {
 }
 
 impl VideoEditorApp {
-    /// The master meter and the standing clipping warning.
-    ///
-    /// Two states and they read completely differently, which is the point.
-    /// Resting, it is a stereo bar and the loudest the mix has been, in
-    /// decibels — the reading a person mixing wants anyway. Once the mix has
-    /// gone over, the right-hand flag turns into a red "Clip" stating how far
-    /// over, and it stays that way: it survives the transport stopping, the
-    /// playhead moving and the panel being folded, and it is cleared only by
-    /// changing the levels it is a report about.
+    /// Two states: resting, a stereo bar and the loudest the mix has been in
+    /// decibels; over, the flag turns into a red "Clip" stating how far over, and stays
+    /// that way until the levels it reports on change.
     pub(super) fn draw_master_strip(
         &self,
         scene: &mut Scene,
@@ -139,10 +133,9 @@ impl VideoEditorApp {
         // --- ruler ticks ---
         let label = caption(theme).numeric();
         let label_h = line_height(tr, &label);
-        // Ruler labels are rendered at the user's text scale while time is
-        // measured in physical timeline pixels.  Ask for proportionally more
-        // spacing so large labels remain individual readings instead of a
-        // single unreadable run of digits.
+        // Ruler labels are at the user's text scale while time is physical pixels, so
+        // ask for proportionally more spacing: large labels must stay separate
+        // readings rather than one run of digits.
         let tick_step = nice_tick(self.zoom / self.text_scale);
         let start_t = self.scroll.max(0.0);
         let end_t = self.x_to_time(r.lanes.x1, &r.lanes);
@@ -154,10 +147,9 @@ impl VideoEditorApp {
         let grid_ink = ui::surface::edge_on_with(ground, ui::chrome::HAIRLINE_ALPHA / 2);
         let label_top = r.ruler.y0 + (r.ruler.height() - label_h) / 2.0;
         let chip_x0 = self.zoom_chip_rect(r).x0;
-        // The ruler's one row of readings, in order of who owns it: the
-        // playhead's time tag, then everyone else's playhead names, then the
-        // named markers, then the tick times. A reading that would run into
-        // one before it is left out rather than printed through it.
+        // The ruler's one row, in order of who owns it: the playhead's time tag, other
+        // participants' names, the named markers, then the tick times. A reading that
+        // would run into one before it is left out rather than printed through it.
         let (tag, tag_rect) = self.playhead_tag(r, tr, theme);
         let mut claimed: Vec<(f64, f64)> = vec![(tag_rect.x0, tag_rect.x1)];
         let peer_name = caption(theme);
@@ -213,10 +205,8 @@ impl VideoEditorApp {
         }
 
         // --- where the mix went over ---
-        // The other half of the warning. Knowing the mix clipped and not
-        // knowing where is knowing you have to scrub ninety seconds; these
-        // marks put it on the ruler, in the same place a person already looks
-        // to find a moment, and they stay there until the levels change.
+        // Knowing the mix clipped and not knowing where means scrubbing ninety seconds;
+        // these marks stay until the levels change.
         for over in &self.mix.overs {
             let x = self.time_to_x(*over, &r.lanes);
             if x < r.ruler.x0 || x > r.ruler.x1 {
@@ -231,10 +221,9 @@ impl VideoEditorApp {
         }
 
         // --- render range ---
-        // The in / out marks the export honours, drawn before the markers so
-        // a marker flag sits over the band rather than under it. A range that
-        // is set has to be visible: an export that is eight seconds long when
-        // the timeline is ninety needs a reason on screen.
+        // Drawn before the markers, so a marker flag sits over the band. A range that is
+        // set has to be visible: an export of eight seconds from a ninety-second
+        // timeline needs a reason on screen.
         if self.project.has_marks() {
             let (from, to) = self.project.export_range();
             let ax = self.time_to_x(from, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
@@ -269,10 +258,7 @@ impl VideoEditorApp {
         }
 
         // --- markers ---
-        // Every marker on one absolute timeline: the project's own, plus
-        // each clip's rebased onto where that clip sits. A flag on the
-        // ruler with a hairline down the lanes, so a marked instant can be
-        // lined up against every track at once.
+        // The project's own, plus each clip's rebased onto where that clip sits.
         for (at, marker, on_clip) in self.project.all_markers() {
             let x = self.time_to_x(at, &r.lanes);
             if x < r.ruler.x0 - 1.0 || x > r.ruler.x1 {
@@ -357,10 +343,8 @@ impl VideoEditorApp {
                 head.name.x0,
                 name_y,
             );
-            // Once its fader has moved off unity or centre, show where it
-            // is. The reading belongs on the lane, not only in a panel:
-            // a lane at +6 dB that says so
-            // nowhere is how a mix ends up loud for a reason nobody can find.
+            // Once off unity or centre, say where: a lane at +6 dB that says so nowhere
+            // is how a mix ends up loud for a reason nobody can find.
             let line = match track.filter(|t| t.mix_is_set()) {
                 Some(t) if t.gain_db.abs() > 1e-9 && t.pan.abs() > 1e-9 => {
                     format!("{}, {}", t.gain_words(), t.pan_words())
@@ -382,12 +366,10 @@ impl VideoEditorApp {
                 head.kind.x0,
                 kind_y,
             );
-            // The lane's level. Fed from the mix that made the sound, so a
-            // bar moving here is the same measurement the master meter and
-            // the clip warning are reading — never a second opinion.
-            //
-            // Drawn only on a lane that can carry sound: a bar that can never
-            // move reads as an output that is broken.
+            // Fed from the mix that made the sound, so this is the measurement the master
+            // meter and the clip warning read, never a second opinion. Drawn only on a
+            // lane that can carry sound: a bar that can never move reads as a broken
+            // output.
             if crate::audio::track_carries_sound(&self.project, *tid) {
                 let level = self.mix.track(*tid);
                 draw_level_meter(
@@ -400,12 +382,8 @@ impl VideoEditorApp {
                     level.is_some_and(|l| l.clipped),
                 );
             }
-            // Mute, solo and lock: toggles that stay down while they are on.
-            // Lettered M, S and L, the mixing desk's own shorthand, so the
-            // three never read as one another; their full names are what a
-            // reader hears and what the hover says. The head is too narrow
-            // for a labelled face's insets, so the letter is set centred on
-            // the toolkit's toggle face rather than elided to nothing.
+            // Lettered M, S and L, the mixing desk's shorthand, centred on the toolkit's
+            // toggle face: the head is too narrow for a labelled face's insets.
             let muted = track.is_some_and(|t| t.muted);
             let locked = track.is_some_and(|t| t.locked);
             let solo = track.is_some_and(|t| t.solo);
@@ -442,10 +420,8 @@ impl VideoEditorApp {
             tf,
             &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
         );
-        // A locked lane says so across its whole width: a diagonal hatch on
-        // the lane itself, under its clips, so "my drag did nothing" always
-        // has a visible reason rather than reading as a dead app. The clips
-        // on it grey back (see `draw_clip`) with their names kept legible.
+        // A locked lane is hatched across its width, under its clips, so "my drag did
+        // nothing" has a visible reason rather than reading as a dead app.
         for (tid, _kind, lane) in &lanes {
             if self.project.track(*tid).is_some_and(|t| t.locked) {
                 let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
@@ -472,11 +448,8 @@ impl VideoEditorApp {
                 }
             }
         }
-        // The tie between the halves of a selected shot: a hairline down the
-        // gap between their lanes, capped at each end. Drawn only while the
-        // group is selected — including all the way through a drag, which is
-        // what makes "dragging one drags both" legible while it happens rather
-        // than only after it lands.
+        // Drawn only while the group is selected, all the way through a drag, which is
+        // what makes "dragging one drags both" legible while it happens.
         tied.sort_by(|a, b| {
             a.0.cmp(&b.0).then_with(|| {
                 a.1.y0
@@ -524,10 +497,9 @@ impl VideoEditorApp {
                 }
             }
         }
-        // Which clips other participants are holding, outlined in their
-        // colours. Over the mute/lock veils, because a peer's selection has
-        // to stay legible on a lane that is greyed back -- knowing someone
-        // else is working on a locked clip is exactly when it matters.
+        // Over the mute and lock veils: a peer's selection has to stay legible on a
+        // greyed lane, which is exactly when knowing someone else is on a locked clip
+        // matters.
         crate::presence::draw_peer_clips(
             &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
             &drawn,
@@ -542,13 +514,8 @@ impl VideoEditorApp {
         }
         scene.pop_layer();
 
-        // Zoom readout, doubling as fit-to-window. Without it there was no way
-        // to tell how far in you were, and no way back out but wheeling.
-        //
-        // Under the playhead, not over it: the chip sits at the ruler's right
-        // edge, exactly where the playhead's time tag ends up on a narrow
-        // window or at a large text scale, and the tag is the reading the
-        // ruler exists to give.
+        // Under the playhead, not over it: the chip sits where the playhead's time tag
+        // ends up on a narrow window or at a large text scale.
         let chip = self.zoom_chip_rect(r);
         let zl = self.zoom_words();
         let face = ButtonFace::new(chip, &zl)
@@ -603,10 +570,9 @@ impl VideoEditorApp {
             self.playhead_bottom(r),
         );
 
-        // Empty timeline: say what to do, rather than showing bare lanes.
-        // Through the same shared empty state the preview and the inspector
-        // use, so the three empty surfaces of one window are one design.
-        // Its words ask for a step, so it carries the button for it.
+        // Through the shared empty state the preview and the inspector use, so the
+        // window's three empty surfaces are one design. Its words ask for a step, so it
+        // carries the button for it.
         if let Some(empty) = self.timeline_empty(r) {
             let words = empty.words();
             ui::widget::EmptyState::paint(
@@ -649,12 +615,8 @@ impl VideoEditorApp {
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Lanes, r);
     }
 
-    /// The playhead's time tag in the ruler: its words and its chip.
-    ///
-    /// The tag follows the playhead but stops a sibling step short of the zoom
-    /// chip rather than running under it, so the chip's hit rect is never
-    /// covered by a reading it does not answer for; the playhead's own head
-    /// still reaches the ruler's end.
+    /// The tag stops a sibling step short of the zoom chip rather than running under it,
+    /// so the chip's hit rect is never covered.
     pub(super) fn playhead_tag(
         &self,
         r: &Regions,
@@ -772,10 +734,9 @@ impl VideoEditorApp {
                     at.y,
                 );
             } else if kind == TrackKind::Video {
-                // A filmstrip: one frame **per cell**, walking the clip's
-                // trimmed source window, so the strip shows the shot changing.
-                // The frames themselves are requested in `request_filmstrips`
-                // (which needs `&mut self`).
+                // One frame **per cell** across the trimmed source window, so the strip
+                // shows the shot changing; the frames are requested in
+                // `request_filmstrips`, which needs `&mut self`.
                 let (cell_w, n) = filmstrip_cells(inner);
                 let span = clip.out_point - clip.in_point;
                 for i in 0..n {
@@ -876,23 +837,16 @@ impl VideoEditorApp {
                     .paint(ctx.scene, ctx.transform, ctx.text, theme);
             }
         }
-        // A clip on a lane that will not be heard or seen (muted, or not
-        // soloed while something else of its kind is) or that is locked greys
-        // back toward the ground, so the lane's state is legible from the
-        // clips themselves and not only from the header. Its name and marks
-        // are then lettered in the ground's own ink, over the veil, so they
-        // stay as readable as anything else on the timeline.
+        // A clip that will not be heard or seen, or whose lane is locked, greys back so
+        // the lane's state is legible from the clips and not only the header.
         let dimmed = !self.project.track_audible(clip.track)
             || self.project.track(clip.track).is_some_and(|t| t.locked);
         if dimmed {
             fill_round(ctx.scene, ctx.transform, cr, radius, clip_veil(theme));
             head_col = c.text_primary;
         }
-        // The part of the clip the lane actually shows. The lane layer is
-        // clipped, so a clip whose start is scrolled off to the left had its
-        // name, its speed badge and its head marker all drawn outside the
-        // visible strip. Everything below anchors to this, not to the clip's
-        // own edges.
+        // The lane layer is clipped, so a clip scrolled off to the left had its name,
+        // badge and head marker drawn outside the strip. Everything below anchors here.
         let vx0 = cr.x0.max(r.lanes.x0);
         let vx1 = cr.x1.min(r.lanes.x1);
         let seen = (vx1 - vx0).max(0.0);
@@ -975,10 +929,8 @@ impl VideoEditorApp {
                 );
             }
         }
-        // Keyframes, as diamonds on a lane along the foot of the clip. This is
-        // where animation becomes visible without opening the inspector — and
-        // clicking one takes the playhead there, which makes stepping through
-        // a curve direct rather than a menu round-trip.
+        // Animation becomes visible without opening the inspector, and clicking a
+        // diamond takes the playhead there.
         let key_times = clip.key_times();
         if cr.width() > 12.0 && !key_times.is_empty() && cr.height() > 24.0 {
             let y = cr.y1 - 7.0;
@@ -1010,10 +962,9 @@ impl VideoEditorApp {
                     .stroke(&Stroke::new(1.0), ctx.transform, strip_fill, None, &d);
             }
         }
-        // Selection, in your colour. The primary (anchor) clip — the one the
-        // inspector edits — keeps the full outline and trim handles; the rest
-        // of a multi-selection gets a lighter outline and no handles, so it is
-        // always clear which clip a trim or a grade will land on.
+        // The anchor clip, which the inspector edits, keeps the full outline and trim
+        // handles; the rest of a multi-selection gets a lighter outline, so it is clear
+        // which clip a trim or grade lands on.
         let you = c.intent.you;
         let primary = self.selection.primary() == Some(clip.id);
         // Clips abut, and your colour can be any clip's label colour too, so a
