@@ -227,96 +227,100 @@ mod tests {
             .collect()
     }
 
-    /// A file only one side has is added or removed; a file both have is
-    /// modified unless its bytes agree.
-    #[test]
-    fn a_listing_names_what_each_side_holds_alone() {
-        let left = tree(&[("a.txt", 3), ("b.txt", 4), ("same.txt", 2)]);
-        let right = tree(&[("b.txt", 5), ("c.txt", 1), ("same.txt", 2)]);
-        let entries = differences(&left, &right, |path| path == "same.txt");
-        let kinds: Vec<(&str, FolderKind)> =
-            entries.iter().map(|e| (e.path.as_str(), e.kind)).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                ("a.txt", FolderKind::Added),
-                ("b.txt", FolderKind::Modified),
-                ("c.txt", FolderKind::Removed),
-            ],
-            "one entry per differing file, in path order"
-        );
-        assert_eq!(entries[1].left_len, 4);
-        assert_eq!(entries[1].right_len, 5);
-        assert!(entries[1].by_length, "a length difference is not read");
-    }
+    tilo_test_env::scenario! {
+        fn two_folders_compare_by_what_each_holds_and_by_content;
 
-    /// Two files of equal length that differ only in content are still
-    /// reported: equal lengths are not equal files.
-    #[test]
-    fn equal_lengths_are_not_equal_files() {
-        let left = tree(&[("x", 3)]);
-        let right = tree(&[("x", 3)]);
-        let entries = differences(&left, &right, |_| false);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].kind, FolderKind::Modified);
-        assert!(!entries[0].by_length, "the contents were compared");
-        assert!(differences(&left, &right, |_| true).is_empty());
-    }
-
-    #[test]
-    fn comparing_two_folders_names_the_files_that_differ() {
-        let base = std::env::temp_dir().join(format!(
-            "tilo-diffmerge-folder-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let left = AbsolutePath::new(base.join("left")).unwrap();
-        let right = AbsolutePath::new(base.join("right")).unwrap();
-        for tree in [&left, &right] {
-            std::fs::create_dir_all(tree.join("src")).unwrap();
+        phase a_listing_names_what_each_side_holds_alone;
+        // A file only one side has is added or removed; a file both have is
+        // modified unless its bytes agree.
+        {
+            let left = tree(&[("a.txt", 3), ("b.txt", 4), ("same.txt", 2)]);
+            let right = tree(&[("b.txt", 5), ("c.txt", 1), ("same.txt", 2)]);
+            let entries = differences(&left, &right, |path| path == "same.txt");
+            let kinds: Vec<(&str, FolderKind)> =
+                entries.iter().map(|e| (e.path.as_str(), e.kind)).collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    ("a.txt", FolderKind::Added),
+                    ("b.txt", FolderKind::Modified),
+                    ("c.txt", FolderKind::Removed),
+                ],
+                "one entry per differing file, in path order"
+            );
+            assert_eq!(entries[1].left_len, 4);
+            assert_eq!(entries[1].right_len, 5);
+            assert!(entries[1].by_length, "a length difference is not read");
         }
-        std::fs::write(left.join("src/kept.rs"), "same\n").unwrap();
-        std::fs::write(right.join("src/kept.rs"), "same\n").unwrap();
-        // Same length, different bytes: only a content comparison sees it.
-        std::fs::write(left.join("src/edited.rs"), "one\n").unwrap();
-        std::fs::write(right.join("src/edited.rs"), "two\n").unwrap();
-        std::fs::write(left.join("src/removed.rs"), "gone\n").unwrap();
-        std::fs::write(right.join("src/added.rs"), "new\n").unwrap();
 
-        let comparison = compare(&left, &right).unwrap();
-        let listed: Vec<(&str, FolderKind)> = comparison
-            .entries
-            .iter()
-            .map(|entry| (entry.path.as_str(), entry.kind))
-            .collect();
-        assert_eq!(
-            listed,
-            vec![
-                ("src/added.rs", FolderKind::Removed),
-                ("src/edited.rs", FolderKind::Modified),
-                ("src/removed.rs", FolderKind::Added),
-            ]
-        );
-        assert_eq!(comparison.counts(), (1, 1, 1));
-        assert_eq!(comparison.left_label, "left");
-        assert_eq!(comparison.right_label, "right");
-        assert!(!comparison.truncated);
-        let (left_path, right_path) = comparison.paths(&comparison.entries[1]);
-        assert_eq!(
-            left_path.as_deref(),
-            Some(left.join("src/edited.rs").as_path()),
-            "the entry names the file in each tree"
-        );
-        assert!(right_path.is_some());
+        phase equal_lengths_are_not_equal_files;
+        // Two files of equal length that differ only in content are still
+        // reported: equal lengths are not equal files.
+        {
+            let left = tree(&[("x", 3)]);
+            let right = tree(&[("x", 3)]);
+            let entries = differences(&left, &right, |_| false);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].kind, FolderKind::Modified);
+            assert!(!entries[0].by_length, "the contents were compared");
+            assert!(differences(&left, &right, |_| true).is_empty());
+        }
 
-        std::fs::remove_dir_all(&base).unwrap();
-    }
+        phase comparing_two_folders_names_the_files_that_differ;
+        {
+            let base = std::env::temp_dir().join(format!(
+                "tilo-diffmerge-folder-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let left = AbsolutePath::new(base.join("left")).unwrap();
+            let right = AbsolutePath::new(base.join("right")).unwrap();
+            for tree in [&left, &right] {
+                std::fs::create_dir_all(tree.join("src")).unwrap();
+            }
+            std::fs::write(left.join("src/kept.rs"), "same\n").unwrap();
+            std::fs::write(right.join("src/kept.rs"), "same\n").unwrap();
+            // Same length, different bytes: only a content comparison sees it.
+            std::fs::write(left.join("src/edited.rs"), "one\n").unwrap();
+            std::fs::write(right.join("src/edited.rs"), "two\n").unwrap();
+            std::fs::write(left.join("src/removed.rs"), "gone\n").unwrap();
+            std::fs::write(right.join("src/added.rs"), "new\n").unwrap();
 
-    #[test]
-    fn a_missing_folder_fails() {
-        let missing =
-            AbsolutePath::new(std::env::temp_dir().join("tilo-diffmerge-no-such-folder")).unwrap();
-        let error = compare(&missing, &missing).unwrap_err();
-        assert!(error.contains("tilo-diffmerge-no-such-folder"), "{error}");
+            let comparison = compare(&left, &right).unwrap();
+            let listed: Vec<(&str, FolderKind)> = comparison
+                .entries
+                .iter()
+                .map(|entry| (entry.path.as_str(), entry.kind))
+                .collect();
+            assert_eq!(
+                listed,
+                vec![
+                    ("src/added.rs", FolderKind::Removed),
+                    ("src/edited.rs", FolderKind::Modified),
+                    ("src/removed.rs", FolderKind::Added),
+                ]
+            );
+            assert_eq!(comparison.counts(), (1, 1, 1));
+            assert_eq!(comparison.left_label, "left");
+            assert_eq!(comparison.right_label, "right");
+            assert!(!comparison.truncated);
+            let (left_path, right_path) = comparison.paths(&comparison.entries[1]);
+            assert_eq!(
+                left_path.as_deref(),
+                Some(left.join("src/edited.rs").as_path()),
+                "the entry names the file in each tree"
+            );
+            assert!(right_path.is_some());
+
+            std::fs::remove_dir_all(&base).unwrap();
+        }
+
+        phase a_missing_folder_fails;
+        {
+            let missing =
+                AbsolutePath::new(std::env::temp_dir().join("tilo-diffmerge-no-such-folder")).unwrap();
+            let error = compare(&missing, &missing).unwrap_err();
+            assert!(error.contains("tilo-diffmerge-no-such-folder"), "{error}");
+        }
     }
 }

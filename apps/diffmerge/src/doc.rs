@@ -188,55 +188,59 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_alignment_of_two_texts_is_shared_and_replacing_one_recomputes_it() {
-        let first = Comparison {
-            left: Atom("before\n".into()),
-            right: Atom("after\n".into()),
-            ..Comparison::default()
-        };
-        let model = first.model();
-        let again = first.clone();
-        assert!(std::sync::Arc::ptr_eq(&model, &again.model()));
-        let changed = Comparison {
-            right: Atom("before\n".into()),
-            ..first
-        };
-        assert!(changed.model().blocks.is_empty());
-        assert!(!std::sync::Arc::ptr_eq(&model, &changed.model()));
-    }
+    tilo_test_env::scenario! {
+        fn a_session_shares_its_alignment_and_applies_recorded_resolutions;
 
-    #[test]
-    fn resolutions_apply_to_the_merge_and_composed_follows_the_result() {
-        let mut session = Session {
-            merge: Some(conflict_inputs()),
-            ..Session::default()
-        };
-        let conflict = session
-            .merge_model()
-            .hunks
-            .iter()
-            .position(|h| h.resolution.is_conflict())
-            .unwrap();
-        session
-            .resolutions
-            .insert(conflict.to_string(), HunkChoice::Theirs);
-        session.resolutions.insert("99".into(), HunkChoice::Both);
-        let model = session.merge_model();
-        assert_eq!(
-            model.hunks[conflict].resolution,
-            Resolution::TookTheirs,
-            "the recorded side, and an index the merge lacks is ignored"
-        );
-        session.merged = model.merged_text();
-        assert!(session.composed(&model));
-        assert_eq!(session.title(), "Merge of ours and theirs");
-        session.merged = "edited by hand\n".into();
-        assert!(!session.composed(&model));
-        assert_eq!(
-            session.resolutions(),
-            vec![(conflict, HunkChoice::Theirs), (99, HunkChoice::Both)],
-            "sorted by hunk index"
-        );
+        phase the_alignment_of_two_texts_is_shared_and_replacing_one_recomputes_it;
+        {
+            let first = Comparison {
+                left: Atom("before\n".into()),
+                right: Atom("after\n".into()),
+                ..Comparison::default()
+            };
+            let model = first.model();
+            let again = first.clone();
+            assert!(std::sync::Arc::ptr_eq(&model, &again.model()));
+            let changed = Comparison {
+                right: Atom("before\n".into()),
+                ..first
+            };
+            assert!(changed.model().blocks.is_empty());
+            assert!(!std::sync::Arc::ptr_eq(&model, &changed.model()));
+        }
+
+        phase resolutions_apply_to_the_merge_and_composed_follows_the_result;
+        {
+            let mut session = Session {
+                merge: Some(conflict_inputs()),
+                ..Session::default()
+            };
+            let conflict = session
+                .merge_model()
+                .hunks
+                .iter()
+                .position(|h| h.resolution.is_conflict())
+                .unwrap();
+            session
+                .resolutions
+                .insert(conflict.to_string(), HunkChoice::Theirs);
+            session.resolutions.insert("99".into(), HunkChoice::Both);
+            let model = session.merge_model();
+            assert_eq!(
+                model.hunks[conflict].resolution,
+                Resolution::TookTheirs,
+                "the recorded side, and an index the merge lacks is ignored"
+            );
+            session.merged = model.merged_text();
+            assert!(session.composed(&model));
+            assert_eq!(session.title(), "Merge of ours and theirs");
+            session.merged = "edited by hand\n".into();
+            assert!(!session.composed(&model));
+            assert_eq!(
+                session.resolutions(),
+                vec![(conflict, HunkChoice::Theirs), (99, HunkChoice::Both)],
+                "sorted by hunk index"
+            );
+        }
     }
 }
