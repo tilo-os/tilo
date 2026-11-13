@@ -1,8 +1,6 @@
-//! Backups as a resource: the retention policy is document state, each
-//! count a field edited at its path; where this device backs up from and to
-//! is a device-local setting; backing up, verifying and restoring are the
-//! view's [`BackupsEffect`]s, and the catalog on this device is published
-//! as live rows beside the resource.
+//! Backups as a resource: the retention policy is document state, each count edited at its
+//! path; where this device backs up from and to is its own setting; backing up, verifying
+//! and restoring are effects, and the catalog is published as live rows.
 
 use std::path::PathBuf;
 
@@ -23,11 +21,6 @@ pub struct Backups {
 
 impl Backups {
     /// What the record holds: the retention policy every device follows.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -42,9 +35,8 @@ impl Backups {
 )]
 impl Backups {}
 
-/// The folder this device protects and the location its backups go to.
-/// Absolute paths mean nothing on another device, so they never leave this
-/// one; the retention policy, which does, is the document's.
+/// The folder this device protects and the location its backups go to. Absolute paths mean
+/// nothing on another device, so they never leave this one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackupLocation {
     pub source: Option<PathBuf>,
@@ -60,7 +52,6 @@ impl SettingsSchema for BackupLocation {
 pub struct DemoRepository {
     pub catalog: Catalog,
     pub location: BackupLocation,
-    /// Why the saved location could not be read, for the recovery screen.
     pub error: Option<String>,
 }
 
@@ -77,7 +68,6 @@ const SCENARIOS: &[&str] = &[
     "rail",
 ];
 
-/// Framework app.
 pub struct BackupsShell;
 
 impl ResourceApp for BackupsShell {
@@ -92,7 +82,6 @@ impl ResourceApp for BackupsShell {
     }
 
     fn view(cx: &mut ViewCx<Backups>) -> Element {
-        // A search hit, or an agent's `open`, shows the snapshot it names.
         let dispatcher = cx.dispatcher();
         cx.on_open(
             move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
@@ -115,8 +104,8 @@ impl ResourceApp for BackupsShell {
         SCENARIOS
     }
 
-    /// Every capture but first-run onboarding (`empty`) shows the sample
-    /// catalog; `unavailable` shows a saved location whose drive is gone.
+    /// Every capture but first-run onboarding (`empty`) shows the sample catalog;
+    /// `unavailable` shows a saved location whose drive is gone.
     fn fixture(fixture: &mut Fixture<Backups>) {
         let demo = match fixture.scenario() {
             Some("empty") => return,

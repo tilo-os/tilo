@@ -1,12 +1,6 @@
-//! The Backups app's **effects** and the **live rows** it publishes beside
-//! its resource.
-//!
-//! Backups keeps almost all of its state *outside* the shared document: the
-//! catalog of sources, snapshots and destinations is projected live from the
-//! storage backend on this device, and running/verifying/restoring a snapshot
-//! are [`BackupsEffect`]s, not document changes. The retention policy, which
-//! must replicate and undo, is the resource's model
-//! ([`Backups`](crate::resource::Backups)), edited at its paths.
+//! The app's effects and the live rows it publishes beside its resource. The retention
+//! policy, which must replicate and undo, is the resource's model
+//! ([`Backups`](crate::resource::Backups)).
 
 use tilo_actions::ActionSpec;
 use ui::framework::{Effect, LiveRow};
@@ -14,77 +8,55 @@ use ui::tilo_resource;
 
 use crate::model::{Catalog, Snapshot};
 
-/// Protocol of the effects: local, deliberately non-replicated filesystem
-/// operations. Paths and credentials never cross this boundary: effects
-/// address the already-published catalog by opaque id only.
+/// Paths and credentials never cross this boundary: effects address the already-published
+/// catalog by opaque id only.
 pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 
-/// The safe, agent-drivable side-effect surface. These are effects rather
-/// than document actions: a peer must never replay a backup or restore
-/// against a different machine's filesystem merely because it received a
-/// collaborative document change. The `Show…` views change only what this
-/// window shows; their ids are stable catalog identities, never paths or
-/// display labels, so search and agents can target a concrete item.
+/// The safe, agent-drivable side-effect surface. These are effects rather than document
+/// actions: a peer must never replay a backup or restore against a different machine's
+/// filesystem merely because it received a collaborative document change.
 #[derive(Clone, Debug, PartialEq, Eq, ui::framework::Effect)]
 #[effect(operation = "backups.operation")]
 pub enum BackupsEffect {
-    /// Create one new checksummed local snapshot, then keep only what the
-    /// retention policy keeps.
     #[effect(job, returns)]
     BackupNow,
-    /// Choose a local source and a destination outside it.
     #[effect(attended, job)]
     Setup,
-    /// Read every file in this stored snapshot and verify its checksum.
     #[effect(job, returns, kind = "read")]
     Verify {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
-    /// Choose a new or empty local folder, then restore and verify the whole
-    /// snapshot.
     #[effect(attended, job)]
     RestoreSnapshot {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
-    /// Show one backup source.
     #[effect(view)]
     ShowSource {
         #[param("Id of the source")]
         source_id: String,
     },
-    /// Show one backup destination.
     #[effect(view)]
     ShowDestination {
         #[param("Id of the destination")]
         destination_id: String,
     },
-    /// Show one stored snapshot in the timeline.
     #[effect(view)]
     ShowSnapshot {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
-    /// List the snapshots newest or oldest first.
     #[effect(view, idempotent)]
     OrderSnapshots {
         #[param("How to list them", choices = ORDERS.iter().copied())]
         order: String,
     },
-    /// Read one stored snapshot
-    ///
-    /// Answers what the snapshot is: when it was taken, of what, where it
-    /// is kept, how large, its state and how many files it holds. It is the
-    /// snapshot row's read: what discloses the row, so restoring and
-    /// verifying it are offered to whoever may read it, an agent too, where
-    /// the row's Show view is this window's own.
     #[effect(view, returns)]
     ReadSnapshot {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
-    /// Show the retention policy a source's snapshots follow.
     #[effect(view)]
     ShowSchedule {
         #[param("Id of the source")]
@@ -92,8 +64,6 @@ pub enum BackupsEffect {
     },
 }
 
-/// The orders the timeline lists snapshots in, as the order picker names
-/// them: newest first, then oldest first.
 pub const ORDERS: [&str; 2] = ["Newest first", "Oldest first"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,13 +158,10 @@ fn destination_rows(catalog: &Catalog) -> LiveRow {
     destinations
 }
 
-/// How many recent snapshots the published tree lists; older ones resolve
-/// by id ([`live_row`]) and are found through search.
 const SNAPSHOT_PAGE: usize = 128;
 
-/// The live catalog as rows beneath the resource: sources with their
-/// schedules, destinations, and the recent page of stored snapshots with the
-/// effects each offers on this device.
+/// The live catalog as rows beneath the resource: sources with their schedules,
+/// destinations, and the recent snapshots.
 pub(crate) fn live_rows(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<LiveRow> {
     let mut snapshots = LiveRow::new(
         "backups.snapshots",
@@ -207,9 +174,8 @@ pub(crate) fn live_rows(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<Liv
     vec![source_rows(catalog), destination_rows(catalog), snapshots]
 }
 
-/// The live row `id`, also for a snapshot outside the recent page: search
-/// result addresses use these ids, so an older recovery point stays
-/// invokable with the same Verify/Restore operations.
+/// The live row `id`, also for a snapshot outside the recent page: a search result's
+/// address keeps its Verify and Restore operations.
 pub(crate) fn live_row(catalog: &Catalog, blocked: Option<&Blocked>, id: &str) -> Option<LiveRow> {
     let snapshot_id = id
         .strip_prefix("backups.snapshot:")
@@ -274,10 +240,9 @@ fn snapshot_row(snapshot: &Snapshot, blocked: Option<&Blocked>) -> LiveRow {
     .row(target)
 }
 
-/// A stored snapshot's completed run, and the folder a restore writes to:
-/// an explicit child rather than an unspoken side effect of Restore, so
-/// palette and agent users get the same "new or empty folder" contract the
-/// restore sheet shows.
+/// A stored snapshot's completed run, and the folder a restore writes to: an explicit child
+/// rather than an unspoken side effect of Restore, so palette and agent users get the same
+/// "new or empty folder" contract the restore sheet shows.
 fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow, LiveRow) {
     let run = LiveRow::new(
         format!("backups.run:{}", snapshot.id),
@@ -333,8 +298,8 @@ mod tests {
             .collect()
     }
 
-    /// The catalog's rows carry each item's effects with its id bound, and
-    /// the reason this device cannot run them.
+    /// The catalog's rows carry each item's effects with its id bound, and the reason this
+    /// device cannot run them.
     #[test]
     fn live_rows_bind_each_items_effects_and_say_why_they_are_unavailable() {
         let catalog = Catalog::sample(ui::clock::local_now().naive_local());
@@ -421,8 +386,8 @@ mod tests {
         assert_eq!(open.contract.availability, Availability::Available);
     }
 
-    /// An older snapshot outside the published page still resolves by the id
-    /// its search result names.
+    /// An older snapshot outside the published page still resolves by the id its search
+    /// result names.
     #[test]
     fn snapshots_beyond_the_page_resolve_by_id() {
         let mut catalog = Catalog::sample(ui::clock::local_now().naive_local());

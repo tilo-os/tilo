@@ -1,15 +1,11 @@
 //! Backups' Fluent catalogue: every string that carries a count.
-//!
-//! The catalogue is embedded with `include_str!`, so a capture, a unit test
-//! and a live session resolve the same strings with no runtime file I/O.
 
 use ui::ArgValue;
 
 ui::embedded_catalog!(pub fn, ["de-DE", "en-US"]);
 
-/// Resolve a counted string: `count` picks the plural form and is offered
-/// to the message both as `$count` and, digit-grouped, as `$files` and
-/// `$snapshots`; `size` fills `$size`.
+/// Resolve a counted string: `count` picks the plural form and is offered to the message
+/// both as `$count` and, digit-grouped, as `$files` and `$snapshots`; `size` fills `$size`.
 pub fn counted(key: &str, count: u64, size: &str) -> String {
     let grouped = group_digits(count);
     #[allow(
@@ -28,9 +24,8 @@ pub fn counted(key: &str, count: u64, size: &str) -> String {
     )
 }
 
-/// How the retention page names what the counts on screen would remove at the
-/// next backup, so the sentence a person reads is the catalogue's, in their
-/// language.
+/// How the retention page names what the counts on screen would remove at the next backup,
+/// so the sentence a person reads is the catalogue's, in their language.
 pub fn removal(count: u64, when: &str) -> String {
     let key = match count {
         0 => "backups-retention-removes-none",
@@ -84,9 +79,9 @@ mod tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[cfg(test)]
 mod german_catalogue_tests {
     use super::CATALOG;

@@ -1,19 +1,8 @@
-//! Pure data model for the Backups app.
-//!
-//! The *catalog* (sources, snapshots, destinations) comes from the local
-//! checksummed repository in the live app. Future providers can project btrfs
-//! or remote repositories here too. Screenshot captures stage the sample
-//! catalog from [`Catalog::sample`]: a week of activity laid out backwards
-//! from the clock, so every "last backup" and "next run" it shows is true of
-//! the moment it is drawn.
-//!
-//! Every time here is local wall time (`NaiveDateTime`), read against
-//! [`ui::clock::local_now`] where the app needs "now".
+//! Retention policy, sources, snapshots and the sample catalog captures show.
 
 use chrono::{Datelike, Duration, NaiveDateTime, Timelike, Weekday};
 use ui::tilo_resource::{self, Model, Path, Refusal};
 
-/// What kind of thing a source is: drives its icon and its kind label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
     Home,
@@ -23,9 +12,8 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
-    /// A path-free label suitable for shared search and automation surfaces.
-    /// Local paths can expose account names or mount details, so they remain in
-    /// the device-local visual UI and are never published as a resource label.
+    /// A path-free label for shared search and automation surfaces: a local path can expose
+    /// account names or mounts, so it stays in this device's UI.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Home => "Home folder",
@@ -36,16 +24,16 @@ impl SourceKind {
     }
 }
 
-/// When a source is captured automatically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Schedule {
-    /// Only when the person asks.
     OnDemand,
-    /// Every hour at `minute`.
-    Hourly { minute: u32 },
-    /// Every day at `hour:minute`.
-    Daily { hour: u32, minute: u32 },
-    /// Every week on `weekday` at `hour:minute`.
+    Hourly {
+        minute: u32,
+    },
+    Daily {
+        hour: u32,
+        minute: u32,
+    },
     Weekly {
         weekday: Weekday,
         hour: u32,
@@ -94,8 +82,6 @@ impl Schedule {
 pub enum SnapType {
     Auto,
     Manual,
-    /// The repository did not record who started this snapshot. Unknown is
-    /// a fact about the record, not a guess at "Manual".
     Unknown,
 }
 
@@ -109,9 +95,6 @@ impl SnapType {
     }
 }
 
-/// Retention class a snapshot is currently held under. A snapshot promotes
-/// through these as it ages (hourly → daily → weekly → monthly); `Keep` is a
-/// pin that exempts it from pruning entirely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retention {
     Hourly,
@@ -119,12 +102,10 @@ pub enum Retention {
     Weekly,
     Monthly,
     Keep,
-    /// The repository did not record the class this snapshot is held under.
     Unknown,
 }
 
 impl Retention {
-    /// How the snapshot is kept, as a sentence-case phrase.
     pub fn label(self) -> &'static str {
         match self {
             Retention::Hourly => "Hourly",
@@ -137,7 +118,6 @@ impl Retention {
     }
 }
 
-/// Completion state of a snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnapStatus {
     Complete,
@@ -178,14 +158,12 @@ impl DestKind {
 pub enum Health {
     Ok,
     Warning,
-    /// No run has been measured against this source or destination yet.
     Unknown,
 }
 
 #[derive(Clone, Debug)]
 pub struct Source {
     pub id: String,
-    /// What the person calls it ("Home", "Workspace").
     pub name: String,
     pub path: String,
     pub kind: SourceKind,
@@ -195,7 +173,6 @@ pub struct Source {
 }
 
 /// One entry in a snapshot's file index, as shown in the restore preview.
-/// `depth` is the indent level; a directory carries the bytes beneath it.
 #[derive(Clone, Debug)]
 pub struct SnapFile {
     pub depth: usize,
@@ -204,9 +181,8 @@ pub struct SnapFile {
     pub is_dir: bool,
 }
 
-/// A representative listing for a sample source, so restore previews in
-/// captures have content. The live catalog reads its listing from the
-/// repository manifest.
+/// A representative listing for a sample source, so restore previews in captures have
+/// content.
 fn sample_files(source_id: &str) -> Vec<SnapFile> {
     let rows: &[(usize, &str, u64, bool)] = match source_id {
         "workspace" => &[
@@ -227,7 +203,6 @@ fn sample_files(source_id: &str) -> Vec<SnapFile> {
             (1, "fstab", 1_300, false),
             (1, "hostname", 24, false),
         ],
-        // Home and any unknown source fall back to a home-shaped tree.
         _ => &[
             (0, "home", 48_200 * MB, true),
             (1, "Documents", 2_100 * MB, true),
@@ -254,29 +229,19 @@ pub struct Snapshot {
     pub id: String,
     pub source_id: String,
     pub dest_id: String,
-    /// When the snapshot was taken, local time.
     pub taken: NaiveDateTime,
-    /// The name a person gave a manual snapshot ("Before system upgrade").
     pub label: Option<String>,
     pub kind: SnapType,
     pub retention: Retention,
-    /// Total on-disk size the snapshot pins.
     pub size_bytes: u64,
-    /// New/changed bytes captured in this snapshot (delta from parent).
     pub delta_bytes: u64,
     pub files_changed: u32,
     pub status: SnapStatus,
-    /// Why a failed run failed, when the engine recorded a reason.
     pub failure: Option<String>,
-    /// The snapshot's indexed contents, shown in the restore preview. Empty
-    /// until the repository manifest is read. The local engine records every
-    /// entry while copying, so its snapshots populate this list.
     pub files: Vec<SnapFile>,
 }
 
 /// Named input for sample snapshots, placed `minutes_ago` before the clock.
-/// Keeping the seed shape separate from the runtime model makes fixture rows
-/// compact without relying on a long, transposition-prone positional list.
 struct SampleSnapshot<'a> {
     id: &'a str,
     source_id: &'a str,
@@ -317,24 +282,20 @@ pub struct Destination {
     pub name: String,
     pub kind: DestKind,
     pub used_bytes: u64,
-    /// The destination's capacity, when its provider reports one.
     pub total_bytes: Option<u64>,
     pub encrypted: bool,
     pub health: Health,
 }
 
 impl Destination {
-    /// The share of the destination in use, `0..=1`, when its capacity is
-    /// known.
+    /// The share of the destination in use, `0..=1`, when its capacity is known.
     pub fn used_fraction(&self) -> Option<f64> {
         let total = self.total_bytes.filter(|total| *total > 0)?;
         Some((self.used_bytes as f64 / total as f64).clamp(0.0, 1.0))
     }
 }
 
-/// Retention policy (counts to keep per class). Lives in the document so
-/// edits undo/redo and replicate; each count is edited at its path
-/// (`Backups::paths().policy.daily.set(7)`) and is at most [`MAX_KEPT`].
+/// Retention policy (counts to keep per class).
 #[derive(Model, Clone, Copy, Debug, PartialEq, Eq)]
 #[model(check = RetentionPolicy::valid)]
 pub struct RetentionPolicy {
@@ -348,10 +309,8 @@ pub struct RetentionPolicy {
     pub monthly: u32,
 }
 
-/// The most snapshots one retention class keeps.
 pub const MAX_KEPT: u32 = 999;
 
-/// One class of the retention policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolicyField {
     Hourly,
@@ -368,7 +327,6 @@ impl PolicyField {
         PolicyField::Monthly,
     ];
 
-    /// The stable key control ids are built from.
     pub fn key(self) -> &'static str {
         match self {
             PolicyField::Hourly => "hourly",
@@ -378,7 +336,6 @@ impl PolicyField {
         }
     }
 
-    /// The catalogue message naming how many snapshots of this class to keep.
     pub fn keep_label_key(self) -> &'static str {
         match self {
             PolicyField::Hourly => "backups-keep-hourly",
@@ -388,7 +345,6 @@ impl PolicyField {
         }
     }
 
-    /// The count this class keeps in `policy`.
     pub fn of(self, policy: &RetentionPolicy) -> u32 {
         match self {
             PolicyField::Hourly => policy.hourly,
@@ -398,7 +354,6 @@ impl PolicyField {
         }
     }
 
-    /// The path of this class's count in a policy at `policy`.
     pub fn path<R>(self, policy: &RetentionPolicyPaths<R>) -> Path<R, u32> {
         match self {
             PolicyField::Hourly => policy.hourly.clone(),
@@ -452,7 +407,6 @@ const MB: u64 = 1_000 * KB;
 const GB: u64 = 1_000 * MB;
 const TB: u64 = 1_000 * GB;
 
-/// Local wall time of a Unix timestamp.
 fn local_time(unix_seconds: u64) -> Option<NaiveDateTime> {
     let seconds = i64::try_from(unix_seconds).ok()?;
     let utc = chrono::DateTime::from_timestamp(seconds, 0)?;
@@ -484,9 +438,6 @@ impl Catalog {
                 dest_id: "local-destination".into(),
                 taken: local_time(manifest.created_unix_seconds).unwrap_or(now),
                 label: None,
-                // The manifest records the snapshot, not who started it or
-                // which retention class holds it: those stay unknown rather
-                // than being invented as Manual/Daily.
                 kind: SnapType::Unknown,
                 retention: Retention::Unknown,
                 size_bytes: manifest.bytes,
@@ -518,8 +469,6 @@ impl Catalog {
                 name: source_name,
                 path: source_label,
                 kind: SourceKind::Custom,
-                // No scheduler runs in this build; the honest schedule is
-                // the one the person starts by hand.
                 schedule: Schedule::OnDemand,
                 enabled: true,
                 health: Health::Unknown,
@@ -530,7 +479,6 @@ impl Catalog {
                 name: destination_label,
                 kind: DestKind::LocalFolder,
                 used_bytes: used,
-                // A local folder reports no capacity of its own.
                 total_bytes: None,
                 encrypted: false,
                 health: Health::Unknown,
@@ -538,9 +486,6 @@ impl Catalog {
         }
     }
 
-    /// An empty catalog — no sources, snapshots, or destinations. This is the
-    /// real first-run state: the live app starts here and shows onboarding
-    /// until the person selects a source and destination.
     pub fn empty() -> Self {
         Self {
             sources: Vec::new(),
@@ -549,9 +494,8 @@ impl Catalog {
         }
     }
 
-    /// A realistic week of backups across three sources and three
-    /// destinations, laid out backwards from `now`. Deterministic for a given
-    /// clock, so a capture (whose clock is pinned) is stable.
+    /// A realistic week of backups across three sources and three destinations, laid out
+    /// backwards from `now`.
     pub fn sample(now: NaiveDateTime) -> Self {
         let sources = vec![
             Source {
@@ -614,7 +558,6 @@ impl Catalog {
                 name: "Backblaze B2".into(),
                 kind: DestKind::RemoteRestic,
                 used_bytes: 88 * GB,
-                // Cloud storage grows with what it holds: no capacity.
                 total_bytes: None,
                 encrypted: true,
                 health: Health::Warning,
@@ -645,7 +588,6 @@ impl Catalog {
         self.snapshots.iter().find(|s| s.id == id)
     }
 
-    /// Snapshots matching `filter`, newest first.
     pub fn timeline(&self, filter: Filter<'_>) -> Vec<&Snapshot> {
         let mut v: Vec<&Snapshot> = self.snapshots.iter().filter(|s| filter.admits(s)).collect();
         v.sort_by(|a, b| b.taken.cmp(&a.taken).then_with(|| a.id.cmp(&b.id)));
@@ -659,8 +601,8 @@ impl Catalog {
             .count()
     }
 
-    /// Total bytes pinned by the newest snapshot of a source (a proxy for the
-    /// live subvolume size).
+    /// Total bytes pinned by the newest snapshot of a source (a proxy for the live
+    /// subvolume size).
     pub fn protected_bytes(&self, source_id: &str) -> u64 {
         self.snapshots
             .iter()
@@ -680,7 +622,6 @@ impl Catalog {
             .sum()
     }
 
-    /// Snapshots under `filter` that failed.
     pub fn failed(&self, filter: Filter<'_>) -> usize {
         self.snapshots
             .iter()
@@ -688,7 +629,6 @@ impl Catalog {
             .count()
     }
 
-    /// The newest completed snapshot under `filter`.
     pub fn last_backup(&self, filter: Filter<'_>) -> Option<&Snapshot> {
         self.snapshots
             .iter()
@@ -696,7 +636,6 @@ impl Catalog {
             .max_by_key(|s| s.taken)
     }
 
-    /// The next scheduled run of any enabled source under `filter`.
     pub fn next_run(&self, filter: Filter<'_>, now: NaiveDateTime) -> Option<NaiveDateTime> {
         self.sources
             .iter()
@@ -731,9 +670,8 @@ impl Filter<'_> {
     }
 }
 
-/// A week of sample snapshots. Offsets are minutes before the clock; at the
-/// pinned capture time (10:42) they land on the hour the scheduler would
-/// have used.
+/// Offsets are minutes before the clock; at the pinned capture time (10:42) they land on
+/// the hour the scheduler would have used.
 #[allow(
     clippy::too_many_lines,
     reason = "one readable fixture table; splitting it by day only scatters it"
@@ -759,8 +697,6 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
             status: Complete,
         };
     vec![
-        // Today: the workspace every hour, and a pinned manual snapshot taken
-        // before an upgrade.
         SampleSnapshot {
             status: Verifying,
             ..auto(
@@ -818,7 +754,6 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
             64 * MB,
             97,
         ),
-        // Yesterday: the nightly home run.
         auto(
             "h-1-1800",
             "home",
@@ -829,7 +764,6 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
             820 * MB,
             1_320,
         ),
-        // Yesterday's offsite copy of the workspace failed.
         SampleSnapshot {
             status: Failed,
             ..auto(
@@ -843,7 +777,6 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
                 88,
             )
         },
-        // Sunday: the weekly system run and photos pinned after an import.
         auto(
             "h-2-1800",
             "home",
@@ -878,7 +811,6 @@ fn sample_snapshots() -> Vec<SampleSnapshot<'static>> {
             4 * MB,
             23,
         ),
-        // Earlier in the week.
         auto(
             "h-3-1800",
             "home",
@@ -963,8 +895,8 @@ mod tests {
             .expect("the capture time is a valid date")
     }
 
-    /// The sample catalog is populated and internally consistent, and every
-    /// snapshot lies in the past of the clock it was laid out from.
+    /// The sample catalog is populated and internally consistent, and every snapshot lies
+    /// in the past of the clock it was laid out from.
     #[test]
     fn sample_catalog_is_populated_with_unique_known_references() {
         use std::collections::HashSet;
@@ -985,8 +917,8 @@ mod tests {
         }
     }
 
-    /// Timelines filter and sort newest first; the summary figures derive
-    /// from the data and the schedules rather than from fixed copy.
+    /// Timelines filter and sort newest first; the summary figures derive from the data and
+    /// the schedules rather than from fixed copy.
     #[test]
     fn timelines_and_summaries_derive_from_the_catalog() {
         let now = capture_now();
@@ -1004,7 +936,6 @@ mod tests {
         );
         assert!(c.protected_bytes("home") > c.protected_bytes("etc"));
 
-        // The newest completed snapshot, not the one still verifying.
         let last = c.last_backup(Filter::All).expect("a completed snapshot");
         assert_eq!(last.id, "w-0-0900");
         assert_eq!(c.failed(Filter::All), 1);
@@ -1017,8 +948,7 @@ mod tests {
         assert_eq!((home_next.hour(), home_next.date()), (18, now.date()));
     }
 
-    /// A weekly schedule finds the next matching weekday, never the same
-    /// instant.
+    /// A weekly schedule finds the next matching weekday, never the same instant.
     #[test]
     fn weekly_schedule_runs_on_its_weekday() {
         let now = capture_now(); // Tuesday 30 June 2026

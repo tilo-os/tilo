@@ -1,7 +1,6 @@
-//! The Backups window over the device's repository: the [`Store`] the
-//! view shares with its effect handler (the catalog, where it backs up from
-//! and to, the work running on it) and the [`BackupsWindow`] that lays it
-//! out.
+//! The Backups window over the device's repository: the [`Store`] the view shares with its
+//! effect handler (the catalog, where it backs up from and to, the work running on it) and
+//! the [`BackupsWindow`] that lays it out.
 use crate::actions::{BackupsEffect, Blocked};
 use crate::i18n;
 use crate::model::MAX_KEPT;
@@ -12,13 +11,9 @@ use crate::view::{self, Intent, Intents, JobKind, Order, Page, Setup};
 use chrono::NaiveDateTime;
 use std::cell::{Cell, RefCell};
 
-/// How often a running job's progress line is read.
 const PROGRESS_READ: ui::time::Duration = ui::time::Duration::from_millis(250);
-/// The window bar's Back up now ([`BackupsWindow::sync_window_toolbar`]).
 const BACK_UP_NOW: &str = "back-up-now";
 
-/// Who raises a job or a notice: this app, in the jobs band and in what
-/// wants the person.
 fn owner() -> ui::attention::Owner {
     ui::attention::Owner::new("so.tilo.backups", "Backups").with_icon(ui::icons::Icon::Archive)
 }
@@ -54,7 +49,6 @@ enum SetupKey {
     Unavailable(String),
 }
 
-/// What the shell currently shows, so it is rebuilt only when it changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ViewKey {
     catalog: u64,
@@ -67,17 +61,13 @@ struct ViewKey {
     failure: Option<(String, String)>,
 }
 
-/// The repository a window shows and the work running on it, shared by the
-/// window and the view's effect handler.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent flag (redraw, drawer, a sheet to close or show)"
 )]
 pub(crate) struct Store {
     intents: Intents,
-    /// What the jobs band reports back: the person pressing Stop.
     jobs: ui::jobs::Presses,
-    /// What the stack of what wants the person reports back.
     needs: ui::attention::Presses,
     catalog: Catalog,
     catalog_rev: u64,
@@ -88,11 +78,7 @@ pub(crate) struct Store {
     retention: [LocalState<f64>; 4],
     order: Order,
     failure: Option<(String, String)>,
-    /// Said in the window's bar for a while when the backups' health
-    /// changes: all healthy again, or how many now need a look.
     health: ui::widget::toast::Transient<(String, ui::widget::toast::ToastKind)>,
-    /// How many backups needed a look when last read; `None` before the
-    /// first read, which is the window opening, not news.
     failed_seen: Option<u64>,
     scroll: Rc<Cell<(f32, f32)>>,
     dirty: bool,
@@ -101,8 +87,6 @@ pub(crate) struct Store {
     destination_path: Option<PathBuf>,
     repository_error: Option<String>,
     dispatcher: Option<Dispatcher<Backups>>,
-    /// What the order picker runs, once the window takes part in the
-    /// resource.
     order_binding: Option<ui::tilo_actions::ActionBinding<String>>,
     location: Option<Setting<BackupLocation>>,
     loaded: BackupLocation,
@@ -112,23 +96,17 @@ pub(crate) struct Store {
     job_status: Option<view::Job>,
     job_kind: Option<JobKind>,
     ui: UiCache,
-    /// What the window says in a toast next.
     toasts: Vec<(String, ToastKind)>,
-    /// The restore sheet closes: a folder to restore into was chosen.
     close_restore: bool,
-    /// A capture shows the restore sheet.
     show_restore: bool,
 }
 
-/// The [`Store`] as the window and the effect handler share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
-/// The window: the repository in a [`NavShell`], with the restore sheet
-/// over it while it is open.
+/// The window: the repository in a [`NavShell`], with the restore sheet over it while it is
+/// open.
 pub struct BackupsWindow {
     repo: Shared,
-    /// The policy as the document holds it, shown as it changes; `None` for
-    /// a window outside the framework.
     live: Option<Live<Backups>>,
     presented: Option<(u64, u64)>,
     shell: NavShell,
@@ -140,19 +118,17 @@ pub struct BackupsWindow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Work {
     Idle,
-    /// A folder chooser is open.
     Choosing,
-    /// A backup, verification or restore is running.
     Running,
 }
 
-/// What a running job last reported, written by its worker and shown by the
-/// progress banner.
+/// What a running job last reported, written by its worker and shown by the progress
+/// banner.
 type JobProgress = Arc<Mutex<Option<String>>>;
 
-/// A backup, verification or restore under way: the progress line the page
-/// reads, the job the window's band shows (with its Stop), and the flag
-/// between them, so pressing Stop ends the work instead of hiding it.
+/// A backup, verification or restore under way: the progress line the page reads, the job
+/// the window's band shows (with its Stop), and the flag between them, so pressing Stop
+/// ends the work instead of hiding it.
 struct Run {
     progress: JobProgress,
     job: ui::jobs::Running,
@@ -165,9 +141,8 @@ fn report(progress: &JobProgress, status: String) {
     }
 }
 
-/// Local view state. It is intentionally never read from or written to the
-/// collaborative document: another device's active modal or local repository
-/// selection must not navigate this device or trigger a restore prompt.
+/// Local view state, never read from or written to the collaborative document: another
+/// device's modal must not navigate this one.
 struct UiCache {
     view: View,
     sel_source: Option<String>,
@@ -201,8 +176,8 @@ fn now() -> NaiveDateTime {
     ui::clock::local_now().naive_local()
 }
 
-/// A verification under way, for a capture: the window's band says what it is
-/// doing, how far through it is, and offers Stop, exactly as a live one does.
+/// A verification under way, for a capture: the window's band says what it is doing, how
+/// far through it is, and offers Stop, exactly as a live one does.
 fn sample_job() {
     if ui::jobs::is_active() {
         return;
@@ -267,9 +242,8 @@ impl Store {
             && self.repository_error.is_none()
     }
 
-    /// Take part in the resource: edits and effects go through the
-    /// dispatcher, and the repository shown is this device's (a live
-    /// window) or the scenario's (a capture).
+    /// Take part in the resource: edits and effects go through the dispatcher, and the
+    /// repository shown is this device's (a live window) or the scenario's (a capture).
     fn attach(&mut self, cx: &ViewCx<Backups>) {
         self.dispatcher = Some(cx.dispatcher());
         self.order_binding = cx.actions().effect_binding(BackupsEffect::ORDER_SNAPSHOTS);
@@ -286,7 +260,6 @@ impl Store {
         }
     }
 
-    /// Show the retention policy the document holds.
     pub(crate) fn present_policy(&mut self, policy: RetentionPolicy) {
         if self.policy == policy {
             return;
@@ -302,9 +275,9 @@ impl Store {
         }
     }
 
-    /// Load the repository at `location`. A saved destination that is gone
-    /// (an unplugged drive) is reported, never created: otherwise it could
-    /// look like a fresh repository and receive a backup in the wrong place.
+    /// Load the repository at `location`. A saved destination that is gone (an unplugged
+    /// drive) is reported, never created: otherwise it could look like a fresh repository
+    /// and receive a backup in the wrong place.
     fn load_location(&mut self, location: BackupLocation) {
         self.loaded = location.clone();
         self.source_path = location.source;
@@ -331,7 +304,6 @@ impl Store {
         }
     }
 
-    /// Reload the repository after a job changed it.
     fn reload_repository(&mut self) -> Result<(), String> {
         let (Some(source), Some(destination)) = (&self.source_path, &self.destination_path) else {
             return Ok(());
@@ -346,9 +318,9 @@ impl Store {
         Ok(())
     }
 
-    /// Adjust one retention class by `delta`, within `[0, MAX_KEPT]`: the
-    /// field edit at its path, which both the on-screen +/- buttons and the
-    /// keyboard arrow / `+` / `-` handlers submit.
+    /// Adjust one retention class by `delta`, within `[0, MAX_KEPT]`: the field edit at its
+    /// path, which both the on-screen +/- buttons and the keyboard arrow / `+` / `-`
+    /// handlers submit.
     fn bump_retention(&self, field: PolicyField, delta: i64) {
         let count = (i64::from(field.of(&self.ui.policy)) + delta).clamp(0, i64::from(MAX_KEPT));
         let count = u32::try_from(count).unwrap_or_default();
@@ -357,7 +329,6 @@ impl Store {
         }
     }
 
-    /// Invoke `effect` through the door, as the palette and agents do.
     fn invoke(&self, effect: &BackupsEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
@@ -369,8 +340,8 @@ impl Store {
         self.dirty = true;
     }
 
-    /// Errors must read as errors — a green success toast after a rejected
-    /// restore is actively misleading and can make recovery unsafe.
+    /// Errors must read as errors — a green success toast after a rejected restore is
+    /// actively misleading and can make recovery unsafe.
     fn toast_error(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
         self.failure = Some(("Backup paused".into(), msg.clone()));
@@ -378,7 +349,6 @@ impl Store {
         self.dirty = true;
     }
 
-    /// Why the repository effects cannot run here now, if they cannot.
     pub(crate) fn blocked(&self) -> Option<Blocked> {
         if self.work != Work::Idle {
             return Some(Blocked {
@@ -401,7 +371,6 @@ impl Store {
         None
     }
 
-    /// The effects that cannot run on this device right now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         if let Some(blocked) = self.blocked() {
@@ -452,8 +421,6 @@ impl Store {
                         "A backup operation is already running; wait for it to finish.".into(),
                     );
                 }
-                // A saved location that can no longer be read keeps its
-                // source: only a new destination is chosen.
                 if self.source_path.is_some() && !self.is_configured() {
                     Ok(self.choose_destination(me, cx))
                 } else {
@@ -536,9 +503,8 @@ impl Store {
         }
     }
 
-    /// What the stored snapshot `snapshot_id` is: when it was taken, of
-    /// what, where it is kept, how large, its state and how many files it
-    /// holds.
+    /// What the stored snapshot `snapshot_id` is: when it was taken, of what, where it is
+    /// kept, how large, its state and how many files it holds.
     fn read_snapshot(&self, snapshot_id: &str) -> Result<serde_json::Value, &'static str> {
         let snapshot = self
             .catalog
@@ -562,7 +528,6 @@ impl Store {
         }))
     }
 
-    /// Whether a verification or restore of `snapshot_id` may start now.
     fn repository_ready(&mut self, snapshot_id: &str) -> Result<(), String> {
         if let Some(blocked) = self.blocked() {
             self.toast_error(blocked.reason.clone());
@@ -639,9 +604,7 @@ impl Store {
         )
     }
 
-    /// Begin a job: the page's progress row, and the window's band, which
-    /// offers Stop. `subject` names what it works on, so Stop and "Show me"
-    /// point at the same thing the person chose.
+    /// Begin a job: the page's progress row, and the window's band, which offers Stop.
     fn start_job(&mut self, kind: JobKind, subject: &str, status: &str) -> Run {
         self.work = Work::Running;
         self.job_progress = JobProgress::new(Mutex::new(Some(status.to_owned())));
@@ -670,9 +633,9 @@ impl Store {
         self.operation_status = None;
     }
 
-    /// End `run` the way its result says: stopped by the person, failed with
-    /// its reason, or done. A stop is recorded in the ledger as something
-    /// that happened, because the person asked for it rather than it failing.
+    /// End `run` the way its result says: stopped by the person, failed with its reason, or
+    /// done. A stop is recorded in the ledger as something that happened, because the
+    /// person asked for it rather than it failing.
     fn end_job(
         kind: JobKind,
         run: &Run,
@@ -729,9 +692,6 @@ impl Store {
                 let (manifest, pruned) = match result {
                     Ok(both) => both,
                     Err(error) if error.is_stopped() => {
-                        // The person stopped it: nothing failed, so nothing
-                        // is reported as a failure. The ledger says what
-                        // happened instead.
                         Store::end_job(JobKind::Backup, &run, &Err(error), "");
                         return Ok(Effected::done());
                     }
@@ -743,8 +703,6 @@ impl Store {
                     }
                 };
                 if let Err(error) = app.reload_repository() {
-                    // The backup itself succeeded; it is the history that
-                    // could not be read back here.
                     Store::end_job(
                         JobKind::Backup,
                         &run,
@@ -762,8 +720,8 @@ impl Store {
                     ui::format::size(manifest.bytes)
                 );
                 Store::end_job(JobKind::Backup, &run, &Ok(()), &done);
-                // Pruning deletes snapshots: say which ones went, so history
-                // never shrinks without a word.
+                // Pruning deletes snapshots: say which ones went, so history never shrinks
+                // without a word.
                 match &pruned {
                     Ok(removed) if removed.is_empty() => app.toast_now(format!(
                         "Backup complete: {} files totaling {}.",
@@ -797,8 +755,8 @@ impl Store {
         )
     }
 
-    /// The name the person knows this backup's source by, for the job's
-    /// subject and its Stop.
+    /// The name the person knows this backup's source by, for the job's subject and its
+    /// Stop.
     fn source_title(&self) -> String {
         self.source_path.as_ref().map_or_else(
             || "this folder".to_owned(),
@@ -811,9 +769,9 @@ impl Store {
         )
     }
 
-    /// When the snapshot `id` was taken, as the person's clock reads it: a
-    /// snapshot the policy removed is no longer in the catalog, so its id
-    /// (the second it was taken) answers instead.
+    /// When the snapshot `id` was taken, as the person's clock reads it: a snapshot the
+    /// policy removed is no longer in the catalog, so its id (the second it was taken)
+    /// answers instead.
     fn snapshot_when(&self, id: &str) -> String {
         if let Some(snapshot) = self.catalog.snapshots.iter().find(|s| s.id == id) {
             return crate::actions::taken_label(snapshot);
@@ -911,9 +869,9 @@ impl Store {
                 let mut app = me.borrow_mut();
                 app.work = Work::Idle;
                 match picked {
-                    // The sheet promises a destination chooser, not a
-                    // background restore: it closes only once a folder was
-                    // chosen, and the engine never overwrites one.
+                    // The sheet promises a destination chooser, not a background restore:
+                    // it closes only once a folder was chosen, and the engine never
+                    // overwrites one.
                     Picked::Opened(path) => {
                         app.close_restore = true;
                         Ok(app.start_restore(id, path, &me, cx))
@@ -1019,7 +977,6 @@ impl Store {
         me: &Shared,
         cx: &mut EffectCx<Backups>,
     ) -> EffectAnswer {
-        // The order is the window's alone: it shows the page it showed.
         if matches!(effect, BackupsEffect::OrderSnapshots { .. }) {
             return self.answer_backend(effect, me, cx);
         }
@@ -1048,8 +1005,8 @@ impl Store {
         result
     }
     fn refresh_runtime(&mut self) {
-        // Stop and "read" are the registry's own; "show me" is already here,
-        // because a snapshot job's subject is the page this app is showing.
+        // Stop and "read" are the registry's own; "show me" is already here, because a
+        // snapshot job's subject is the page this app is showing.
         for press in self.jobs.take() {
             let _ = ui::jobs::apply(press);
         }
@@ -1117,7 +1074,6 @@ impl Store {
         }
         self.refresh_runtime();
     }
-    /// The newest snapshot of the page, unless one is chosen there already.
     fn keep_selection(&mut self) {
         if !self.page.lists_snapshots() {
             return;
@@ -1178,12 +1134,8 @@ impl Store {
         self.catalog.failed(Filter::All) as u64
     }
 
-    /// "All backups healthy", or how many need a look, in the window's bar
-    /// for a while.
+    /// "All backups healthy", or how many need a look, in the window's bar for a while.
     fn say_health(&mut self, failed: u64) {
-        // A count of failed snapshots is a measurement; "all healthy" is not
-        // a claim this app can make while health is unknown or no source is
-        // configured.
         let text = if self.catalog.sources.is_empty() {
             "Backup health is unknown: no source is configured.".to_owned()
         } else if failed == 0 {
@@ -1199,7 +1151,6 @@ impl Store {
         self.health.show((text, kind));
     }
 
-    /// Say the health when it changes, and keep the bar's notice current.
     fn publish_health(&mut self) {
         if self.setup_key().is_none() {
             let failed = self.failed_count();
@@ -1214,11 +1165,7 @@ impl Store {
     }
 }
 impl BackupsWindow {
-    /// A window over `repo`.
     fn new(repo: Store, live: Option<Live<Backups>>) -> Self {
-        // What runs, across the window's foot: it stays whatever page the
-        // window shows, so a backup outlives the page that started it and its
-        // Stop is reachable from every page.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::List)
             .with_window_toolbar()
@@ -1243,7 +1190,6 @@ impl BackupsWindow {
         Self::new(Store::with_catalog(catalog), None)
     }
 
-    /// Show the retention policy the document holds when it changed.
     fn follow_document(&mut self) {
         let Some(live) = &self.live else {
             return;
@@ -1255,8 +1201,8 @@ impl BackupsWindow {
         self.repo.borrow_mut().present_policy(policy);
     }
 
-    /// Bring the window in step with the repository: what it asked to say,
-    /// the restore sheet it opened or closed, and the columns.
+    /// Bring the window in step with the repository: what it asked to say, the restore
+    /// sheet it opened or closed, and the columns.
     fn show_repository(&mut self) {
         let (toasts, close, open) = {
             let mut repo = self.repo.borrow_mut();
@@ -1431,9 +1377,9 @@ impl BackupsWindow {
         self.shell.set_inspector(details);
     }
 
-    /// Declare the window bar's slots ([`ui::window_toolbar`]): the shell's
-    /// own (the sources list, Back, the snapshot's details), the page as the
-    /// window's location and Back up now; and run what the person did there.
+    /// Declare the window bar's slots ([`ui::window_toolbar`]): the shell's own (the
+    /// sources list, Back, the snapshot's details), the page as the window's location and
+    /// Back up now; and run what the person did there.
     fn sync_window_toolbar(&mut self) {
         let repo = Rc::clone(&self.repo);
         let repo = repo.borrow();
@@ -1466,8 +1412,6 @@ impl BackupsWindow {
             .enabled(repo.can_act() && job.is_none());
             NavShell::push_window_actions(&mut toolbar, [back_up]);
         } else {
-            // Before anything is set up nothing is open: the window is
-            // Backups.
             toolbar.location = Some(ui::window_toolbar::ToolbarLocation {
                 label: crate::i18n::t("backups-a11y-window"),
                 ..ui::window_toolbar::ToolbarLocation::default()
@@ -1477,8 +1421,8 @@ impl BackupsWindow {
     }
 }
 
-/// The Backups window over this device's repository, answering its effects
-/// and publishing its catalog as live rows.
+/// The Backups window over this device's repository, answering its effects and publishing
+/// its catalog as live rows.
 pub(crate) fn window(cx: &ViewCx<Backups>) -> Element {
     let mut repo = Store::with_catalog(Catalog::empty());
     repo.attach(cx);
@@ -1510,7 +1454,6 @@ pub(crate) fn window(cx: &ViewCx<Backups>) -> Element {
                 let repo = row.borrow();
                 crate::actions::live_row(&repo.catalog, repo.blocked().as_ref(), id)
             })
-            // Every loaded recovery point, older than the published page too.
             .search_entries(move || crate::search::snapshot_entries(&entries.borrow().catalog)),
         Box::new(window),
     )
@@ -1519,8 +1462,8 @@ pub(crate) fn window(cx: &ViewCx<Backups>) -> Element {
 impl ui::widget::Decorator for BackupsWindow {
     type Inner = NavShell;
 
-    // While the restore sheet is open it is the window's one live child:
-    // what its controls run reaches it, not the shell behind its scrim.
+    // While the restore sheet is open it is the window's one live child: what its controls
+    // run reaches it, not the shell behind its scrim.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         match &self.restore {
             Some(dialog) => dialog.provide(request),
@@ -1547,7 +1490,6 @@ impl ui::widget::Decorator for BackupsWindow {
         self.sync_window_toolbar();
         self.drain_intents();
         self.show_repository();
-        // A narrow window shows the list as a drawer or as its own screen.
         if self.repo.borrow().open_drawer
             && matches!(
                 self.shell.geometry().sidebar,
@@ -1566,7 +1508,6 @@ impl ui::widget::Decorator for BackupsWindow {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        // A running job's progress line, read on its wake deadline.
         let (progressed, jobs_moved) = {
             let repo = self.repo.borrow();
             let progressed = repo.work == Work::Running
@@ -1574,7 +1515,6 @@ impl ui::widget::Decorator for BackupsWindow {
                     .job_progress
                     .lock()
                     .is_ok_and(|shown| *shown != repo.operation_status);
-            // A job's rows move when one starts, reports or ends.
             (progressed, repo.jobs.changed())
         };
         self.sync_window_toolbar();
@@ -1583,9 +1523,8 @@ impl ui::widget::Decorator for BackupsWindow {
         self.shell.update(state, path) || self.repo.borrow().dirty || progressed || jobs_moved
     }
 
-    /// A running job reports progress through a shared line; the app reads
-    /// it a few times a second on a deadline. Choosing a folder and the job's
-    /// end wake the app themselves (framework effects).
+    /// A running job reports progress through a shared line; the app reads it a few times a
+    /// second on a deadline.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let repo = self.repo.borrow();
         let progress = (repo.work == Work::Running)
@@ -1605,7 +1544,6 @@ impl ui::widget::Decorator for BackupsWindow {
         node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
         let node = self.shell.build_layout(taffy, theme, node_map);
-        // The host reaches the undo bracket through the node map.
         ui::widget::decorator::register_node(node_map, node, self);
         node
     }
@@ -1714,9 +1652,9 @@ mod tests {
         BackupsWindow::with_catalog(Catalog::sample(now()))
     }
 
-    /// The wire between the band's Stop and the work: a backup, verification
-    /// or restore starts as a job that offers Stop, and pressing it sets the
-    /// flag the engine checks between files.
+    /// The wire between the band's Stop and the work: a backup, verification or restore
+    /// starts as a job that offers Stop, and pressing it sets the flag the engine checks
+    /// between files.
     #[test]
     fn a_backup_job_offers_stop_and_stop_reaches_the_worker() {
         let mut app = Store::with_catalog(Catalog::sample(now()));
@@ -1755,7 +1693,6 @@ mod tests {
         Framed::harness_mut(app).relayout();
     }
     fn place(app: &mut Framed<BackupsWindow>, id: &str) {
-        // Narrow, the list is a screen of its own: go back to it first.
         if app.shell.geometry().sidebar == SidebarPlacement::Screen {
             app.shell.open_sidebar();
             app.shell.snap();
@@ -1769,8 +1706,6 @@ mod tests {
             .unwrap()
             .center();
         click(app, at);
-        // Opening and closing drawers animate on the live path. Geometry
-        // assertions inspect the settled destination, as the opening above does.
         app.shell.snap();
         Framed::harness_mut(app).relayout();
     }
@@ -1822,7 +1757,6 @@ mod tests {
         }
     }
     fn the_sample_catalog_indexes_every_snapshot() {
-        // Demo/shots data is populated; the live catalog stays empty.
         let demo = Catalog::sample(now());
         assert!(
             demo.snapshots.iter().all(|s| !s.files.is_empty()),
@@ -1880,8 +1814,6 @@ mod tests {
         narrow.shell.snap();
         Framed::harness_mut(&mut narrow).relayout();
         assert!(narrow.shell.is_sidebar_open());
-        // Short enough that the list overflows the whole window height: no
-        // header row stands above it.
         let mut short = frame(demo(), 1280.0, 420.0, 1.0);
         let sidebar = short.shell.geometry().sidebar_column;
         let before = short

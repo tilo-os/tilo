@@ -1,9 +1,5 @@
-//! Local backup history as search entries.
-//!
-//! The visible resource tree deliberately publishes a small contextual page of
-//! snapshots. Search is different: a recovery point must remain findable even
-//! when it is older than that page, so every loaded local snapshot is an
-//! entry, and the framework's search source bounds the query work.
+//! Local backup history as search entries: a recovery point stays findable after it leaves
+//! the recent page, so every loaded local snapshot is an entry.
 
 use ui::tilo_resource::SearchEntry;
 
@@ -11,9 +7,9 @@ use crate::model::{Catalog, Snapshot};
 
 pub const SNAPSHOT_KIND: &str = "Backup recovery points";
 
-/// Every recovery point in the loaded catalogue, each anchored at its live
-/// row, which the window's opener shows:
-/// found by its id, time, source, destination, kind, retention or status.
+/// Every recovery point in the loaded catalogue, each anchored at its live row, which the
+/// window's opener shows: found by its id, time, source, destination, kind, retention or
+/// status.
 pub fn snapshot_entries(backups: &Catalog) -> Vec<SearchEntry> {
     backups
         .snapshots
@@ -64,7 +60,6 @@ mod tests {
     use super::*;
     use ui::search::SearchProvider;
 
-    /// The app's search source over `catalog`, as the framework builds it.
     fn source(catalog: &Catalog) -> impl SearchProvider + use<> {
         ui::framework::testing::search_source::<crate::resource::Backups>(snapshot_entries(catalog))
     }
@@ -88,16 +83,14 @@ mod tests {
         catalog
     }
 
-    /// A late recovery point is found with bounded query work and resolves to
-    /// its resource, and a catalog refresh invalidates prior cursors; each case
-    /// builds its own index.
+    /// A late recovery point is found with bounded query work and resolves to its resource,
+    /// and a catalog refresh invalidates prior cursors; each case builds its own index.
     #[test]
     fn snapshot_search_is_bounded_and_invalidated_by_catalog_refresh() {
         late_recovery_point_is_found_with_bounded_query_work();
         catalog_refresh_invalidates_existing_search_cursors();
     }
 
-    /// Case of `snapshot_search_is_bounded_and_invalidated_by_catalog_refresh`.
     fn late_recovery_point_is_found_with_bounded_query_work() {
         let mut loaded = None;
         let (provider, hit) = assert_late_hit_reachable(
@@ -135,7 +128,6 @@ mod tests {
         assert!(page.next.is_some(), "the complete history remains pageable");
     }
 
-    /// Case of `snapshot_search_is_bounded_and_invalidated_by_catalog_refresh`.
     fn catalog_refresh_invalidates_existing_search_cursors() {
         let catalog = Catalog::sample(
             chrono::DateTime::from_timestamp(1_782_835_500, 0)

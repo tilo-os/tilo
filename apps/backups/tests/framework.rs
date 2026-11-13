@@ -5,10 +5,10 @@
     reason = "test assertions read a job's own report by name"
 )]
 
-//! Backups on the framework: the retention controls edit the document
-//! through the resource's action, and backing up, verifying and restoring
-//! are effects every caller reaches the same way, with jobs that run off
-//! the UI thread against this device's repository.
+//! Backups on the framework: the retention controls edit the document through the
+//! resource's action, and backing up, verifying and restoring are effects every caller
+//! reaches the same way, with jobs that run off the UI thread against this device's
+//! repository.
 
 use backups::actions::BackupsEffect;
 use backups::{BackupLocation, BackupsShell};
@@ -32,8 +32,6 @@ fn the_retention_steppers_edit_the_document_as_one_undo_step() {
         .expect("the daily retention spinbutton exposes increase");
     app.settle();
     assert_eq!(app.state().policy.daily, 8);
-    // The stepper's change is the daily count's field edit, which an agent
-    // makes in one call as well.
     let surface = app.agent_surface();
     assert_eq!(
         row(&surface, "backups.workspace", "field-edit")["operation"],
@@ -64,15 +62,10 @@ fn an_unconfigured_device_offers_setup_and_refuses_to_back_up() {
 
 #[test]
 fn backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy() {
-    // Both backups fall in one hour whenever the test runs: the retention
-    // policy buckets snapshots by the UTC hour they were taken in, and a
-    // running clock may cross into the next one between them.
     let half_past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_841_400);
     ui::time::testing::with_wall(half_past, backups_run_and_follow_the_policy_at_once);
 }
 
-/// [`backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy`]
-/// with the wall clock held at half past an hour.
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario keeps each step and what it proves beside it"
@@ -85,7 +78,6 @@ fn backups_run_and_follow_the_policy_at_once() {
     std::fs::create_dir_all(&destination).unwrap();
     std::fs::write(source.join("letter.txt"), b"dear backup").unwrap();
     let mut app = TestApp::<BackupsShell>::new().unwrap();
-    // The location is this device's setting, not the document.
     app.settings::<BackupLocation>()
         .set(&BackupLocation {
             source: Some(source),
@@ -108,7 +100,6 @@ fn backups_run_and_follow_the_policy_at_once() {
     app.settle();
     let id = first["snapshot"].as_str().unwrap().to_owned();
 
-    // The new snapshot is a live row, offering what this device can do with it.
     let snapshot = format!("backups.snapshot:{id}");
     let surface = app.agent_surface();
     assert_eq!(row(&surface, &snapshot, "verify")["operation"], "Effect");
@@ -129,14 +120,11 @@ fn backups_run_and_follow_the_policy_at_once() {
         })
         .is_err()
     );
-    // The order picker's effect lists the timeline oldest first.
     app.effect(&BackupsEffect::OrderSnapshots {
         order: "Oldest first".into(),
     })
     .unwrap();
 
-    // A second backup within the same hour replaces the first: the policy
-    // keeps the newest snapshot of each hour.
     let second = app
         .effect(&BackupsEffect::BackupNow)
         .unwrap()
@@ -155,7 +143,6 @@ fn backups_run_and_follow_the_policy_at_once() {
     );
     let kept = format!("backups.snapshot:{}", second["snapshot"].as_str().unwrap());
     row(&surface, &kept, "restore");
-    // Nothing of it is the document.
     assert_eq!(
         app.state().policy,
         backups::model::RetentionPolicy::default()
@@ -175,7 +162,6 @@ fn every_scenario_stages_its_screen() {
         let tree = app.harness().inspection_json().unwrap();
         assert!(tree.contains(shown), "{scenario:?} shows {shown}: {tree}");
     }
-    // The overview's one main action is the window bar's.
     let _app = TestApp::<BackupsShell>::capture(None).unwrap();
     let declared = ui::window_toolbar::declared().expect("the window declares its slots");
     assert!(
@@ -235,8 +221,8 @@ fn two_devices_changing_different_classes_keep_both() {
     assert_eq!(left.state().unwrap(), right.state().unwrap());
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
+/// The window bar's sidebar button flips the sidebar on every click, in a window wide
+/// enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(|| {
@@ -245,8 +231,8 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     .unwrap_or_else(|error| panic!("{error}"));
 }
 
-/// A backup is a job in the registry, with a body the person can read: what it
-/// was doing, and how it ended.
+/// A backup is a job in the registry, with a body the person can read: what it was doing,
+/// and how it ended.
 #[test]
 fn a_backup_is_a_job_in_the_registry_with_its_outcome() {
     let temp = tempfile::tempdir().unwrap();

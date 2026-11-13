@@ -1,12 +1,3 @@
-//! The window's content, built from the toolkit's widgets.
-//!
-//! The sidebar is a [`NavList`] of places (every backup, each source, each
-//! destination, the retention policy); the content is one scrolling page of
-//! summary tiles and the snapshot timeline; the inspector shows the selected
-//! snapshot. Nothing here paints, sizes or colours anything: every widget
-//! says what it is and the theme decides how it looks. Interaction leaves as
-//! an [`Intent`] the app applies.
-
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -38,9 +29,7 @@ use crate::model::{
 pub enum Page {
     All,
     Source(String),
-    /// One destination's capacity and the snapshots stored on it.
     Destination(String),
-    /// The retention policy.
     Retention,
 }
 
@@ -69,7 +58,6 @@ impl Page {
         }
     }
 
-    /// The snapshots the page lists.
     pub fn filter(&self) -> Filter<'_> {
         match self {
             Page::All | Page::Retention => Filter::All,
@@ -83,8 +71,7 @@ impl Page {
     }
 }
 
-/// What a control in the window asks for. The app applies each one the same
-/// way for a click, a key or an accessibility action.
+/// What a control in the window asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     Navigate(Page),
@@ -98,7 +85,6 @@ pub enum Intent {
     DismissFailure,
 }
 
-/// The queue controls write to and the app drains.
 pub type Intents = ui::Intents<Intent>;
 
 /// The order the timeline lists snapshots in.
@@ -160,8 +146,8 @@ impl JobKind {
 #[derive(Clone)]
 pub struct Job {
     pub kind: JobKind,
-    /// Rewritten as the worker reports progress; read by the progress row
-    /// each frame, so progress never rebuilds the page.
+    /// Rewritten as the worker reports progress; read by the progress row each frame, so
+    /// progress never rebuilds the page.
     pub line: Rc<RefCell<String>>,
 }
 
@@ -181,10 +167,8 @@ pub struct Model<'a> {
     pub selected: Option<&'a str>,
     pub now: NaiveDateTime,
     pub order: Order,
-    /// What the order picker runs: the window's `order-snapshots` effect.
     pub order_binding: Option<&'a ActionBinding<String>>,
     pub job: Option<&'a Job>,
-    /// The last operation failed: what, and what to do.
     pub failure: Option<(&'a str, &'a str)>,
 }
 
@@ -331,8 +315,8 @@ fn snapshot_title(snapshot: &Snapshot, catalog: &Catalog) -> String {
         .map_or_else(|| i18n::t("backups-snapshot"), |source| source.name.clone())
 }
 
-/// What an unlabelled snapshot is, on a page that already names its source:
-/// taken by hand, or the retention class that keeps it.
+/// What an unlabelled snapshot is, on a page that already names its source: taken by hand,
+/// or the retention class that keeps it.
 fn kind_title(snapshot: &Snapshot) -> &'static str {
     match (snapshot.kind, snapshot.retention) {
         (SnapType::Manual, _) => "Manual snapshot",
@@ -371,7 +355,6 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
                 Some(status) => item.status(status),
                 None => item,
             };
-            // Failed runs wait for the person; a plain count does not.
             let failed = catalog.failed(Filter::Source(&source.id));
             if failed > 0 {
                 item.live_count(failed as u32)
@@ -388,7 +371,6 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
                 .icon(destination_icon(dest.kind))
                 .meta(size(dest.used_bytes))
                 .without_actions();
-            // How full it is, where the provider says how big it is.
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "a share in 0..=1 drawn as a bar"
@@ -422,7 +404,6 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
     })
 }
 
-/// The content column's title.
 pub fn page_title(catalog: &Catalog, page: &Page) -> String {
     match page {
         Page::All => crate::i18n::t("backups-page-all"),
@@ -466,8 +447,6 @@ pub fn content(
     offset: &Rc<Cell<(f32, f32)>>,
     retention: &[LocalState<f64>; 4],
 ) -> Element {
-    // The banner, the job, the tiles, the details and the timeline are
-    // separate groups of the page, a group step apart.
     let mut page = Column::new()
         .with_intrinsic_height()
         .with_rhythm(ui::tokens::Rhythm::Group);
@@ -524,10 +503,7 @@ fn failure_banner(title: &str, message: &str, intents: &Intents) -> Element {
     ))
 }
 
-/// A running backup, verification or restore. The line moves as files are
-/// counted, and the window's jobs band carries the percentage and the Stop;
-/// this bar says work is happening rather than naming a fraction it is not
-/// allowed to rebuild the page for.
+/// A running backup, verification or restore.
 fn progress(job: &Job) -> Section {
     let line = Rc::clone(&job.line);
     Section::new(vec![
@@ -551,8 +527,7 @@ fn progress(job: &Job) -> Section {
     ])
 }
 
-/// One summary tile: `fact`'s value over the caption that says where it
-/// came from and when.
+/// One summary tile: `fact`'s value over the caption that says where it came from and when.
 fn fact_tile(
     label: &str,
     fact: &Measured,
@@ -580,8 +555,8 @@ fn fact_tile(
     )
 }
 
-/// Protected size, snapshot count, last backup and next run, all derived
-/// from the catalog and the schedules.
+/// Protected size, snapshot count, last backup and next run, all derived from the catalog
+/// and the schedules.
 fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGroup {
     let protected = match filter {
         Filter::Source(id) => catalog.protected_bytes(id),
@@ -688,8 +663,7 @@ fn source_details(source: &Source) -> PropertyList {
     PropertyList::new(facts)
 }
 
-/// A destination's capacity, and what it holds. The ring shows only where
-/// the destination reports a capacity; nothing is estimated.
+/// A destination's capacity, and what it holds.
 fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime) -> Element {
     let mut facts = vec![
         Property::new(CATALOG.t("backups-kind"), dest.kind.label()),
@@ -865,9 +839,9 @@ fn snapshot_row(
     }
 }
 
-/// How many snapshots each class keeps, and what the counts on screen would
-/// remove: lowering a count deletes snapshots at the next backup, so the page
-/// names them before that happens.
+/// How many snapshots each class keeps, and what the counts on screen would remove:
+/// lowering a count deletes snapshots at the next backup, so the page names them before
+/// that happens.
 fn retention_page(
     states: &[LocalState<f64>; 4],
     catalog: &Catalog,
@@ -894,7 +868,6 @@ fn retention_page(
     })
     .with_role(TextRole::Body)
     .dimmed();
-    // What these counts would drop, by the same rule the pruner uses.
     let stored: Vec<(String, u64, NaiveDateTime)> = catalog
         .snapshots
         .iter()
@@ -933,8 +906,8 @@ fn retention_page(
         .push(Box::new(keep))
         .push(Box::new(total))
         .push(Box::new(consequence));
-    // A form is bounded to the readable measure, on the page's leading
-    // edge, so each count sits near its label.
+    // A form is bounded to the readable measure, on the page's leading edge, so each count
+    // sits near its label.
     Container::new()
         .with_no_padding()
         .readable()
@@ -953,8 +926,8 @@ fn count_of(state: &LocalState<f64>) -> u32 {
     count.min(MAX_KEPT)
 }
 
-/// The inspector: everything known about the selected snapshot, and what
-/// can be done with it.
+/// The inspector: everything known about the selected snapshot, and what can be done with
+/// it.
 pub fn snapshot_details(
     snapshot: &Snapshot,
     catalog: &Catalog,
@@ -1032,9 +1005,8 @@ pub fn snapshot_details(
     )
 }
 
-/// The restore sheet's body: what recovery does, the snapshot it restores,
-/// and a read-only preview of its contents. Recovery is the whole snapshot,
-/// so the preview selects nothing.
+/// The restore sheet's body: what recovery does, the snapshot it restores, and a read-only
+/// preview of its contents.
 pub fn restore_dialog(
     snapshot: &Snapshot,
     catalog: &Catalog,
@@ -1113,7 +1085,6 @@ fn file_tree(files: &[SnapFile]) -> Option<Element> {
         folder: bool,
         size: Option<u64>,
     }
-    // The index comes depth-ordered: each row stands under the last folder over it.
     let mut entries: Vec<Entry> = Vec::with_capacity(files.len());
     let mut open: Vec<(usize, u64)> = Vec::new();
     for (index, file) in files.iter().enumerate() {
@@ -1170,13 +1141,9 @@ fn file_tree(files: &[SnapFile]) -> Option<Element> {
 
 /// Where setup stands on a device with no usable repository.
 pub enum Setup<'a> {
-    /// Nothing chosen yet.
     Start,
-    /// A source is chosen; the destination is next.
     ChooseDestination,
-    /// The first backup is running.
     Running(&'a str),
-    /// The saved location could not be read.
     Unavailable(&'a str),
 }
 
@@ -1210,8 +1177,8 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
     ))
 }
 
-/// A widget whose one signal (a dismissed banner, an empty state's action)
-/// leaves as an intent.
+/// A widget whose one signal (a dismissed banner, an empty state's action) leaves as an
+/// intent.
 pub struct OnSignal<W> {
     inner: W,
     take: fn(&mut W) -> bool,
