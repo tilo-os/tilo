@@ -29,14 +29,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Open a shell in a layer (the default when no subcommand is given).
     Shell(ShellArgs),
+    /// Show every layer, its base, and whether it survives.
     List,
+    /// Show what a layer changed, relative to its base.
     Diff {
         name: String,
         /// Include package-manager bookkeeping.
         #[arg(long)]
         all: bool,
     },
+    /// Make an ephemeral layer permanent.
     Keep {
         name: String,
         /// Rename it while keeping it.
@@ -46,16 +50,15 @@ enum Cmd {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Delete a layer and everything in it.
     Discard {
         name: String,
         /// Do not ask.
         #[arg(long, short)]
         yes: bool,
     },
-    Revert {
-        name: String,
-        path: PathBuf,
-    },
+    /// Undo one path's worth of change inside a layer.
+    Revert { name: String, path: PathBuf },
     /// Manage base root filesystems.
     #[command(subcommand)]
     Base(BaseCmd),
@@ -65,6 +68,7 @@ enum Cmd {
 
 #[derive(Args)]
 struct ShellArgs {
+    /// Layer to open. Omitted means a fresh ephemeral layer.
     name: Option<String>,
     /// Base root filesystem to stack on.
     #[arg(long, default_value = "debian")]
@@ -92,7 +96,9 @@ struct ShellArgs {
 
 #[derive(Subcommand)]
 enum BaseCmd {
+    /// List available bases.
     List,
+    /// Unpack a container image into a base root filesystem.
     Add {
         name: String,
         /// Image reference, e.g. `docker.io/library/debian:stable-slim`.
@@ -248,6 +254,7 @@ fn cmd_shell(store: &Store, args: &ShellArgs) -> Result<()> {
 
         let layer = store.load(&name)?;
         if layer.kind == LayerKind::Ephemeral {
+            // The layer is still on disk, so the user can choose to keep it.
             let d = diff::compute(&store.upper_dir(&name), Some(&store.base_path(&layer.base)))?;
             if d.is_empty() {
                 store.discard(&name)?;

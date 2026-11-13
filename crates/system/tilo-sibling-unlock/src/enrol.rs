@@ -16,6 +16,15 @@
 //! The sibling half is wiped here once it is handed over. A failure after the
 //! slot was added removes the slot again, so a half-enrolled volume never
 //! remains.
+//!
+//! Enrolling again with `--replace-networks` keeps the slot, the certificate
+//! and the siblings, and only chooses the unlock networks anew: the material
+//! is unsealed, its networks replaced, and it is sealed the same way again.
+//!
+//! What is enrolled is described for Settings under [`STATE_DIR`], without
+//! secrets but readable only by root: it names the networks the owner trusts
+//! to unlock this machine. Settings reads it through polkit
+//! (`tilo-sibling-unlock volumes`).
 
 use crate::luks;
 use crate::material::{self, Material};
@@ -30,10 +39,13 @@ use tilo_unlock_protocol::{
     derive_slot_key, encode_frame, frame_len,
 };
 
+/// Where the enrolment is described for Settings, without secrets.
 pub const STATE_DIR: &str = "/var/lib/tilo/sibling-unlock";
 
+/// `tilo-sibling-unlock enrol`.
 #[derive(Debug, clap::Args)]
 pub struct Args {
+    /// The LUKS2 partition.
     pub device: PathBuf,
     /// A key file holding an existing passphrase of the volume; without one
     /// cryptsetup asks for it (the recovery key will do).
@@ -60,7 +72,9 @@ pub struct Args {
     pub require_tpm: bool,
 }
 
+/// Hands an [`EnrolRequest`] to the sibling service.
 pub trait Registrar {
+    /// Registers the request and returns the certificate and siblings.
     fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse>;
 }
 
@@ -70,6 +84,7 @@ pub trait Registrar {
 pub struct SessionRegistrar(pub PathBuf);
 
 impl SessionRegistrar {
+    /// The socket of `uid`'s session, or of the one session serving one.
     pub fn find(uid: Option<u32>) -> Result<Self> {
         if let Some(uid) = uid {
             return Ok(Self(
@@ -117,6 +132,7 @@ impl Registrar for SessionRegistrar {
     }
 }
 
+/// What Settings shows about an enrolment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     pub keyslot: u32,
@@ -124,9 +140,11 @@ pub struct Status {
     /// passwords are readable by anyone holding the disk.
     pub sealing: Sealing,
     pub networks: Vec<String>,
+    /// The devices asked at boot, by label.
     pub siblings: Vec<String>,
 }
 
+/// The file `NetworkManager` keeps the saved connection called `name` in.
 fn keyfile_of(name: &str) -> Result<String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -143,6 +161,7 @@ fn keyfile_of(name: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("no saved connection is named {name:?}"))
 }
 
+/// Reads a `NetworkManager` connection's keyfile by name, secrets included.
 fn network(name: &str) -> Result<material::Network> {
     if !material::valid_network_id(name) {
         bail!("{name:?} is not a usable connection name");
@@ -378,6 +397,7 @@ fn write_status(status: &Status, volume_uuid: &[u8; 16]) {
     let _ = write_status_in(Path::new(STATE_DIR), status, volume_uuid);
 }
 
+/// Writes the description root-only, replacing an earlier one whole.
 fn write_status_in(dir: &Path, status: &Status, volume_uuid: &[u8; 16]) -> Result<()> {
     let path = dir.join(format!("{}.json", hex::encode(volume_uuid)));
     tilo_files::native::atomic::write_private(&path, &serde_json::to_vec_pretty(status)?)?;
@@ -388,12 +408,15 @@ fn write_status_in(dir: &Path, status: &Status, volume_uuid: &[u8; 16]) -> Resul
 /// prints it for Settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Enrolled {
+    /// The LUKS UUID, as `/dev/disk/by-uuid` names the volume.
     pub volume: String,
+    /// Where `enrol --replace-networks` finds it.
     pub device: PathBuf,
     #[serde(flatten)]
     pub status: Status,
 }
 
+/// Every enrolment described under [`STATE_DIR`].
 pub fn enrolled() -> Result<Vec<Enrolled>> {
     enrolled_in(Path::new(STATE_DIR))
 }
@@ -431,6 +454,7 @@ fn enrolled_in(dir: &Path) -> Result<Vec<Enrolled>> {
     Ok(out)
 }
 
+/// `0123…` (32 hex digits) as `01234567-89ab-cdef-0123-456789abcdef`.
 fn dashed_uuid(hex_uuid: &str) -> Option<String> {
     let bytes = hex::decode(hex_uuid)
         .ok()
@@ -446,12 +470,14 @@ fn dashed_uuid(hex_uuid: &str) -> Option<String> {
     ))
 }
 
+/// What is enrolled on `device`.
 pub fn status(device: &Path) -> Result<Status> {
     let token = luks::token(device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
     status_of(&token)
 }
 
+/// Removes the sibling slot and its token.
 pub fn remove(device: &Path, key_file: Option<&Path>) -> Result<()> {
     let token = luks::token(device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
