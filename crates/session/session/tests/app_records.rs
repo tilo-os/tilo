@@ -1,0 +1,248 @@
+//! An app's records have one home: the workspace's record of the app, the one its windows open.
+//!
+//! A development session seeds its apps (`--seed-apps`): each app's first scenario fills its
+//! record, and the session keeps that record in the workspace the person is in once it holds it.
+//! So the record the Tasks window opens holds the seeded tasks, and a task made through the app's
+//! own action — at the session's door, as the canvas, the REPL and an agent make one — is in that
+//! record, where the REPL's `find`, an agent's programs (which read the workspace's copy through
+//! the broker) and the app's own window read it.
+//!
+//! The session here is the one `dist/dev/shell-run.sh` starts: it takes part in the collaboration
+//! plane, founds its workspace on a throwaway identity, and holds its secrets in a file store, so
+//! the workspace's records are sealed with channel keys it has.
+
+#![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
+)]
+
+use serde_json::json;
+use tilo_service::Questions;
+use tilo_session::{ActionPlane, Options, Session};
+use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::host::Host;
+use tilolang_tilo::runtime::Principal;
+
+use crate::common::{PERSON, Repl, until, wait_for};
+
+/// The Tasks app, as its package names it.
+const TASKS: &str = "so.tilo.lang.tasks";
+
+/// A task the tasks app's first scenario seeded.
+const SEEDED_TASK: &str = "Take the bins out";
+
+/// A project the tasks app's first scenario seeded: the app's window lists it in its sidebar,
+/// whichever day it shows.
+const SEEDED_PROJECT: &str = "Move flat";
+
+/// A seeded session as `dist/dev/shell-run.sh` starts one, in `home`: the shell as the whole
+/// screen, the development apps seeded, the agent door admitting this test's program as the
+/// person, and the workspace it founds on its throwaway identity, its channel keys in the file
+/// store `home` keeps. Answers the session once it holds that workspace.
+fn session(home: &mut tilo_test_env::TestHome, root: &std::path::Path) -> (Session, String) {
+    let identity = home.config().join("tilo/identity");
+    std::fs::create_dir_all(&identity).expect("the identity's directory");
+    let system = home.root().join("system");
+    home.env()
+        .set("TILO_IDENTITY_ROOT", &system)
+        .set("TILO_SECRETS_DIR", secrets());
+    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+        &identity,
+        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .expect("the throwaway identity");
+    let program = std::env::current_exe().expect("this test's program");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: true,
+        state: Some(home.state().to_path_buf()),
+        services: crate::common::seeded_apps(),
+        questions: Some(Questions::new()),
+        action_plane: ActionPlane::At(root.join("plane.sock")),
+        agent_door: Some(root.join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
+    let workspace = wait_for(&mut session, "the workspace the desk shows", |session| {
+        session.handle().read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        })
+    });
+    (session, workspace)
+}
+
+/// The file store this process keeps its secrets in: a process opens the store
+/// `TILO_SECRETS_DIR` names once, so every session of this test binary keeps its channel keys in
+/// the one store, which outlives each test's home.
+fn secrets() -> &'static std::path::Path {
+    static STORE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("tilo-test-secrets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the secret store's directory");
+        dir
+    })
+}
+
+/// The workspace's record of the Tasks app, as the workspace holds it, once it holds one that
+/// `holds` accepts: what a window of the app joining the workspace is handed, and what an agent's
+/// programs read through the broker.
+fn tasks_record(
+    session: &mut Session,
+    workspace: &str,
+    what: &str,
+    holds: impl Fn(&[u8]) -> bool,
+) -> Vec<u8> {
+    wait_for(session, what, |session| {
+        let bytes = session.read_record(workspace, TASKS, "").ok().flatten()?;
+        holds(&bytes).then_some(bytes)
+    })
+}
+
+/// What the Tasks app's own main view shows of the record `bytes`: its package, as installed,
+/// run over the record in a host of its own, as a window of the app opens it.
+fn shown_by_tasks(bytes: &[u8]) -> Vec<String> {
+    let catalog = package_store::Catalog::at(crate::common::app_store(), None);
+    let installed = app_catalogue::apps::read(&catalog).expect("the installed apps");
+    let tasks = installed
+        .iter()
+        .find(|app| app.package_id == TASKS)
+        .expect("Tasks is installed");
+    let bundle = Bundle::read(&tasks.payload_root).expect("Tasks' payload");
+    let record = tilo_resource::Doc::load(bytes).expect("the record is a document");
+    let host = Host::new(&record, Principal::new(PERSON), || None).expect("a host");
+    host.load_bundle(&bundle).expect("Tasks' package loads");
+    host.wait_index();
+    let view = host.open_main(TASKS).expect("Tasks' main view");
+    let mut shown = Vec::new();
+    texts_of(view.tree(), &mut shown);
+    shown
+}
+
+/// Every text `node` and the nodes inside it show.
+fn texts_of(node: &tilolang_tilo::runtime::UiNode, out: &mut Vec<String>) {
+    out.extend(node.props.values().filter_map(|value| match value {
+        tilolang_tilo::runtime::Value::Text(text) => Some(text.clone()),
+        _ => None,
+    }));
+    for child in &node.children {
+        texts_of(child, out);
+    }
+}
+
+/// The published root of the Tasks app's record, as the session publishes it.
+fn tasks_root(session: &Session) -> String {
+    let prefix = format!("tl:{TASKS}:root-");
+    session
+        .resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str().starts_with(&prefix))
+        .map(|spec| spec.id.as_str().to_owned())
+        .expect("the Tasks root is published")
+}
+
+/// The seeded tasks are in the workspace's record of the Tasks app, the one its window opens:
+/// the app's own view, run over that record, shows the seeded projects in its sidebar, and a
+/// program finds the seeded tasks in it.
+#[test]
+fn the_seeded_tasks_are_in_the_record_the_tasks_window_opens() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let (mut session, workspace) = session(&mut home, root.path());
+
+    let record = tasks_record(
+        &mut session,
+        &workspace,
+        "the seeded tasks in the workspace's record of Tasks",
+        |bytes| program_find(bytes, "bins").contains(SEEDED_TASK),
+    );
+    let shown = shown_by_tasks(&record);
+    assert!(
+        shown.iter().any(|text| text == SEEDED_PROJECT),
+        "the Tasks window's view of the record lists the seeded projects: {shown:?}"
+    );
+}
+
+/// A task made through the Tasks app's own action, at the session's door, is a change of the
+/// workspace's record of the app: the app's window shows it, the person's REPL finds it, and an
+/// agent's program, which reads the workspace's copy, finds it too.
+#[test]
+fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_a_program() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let (mut session, workspace) = session(&mut home, root.path());
+    let tasks = tasks_root(&session);
+
+    session
+        .invoke(
+            &tasks,
+            "new_task",
+            json!({"title": "Water the ferns"})
+                .as_object()
+                .expect("an object"),
+        )
+        .unwrap_or_else(|error| panic!("the app's action runs: {error}"));
+
+    // An agent's program reads the record the workspace holds, with the app's own package.
+    let record = tasks_record(
+        &mut session,
+        &workspace,
+        "the new task in the workspace's record of Tasks",
+        |bytes| program_find(bytes, "ferns").contains("Water the ferns"),
+    );
+    assert!(
+        program_find(&record, "bins").contains(SEEDED_TASK),
+        "the seeded tasks are still beside it"
+    );
+
+    // The person's REPL, at the session's door.
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    until(&mut session, "the REPL's find", |session| {
+        let (found, failed) = repl.run(session, "find(tasks.Task)");
+        assert!(!failed, "the REPL's find ran: {found}");
+        found.contains("Water the ferns") && found.contains(SEEDED_TASK)
+    });
+}
+
+/// What a program's find of `words` answers over the Tasks record `bytes`, as an agent's program
+/// reads it: the record the door hands the task's host, read with the app's own package
+/// ([`tilolang_tilo::task_records::RecordReads`]).
+fn program_find(bytes: &[u8], words: &str) -> String {
+    struct Held(Vec<u8>);
+    impl tilolang_tilo::task_records::RecordSource for Held {
+        fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
+            assert_eq!((app, record), (TASKS, ""), "the task reads Tasks' record");
+            Ok(Some(self.0.clone()))
+        }
+    }
+    let catalog = package_store::Catalog::at(crate::common::app_store(), None);
+    let installed = app_catalogue::apps::read(&catalog).expect("the installed apps");
+    let tasks = installed
+        .iter()
+        .find(|app| app.package_id == TASKS)
+        .expect("Tasks is installed");
+    let bundle = Bundle::read(&tasks.payload_root).expect("Tasks' payload");
+    let reads = tilolang_tilo::task_records::RecordReads::new(
+        &[bundle],
+        std::collections::BTreeMap::new(),
+        Some(PERSON),
+        std::rc::Rc::new(Held(bytes.to_vec())),
+    );
+    let answer = reads
+        .query(
+            TASKS,
+            &json!({"read": "find", "app": TASKS, "words": words}),
+        )
+        .expect("the find runs");
+    answer.to_string()
+}

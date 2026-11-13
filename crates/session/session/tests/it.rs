@@ -43,6 +43,8 @@ mod agent_control;
 mod agent_environments;
 #[path = "agent_story.rs"]
 mod agent_story;
+#[path = "app_records.rs"]
+mod app_records;
 #[path = "app_sheets.rs"]
 mod app_sheets;
 #[path = "app_side_records.rs"]

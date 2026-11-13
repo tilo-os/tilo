@@ -572,11 +572,12 @@ pub fn app_store() -> &'static Path {
 }
 
 /// The records of the tilolang apps installed in [`app_store`], each filled by its first
-/// scenario, published for [`PERSON`]: what a development session seeds.
+/// scenario, published for [`PERSON`]: what a development session seeds, each app's record a
+/// service of its own, as the session runs them.
 ///
 /// # Panics
 /// The apps do not load.
-pub fn seeded_apps() -> RecordService {
+pub fn seeded_apps() -> Vec<Box<dyn tilo_service::Service>> {
     seeded_apps_in(app_store())
 }
 
@@ -585,9 +586,21 @@ pub fn seeded_apps() -> RecordService {
 ///
 /// # Panics
 /// The apps do not load.
-pub fn seeded_apps_in(store: &Path) -> RecordService {
+pub fn seeded_apps_in(store: &Path) -> Vec<Box<dyn tilo_service::Service>> {
     let catalog = package_store::Catalog::at(store, None);
-    tilo_session::seeded_apps::seeded(PERSON, &catalog).expect("the seeded apps")
+    tilo_session::seeded_apps::seeded(PERSON, &catalog)
+        .expect("the seeded apps")
+        .into_iter()
+        .map(|app| Box::new(app) as Box<dyn tilo_service::Service>)
+        .collect()
+}
+
+/// Every resource `services` publish, as the session's catalogue lists them.
+pub fn published(services: &[Box<dyn tilo_service::Service>]) -> Vec<tilo_actions::ResourceSpec> {
+    services
+        .iter()
+        .flat_map(|service| service.resources())
+        .collect()
 }
 
 /// Build the tilolang apps a development session runs into the store `store`, from this tree's
@@ -612,14 +625,13 @@ pub fn seeded_session_at(
     admit_repl: Vec<std::path::PathBuf>,
     apps: Option<Rc<dyn tilo_session::AppActions>>,
 ) -> Session {
-    let seeded = seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![Box::new(seeded)],
+            services: seeded_apps(),
             questions: Some(Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
             agent_door: Some(root.join("agent.sock")),

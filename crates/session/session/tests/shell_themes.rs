@@ -122,15 +122,13 @@ impl Theme {
 /// chat and mail apps published, and the person's settings service beside them, which publishes the
 /// appearance section the theme is chosen through.
 fn session() -> Session {
-    let apps = crate::common::seeded_apps();
+    let mut services = crate::common::seeded_apps();
+    services.push(Box::new(tilo_settings_service::SettingsService::new()));
     crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![
-            Box::new(apps),
-            Box::new(tilo_settings_service::SettingsService::new()),
-        ],
+        services,
         ..Options::default()
     })
 }

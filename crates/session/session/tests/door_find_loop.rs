@@ -104,7 +104,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![Box::new(crate::common::seeded_apps())],
+            services: crate::common::seeded_apps(),
             questions: Some(Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
             agent_door: Some(root.join("agent.sock")),
