@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use legacy_agent_protocol::InstalledApp;
 
-/// Where Flatpak exports desktop entries, system-wide and for `home`.
 #[must_use]
 pub fn export_dirs(home: &Path) -> Vec<PathBuf> {
     vec![
@@ -13,7 +12,6 @@ pub fn export_dirs(home: &Path) -> Vec<PathBuf> {
     ]
 }
 
-/// Every launchable app in `dirs`, first directory winning on a shared id.
 #[must_use]
 pub fn installed(dirs: &[PathBuf]) -> Vec<InstalledApp> {
     let mut apps: Vec<InstalledApp> = Vec::new();
