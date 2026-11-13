@@ -19,19 +19,11 @@ use crate::resource::{ReportProjection, StoreEffect};
 use crate::worker::StoreWorker;
 use ui::widget::DrawChild;
 
-/// The window: the shared [`StoreState`] in the shell its screens are
-/// composed into.
 pub struct StoreApp {
     pub(super) state: Shared,
-    /// The reports as the document holds them, shown as they change; `None`
-    /// for a window outside the framework.
     document: Option<Live<Store>>,
     presented: Option<(u64, u64)>,
-    /// The rect the toplevel container resolves into during
-    /// `apply_layout` — needed for `get_rect`.
     pub(super) rect: Rect,
-    /// Root of the built layout so events can be routed to the
-    /// composed sub-tree.
     pub(super) root: Option<Box<ui::widget::NavShell>>,
 }
 
@@ -46,7 +38,6 @@ impl StoreApp {
         Self::showing(StoreState::new())
     }
 
-    /// The window over `state`.
     pub(crate) fn showing(state: StoreState) -> Self {
         Self {
             state: Rc::new(RefCell::new(state)),
@@ -57,12 +48,10 @@ impl StoreApp {
         }
     }
 
-    /// What the window shows, shared with the view's effect handler.
     pub fn state(&self) -> RefMut<'_, StoreState> {
         self.state.borrow_mut()
     }
 
-    /// Show the reports the document holds now, when they changed since.
     fn follow_document(&mut self) {
         let Some(document) = &self.document else {
             return;
@@ -74,9 +63,6 @@ impl StoreApp {
     }
 }
 
-/// Mount `window` as the view of the reports: the view shares its state
-/// with the effect handler, and publishes the catalogue, what is on this
-/// device, the remotes and the running jobs.
 pub(crate) fn window(cx: &ViewCx<Store>, mut window: StoreApp) -> Element {
     window.document = Some(cx.live().clone());
     let state = Rc::clone(&window.state);
@@ -332,8 +318,6 @@ impl Widget for StoreApp {
         self.rect
     }
 
-    /// The composed child tree supplies individual control semantics; the
-    /// canvas-free root still names the application for assistive technology.
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Window)
             .with_name(crate::resource::CATALOG.t("store-window-name"))

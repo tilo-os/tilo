@@ -62,7 +62,6 @@ pub fn person_can_unblock(blocks: &BlockList, app: &str) -> bool {
     !blockers.is_empty() && blockers.iter().all(|by| **by == Blocker::Person)
 }
 
-/// How many apps a Home shelf shows.
 pub const SHELF: usize = 12;
 
 /// Now, in Unix seconds.
@@ -73,8 +72,6 @@ pub fn now_unix() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
-/// The desktop's language as the Store follows it (BCP 47): Flathub's
-/// localized fields and kept details are in this language.
 #[must_use]
 pub fn desktop_locale() -> String {
     crate::resource::CATALOG.current_locale()
@@ -100,7 +97,6 @@ pub fn is_listed_app(item: &StoreItem) -> bool {
         && !item.not_built_for_this_device()
 }
 
-/// The source an app states on its row and page, in the person's words.
 #[must_use]
 pub fn source_label(item: &StoreItem) -> String {
     match &item.source {
@@ -110,9 +106,6 @@ pub fn source_label(item: &StoreItem) -> String {
     }
 }
 
-/// The line under an app's name in a list: its source, or that it is not
-/// available for this device when its source has no build for this
-/// device's processor (its page says why).
 #[must_use]
 pub fn list_caption(item: &StoreItem) -> String {
     if item.not_built_for_this_device() {
@@ -187,16 +180,12 @@ pub fn in_previous_order(previous: &[StoreItem], fresh: Vec<StoreItem>) -> Vec<S
 pub struct Home {
     /// Installed apps a newer version is offered for.
     pub updates: Vec<String>,
-    /// Tilo's own apps first, then Flathub's most popular.
     pub featured: Vec<String>,
-    /// The apps that changed most recently in their source.
     pub recent: Vec<String>,
-    /// Every category with apps in it, by name, with how many.
     pub categories: Vec<(String, usize)>,
 }
 
 impl Home {
-    /// Home for `items`, without what `blocks` blocks.
     #[must_use]
     pub fn compute(items: &[StoreItem], blocks: &BlockList) -> Self {
         Self {
@@ -207,9 +196,6 @@ impl Home {
         }
     }
 
-    /// Bring Home up to date with `items` without moving what it shows:
-    /// apps that no longer qualify leave, new ones join at the end of their
-    /// shelf.
     pub fn reconcile(&mut self, items: &[StoreItem], blocks: &BlockList) {
         let fresh = Self::compute(items, blocks);
         self.updates = keep_order(&self.updates, &fresh.updates);
@@ -220,7 +206,6 @@ impl Home {
         self.categories = fresh.categories;
     }
 
-    /// Whether Home has anything to show.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.updates.is_empty() && self.featured.is_empty() && self.recent.is_empty()
@@ -238,7 +223,6 @@ pub fn updates(items: &[StoreItem], blocks: &BlockList) -> Vec<String> {
     found.into_iter().map(|item| item.id.clone()).collect()
 }
 
-/// Tilo's own apps (by name), then the apps Flathub features (by rank).
 fn featured(items: &[StoreItem], blocks: &BlockList) -> Vec<String> {
     let mut tilo: Vec<&StoreItem> = blocks
         .unblocked(items)
@@ -259,7 +243,6 @@ fn featured(items: &[StoreItem], blocks: &BlockList) -> Vec<String> {
         .collect()
 }
 
-/// The apps that changed most recently in their source.
 fn recent(items: &[StoreItem], blocks: &BlockList) -> Vec<String> {
     let mut found: Vec<&StoreItem> = blocks
         .unblocked(items)
@@ -278,7 +261,6 @@ fn recent(items: &[StoreItem], blocks: &BlockList) -> Vec<String> {
         .collect()
 }
 
-/// Every category with apps in it, by its label, with how many.
 fn categories(items: &[StoreItem], blocks: &BlockList) -> Vec<(String, usize)> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for item in blocks.unblocked(items).filter(|item| is_listed_app(item)) {
@@ -294,7 +276,6 @@ fn categories(items: &[StoreItem], blocks: &BlockList) -> Vec<(String, usize)> {
     categories
 }
 
-/// The apps in `category`: Tilo first, then by featured rank, then by name.
 #[must_use]
 pub fn in_category(items: &[StoreItem], blocks: &BlockList, category: &str) -> Vec<String> {
     let mut found: Vec<&StoreItem> = blocks
@@ -311,7 +292,6 @@ pub fn in_category(items: &[StoreItem], blocks: &BlockList, category: &str) -> V
     found.into_iter().map(|item| item.id.clone()).collect()
 }
 
-/// The bots of the catalogue, by name.
 #[must_use]
 pub fn bots(items: &[StoreItem], blocks: &BlockList) -> Vec<String> {
     let mut found: Vec<&StoreItem> = blocks
@@ -322,7 +302,6 @@ pub fn bots(items: &[StoreItem], blocks: &BlockList) -> Vec<String> {
     found.into_iter().map(|item| item.id.clone()).collect()
 }
 
-/// What a search inside the Store found, apps and bots apart, best first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchResults {
     pub apps: Vec<String>,
@@ -341,8 +320,6 @@ impl SearchResults {
     }
 }
 
-/// The text a search matches an item by, with how much each field weighs:
-/// its names, tag line, developer and categories outrank its description.
 fn search_fields(item: &StoreItem) -> Vec<(&str, FieldWeight)> {
     crate::model::searchable_fields(item)
         .chain(std::iter::once((
@@ -366,9 +343,6 @@ pub fn warm(index: &ListIndex, items: &[StoreItem]) {
     let _ = index.ranks("tilo", search_rows(items));
 }
 
-/// Search `items` for `query` from `index`, on this device: apps and bots
-/// apart, without what `blocks` blocks, best match first and a Tilo app
-/// before an equally good Flathub one.
 #[must_use]
 pub fn search(
     index: &ListIndex,

@@ -1,33 +1,22 @@
-//! Data model shared across the store.
-//!
-//! Everything the UI renders is a [`StoreItem`] — one uniform shape whether
-//! the item came from a Tilo registry or from Flathub. That merge happens in
-//! [`crate::sources`]; downstream (widget, filter, search) only ever sees
-//! [`StoreItem`].
-//!
-//! Kept deliberately serde-friendly so tests can round-trip fixtures through
-//! JSON without importing the transport crates. The registry-facing types
-//! (`RegistryEntry`, `RegistryVersion`) live in `registry-types`; we do
-//! **not** re-export them from here because the store's UI needs to unify
-//! them with Flathub records anyway, and using our own uniform shape keeps
-//! that seam explicit.
+//! The store's data model. Everything the UI renders is a [`StoreItem`], one
+//! shape whether it came from a Tilo registry or Flathub; the merge happens in
+//! [`crate::sources`]. The types stay serde-friendly, so tests round-trip fixtures
+//! through JSON without the transport crates.
 
 use crate::resource::CATALOG;
 use serde::{Deserialize, Serialize};
 use ui::search::{FieldWeight, ListIndex};
 
-/// Which upstream feed a [`StoreItem`] came from.
-///
-/// Encoded in the item so the widget can pick the right action-button
-/// label + colour (Add vs Install) without touching the source-of-truth.
+/// Which upstream feed the item came from; the widget picks the button's label
+/// and colour from it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoreSource {
     /// A Tilo registry entry. The tuple carries the human-readable
     /// registry name so the detail sheet can say "from Tilo main".
-    Tilo { registry_name: String },
-    /// A Flathub-hosted Flatpak app.
+    Tilo {
+        registry_name: String,
+    },
     Flathub,
-    /// A configured Flatpak repository. Its original scope is retained.
     FlatpakRemote {
         name: String,
         title: String,
@@ -37,7 +26,6 @@ pub enum StoreSource {
 }
 
 impl StoreSource {
-    /// The repository whose metadata is shown, without inventing trust claims.
     pub fn distribution_name(&self) -> &str {
         match self {
             Self::Tilo { registry_name } => registry_name,
@@ -46,7 +34,6 @@ impl StoreSource {
         }
     }
 
-    /// Short label used on filter chips.
     pub fn short_label(&self) -> &'static str {
         match self {
             StoreSource::Tilo { .. } => "Tilo",
@@ -55,14 +42,11 @@ impl StoreSource {
     }
 }
 
-/// Provenance claim the Store can substantiate for an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoreTrust {
-    /// Signed local file authorized by this person's existing scoped attestor.
     TrustedAttestor,
     PublisherSigned,
     Flathub,
-    /// Metadata from the device’s configured Flatpak repository.
     ConfiguredRemote,
 }
 
@@ -121,12 +105,10 @@ impl InstalledState {
         }
     }
 
-    /// Whether this app is present (cached / installed) at all.
     pub fn is_installed(&self) -> bool {
         matches!(self, InstalledState::Installed { .. })
     }
 
-    /// Whether the user has pinned ("marked installed") this app.
     pub fn is_pinned(&self) -> bool {
         matches!(self, InstalledState::Installed { pinned: true, .. })
     }
@@ -143,15 +125,12 @@ pub enum ActionKind {
     /// cached) + launch. The Tilo path never shows a separate
     /// "Install" step — opening an app *is* adding it.
     Open,
-    /// Install a runtime without launching its host executable.
     RuntimeInstall,
-    /// Tilo registry, installed → **Remove**.
     Remove,
     /// Tilo registry, installed but older version available → **Update**.
     Update,
     /// Tilo registry, cached but not pinned → **Keep on device** (pin).
     MarkInstalled,
-    /// Tilo registry, pinned → **Kept on device** (click allows cleanup).
     Unmark,
     /// Flatpak, not installed → **Install** (spawns `flatpak install`).
     FlatpakInstall,
@@ -168,10 +147,7 @@ pub enum ActionKind {
     /// cannot run inside Tilo's, so the launch goes through
     /// `tilo-launcher run-host`, which says so. See `launcher::host`.
     FlatpakOpen,
-    /// Flatpak, installed → **Remove** (spawns `flatpak uninstall`).
     FlatpakRemove,
-    /// Flatpak but the host has no `flatpak` binary — offer a link to
-    /// Flathub's install docs instead.
     NeedsFlatpakHost,
     /// A directory bot → **Add to a workspace…**. A bot never installs on
     /// the device; it runs in a workspace, added through that workspace's
@@ -180,7 +156,6 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    /// Label shown on the card's action button.
     pub fn label(self) -> &'static str {
         match self {
             ActionKind::Open | ActionKind::FlatpakOpen => "Open",
@@ -230,21 +205,15 @@ impl ActionKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotListing {
     pub version: String,
-    /// Trigger kinds (`connector`, `record_changed`, …).
     pub triggers: Vec<String>,
     pub apps: Vec<String>,
     pub connectors: Vec<ui::registry::PackageRequirement>,
-    /// Whether it may post under other names and avatars.
     pub appearance: bool,
     pub artifact: ui::registry::BotArtifact,
 }
 
-/// What the catalogue says about an app beyond its name and versions: who
-/// makes it, under which licence, when it last changed, whether its source
-/// features it, and what its signed manifest lets it do.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listing {
-    /// Who makes the app, as its source names them; empty when it does not.
     #[serde(default)]
     pub developer: String,
     /// SPDX licence expression; empty when the source does not say.
@@ -257,8 +226,6 @@ pub struct Listing {
     /// source does not feature it.
     #[serde(default)]
     pub featured_rank: Option<u32>,
-    /// The capabilities its signed manifest declares, once it is on this
-    /// device (`network.http`, `files.open`, ...).
     #[serde(default)]
     pub capabilities: Vec<String>,
     /// The processors its source builds it for (`x86_64`, `aarch64`), as
@@ -287,24 +254,15 @@ pub struct StoreItemVersion {
     pub size_bytes: u64,
 }
 
-/// Unified store item: what every card renders from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreItem {
-    /// Stable identifier. For Tilo this is the reverse-DNS package id
-    /// (`so.tilo.notes`). For Flathub it's the app-id
-    /// (`org.gnome.Calculator`).
     pub id: String,
-    /// Human-readable name shown in the card title.
     pub name: String,
-    /// One-line description under the name.
     pub description: String,
-    /// Short localized publisher tagline.
     #[serde(default)]
     pub tagline: String,
-    /// Canonical language tags supported by the app itself.
     #[serde(default)]
     pub supported_languages: Vec<String>,
-    /// Free-form categories used for the derived category chip row.
     pub categories: Vec<String>,
     /// Icon URL, if the source publishes one. Artwork is fetched lazily
     /// through the Store's bounded HTTPS-only image cache; rejected or
@@ -314,10 +272,7 @@ pub struct StoreItem {
     /// HTTPS-only cache used for icons.
     #[serde(default)]
     pub screenshot_urls: Vec<String>,
-    /// Project homepage URL, if known.
     pub homepage_url: Option<String>,
-    /// Source-code URL, if the item exposes it. Tilo entries do; most
-    /// Flathub apps don't via the v2 API.
     pub source_url: Option<String>,
     /// Original local `.flatpakref` selected through file-open integration.
     ///
@@ -327,13 +282,9 @@ pub struct StoreItem {
     /// the user chose.
     #[serde(default)]
     pub install_ref_path: Option<String>,
-    /// Where this came from.
     pub source: StoreSource,
-    /// Source verification retained through the full ingestion/UI pipeline.
     pub trust: StoreTrust,
-    /// Newest → oldest.
     pub versions: Vec<StoreItemVersion>,
-    /// Publisher pubkey (hex) for Tilo entries. `None` for Flatpak.
     pub publisher_pubkey_hex: Option<String>,
     /// Cross-referenced install state at merge time.
     pub installed: InstalledState,
@@ -346,7 +297,6 @@ pub struct StoreItem {
     /// (docs/architecture/compatibility.md).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaiting_developer: bool,
-    /// Developer, licence, freshness and capabilities, when the source says.
     #[serde(default)]
     pub listing: Listing,
 }
@@ -546,7 +496,6 @@ impl StoreItem {
         }
     }
 
-    /// The same availability contract for controls, rows and direct invocation.
     pub fn unavailable_action(&self, action: ActionKind) -> Option<(&'static str, String)> {
         if action == ActionKind::RuntimeInstall && self.installed.is_installed() {
             Some((
@@ -600,14 +549,10 @@ impl StoreItem {
                 || self.remove_action() == Some(action))
     }
 
-    /// Whether a card should offer a secondary **Remove**.
     pub fn offers_remove(&self) -> bool {
         self.remove_action().is_some()
     }
 
-    /// Ranking rank: pinned first, then merely-cached, then the
-    /// rest. Higher sorts earlier. Drives the "mark installed →
-    /// rank first" behaviour.
     pub fn install_rank(&self) -> u8 {
         if self.installed.is_pinned() {
             2
@@ -617,8 +562,6 @@ impl StoreItem {
     }
 }
 
-/// A processor architecture as people name it (`store-processor-x86_64`),
-/// or its technical name when no message names it.
 fn processor_name(prefix: &str, arch: &str) -> String {
     let key = format!("{prefix}-{arch}");
     if ui::i18n::I18nManager::has_message(&key) {
@@ -667,17 +610,13 @@ pub(crate) fn searchable_fields(item: &StoreItem) -> impl Iterator<Item = (&str,
     )
 }
 
-/// Which source-side filter chip is active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceFilter {
-    /// Show everything.
     All,
     /// Only Tilo registry entries.
     Tilo,
     /// Only Flatpak entries.
     Flatpak,
-    /// Items already present on this device: cached Tilo apps or installed
-    /// Flatpaks. The variant name remains serialized for compatibility.
     Installed,
     /// Installed apps a source offers a newer version of, the system
     /// image's own apps included.
@@ -703,7 +642,6 @@ impl SourceFilter {
         }
     }
 
-    /// Does an item pass this filter?
     pub fn accepts(self, item: &StoreItem) -> bool {
         match self {
             SourceFilter::All => true,
@@ -795,10 +733,8 @@ mod tests {
         }
     }
 
-    /// Action kind, progress labels, per-source removal, authorisation and update detection.
     #[test]
     fn item_actions_follow_source_and_install_state() {
-        // Case `action_kind_reflects_source_and_install_state`.
         {
             // Tilo not-installed → Open (fetch-on-demand + run), with Keep
             // on this device beside it as the opt-in.
@@ -806,18 +742,14 @@ mod tests {
             assert_eq!(not_installed.action_kind(true), ActionKind::Open);
             assert_eq!(not_installed.pin_action(), Some(ActionKind::MarkInstalled));
 
-            // Tilo installed + up-to-date → still Open (relaunch), and it
-            // now offers the pin toggle + a secondary Remove.
             let up_to_date = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
             assert_eq!(up_to_date.action_kind(true), ActionKind::Open);
             assert_eq!(up_to_date.pin_action(), Some(ActionKind::MarkInstalled));
             assert!(up_to_date.offers_remove());
 
-            // Tilo installed but newer available → Update.
             let stale = tilo_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
             assert_eq!(stale.action_kind(true), ActionKind::Update);
 
-            // Tilo pinned → pin toggle flips to Unmark.
             let pinned = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", true), "0.1.0");
             assert_eq!(pinned.pin_action(), Some(ActionKind::Unmark));
 
@@ -851,7 +783,6 @@ mod tests {
             );
         }
 
-        // Case `progress_labels_name_the_offered_operation`.
         {
             assert_eq!(ActionKind::Open.progress_label(), "Starting");
             assert_eq!(ActionKind::FlatpakInstall.progress_label(), "Installing");
@@ -867,7 +798,6 @@ mod tests {
             assert_eq!(q.remove_action(), Some(ActionKind::Remove));
             let f = flatpak_item("Chess", qinstalled("1", "1", false));
             assert_eq!(f.remove_action(), Some(ActionKind::FlatpakRemove));
-            // Nothing to remove until something is installed.
             assert_eq!(
                 tilo_item("Notes", InstalledState::Not, "1").remove_action(),
                 None
@@ -878,7 +808,6 @@ mod tests {
             );
         }
 
-        // Case `action_authorization_tracks_the_current_install_snapshot`.
         {
             let not_installed = tilo_item("Notes", InstalledState::Not, "1");
             assert!(not_installed.allows_action(ActionKind::Open, true));
@@ -895,7 +824,6 @@ mod tests {
             assert!(!cached.allows_action(ActionKind::Update, true));
         }
 
-        // Case `update_available_only_for_a_newer_version`.
         {
             let same = qinstalled("1.0.0", "1.0.0", false);
             assert!(!same.update_available());
@@ -916,10 +844,8 @@ mod tests {
         }
     }
 
-    /// Install rank, search matching, relevance scoring and source filters.
     #[test]
     fn catalogue_ranking_search_and_source_filters() {
-        // Case `install_rank_orders_pinned_first`.
         {
             let not = tilo_item("A", InstalledState::Not, "1");
             let cached = tilo_item("B", qinstalled("1", "1", false), "1");
@@ -928,7 +854,6 @@ mod tests {
             assert!(cached.install_rank() > not.install_rank());
         }
 
-        // Case `search_matches_name_and_description_case_insensitive`.
         {
             let n = tilo_item("Notes", InstalledState::Not, "0.1.0");
             let index = ListIndex::default();
@@ -940,14 +865,12 @@ mod tests {
             assert!(!matches("terminal"));
         }
 
-        // Case `relevance_prefers_name_prefix_hits`.
         {
             let mut n = tilo_item("Notes", InstalledState::Not, "0.1.0");
             n.description = "great little app".into();
             let index = ListIndex::default();
             let rank = |needle: &str| relevance(&index, needle, &[&n])[0];
             let prefix = rank("no");
-            // A match inside a word takes four letters (shared search).
             let mid = rank("otes");
             let desc = rank("little");
             assert!(mid.is_some() && desc.is_some());
@@ -961,7 +884,6 @@ mod tests {
             );
         }
 
-        // Case `source_filter_gates_items`.
         {
             let q = tilo_item("A", InstalledState::Not, "1");
             let f = flatpak_item("B", InstalledState::Not);

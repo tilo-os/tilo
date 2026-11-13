@@ -20,7 +20,6 @@ pub struct ImportedPackage {
     pub local: Option<app_host::local_package::LocalReview>,
 }
 
-/// Review a package without installing or trusting anything it says about itself.
 pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, String> {
     if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
         return Err(CATALOG.t("store-package-size-refused"));
@@ -185,8 +184,6 @@ pub(crate) mod tests {
     use super::*;
     use tilo_app_package::DiscardBlobs;
 
-    /// The architecture this test runs on, as a manifest names it and as a
-    /// registry target names it.
     fn native_target() -> (&'static str, &'static str, &'static str) {
         #[cfg(target_arch = "aarch64")]
         {

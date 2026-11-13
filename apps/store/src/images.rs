@@ -85,8 +85,6 @@ pub fn image_fetcher() -> Fetcher {
         if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
             return None;
         }
-        // Pin this request to the validated address. This closes the usual
-        // validate-then-resolve DNS-rebinding gap while preserving TLS SNI.
         let client = tilo_net::http::blocking_client()
             .user_agent("tilo-store-artwork/1")
             .timeout(Duration::from_secs(10))
@@ -117,10 +115,8 @@ pub fn image_fetcher() -> Fetcher {
 
 /// Keep this much artwork on disk before the oldest files make room.
 const ARTWORK_CACHE_BYTES: u64 = 256 * 1024 * 1024;
-/// Check the artwork cache's size after this many new files.
 const EVICT_EVERY: usize = 64;
 
-/// The artwork cache under the Store's cache directory.
 fn artwork_dir() -> Option<std::path::PathBuf> {
     crate::config::cache_dir().map(|dir| dir.join("artwork"))
 }

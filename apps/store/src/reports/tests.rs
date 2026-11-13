@@ -90,7 +90,6 @@ fn a_moderation_case_is_recorded_on_its_report() {
     );
 }
 
-/// What an agent does with a report reads as the Store's sentences.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::framework::testing::TestApp;

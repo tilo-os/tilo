@@ -23,7 +23,6 @@ fn arguments<const N: usize>(
         .collect()
 }
 
-/// A control invoking `action` with fixed `arguments`.
 fn bound(
     action: &str,
     arguments: serde_json::Map<String, serde_json::Value>,
@@ -32,8 +31,6 @@ fn bound(
     ActionBinding::static_json(&DOOR, spec, arguments).ok()
 }
 
-/// A control taking a text value (a search box, a dropdown) that invokes
-/// `action` with it as `param`.
 fn bound_text(action: &str, param: &'static str) -> Option<ActionBinding<String>> {
     let spec = DOOR.actions.iter().find(|spec| spec.id == action)?;
     ActionBinding::new(&DOOR, spec, move |value: String| {
@@ -42,12 +39,10 @@ fn bound_text(action: &str, param: &'static str) -> Option<ActionBinding<String>
     .ok()
 }
 
-/// A control invoking `effect`.
 pub fn effect(effect: &StoreEffect) -> Option<ActionBinding<()>> {
     bound(effect.id(), effect.arguments())
 }
 
-/// A control carrying out `action` on `item`.
 pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>> {
     if action == ActionKind::AddBot {
         return add_bot(item);
@@ -63,9 +58,6 @@ pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>
     }
 }
 
-/// A control asking the system's one Uninstall to remove `item`: the same
-/// action Files and search offer, which asks the person first ("Uninstall
-/// `<name>`?", with "Remove its data" for a Flatpak).
 pub fn uninstall(item: &StoreItem) -> ActionBinding<()> {
     ui::search::open_search_binding(&ui::search::SearchRequest::offering(
         UNINSTALL_ACTION,
@@ -73,7 +65,6 @@ pub fn uninstall(item: &StoreItem) -> ActionBinding<()> {
     ))
 }
 
-/// The system's Uninstall action.
 const UNINSTALL_ACTION: &str = "app.uninstall";
 
 /// A control preparing the workspace's Add a bot for `item`, a directory
@@ -89,30 +80,24 @@ pub fn add_bot(item: &StoreItem) -> Option<ActionBinding<()>> {
     ))
 }
 
-/// The system's action that asks a workspace's host to run a bot.
 const ADD_BOT_ACTION: &str = "bot.add";
 
-/// A control starting a report about `item`.
 pub fn draft_report(item: &StoreItem) -> Option<ActionBinding<()>> {
     bound("draft-report", arguments([("app_id", item.id.clone())]))
 }
 
-/// A control blocking `item` in the person's own block list.
 pub fn block(item: &StoreItem) -> Option<ActionBinding<()>> {
     effect(&StoreEffect::BlockApp {
         app: item.id.clone(),
     })
 }
 
-/// A control lifting the person's own block on `item`; a policy's block
-/// stays.
 pub fn unblock(item: &StoreItem) -> Option<ActionBinding<()>> {
     effect(&StoreEffect::UnblockApp {
         app: item.id.clone(),
     })
 }
 
-/// The views' segmented control: segment `index` shows that view.
 pub fn view() -> Option<ActionBinding<usize>> {
     let spec = DOOR.actions.iter().find(|spec| {
         spec.id
@@ -134,14 +119,12 @@ pub fn view() -> Option<ActionBinding<usize>> {
     .ok()
 }
 
-/// A control showing the view `name` (`home`, `updates`, ...).
 pub fn view_named(name: &str) -> Option<ActionBinding<()>> {
     effect(&StoreEffect::ShowView {
         view: name.to_owned(),
     })
 }
 
-/// A control showing every app in `category`.
 pub fn category_named(category: &str) -> Option<ActionBinding<()>> {
     effect(&StoreEffect::SetCategory {
         category: category.to_owned(),
@@ -192,7 +175,6 @@ pub fn category() -> Option<ActionBinding<String>> {
     bound_text("set-category", "category")
 }
 
-/// A report control (`submit-report`, `appeal`, …) for `app_id`'s report.
 pub fn report(effect_of: fn(String) -> StoreEffect, app_id: &str) -> Option<ActionBinding<()>> {
     effect(&effect_of(app_id.to_owned()))
 }
