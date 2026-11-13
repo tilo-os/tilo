@@ -1,7 +1,7 @@
 //! `tilolang layout-check` through its library: a fixture app whose views are each laid out
-//! wrong in one way is caught for every kind of problem, at the view that is wrong; and the
-//! shipped apps show no problem their allow-list (`tests/layout_check/allowed`) does not
-//! already name, so a new one fails here.
+//! wrong in one way is caught for every kind of problem, at the view that is wrong. The shipped
+//! apps are laid out by the `layout-check` t checks, which read the allow-list
+//! (`tests/layout_check/allowed`) and keep every size's dump and shots.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,21 +10,6 @@ use tilolang_cli::layout_check::{self, Kind, Options};
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-}
-
-/// Every app in `apps/tl`: a package directory with an `app.tl`, so an app added there is checked
-/// without being named here.
-fn apps() -> std::io::Result<Vec<PathBuf>> {
-    let root = manifest().join("../../../apps/tl");
-    let mut dirs = Vec::new();
-    for entry in std::fs::read_dir(&root)? {
-        let dir = entry?.path();
-        if dir.join("app.tl").is_file() {
-            dirs.push(dir);
-        }
-    }
-    dirs.sort();
-    Ok(dirs)
 }
 
 #[test]
@@ -361,6 +346,42 @@ fn a_view_that_is_one_branch_is_reached_whether_or_not_it_draws() {
     );
 }
 
+/// Held strictly, an allow-list line whose finding no longer shows fails the run: a fixed problem
+/// whose line stays behind reads to the next person as a problem still there.
+#[test]
+fn a_strict_run_fails_on_an_allow_list_line_that_no_longer_shows() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let allow = scratch.path().join("allowed");
+    std::fs::write(&allow, "overlap nowhere › view [Row]\n").expect("the allow-list writes");
+    let run = |strict: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tilolang"));
+        command
+            .arg("layout-check")
+            .arg(manifest().join("tests/layout_check/branches"))
+            .arg("--allow")
+            .arg(&allow);
+        if strict {
+            command.arg("--strict");
+        }
+        command.output_locked().expect("the check runs")
+    };
+    let lenient = run(false);
+    assert!(
+        lenient.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lenient.stderr)
+    );
+    let strict = run(true);
+    assert!(!strict.status.success(), "a stale line fails a strict run");
+    assert!(
+        String::from_utf8_lossy(&strict.stdout).contains("take it out"),
+        "the run says which line to take out: {}",
+        String::from_utf8_lossy(&strict.stdout)
+    );
+}
+
 #[test]
 fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scale() {
     let scales = layout_check::layouts()
@@ -378,30 +399,6 @@ fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scal
     assert!(
         report.findings.is_empty(),
         "every edge stands on a device pixel:\n{}",
-        layout_check::render(&report)
-    );
-}
-
-#[test]
-fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
-    let report = layout_check::check(&Options {
-        dirs: apps().expect("apps/tl reads"),
-        allow: Some(manifest().join("tests/layout_check/allowed")),
-        ..Options::default()
-    })
-    .expect("the apps lay out");
-    assert!(
-        report.layouts > 0 && apps().expect("apps/tl reads").len() >= 8,
-        "every app in apps/tl is checked"
-    );
-    assert!(
-        report.unreached.is_empty(),
-        "every view is laid out: a scenario reaches each, or the system shows it:\n{}",
-        layout_check::render(&report)
-    );
-    assert!(
-        report.new_findings().next().is_none() && report.stale.is_empty(),
-        "new layout problems, or allowed ones gone (take them out of the allow-list):\n{}",
         layout_check::render(&report)
     );
 }

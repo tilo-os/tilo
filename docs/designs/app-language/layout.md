@@ -93,7 +93,8 @@ room above it as below at a phone's width and a monitor's alike.
 `tilolang layout-check` renders every view headlessly across sizes from 320×568 to 3440×1440,
 display scales 1, 1.5 and 2 and text scales 1 and 1.5. It reports overflow, clipped text, overlaps,
 hit targets that are too small, pages that scroll sideways and edges between device pixels, each at
-a view path. Agents run it like the type checker.
+a view path. It runs as the `layout-check` t checks, on the build servers, where its findings are
+the verdict and each standard size's dump and shots are `t outputs`.
 
 It also reads what a screen says and how its rows line up: every row at one depth starts its title
 at one x, nesting indents by one gutter, a box's rows end at one right edge, one choice is drawn

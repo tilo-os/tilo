@@ -383,6 +383,44 @@ Assert on the record, not the widget: the body the store holds, the history entr
 
 `Driver::invoke_action` is the same call from Rust, and `Driver::deliver_external` delivers a `UserEvent::External` payload the way the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs the whole installer wizard this way against a recording install backend.
 
+## Layout checks on the build servers
+
+`tilolang layout-check` lays every view of the tilolang apps (`apps/tl`) out headlessly at window
+sizes from 320x568 to 3440x1440, at display and text scales, and reports overflow, clipped text,
+overlaps, hit targets below the minimum, pages that scroll sideways and the rest of
+`docs/designs/app-language/layout.md`, each at the view's node in the source. It takes the
+machine for the run, so it is a t check and never runs on a workstation:
+
+```bash
+t test layout-check                    # every standard size, every app
+t test layout-check/390x844            # one size, one run
+```
+
+The sizes are 320x568 and 390x844 (a phone's) and 1280x800 (a laptop's). What the run finds is
+the check's verdict: a finding the allow-list
+(`crates/lang/tilolang-cli/tests/layout_check/allowed`) does not name fails it, as does an
+allow-list line whose finding no longer shows or a view no scenario reaches. The job's log
+(`t log layout-check/390x844`) lists every finding with its app, view, node and source line.
+
+Each size's run keeps its outputs, which `t outputs` fetches:
+
+```bash
+t outputs layout-check/390x844 --to ~/layout-shots
+```
+
+That writes `~/layout-shots/target/layout-check/390x844/`, which holds `report.txt` (the report the
+job's log prints: every finding with its app, view, node and source line, the allow-list lines
+that no longer show and the views no layout reached, then the counts), `dump.txt` (the toolkit's
+inspection of every layout at that size: each widget's box, clip and semantics — hundreds of
+megabytes, so fetch it when you need to see inside a layout) and one PNG per window per theme
+(`<app>-<view>-<theme>.png`, light and dark; about nine hundred for the tl apps), as each scenario
+leaves the window. `t outputs` starts the run for this state if none ran, so the shot is always of
+the code as it stands here.
+
+The check lays the apps out as their scenarios leave them, with no input of its own: a layout
+reached by a press, a key or a staged view state is the CLI's `--press`, `--key` and `--state`
+flags, which `t test` cannot pass to a check.
+
 ## Screenshots of every app
 
 `tools/screenshots/run.py` photographs every app of the default collection in realistic situations, set up only through each app's actions. A plan per app, `tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line title and the steps that reach it (`invoke`, `wait_for_named`, `expect`, `perform`; no clicks or keys):

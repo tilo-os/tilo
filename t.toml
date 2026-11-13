@@ -2815,6 +2815,24 @@ requires = ["arch=x86_64"]
 timeout_secs = 1800
 on = ["idle"]
 
+# The tilolang apps laid out headlessly at the standard window sizes: 320x568 and 390x844, a
+# phone's, and 1280x800, a laptop's. What `tilolang layout-check` finds is the check's verdict (a
+# finding the allow-list does not name, a line it names that no longer shows, a view no scenario
+# reaches), and each size's layout dump and PNG captures are its outputs: `t outputs
+# layout-check/390x844 --to DIR`. `t test layout-check` runs every size, one size by name. The
+# renders are the toolkit's own, so they run in the test environment (the product's fonts,
+# lavapipe) on x86_64, where the visual goldens are recorded.
+[[check]]
+name = "layout-check/{size}"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/test-env.sh bash tools/ci/layout-check.sh {size}"
+env = { TILO_TEST_NTFS_FIXTURES = "0" }
+requires = ["arch=x86_64"]
+outputs = ["/target/layout-check/{size}/**"]
+timeout_secs = 1800
+[check.matrix]
+size = ["320x568", "390x844", "1280x800"]
+
 [[check]]
 name = "app-screenshots"
 egress = { to = ["code.tilo.so:443"], pinned = true }

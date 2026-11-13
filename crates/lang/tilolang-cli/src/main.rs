@@ -56,12 +56,14 @@ usage:
       (`tilo-session --admit-repl PATH`). Each entry is a program for the door's `tilo` tool, run
       as the REPL's task: lets are kept, refs (n3) name what answers showed, a bulk change
       previews until `confirm`, `undo` takes a step back.
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump WxH [--shots DIR [--theme NAME]... [--bar-at-rest]]] [--locale TAG]
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump WxH [--shots DIR [--theme NAME]... [--bar-at-rest]]] [--locale TAG]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
       pages that scroll sideways, each at its view's node in the source. Exits 1 on a finding
-      the allow-list (one finding id per line) does not name; --json prints the report as JSON;
+      the allow-list (one finding id per line) does not name; --strict exits 1 on an allow-list
+      line whose finding no longer shows and on a view no layout showed, too; --json prints the
+      report as JSON;
       --dump prints each layout at that window size as the check reads it (boxes, clips and
       semantics of every widget) to stderr, and --shots writes the window at that size (display
       and text scale 1) as each stage leaves it, light and dark, to PNGs in DIR. --theme takes
@@ -207,6 +209,7 @@ fn build(args: &[String]) -> Result<(), String> {
 fn layout_check_command(args: &[String]) -> ExitCode {
     let mut options = tilolang_cli::layout_check::Options::default();
     let mut json = false;
+    let mut strict = false;
     let mut iter = args.iter();
     let parsed: Result<(), String> = (|| {
         while let Some(arg) = iter.next() {
@@ -214,6 +217,7 @@ fn layout_check_command(args: &[String]) -> ExitCode {
                 "--search" | "--path" => options.search.push(value(&mut iter, arg)?.into()),
                 "--allow" => options.allow = Some(value(&mut iter, arg)?.into()),
                 "--json" => json = true,
+                "--strict" => strict = true,
                 "--shots" => options.shots = Some(value(&mut iter, arg)?.into()),
                 "--bar-at-rest" => options.bar_at_rest = true,
                 "--theme" => options.themes.push(value(&mut iter, arg)?),
@@ -263,7 +267,9 @@ fn layout_check_command(args: &[String]) -> ExitCode {
     } else {
         print!("{}", tilolang_cli::layout_check::render(&report));
     }
-    if report.new_findings().next().is_some() {
+    if report.new_findings().next().is_some()
+        || (strict && !(report.stale.is_empty() && report.unreached.is_empty()))
+    {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
