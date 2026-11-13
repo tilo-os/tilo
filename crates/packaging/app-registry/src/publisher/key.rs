@@ -130,37 +130,41 @@ pub fn public_hex(key: &SigningKey) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn keys_round_trip_and_are_never_replaced() {
-        let store = SecretStore::memory(SECRETS_APP);
-        assert!(stored(&store).unwrap().is_none());
-        let key = create(&store).unwrap();
-        assert_eq!(stored(&store).unwrap().unwrap().to_bytes(), key.to_bytes());
-        assert!(create(&store).is_err());
-        assert_eq!(stored(&store).unwrap().unwrap().to_bytes(), key.to_bytes());
-        assert_eq!(parse(&encode(&key)).unwrap().to_bytes(), key.to_bytes());
-        assert!(
-            parse(&hex::encode(key.to_bytes())).is_err(),
-            "bare hex is no key file"
-        );
-        assert!(parse("not a key").is_err());
-    }
+    tilo_test_env::scenario! {
+        fn publisher_keys_are_stored_and_resolved;
 
-    #[test]
-    fn a_named_key_file_wins_over_the_store() {
-        let store = SecretStore::memory(SECRETS_APP);
-        create(&store).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("key.json");
-        std::fs::write(
-            &path,
-            format!(r#"{{"secret_key_hex": "{}"}}"#, "07".repeat(32)),
-        )
-        .unwrap();
-        assert_eq!(
-            resolve(Some(&path), &store).unwrap().to_bytes(),
-            [7; 32],
-            "--key names another key"
-        );
+        phase keys_round_trip_and_are_never_replaced;
+        {
+            let store = SecretStore::memory(SECRETS_APP);
+            assert!(stored(&store).unwrap().is_none());
+            let key = create(&store).unwrap();
+            assert_eq!(stored(&store).unwrap().unwrap().to_bytes(), key.to_bytes());
+            assert!(create(&store).is_err());
+            assert_eq!(stored(&store).unwrap().unwrap().to_bytes(), key.to_bytes());
+            assert_eq!(parse(&encode(&key)).unwrap().to_bytes(), key.to_bytes());
+            assert!(
+                parse(&hex::encode(key.to_bytes())).is_err(),
+                "bare hex is no key file"
+            );
+            assert!(parse("not a key").is_err());
+        }
+
+        phase a_named_key_file_wins_over_the_store;
+        {
+            let store = SecretStore::memory(SECRETS_APP);
+            create(&store).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("key.json");
+            std::fs::write(
+                &path,
+                format!(r#"{{"secret_key_hex": "{}"}}"#, "07".repeat(32)),
+            )
+            .unwrap();
+            assert_eq!(
+                resolve(Some(&path), &store).unwrap().to_bytes(),
+                [7; 32],
+                "--key names another key"
+            );
+        }
     }
 }

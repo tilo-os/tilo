@@ -622,9 +622,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn version_identity_is_unique_per_precedence_and_target() {
-        // phase: source_hash_cannot_create_a_second_artifact_at_the_same_precedence
+    tilo_test_env::scenario! {
+        fn version_identity_is_unique_per_precedence_and_target;
+
+        phase source_hash_cannot_create_a_second_artifact_at_the_same_precedence;
         {
             assert!(same_version_identity(
                 &version("0.1.1-dev.10+g111"),
@@ -642,7 +643,8 @@ mod tests {
                 .is_lt()
             );
         }
-        // phase: slower_release_is_stale_only_for_the_same_target
+
+        phase slower_release_is_stale_only_for_the_same_target;
         {
             let current = version("0.1.42+gnew");
             let entry = registry_types::RegistryEntry {
@@ -720,94 +722,98 @@ module = "{module}"
         (bytes, manifest)
     }
 
-    #[test]
-    fn an_android_build_binds_only_as_android_never_as_tilo_os() {
-        let signer = SigningKey::from_bytes(&[7; 32]);
-        let (bytes, manifest) = android_tapp(&signer, "editor.apk");
-        assert_eq!(Platform::of(&manifest), Some(Platform::Android));
-        assert_eq!(Platform::Android.wire(), registry_types::ANDROID_PLATFORM);
+    tilo_test_env::scenario! {
+        fn entry_versions_bind_their_target_and_keep_the_limit;
 
-        let url = "https://apps.tilo.so/artifacts/editor-android.tapp";
-        let entry = build_entry(
-            &bytes,
-            url,
-            &signer,
-            Platform::Android,
-            Some("aarch64"),
-            None,
-            None,
-            &RetentionPolicy::default(),
-        )
-        .unwrap();
-        let [version] = entry.versions.as_slice() else {
-            panic!("one version: {:?}", entry.versions);
-        };
-        assert_eq!(
-            version.target().unwrap().clone(),
-            registry_types::RegistryTarget {
-                platform: registry_types::ANDROID_PLATFORM.into(),
-                architecture: "aarch64".into(),
-                isa: "aarch64".into(),
-                runtime: Some("tilo-runtime/2026.07".into()),
-                interfaces: Vec::new(),
+        phase an_android_build_binds_only_as_android_never_as_tilo_os;
+        {
+            let signer = SigningKey::from_bytes(&[7; 32]);
+            let (bytes, manifest) = android_tapp(&signer, "editor.apk");
+            assert_eq!(Platform::of(&manifest), Some(Platform::Android));
+            assert_eq!(Platform::Android.wire(), registry_types::ANDROID_PLATFORM);
+
+            let url = "https://apps.tilo.so/artifacts/editor-android.tapp";
+            let entry = build_entry(
+                &bytes,
+                url,
+                &signer,
+                Platform::Android,
+                Some("aarch64"),
+                None,
+                None,
+                &RetentionPolicy::default(),
+            )
+            .unwrap();
+            let [version] = entry.versions.as_slice() else {
+                panic!("one version: {:?}", entry.versions);
+            };
+            assert_eq!(
+                version.target().unwrap().clone(),
+                registry_types::RegistryTarget {
+                    platform: registry_types::ANDROID_PLATFORM.into(),
+                    architecture: "aarch64".into(),
+                    isa: "aarch64".into(),
+                    runtime: Some("tilo-runtime/2026.07".into()),
+                    interfaces: Vec::new(),
+                }
+            );
+            assert!(registry_types::verify_entry_signature(&entry));
+
+            for platform in [Platform::TiloOs, Platform::Linux, Platform::Macos] {
+                assert!(
+                    build_entry(
+                        &bytes,
+                        url,
+                        &signer,
+                        platform,
+                        None,
+                        None,
+                        None,
+                        &RetentionPolicy::default()
+                    )
+                    .is_err(),
+                    "an android tapp must not bind as {}",
+                    platform.wire()
+                );
             }
-        );
-        assert!(registry_types::verify_entry_signature(&entry));
-
-        for platform in [Platform::TiloOs, Platform::Linux, Platform::Macos] {
             assert!(
                 build_entry(
                     &bytes,
                     url,
                     &signer,
-                    platform,
+                    Platform::Android,
+                    Some("x86_64"),
                     None,
                     None,
-                    None,
-                    &RetentionPolicy::default()
+                    &RetentionPolicy::default(),
                 )
-                .is_err(),
-                "an android tapp must not bind as {}",
-                platform.wire()
+                .is_err()
             );
         }
-        assert!(
-            build_entry(
-                &bytes,
-                url,
-                &signer,
-                Platform::Android,
-                Some("x86_64"),
-                None,
-                None,
-                &RetentionPolicy::default(),
-            )
-            .is_err()
-        );
-    }
 
-    #[test]
-    fn versions_beyond_the_limit_drop_the_oldest_superseded_ones() {
-        let limit = registry_types::entry::MAX_ENTRY_VERSIONS;
-        let mut arm = version("1.0.0");
-        arm.tapp_mut().unwrap().target.architecture = "aarch64".into();
-        let mut versions: Vec<_> = (1..=limit)
-            .map(|n| version(&format!("1.0.{n}")))
-            .chain(std::iter::once(arm))
-            .collect();
-        versions.sort_by(compare_registry_versions);
-        keep_newest_versions(&mut versions);
-        assert_eq!(versions.len(), limit);
-        // The x86_64 release 1.0.1 left; aarch64's only release stayed.
-        assert!(versions.iter().all(|v| v.version != "1.0.1"));
-        assert!(
-            versions
-                .iter()
-                .any(|v| v.target().unwrap().architecture == "aarch64")
-        );
-        assert_eq!(
-            versions.first().map(|v| v.version.as_str()),
-            Some(&*format!("1.0.{limit}"))
-        );
+        phase versions_beyond_the_limit_drop_the_oldest_superseded_ones;
+        {
+            let limit = registry_types::entry::MAX_ENTRY_VERSIONS;
+            let mut arm = version("1.0.0");
+            arm.tapp_mut().unwrap().target.architecture = "aarch64".into();
+            let mut versions: Vec<_> = (1..=limit)
+                .map(|n| version(&format!("1.0.{n}")))
+                .chain(std::iter::once(arm))
+                .collect();
+            versions.sort_by(compare_registry_versions);
+            keep_newest_versions(&mut versions);
+            assert_eq!(versions.len(), limit);
+            // The x86_64 release 1.0.1 left; aarch64's only release stayed.
+            assert!(versions.iter().all(|v| v.version != "1.0.1"));
+            assert!(
+                versions
+                    .iter()
+                    .any(|v| v.target().unwrap().architecture == "aarch64")
+            );
+            assert_eq!(
+                versions.first().map(|v| v.version.as_str()),
+                Some(&*format!("1.0.{limit}"))
+            );
+        }
     }
 }

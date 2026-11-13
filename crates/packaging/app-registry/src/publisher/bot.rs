@@ -161,63 +161,67 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_bot_entry_binds_the_program_and_lists_what_it_uses() {
-        let key = SigningKey::from_bytes(&[5; 32]);
-        let bytes = program();
-        let entry = build_bot_entry(&release(&bytes), &key, None, None, 100).unwrap();
-        assert_eq!(entry.kind, EntryKind::Bot);
-        assert!(registry_types::verify_entry_signature(&entry));
-        let bot = entry.versions[0].bot().unwrap();
-        assert_eq!(
-            bot.program_blake3_hex,
-            blake3::hash(&bytes).to_hex().to_string()
-        );
-        assert_eq!(
-            bot.program_url,
-            format!("https://apps.tilo.so/blobs/{}", bot.program_blake3_hex)
-        );
-        assert_eq!(bot.requires.apps, ["so.tilo.chat"]);
-        assert_eq!(bot.requires.triggers, ["incoming_message"]);
-        assert!(!bot.requires.appearance);
-    }
+    tilo_test_env::scenario! {
+        fn bot_releases_bind_their_program;
 
-    #[test]
-    fn a_release_refuses_bad_programs_and_mismatched_history() {
-        let key = SigningKey::from_bytes(&[5; 32]);
-        let value: serde_json::Value = serde_json::from_slice(&program()).unwrap();
-        let pretty = serde_json::to_vec_pretty(&value).unwrap();
-        assert!(build_bot_entry(&release(&pretty), &key, None, None, 100).is_err());
-        let connectors = [PackageRequirement {
-            package_id: "so.tilo.discord".into(),
-            min_version: "0.1.0".into(),
-        }];
-        let bytes = program();
-        let with_unused = BotRelease {
-            connectors: &connectors,
-            ..release(&bytes)
-        };
-        let error = build_bot_entry(&with_unused, &key, None, None, 100)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("connector"), "{error}");
-        let first = build_bot_entry(&release(&bytes), &key, None, None, 100).unwrap();
-        let again = build_bot_entry(&release(&bytes), &key, Some(&first), None, 200).unwrap();
-        assert_eq!(again, first, "re-running a release reproduces the entry");
-        let mut renamed = value;
-        renamed["name"] = "Echo 2".into();
-        let renamed: tilo_automation::Shortcut = serde_json::from_value(renamed).unwrap();
-        let other = tilo_automation::program::canonical_bytes(&renamed).unwrap();
-        assert!(
-            build_bot_entry(&release(&other), &key, Some(&first), None, 300).is_err(),
-            "same version, other bytes"
-        );
-        let next = BotRelease {
-            version: "1.1.0",
-            ..release(&other)
-        };
-        let updated = build_bot_entry(&next, &key, Some(&first), None, 300).unwrap();
-        assert_eq!(updated.versions.len(), 2);
-        assert_eq!(updated.versions[0].version, "1.1.0", "newest first");
+        phase a_bot_entry_binds_the_program_and_lists_what_it_uses;
+        {
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let bytes = program();
+            let entry = build_bot_entry(&release(&bytes), &key, None, None, 100).unwrap();
+            assert_eq!(entry.kind, EntryKind::Bot);
+            assert!(registry_types::verify_entry_signature(&entry));
+            let bot = entry.versions[0].bot().unwrap();
+            assert_eq!(
+                bot.program_blake3_hex,
+                blake3::hash(&bytes).to_hex().to_string()
+            );
+            assert_eq!(
+                bot.program_url,
+                format!("https://apps.tilo.so/blobs/{}", bot.program_blake3_hex)
+            );
+            assert_eq!(bot.requires.apps, ["so.tilo.chat"]);
+            assert_eq!(bot.requires.triggers, ["incoming_message"]);
+            assert!(!bot.requires.appearance);
+        }
+
+        phase a_release_refuses_bad_programs_and_mismatched_history;
+        {
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let value: serde_json::Value = serde_json::from_slice(&program()).unwrap();
+            let pretty = serde_json::to_vec_pretty(&value).unwrap();
+            assert!(build_bot_entry(&release(&pretty), &key, None, None, 100).is_err());
+            let connectors = [PackageRequirement {
+                package_id: "so.tilo.discord".into(),
+                min_version: "0.1.0".into(),
+            }];
+            let bytes = program();
+            let with_unused = BotRelease {
+                connectors: &connectors,
+                ..release(&bytes)
+            };
+            let error = build_bot_entry(&with_unused, &key, None, None, 100)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("connector"), "{error}");
+            let first = build_bot_entry(&release(&bytes), &key, None, None, 100).unwrap();
+            let again = build_bot_entry(&release(&bytes), &key, Some(&first), None, 200).unwrap();
+            assert_eq!(again, first, "re-running a release reproduces the entry");
+            let mut renamed = value;
+            renamed["name"] = "Echo 2".into();
+            let renamed: tilo_automation::Shortcut = serde_json::from_value(renamed).unwrap();
+            let other = tilo_automation::program::canonical_bytes(&renamed).unwrap();
+            assert!(
+                build_bot_entry(&release(&other), &key, Some(&first), None, 300).is_err(),
+                "same version, other bytes"
+            );
+            let next = BotRelease {
+                version: "1.1.0",
+                ..release(&other)
+            };
+            let updated = build_bot_entry(&next, &key, Some(&first), None, 300).unwrap();
+            assert_eq!(updated.versions.len(), 2);
+            assert_eq!(updated.versions[0].version, "1.1.0", "newest first");
+        }
     }
 }
