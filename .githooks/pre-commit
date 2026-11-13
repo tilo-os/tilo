@@ -95,6 +95,11 @@ python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
 # keep meaning what they meant (docs/policies.md). Judged against HEAD, so a
 # merge is charged only with what its resolution changed.
 python3 "$root/tools/policy/check_wire_enums.py" staged || fail=1
+# An allowance marker (`// ratchet-allow(...)` above a hit, `allow-breakpoint:`
+# and `allow-socket-path:` trailing the line) is data the checks read as the
+# review of that hit, not prose: it may go only with the code it covers, or its
+# count grows and the suite goes red in a later run (docs/policies.md).
+python3 "$root/tools/policy/check_allowance_markers.py" staged || fail=1
 # Every test-shaped file and every Rust file that reads outside its package is
 # accounted for in tools/ci/suites.toml, so changing what it reads runs it.
 # `--staged` reads only the commit's Rust files and the ones the manifest names
