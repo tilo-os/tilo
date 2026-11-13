@@ -533,18 +533,60 @@ pub fn idle_wakeups(root: u32, settle: Duration, window: Duration) -> io::Result
 mod tests {
     use super::*;
     use crate::SpawnUnderEnvLock as _;
+    use crate::scenario;
 
-    #[test]
-    fn status_counts_both_kinds_of_switch() {
-        let status =
-            "Name:\tworker\nvoluntary_ctxt_switches:\t12\nnonvoluntary_ctxt_switches:\t3\n";
-        assert_eq!(switch_counts(status), (12, 3));
-    }
+    scenario! {
+        fn samples_are_parsed_and_counted_into_wakeups;
 
-    #[test]
-    fn stat_cpu_is_user_plus_system_after_a_name_with_spaces() {
-        let stat = "42 (a (b) c) S 1 42 42 0 -1 4194560 100 0 0 0 7 5 0 0 20 0 1 0 1 0 0";
-        assert_eq!(cpu_ticks(stat), 12);
+        phase status_counts_both_kinds_of_switch;
+        {
+            let status =
+                "Name:\tworker\nvoluntary_ctxt_switches:\t12\nnonvoluntary_ctxt_switches:\t3\n";
+            assert_eq!(switch_counts(status), (12, 3));
+        }
+
+        phase stat_cpu_is_user_plus_system_after_a_name_with_spaces;
+        {
+            let stat = "42 (a (b) c) S 1 42 42 0 -1 4194560 100 0 0 0 7 5 0 0 20 0 1 0 1 0 0";
+            assert_eq!(cpu_ticks(stat), 12);
+        }
+
+        phase between_counts_new_threads_from_zero_and_drops_ended_ones;
+        {
+            let thread = |tid, comm: &str, voluntary| ThreadSample {
+                pid: 1,
+                tid,
+                process: "app".into(),
+                comm: comm.into(),
+                voluntary,
+                involuntary: 1,
+                cpu_ticks: voluntary,
+            };
+            let wakeups = Wakeups::between(
+                vec![thread(1, "main", 10), thread(2, "gone", 5)],
+                vec![thread(1, "main", 14), thread(3, "worker", 6)],
+                Duration::from_secs(2),
+            );
+            let rate = |name: &str| {
+                let row = wakeups.rows.iter().find(|row| row.thread == name).unwrap();
+                wakeups.rate(row.wakeups())
+            };
+            assert!((rate("main") - 2.0).abs() < 1e-9, "{wakeups}");
+            assert!((rate("worker") - 3.5).abs() < 1e-9, "{wakeups}");
+            assert!(!wakeups.rows.iter().any(|row| row.thread == "gone"));
+            assert_eq!(wakeups.threads_started, 1);
+            assert_eq!(wakeups.total(), 11);
+            assert_eq!(wakeups.blocking(), 10);
+            assert!(
+                (wakeups.blocking_per_second() - 5.0).abs() < 1e-9,
+                "{wakeups}"
+            );
+            assert_eq!(wakeups.processes, 1);
+            assert!(
+                (wakeups.total_cpu_percent() - 5.0).abs() < 1e-9,
+                "{wakeups}"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -584,43 +626,6 @@ mod tests {
         );
         assert!(wakeups.per_second() >= rate, "{wakeups}");
         assert!(wakeups.to_string().contains("idle-probe-poll"));
-    }
-
-    #[test]
-    fn between_counts_new_threads_from_zero_and_drops_ended_ones() {
-        let thread = |tid, comm: &str, voluntary| ThreadSample {
-            pid: 1,
-            tid,
-            process: "app".into(),
-            comm: comm.into(),
-            voluntary,
-            involuntary: 1,
-            cpu_ticks: voluntary,
-        };
-        let wakeups = Wakeups::between(
-            vec![thread(1, "main", 10), thread(2, "gone", 5)],
-            vec![thread(1, "main", 14), thread(3, "worker", 6)],
-            Duration::from_secs(2),
-        );
-        let rate = |name: &str| {
-            let row = wakeups.rows.iter().find(|row| row.thread == name).unwrap();
-            wakeups.rate(row.wakeups())
-        };
-        assert!((rate("main") - 2.0).abs() < 1e-9, "{wakeups}");
-        assert!((rate("worker") - 3.5).abs() < 1e-9, "{wakeups}");
-        assert!(!wakeups.rows.iter().any(|row| row.thread == "gone"));
-        assert_eq!(wakeups.threads_started, 1);
-        assert_eq!(wakeups.total(), 11);
-        assert_eq!(wakeups.blocking(), 10);
-        assert!(
-            (wakeups.blocking_per_second() - 5.0).abs() < 1e-9,
-            "{wakeups}"
-        );
-        assert_eq!(wakeups.processes, 1);
-        assert!(
-            (wakeups.total_cpu_percent() - 5.0).abs() < 1e-9,
-            "{wakeups}"
-        );
     }
 
     #[cfg(target_os = "linux")]
