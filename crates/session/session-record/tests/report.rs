@@ -196,81 +196,6 @@ fn gate(root: &Path, log: &str, extra: &[&str]) -> Output {
     report(root, &args)
 }
 
-#[test]
-fn the_render_gate_holds_presentation_to_its_contract() {
-    let directory = tempfile::tempdir().expect("directory");
-    let root = directory.path();
-    let enabled = "direct_scanout_status=enabled format=Xrgb8888 renderer_pci= earlier_failures=0 DRM direct scanout enabled\n";
-    let degraded = "direct_scanout_status=degraded direct_scanout_reason=\"render: GPU-only absolute deadline exceeded\" output=1 hdr=false failures=1 retry_in_ms=500 DRM direct scanout degraded to readback\n";
-    let readback_summary = "frames=40 direct_frames=0 direct_dropped=0 flip_completions=0 unprofiled_frames=0 window_us=2000000 bridge_us=1800000 scanout_us=3000 readback_bytes=866713600 output_bytes=866713600 avg_direct_us=0 max_direct_us=0 direct_failures=1 direct_scanout_status=unavailable direct_scanout_reason=\"render: GPU-only absolute deadline exceeded\" DRM render phase summary\n";
-    let direct_summary = "frames=120 direct_frames=120 direct_dropped=0 flip_completions=120 unprofiled_frames=0 window_us=2000000 bridge_us=0 scanout_us=0 readback_bytes=0 output_bytes=0 avg_direct_us=6100 max_direct_us=9800 direct_failures=1 direct_scanout_status=enabled direct_scanout_reason=\"not-initialized\" DRM render phase summary\n";
-
-    // A demotion that never recovers fails the gate.
-    let failed = gate(
-        root,
-        &[enabled, direct_summary, degraded, readback_summary].concat(),
-        &[],
-    );
-    let stderr = String::from_utf8_lossy(&failed.stderr);
-    assert_eq!(failed.status.code(), Some(1), "{failed:?}");
-    assert!(
-        stderr.contains("direct GPU scanout is not presenting"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(
-            "status=unavailable reason=\"render: GPU-only absolute deadline exceeded\" readback_bytes=866713600); degradations: ['direct_scanout_status=degraded"
-        ),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("readback frames averaged 45000 us"),
-        "{stderr}"
-    );
-    let stdout = String::from_utf8_lossy(&failed.stdout);
-    assert!(
-        stdout.starts_with("render gate: last phase summary {'frames': 40, 'direct_frames': 0,"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("render gate: main-thread frame work None\n"),
-        "{stdout}"
-    );
-
-    // A retried demotion passes.
-    let passed = gate(
-        root,
-        &[enabled, degraded, enabled, direct_summary].concat(),
-        &[],
-    );
-    assert!(passed.status.success(), "{passed:?}");
-    assert!(String::from_utf8_lossy(&passed.stdout).contains("render gate: PASS"));
-
-    // Direct frames over budget fail.
-    let slow = gate(
-        root,
-        &[enabled, direct_summary].concat(),
-        &["--render-budget-ms", "5"],
-    );
-    assert_eq!(slow.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&slow.stderr).contains("direct frames averaged 6100 us"));
-
-    // A required direct presenter must start.
-    let software = "direct_scanout_status=unavailable reason=\"renderer and scanout use different GPUs\" DRM direct scanout unavailable\n\
-        frames=30 direct_frames=0 direct_dropped=0 flip_completions=0 unprofiled_frames=0 window_us=2000000 bridge_us=300000 scanout_us=3000 readback_bytes=1 output_bytes=1 direct_scanout_status=unavailable direct_scanout_reason=\"renderer and scanout use different GPUs\" DRM render phase summary\n";
-    assert!(gate(root, software, &[]).status.success());
-    assert_eq!(
-        gate(root, software, &["--require-direct"]).status.code(),
-        Some(1)
-    );
-
-    // No record at all.
-    fs::remove_file(root.join("latest.log")).expect("remove");
-    let missing = report(root, &["--render-gate"]);
-    assert_eq!(missing.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("no session flight record at"));
-}
-
 tilo_test_env::scenario! {
     fn the_session_report_summarises_what_a_login_recorded;
 
@@ -401,6 +326,81 @@ tilo_test_env::scenario! {
                 & 0o777,
             0o600
         );
+    }
+
+    phase the_render_gate_holds_presentation_to_its_contract;
+    {
+        let directory = tempfile::tempdir().expect("directory");
+        let root = directory.path();
+        let enabled = "direct_scanout_status=enabled format=Xrgb8888 renderer_pci= earlier_failures=0 DRM direct scanout enabled\n";
+        let degraded = "direct_scanout_status=degraded direct_scanout_reason=\"render: GPU-only absolute deadline exceeded\" output=1 hdr=false failures=1 retry_in_ms=500 DRM direct scanout degraded to readback\n";
+        let readback_summary = "frames=40 direct_frames=0 direct_dropped=0 flip_completions=0 unprofiled_frames=0 window_us=2000000 bridge_us=1800000 scanout_us=3000 readback_bytes=866713600 output_bytes=866713600 avg_direct_us=0 max_direct_us=0 direct_failures=1 direct_scanout_status=unavailable direct_scanout_reason=\"render: GPU-only absolute deadline exceeded\" DRM render phase summary\n";
+        let direct_summary = "frames=120 direct_frames=120 direct_dropped=0 flip_completions=120 unprofiled_frames=0 window_us=2000000 bridge_us=0 scanout_us=0 readback_bytes=0 output_bytes=0 avg_direct_us=6100 max_direct_us=9800 direct_failures=1 direct_scanout_status=enabled direct_scanout_reason=\"not-initialized\" DRM render phase summary\n";
+
+        // A demotion that never recovers fails the gate.
+        let failed = gate(
+            root,
+            &[enabled, direct_summary, degraded, readback_summary].concat(),
+            &[],
+        );
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert_eq!(failed.status.code(), Some(1), "{failed:?}");
+        assert!(
+            stderr.contains("direct GPU scanout is not presenting"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(
+                "status=unavailable reason=\"render: GPU-only absolute deadline exceeded\" readback_bytes=866713600); degradations: ['direct_scanout_status=degraded"
+            ),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("readback frames averaged 45000 us"),
+            "{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&failed.stdout);
+        assert!(
+            stdout.starts_with("render gate: last phase summary {'frames': 40, 'direct_frames': 0,"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("render gate: main-thread frame work None\n"),
+            "{stdout}"
+        );
+
+        // A retried demotion passes.
+        let passed = gate(
+            root,
+            &[enabled, degraded, enabled, direct_summary].concat(),
+            &[],
+        );
+        assert!(passed.status.success(), "{passed:?}");
+        assert!(String::from_utf8_lossy(&passed.stdout).contains("render gate: PASS"));
+
+        // Direct frames over budget fail.
+        let slow = gate(
+            root,
+            &[enabled, direct_summary].concat(),
+            &["--render-budget-ms", "5"],
+        );
+        assert_eq!(slow.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&slow.stderr).contains("direct frames averaged 6100 us"));
+
+        // A required direct presenter must start.
+        let software = "direct_scanout_status=unavailable reason=\"renderer and scanout use different GPUs\" DRM direct scanout unavailable\n\
+        frames=30 direct_frames=0 direct_dropped=0 flip_completions=0 unprofiled_frames=0 window_us=2000000 bridge_us=300000 scanout_us=3000 readback_bytes=1 output_bytes=1 direct_scanout_status=unavailable direct_scanout_reason=\"renderer and scanout use different GPUs\" DRM render phase summary\n";
+        assert!(gate(root, software, &[]).status.success());
+        assert_eq!(
+            gate(root, software, &["--require-direct"]).status.code(),
+            Some(1)
+        );
+
+        // No record at all.
+        fs::remove_file(root.join("latest.log")).expect("remove");
+        let missing = report(root, &["--render-gate"]);
+        assert_eq!(missing.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("no session flight record at"));
     }
 
     phase the_render_gate_holds_typing_and_damage_to_the_latency_bar;
