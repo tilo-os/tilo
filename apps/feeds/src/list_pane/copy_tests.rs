@@ -50,17 +50,23 @@ impl AppSurface for Window {
     fn set_cursor(&self, _: winit::window::CursorIcon) {}
 }
 
+/// How many pixels of the window `rects` cover, a pixel under several of
+/// them once: a cell counts when the first rect over it marks it, so only the
+/// cells under the rects are read, not the window's.
 fn covered(rects: &[Rect], size: winit::dpi::PhysicalSize<u32>) -> f64 {
     let window = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     let width = size.width as usize;
     let mut cells = vec![false; width * size.height as usize];
+    let mut covered = 0_usize;
     for rect in rects {
         let rect = rect.intersect(window).expand();
         for y in rect.y0 as usize..rect.y1 as usize {
-            cells[y * width + rect.x0 as usize..y * width + rect.x1 as usize].fill(true);
+            let row = &mut cells[y * width + rect.x0 as usize..y * width + rect.x1 as usize];
+            covered += row.iter().filter(|cell| !**cell).count();
+            row.fill(true);
         }
     }
-    cells.iter().filter(|cell| **cell).count() as f64
+    covered as f64
 }
 
 #[derive(Debug, Default)]
@@ -107,8 +113,30 @@ fn library() -> (FeedsApp, Shared) {
     (app, shared)
 }
 
+/// What a window at one scale presents its frames on, and what draws the
+/// full render each of them is compared with. A window keeps its own while
+/// its theme changes, so the windows of one size use one pair in turn: a
+/// window's first frame is drawn whole over what the one before it left.
+struct Targets {
+    scale: f64,
+    presented: OffscreenRenderer,
+    full: OffscreenRenderer,
+}
+
+impl Targets {
+    fn new(scale: f64) -> Self {
+        let size = Window { scale }.inner_size();
+        Self {
+            scale,
+            presented: OffscreenRenderer::try_new(size.width, size.height)
+                .expect("a scroll's copies are checked on the GPU the toolkit renders with"),
+            full: OffscreenRenderer::new(size.width, size.height),
+        }
+    }
+}
+
 /// The window, the library and how it presents each frame.
-struct Host {
+struct Host<'t> {
     window: Window,
     app: App,
     shared: Shared,
@@ -116,17 +144,16 @@ struct Host {
     _feeds: FeedsApp,
     damage: SurfaceDamage,
     scene: Scene,
-    presented: OffscreenRenderer,
-    full: OffscreenRenderer,
+    targets: &'t mut Targets,
     background: vello::peniko::Color,
 }
 
-impl Host {
-    /// The list in `theme` at `scale`, the pointer resting over the rows
-    /// when `hover`.
-    fn new(theme: &Theme, scale: f64, hover: bool) -> Self {
+impl<'t> Host<'t> {
+    /// The list in `theme` at the scale of `targets`, the pointer resting
+    /// over the rows when `hover`.
+    fn new(theme: &Theme, hover: bool, targets: &'t mut Targets) -> Self {
+        let scale = targets.scale;
         let window = Window { scale };
-        let size = window.inner_size();
         let (feeds, shared) = library();
         let list = ListPane::new(&shared);
         let mut app = App::new(
@@ -141,12 +168,19 @@ impl Host {
             _feeds: feeds,
             damage: SurfaceDamage::copying(),
             scene: Scene::new(),
-            presented: OffscreenRenderer::try_new(size.width, size.height)
-                .expect("a scroll's copies are checked on the GPU the toolkit renders with"),
-            full: OffscreenRenderer::new(size.width, size.height),
+            targets,
             background: theme.tokens.colors.surfaces.content,
         };
-        for _ in 0..3 {
+        // Nothing an earlier window presented on these targets shows through
+        // this one: its first frame replaces them whole.
+        let mut first = Run::default();
+        host.frame(&mut first);
+        assert_eq!(
+            (first.whole, first.copied_frames),
+            (1, 0),
+            "a window's first frame is drawn whole"
+        );
+        for _ in 0..2 {
             host.frame(&mut Run::default());
         }
         if !hover {
@@ -174,7 +208,7 @@ impl Host {
                 run.copied_frames += 1;
                 run.repainted += covered(&rects, self.window.inner_size());
             }
-            let _ = self.presented.render_copies_and_damage_gpu_wait(
+            let _ = self.targets.presented.render_copies_and_damage_gpu_wait(
                 &self.scene,
                 self.background,
                 &copies,
@@ -182,7 +216,7 @@ impl Host {
             );
         } else {
             run.whole += 1;
-            let _ = self.presented.render(&self.scene, self.background);
+            let _ = self.targets.presented.render(&self.scene, self.background);
         }
     }
 
@@ -202,8 +236,8 @@ impl Host {
     }
 
     fn assert_matches(&mut self, label: &str, run: &Run) {
-        let expected = self.full.render(&self.scene, self.background);
-        let actual = self.presented.readback_current();
+        let expected = self.targets.full.render(&self.scene, self.background);
+        let actual = self.targets.presented.readback_current();
         let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected);
         assert_eq!(
             differing, 0,
@@ -226,13 +260,17 @@ impl Host {
 
 #[test]
 fn scrolling_the_article_list_copies_and_matches_a_full_render() {
+    let mut at_100 = Targets::new(1.0);
+    let mut at_200 = Targets::new(2.0);
     for (name, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),
         ("high contrast", Theme::high_contrast()),
     ] {
-        for (scale, hover) in [(1.0, true), (2.0, true), (1.0, false)] {
-            let mut host = Host::new(&theme, scale, hover);
+        for (doubled, hover) in [(false, true), (true, true), (false, false)] {
+            let targets = if doubled { &mut at_200 } else { &mut at_100 };
+            let scale = targets.scale;
+            let mut host = Host::new(&theme, hover, targets);
             let window = WIDTH * HEIGHT * scale * scale;
             // The row under a resting pointer lifts, and that lift follows
             // the pointer as the rows move: where it was and is repaints.
@@ -263,10 +301,11 @@ fn scrolling_the_article_list_copies_and_matches_a_full_render() {
 
 #[test]
 fn a_frame_that_changes_the_rows_repaints_the_list_and_matches() {
-    let mut host = Host::new(&Theme::dark(), 1.0, true);
+    let mut targets = Targets::new(1.0);
+    let mut host = Host::new(&Theme::dark(), true, &mut targets);
     let _ = host.scroll("feeds, warm up", (40.0, 2));
     let shown = host.shared.borrow().list.rows[2].id.clone();
-    let star = |host: &mut Host| {
+    let star = |host: &mut Host<'_>| {
         let mut core = host.shared.borrow_mut();
         let mut store = (*core.store).clone();
         let article = store.articles.get_mut(&shown).unwrap();
