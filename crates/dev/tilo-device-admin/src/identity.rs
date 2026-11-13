@@ -1,12 +1,8 @@
-//! The keys and certificates each side of the route uses.
-//!
-//! Both sides keep the Tilo identity layout ([`IdentityPaths`]): a device
-//! under `/var/lib/tilo`, a developer's machine under its own directory
-//! (`tilo-vm` keeps it beside its registry). A developer's machine enrols as
-//! one of the person's devices like any other: it has a device key, and the
-//! person's root certifies that key with
-//! [`DeviceCapabilities::administrator`](tilo_user_identity::DeviceCapabilities::administrator)
-//! (`tilo-enroll certify --capability admin`).
+//! The keys and certificates each side of the route uses. Both sides keep the Tilo identity layout
+//! ([`IdentityPaths`]): a device under `/var/lib/tilo`, a developer's machine under its own
+//! directory. A developer's machine enrols as one of the person's devices like any other: its
+//! device key certified by the person's root with
+//! [`DeviceCapabilities::administrator`](tilo_user_identity::DeviceCapabilities::administrator).
 
 use std::path::Path;
 
@@ -17,12 +13,10 @@ use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationList, persist, ver
 /// The device's identity root.
 pub const SYSTEM_ROOT: &str = "/var/lib/tilo";
 
-/// The transport secret of the device's admin endpoint, derived from its
-/// device key. The route is served by its own process beside the session's
-/// endpoint; one endpoint id published by two processes would take each
-/// other's relay slot, so the route's endpoint gets its own id, as
-/// tilo-relay's does. The device key itself still proves who answers, in the
-/// handshake.
+/// The transport secret of the device's admin endpoint, derived from its device key. The route is
+/// served by its own process beside the session's endpoint, and one endpoint id published by two
+/// processes would take each other's relay slot, so the route gets its own id. The device key itself
+/// still proves who answers, in the handshake.
 pub fn transport_secret(device_key: &SigningKey) -> [u8; 32] {
     blake3::derive_key(
         "tilo-device-admin-iroh-service-key-v1",
@@ -43,11 +37,10 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Read the identity under `root`. A device key is required; the
-    /// certificate is optional until the device is enrolled.
+    /// Read the identity under `root`. A device key is required; the certificate is optional until
+    /// the device is enrolled.
     ///
-    /// The certificate's signature is not checked here: the other side
-    /// checks it on every session, and refuses one that does not verify.
+    /// The certificate's signature is not checked here: the other side checks it on every session.
     pub fn load(root: &Path) -> anyhow::Result<Self> {
         let paths = IdentityPaths::under(root);
         let key = persist::read_device_key(&paths.device_privkey)
@@ -64,8 +57,8 @@ impl Identity {
         self.key.verifying_key().to_bytes()
     }
 
-    /// The revocations this side has verified for its identity. A missing
-    /// list is empty; a damaged one is an error rather than an empty list.
+    /// The revocations this side has verified for its identity. A missing list is empty; a damaged
+    /// one is an error rather than an empty list.
     pub fn revocations(&self) -> anyhow::Result<RevocationList> {
         tilo_user_identity::read_revocations(&self.paths)
             .map_err(|error| anyhow::anyhow!("{error}"))
@@ -84,8 +77,7 @@ fn read_cert_for(path: &Path, key: &SigningKey) -> anyhow::Result<DeviceCert> {
     Ok(cert)
 }
 
-/// Make the dialing machine's device key under `root` if it has none, and
-/// return its public half.
+/// Make the dialing machine's device key under `root` if it has none, and return its public half.
 pub fn ensure_key(root: &Path) -> anyhow::Result<[u8; 32]> {
     let paths = IdentityPaths::under(root);
     let (key, _) = persist::load_or_create_device_key(&paths)
@@ -93,8 +85,8 @@ pub fn ensure_key(root: &Path) -> anyhow::Result<[u8; 32]> {
     Ok(key.verifying_key().to_bytes())
 }
 
-/// Install a root-signed certificate for the dialing machine's key: it must
-/// name this machine's key, verify, and grant administration.
+/// Install a root-signed certificate for the dialing machine's key: it must name this machine's
+/// key, verify, and grant administration.
 pub fn install_cert(root: &Path, cert_path: &Path) -> anyhow::Result<DeviceCert> {
     let paths = IdentityPaths::under(root);
     let key = persist::read_device_key(&paths.device_privkey).with_context(|| {
