@@ -200,101 +200,97 @@ fn bot_replica(page: &Replica) -> Replica {
     bot
 }
 
-tilo_test_env::scenario! {
-    fn a_report_is_what_moves_the_moderation_agent;
-
-    phase a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot;
-    {
-        let mut page = flooded_room();
-        assert_eq!(texts_by(&messages(&page), MALLORY).len(), 3);
-        let mut bot = bot_replica(&page);
-        let mut policy = WorkspacePolicy::new(ROOM, OWNER);
-        for (person, role) in [(ADA, Role::Editor), (MALLORY, Role::Editor)] {
-            policy.members.insert(person.to_owned(), role);
-        }
-        let now = tilo_clock::unix_now_ms_i64();
-        let cx = Context::at(u64::try_from(now).unwrap());
-        // The host enforces governance as the workspace's root, held to its policy.
-        let mut govern = |change: Change| {
-            let snapshot = policy.clone();
-            let owner = Authority::person(snapshot.party(OWNER));
-            policy
-                .apply(OWNER, &owner, change, &cx, false)
-                .map_err(|refusal| refusal.to_string())
-        };
-        let agent = ModerationAgent::new(FakeJudge(Mutex::default()));
-
-        let mut door =
-            ReplicaDoor::<chat::Chat>::new(&mut bot, |chat| &chat.moderation, &mut govern, now);
-        let moderation = door.moderation().unwrap();
-        assert_eq!(
-            ModerationAgent::<FakeJudge>::reported(&moderation),
-            [MALLORY]
-        );
-        let look = ModerationAgent::<FakeJudge>::look(&mut door, &moderation, MALLORY);
-        assert_eq!(
-            look.case.activity.len(),
-            4,
-            "Mallory joining and her three posts, not Ada's"
-        );
-        let (verdict, model) = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(agent.verdict(&look))
-            .unwrap();
-        let enforced = ModerationAgent::<FakeJudge>::enforce(&mut door, look, verdict, model);
-        assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
-
-        // What the bot did reaches the workspace like anyone's change.
-        page.apply(&bot.take_mutation().unwrap().unwrap()).unwrap();
-        for (record, mutation) in bot.take_record_mutations().unwrap() {
-            page.apply_record(&record, &mutation).unwrap();
-        }
-        assert!(
-            texts_by(&messages(&page), MALLORY).is_empty(),
-            "the flood is taken back"
-        );
-        assert_eq!(texts_by(&messages(&page), ADA), ["hello everyone"]);
-        let state = chat_state(&page);
-        let decision = state.moderation.decisions.iter().next().unwrap();
-        assert_eq!(decision.person, MALLORY);
-        assert_eq!(decision.outcome, Outcome::Restrict);
-        assert_eq!(decision.model, "fake-model");
-        assert_eq!(
-            decision.reverted[0].changes, 3,
-            "her posts, not her joining"
-        );
-        assert!(
-            state
-                .people
-                .find(&tilo_resource::Id::from_raw(MALLORY))
-                .is_some(),
-            "she keeps her place in the roster"
-        );
-        assert_eq!(
-            state.moderation.open_reports().count(),
-            0,
-            "the report is settled"
-        );
-        assert!(
-            policy
-                .restricted_until(MALLORY, &cx)
-                .is_some_and(|until| until > cx.now_unix_ms),
-            "Mallory is restricted by the workspace's own expiring Deny"
-        );
+#[test]
+fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
+    let mut page = flooded_room();
+    assert_eq!(texts_by(&messages(&page), MALLORY).len(), 3);
+    let mut bot = bot_replica(&page);
+    let mut policy = WorkspacePolicy::new(ROOM, OWNER);
+    for (person, role) in [(ADA, Role::Editor), (MALLORY, Role::Editor)] {
+        policy.members.insert(person.to_owned(), role);
     }
+    let now = tilo_clock::unix_now_ms_i64();
+    let cx = Context::at(u64::try_from(now).unwrap());
+    // The host enforces governance as the workspace's root, held to its policy.
+    let mut govern = |change: Change| {
+        let snapshot = policy.clone();
+        let owner = Authority::person(snapshot.party(OWNER));
+        policy
+            .apply(OWNER, &owner, change, &cx, false)
+            .map_err(|refusal| refusal.to_string())
+    };
+    let agent = ModerationAgent::new(FakeJudge(Mutex::default()));
 
-    phase only_a_report_wakes_the_agent;
-    {
-        let report = Did::Verb(tilo_actions::entry::VerbCall::new(
-            tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "report-person"),
-            [],
-        ));
-        assert!(files_a_report(&report));
-        let post = Did::Verb(tilo_actions::entry::VerbCall::new(
-            tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
-            [],
-        ));
-        assert!(!files_a_report(&post));
+    let mut door =
+        ReplicaDoor::<chat::Chat>::new(&mut bot, |chat| &chat.moderation, &mut govern, now);
+    let moderation = door.moderation().unwrap();
+    assert_eq!(
+        ModerationAgent::<FakeJudge>::reported(&moderation),
+        [MALLORY]
+    );
+    let look = ModerationAgent::<FakeJudge>::look(&mut door, &moderation, MALLORY);
+    assert_eq!(
+        look.case.activity.len(),
+        4,
+        "Mallory joining and her three posts, not Ada's"
+    );
+    let (verdict, model) = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(agent.verdict(&look))
+        .unwrap();
+    let enforced = ModerationAgent::<FakeJudge>::enforce(&mut door, look, verdict, model);
+    assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
+
+    // What the bot did reaches the workspace like anyone's change.
+    page.apply(&bot.take_mutation().unwrap().unwrap()).unwrap();
+    for (record, mutation) in bot.take_record_mutations().unwrap() {
+        page.apply_record(&record, &mutation).unwrap();
     }
+    assert!(
+        texts_by(&messages(&page), MALLORY).is_empty(),
+        "the flood is taken back"
+    );
+    assert_eq!(texts_by(&messages(&page), ADA), ["hello everyone"]);
+    let state = chat_state(&page);
+    let decision = state.moderation.decisions.iter().next().unwrap();
+    assert_eq!(decision.person, MALLORY);
+    assert_eq!(decision.outcome, Outcome::Restrict);
+    assert_eq!(decision.model, "fake-model");
+    assert_eq!(
+        decision.reverted[0].changes, 3,
+        "her posts, not her joining"
+    );
+    assert!(
+        state
+            .people
+            .find(&tilo_resource::Id::from_raw(MALLORY))
+            .is_some(),
+        "she keeps her place in the roster"
+    );
+    assert_eq!(
+        state.moderation.open_reports().count(),
+        0,
+        "the report is settled"
+    );
+    assert!(
+        policy
+            .restricted_until(MALLORY, &cx)
+            .is_some_and(|until| until > cx.now_unix_ms),
+        "Mallory is restricted by the workspace's own expiring Deny"
+    );
+}
+
+#[test]
+fn only_a_report_wakes_the_agent() {
+    let report = Did::Verb(tilo_actions::entry::VerbCall::new(
+        tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "report-person"),
+        [],
+    ));
+    assert!(files_a_report(&report));
+    let post = Did::Verb(tilo_actions::entry::VerbCall::new(
+        tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+        [],
+    ));
+    assert!(!files_a_report(&post));
 }

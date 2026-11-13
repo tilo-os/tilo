@@ -1047,96 +1047,6 @@ mod tests {
             );
         }
 
-        phase offered_codes_keep_nothing_until_their_tab_follows_them;
-        // Thousands of visitors who are shown a code and do nothing leave nothing on the host, and
-        // none of them stops the next visitor from getting one: offering keeps no state and has no
-        // ceiling. Keeping one, which a tab does once its person uses the code, is budgeted per
-        // client address, never in all.
-        {
-            let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
-            let offers: Vec<Created> = (0..10_000)
-                .map(|_| codes.create(Some(&link()), NOW).unwrap())
-                .collect();
-            assert!(
-                codes.lock().entries.is_empty(),
-                "nothing is kept for a visitor who does nothing"
-            );
-            assert_eq!(
-                codes.resolve(&offers[0].code, None, NOW),
-                Err(Refusal::Unknown),
-                "an offer nobody kept resolves nothing"
-            );
-            // Thousands who use theirs, from as many addresses, are all kept.
-            for (index, created) in offers.iter().enumerate().take(5_000) {
-                let client = IpAddr::from(u32::try_from(index).unwrap().to_be_bytes());
-                let polled = codes
-                    .follow(
-                        &created.follow,
-                        Some(&offer_of(created, Some(link()))),
-                        Some(client),
-                        NOW,
-                    )
-                    .unwrap();
-                assert!(!polled.expired);
-            }
-            assert_eq!(codes.lock().entries.len(), 5_000);
-            assert!(codes.resolve(&offers[4_999].code, None, NOW + 1).is_ok());
-            // Following again keeps nothing twice.
-            codes
-                .follow(
-                    &offers[0].follow,
-                    Some(&offer_of(&offers[0], Some(link()))),
-                    None,
-                    NOW,
-                )
-                .unwrap();
-            assert_eq!(codes.lock().entries.len(), 5_000);
-            // An offer altered on its way back is not one the host made.
-            let mut altered = offer_of(&offers[6_000], Some(link()));
-            altered.link = Some(link().replace("ab", "ac"));
-            assert_eq!(
-                codes.follow(&offers[6_000].follow, Some(&altered), None, NOW),
-                Err(Refusal::Unknown)
-            );
-            // One that ran out is heard as expired, and kept no more.
-            let late = &offers[7_000];
-            assert!(
-                codes
-                    .follow(
-                        &late.follow,
-                        Some(&offer_of(late, Some(link()))),
-                        None,
-                        late.expires_at_ms
-                    )
-                    .unwrap()
-                    .expired
-            );
-            // One address keeps only so many a minute.
-            let client = Some(IpAddr::from([1, 1, 1, 1]));
-            let codes = LoginCodes::new(None);
-            for _ in 0..CREATES_PER_ADDRESS {
-                let created = codes.create(None, NOW).unwrap();
-                codes
-                    .follow(
-                        &created.follow,
-                        Some(&offer_of(&created, None)),
-                        client,
-                        NOW,
-                    )
-                    .unwrap();
-            }
-            let created = codes.create(None, NOW).unwrap();
-            assert_eq!(
-                codes.follow(
-                    &created.follow,
-                    Some(&offer_of(&created, None)),
-                    client,
-                    NOW
-                ),
-                Err(Refusal::TooMany)
-            );
-        }
-
         phase a_sign_in_claim_mints_one_invite_approved_once;
         {
             let codes = LoginCodes::new(None);
@@ -1210,5 +1120,95 @@ mod tests {
             let long = format!("{}&x={}", link(), "a".repeat(MAX_LINK_CHARS));
             assert!(pairing_link(&long, None).is_err());
         }
+    }
+
+    /// Thousands of visitors who are shown a code and do nothing leave nothing on the host, and
+    /// none of them stops the next visitor from getting one: offering keeps no state and has no
+    /// ceiling. Keeping one, which a tab does once its person uses the code, is budgeted per
+    /// client address, never in all.
+    #[test]
+    fn offered_codes_keep_nothing_until_their_tab_follows_them() {
+        let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
+        let offers: Vec<Created> = (0..10_000)
+            .map(|_| codes.create(Some(&link()), NOW).unwrap())
+            .collect();
+        assert!(
+            codes.lock().entries.is_empty(),
+            "nothing is kept for a visitor who does nothing"
+        );
+        assert_eq!(
+            codes.resolve(&offers[0].code, None, NOW),
+            Err(Refusal::Unknown),
+            "an offer nobody kept resolves nothing"
+        );
+        // Thousands who use theirs, from as many addresses, are all kept.
+        for (index, created) in offers.iter().enumerate().take(5_000) {
+            let client = IpAddr::from(u32::try_from(index).unwrap().to_be_bytes());
+            let polled = codes
+                .follow(
+                    &created.follow,
+                    Some(&offer_of(created, Some(link()))),
+                    Some(client),
+                    NOW,
+                )
+                .unwrap();
+            assert!(!polled.expired);
+        }
+        assert_eq!(codes.lock().entries.len(), 5_000);
+        assert!(codes.resolve(&offers[4_999].code, None, NOW + 1).is_ok());
+        // Following again keeps nothing twice.
+        codes
+            .follow(
+                &offers[0].follow,
+                Some(&offer_of(&offers[0], Some(link()))),
+                None,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(codes.lock().entries.len(), 5_000);
+        // An offer altered on its way back is not one the host made.
+        let mut altered = offer_of(&offers[6_000], Some(link()));
+        altered.link = Some(link().replace("ab", "ac"));
+        assert_eq!(
+            codes.follow(&offers[6_000].follow, Some(&altered), None, NOW),
+            Err(Refusal::Unknown)
+        );
+        // One that ran out is heard as expired, and kept no more.
+        let late = &offers[7_000];
+        assert!(
+            codes
+                .follow(
+                    &late.follow,
+                    Some(&offer_of(late, Some(link()))),
+                    None,
+                    late.expires_at_ms
+                )
+                .unwrap()
+                .expired
+        );
+        // One address keeps only so many a minute.
+        let client = Some(IpAddr::from([1, 1, 1, 1]));
+        let codes = LoginCodes::new(None);
+        for _ in 0..CREATES_PER_ADDRESS {
+            let created = codes.create(None, NOW).unwrap();
+            codes
+                .follow(
+                    &created.follow,
+                    Some(&offer_of(&created, None)),
+                    client,
+                    NOW,
+                )
+                .unwrap();
+        }
+        let created = codes.create(None, NOW).unwrap();
+        assert_eq!(
+            codes.follow(
+                &created.follow,
+                Some(&offer_of(&created, None)),
+                client,
+                NOW
+            ),
+            Err(Refusal::TooMany)
+        );
     }
 }
