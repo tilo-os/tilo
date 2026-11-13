@@ -30,15 +30,30 @@ pub fn device_numbers(_path: &Path) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
 
+    /// `device_numbers` of a path: `(row, path, numbers)`. Each row was a test of its own, the
+    /// second with two paths, and a failure names its row and path.
     #[test]
-    fn a_device_node_is_named_by_its_numbers() {
-        assert_eq!(device_numbers(Path::new("/dev/null")), Some((1, 3)));
-    }
-
-    #[test]
-    fn a_file_with_no_device_behind_it_names_no_gpu() {
+    fn a_path_names_its_devices_numbers_or_no_gpu() {
         let file = std::env::current_exe().expect("this test's own binary");
-        assert_eq!(device_numbers(&file), None);
-        assert_eq!(device_numbers(Path::new("/nonexistent/renderD128")), None);
+        let rows = [
+            (
+                "a_device_node_is_named_by_its_numbers",
+                Path::new("/dev/null"),
+                Some((1, 3)),
+            ),
+            (
+                "a_file_with_no_device_behind_it_names_no_gpu",
+                file.as_path(),
+                None,
+            ),
+            (
+                "a_file_with_no_device_behind_it_names_no_gpu",
+                Path::new("/nonexistent/renderD128"),
+                None,
+            ),
+        ];
+        for (row, path, numbers) in rows {
+            assert_eq!(device_numbers(path), numbers, "{row}: {}", path.display());
+        }
     }
 }
