@@ -73,6 +73,7 @@ struct Group {
 fn group() -> &'static Group {
     static GROUP: OnceLock<Group> = OnceLock::new();
     GROUP.get_or_init(|| {
+        // N is public: its parameters may be computed in variable time.
         let params = FixedMontyParams::new_vartime(N);
         let g = U2048::from_u8(2);
         let n_bytes = to_bytes(N.as_ref());
