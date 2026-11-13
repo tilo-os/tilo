@@ -1,5 +1,5 @@
-//! The launcher's Fluent catalogue, embedded so a capture, a test and a
-//! live session resolve the same strings.
+//! The launcher's Fluent catalogue, embedded so a capture, a test and a live session
+//! resolve the same strings.
 
 ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 

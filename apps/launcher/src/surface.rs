@@ -1,13 +1,5 @@
-//! The launcher's window: the toolkit's palette card with its filter band,
-//! showing what the source answers and putting to it what the person does.
-//!
-//! The window keeps what the person is doing (the query typed, the kinds
-//! chosen, the row selected) and sends every change of it to the source as
-//! an [`Ask`]; what the source answers (the rows, the step on screen, the
-//! scope) replaces what the card shows. A source lent by the host answers
-//! on the host's next frame; without one, the window answers itself from
-//! [`FixtureSource`] as soon as it asks. The view answers the launcher's
-//! effects on the window and publishes the results it shows.
+//! The launcher's window: the toolkit's palette card with its filter band, showing what the
+//! source answers and putting to it what the person does.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -34,10 +26,8 @@ use crate::source::{
     ActivationModifier, Answer, AppScope, Ask, CardFit, Link, ResourceKind, Scope, Search,
 };
 
-/// The card's width on its own: the desktop's search card at its widest.
 const CARD_WIDTH: f64 = ui::tokens::Layout::BASE.search_card_width as f64;
 
-/// The launcher on screen.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each is one independent part of the launcher's state"
@@ -46,50 +36,36 @@ pub struct LauncherSurface {
     palette: ActionPalette,
     filters: SearchFilters,
     link: Link,
-    /// Answers the link here when no host lent one.
     own: Option<FixtureSource>,
-    /// The generation of the answer shown.
     shown: u64,
     open: bool,
-    /// What the person searches for, as last asked.
     search: Search,
     scope: Scope,
-    /// The chips offered, with their labels.
     kinds: Vec<(ResourceKind, String)>,
     band: bool,
-    /// Typing narrows the rows here (a step's values, a row's other
-    /// actions) rather than asking the source.
     narrows: bool,
-    /// The argument step on screen, by its id.
     field: Option<String>,
-    /// The row the last answer selected by itself, while the person has
-    /// not moved the selection since: a late answer moves it to its own
-    /// best row, never a row the person chose.
+    /// The row the last answer selected by itself, while the person has not moved the
+    /// selection since: a late answer moves it to its own best row, never a row the person
+    /// chose.
     auto_selected: Option<String>,
     cursor: Point,
     structure_dirty: bool,
-    /// The room the host gives the card: its width and the tallest its
-    /// list may grow.
     room: Option<(f64, f64)>,
-    /// The scenario to stage on the next sync.
     staged: Rc<RefCell<Option<Scenario>>>,
-    /// The results on screen as the view publishes them.
     rows: Rc<RefCell<Vec<LiveRow>>>,
 }
 
 impl LauncherSurface {
-    /// The launcher over the host's `link`, or over the fixed desktop when
-    /// no host lends one.
+    /// The launcher over the host's `link`, or over the fixed desktop when no host lends
+    /// one.
     pub fn new(link: Option<Link>) -> Self {
         let (link, own) = match link {
             Some(link) => (link, None),
             None => (Link::new(), Some(FixtureSource::new())),
         };
         let mut palette = ActionPalette::rows(Vec::new());
-        // The source ranks and matches; the card shows its rows verbatim.
         palette.set_bypass_fuzzy(true);
-        // The band's chips are the surface's own, painted into the band the
-        // card reserves for them.
         palette.set_filter_band_shown(false);
         palette.set_query_placeholder(t("launcher-placeholder"));
         palette.close();
@@ -120,12 +96,10 @@ impl LauncherSurface {
         &self.link
     }
 
-    /// The card.
     pub fn palette(&self) -> &ActionPalette {
         &self.palette
     }
 
-    /// Whether the launcher is open.
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -171,7 +145,6 @@ impl LauncherSurface {
         }
     }
 
-    /// Close without a choice.
     pub fn dismiss(&mut self) {
         if !self.open {
             return;
@@ -227,8 +200,8 @@ impl LauncherSurface {
         }
         match &answer.field {
             Some((id, spec)) => {
-                // The same step asked again (a value refused) keeps what
-                // was typed unless the source gives it back corrected.
+                // The same step asked again (a value refused) keeps what was typed unless
+                // the source gives it back corrected.
                 if self.field.as_deref() != Some(id.as_str()) || spec.prefill.is_some() {
                     self.palette.open_argument_step(id.clone(), spec.clone());
                 } else {
@@ -274,8 +247,6 @@ impl LauncherSurface {
             .filter(|id| Some(*id) != self.auto_selected.as_deref())
             .map(str::to_owned);
         self.palette.set_entries(answer.rows);
-        // The source's choice is the person's when it keeps it; else the
-        // row the person chose stays, as long as it is listed.
         let select = answer.select.or(kept);
         let cursor = select.and_then(|id| {
             self.palette
@@ -365,8 +336,8 @@ impl LauncherSurface {
         self.band && !self.palette.shows_field_only()
     }
 
-    /// A press at `point`: a chip, a header (which shows only its kind), a
-    /// row (chosen at once), or outside the card (which closes it).
+    /// A press at `point`: a chip, a header (which shows only its kind), a row (chosen at
+    /// once), or outside the card (which closes it).
     fn press(&mut self, point: Point, modifier: Option<ActivationModifier>) -> bool {
         if self.shows_band()
             && let Some(action) = self.filters.hit(point)
@@ -396,9 +367,8 @@ impl LauncherSurface {
         false
     }
 
-    /// What the card asked while it handled an event: a step answered or
-    /// left, the scope token taken away, a value stepped, the query
-    /// changed.
+    /// What the card asked while it handled an event: a step answered or left, the scope
+    /// token taken away, a value stepped, the query changed.
     fn take_requests(&mut self, query_before: &str) {
         if let Some(text) = self.palette.take_submitted_argument() {
             self.ask(Ask::Argument(text));
@@ -430,8 +400,8 @@ impl LauncherSurface {
         self.selection_moved();
     }
 
-    /// The person moved the selection: it is theirs now, and the source is
-    /// told, so rows changing under it keep it on the same result.
+    /// The person moved the selection: it is theirs now, and the source is told, so rows
+    /// changing under it keep it on the same result.
     fn selection_moved(&mut self) {
         self.auto_selected = None;
         if let Some(row) = self.palette.selected_id().map(str::to_owned) {
@@ -493,7 +463,6 @@ fn modifier_of(how: Option<&str>) -> Result<Option<ActivationModifier>, String> 
     }
 }
 
-/// The scope `name` names.
 fn scope_of(name: Option<&str>) -> Result<Scope, String> {
     match name.map(|name| name.trim().to_ascii_lowercase()).as_deref() {
         None | Some("" | "workspace") => Ok(Scope::Workspace),
@@ -539,8 +508,8 @@ impl Decorator for LauncherSurface {
         self.tell_fit();
     }
 
-    /// The card is as wide as the room the host gives it, or the
-    /// desktop's search card on its own, and never wider than its window.
+    /// The card is as wide as the room the host gives it, or the desktop's search card on
+    /// its own, and never wider than its window.
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,
@@ -617,8 +586,6 @@ impl Decorator for LauncherSurface {
                 button: MouseButton::Left,
                 ..
             } => {
-                // Presses on the field are the field's: its caret, its
-                // scope token.
                 if !self.palette.input_row_rect().contains(self.cursor)
                     && self.press(self.cursor, modifier)
                 {
@@ -652,10 +619,8 @@ impl Decorator for LauncherSurface {
                     },
                 ..
             } if !self.palette.in_argument_mode() => {
-                // A typed query is cleared first, so a slip of the finger
-                // never costs the whole search. Then a step's values or a
-                // row's other actions go back to the results; the results
-                // close the launcher.
+                // A typed query is cleared first, so a slip of the finger never costs the
+                // whole search.
                 if !self.palette.query().is_empty() {
                     let before = self.palette.query().to_owned();
                     self.palette.set_query("");
@@ -749,14 +714,12 @@ impl Decorator for LauncherSurface {
 /// A screenshot scenario to stage, `None` for a plain capture.
 struct Scenario(Option<String>);
 
-/// The launcher window of `cx`'s view, over the host's `link` or over the
-/// fixed desktop when no host lends one: it answers the launcher's effects
-/// and publishes the results on screen.
+/// The launcher window of `cx`'s view, over the host's `link` or over the fixed desktop
+/// when no host lends one: it answers the launcher's effects and publishes the results on
+/// screen.
 pub(crate) fn window(cx: &ViewCx<Launcher>, link: Option<Link>) -> Element {
     let mut window = LauncherSurface::new(link);
     window.link().wake_with(cx.waker());
-    // On its own (its own window, a capture) the launcher is the window: it
-    // opens at once. A host opens it when the person asks.
     if window.own.is_some() && cx.mode().is_live() {
         window.open(Scope::Workspace, None);
     }
@@ -862,9 +825,8 @@ impl LauncherSurface {
         Ok(Effected::done())
     }
 
-    /// Publish the results on screen, each chosen
-    /// through [`LauncherEffect::Choose`]: what an agent reads to find the row to
-    /// choose.
+    /// Publish the results on screen, each chosen through [`LauncherEffect::Choose`]: what
+    /// an agent reads to find the row to choose.
     fn publish_rows(&self) {
         if !self.open {
             self.rows.borrow_mut().clear();
@@ -889,7 +851,6 @@ impl LauncherSurface {
     }
 }
 
-/// The kinds a filter may name before a search found any of them.
 const KNOWN_KINDS: &[ResourceKind] = &[
     ResourceKind::Application,
     ResourceKind::Action,

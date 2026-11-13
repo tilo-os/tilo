@@ -1,30 +1,19 @@
-//! The launcher as a resource: the door its effects are published on, so
-//! the person, the palette, an agent and a script open search, type into
-//! it, narrow it and choose what it found through the same actions.
-//!
-//! The launcher keeps no document. What is being searched (the query, the
-//! scope, the kinds chosen) and what was found live in the window for as
-//! long as it is open and are published as its live rows; nothing of it is
-//! recorded, synced or kept in History.
+//! The launcher as a resource: the door its effects are published on, so the person, the
+//! palette, an agent and a script open search, type into it, narrow it and choose what it
+//! found through the same actions.
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Model, resource};
 use ui::widget::Element;
 
-/// The launcher resource: the door its effects and result rows are
-/// published on. It holds nothing.
+/// The launcher resource: the door its effects and result rows are published on.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Launcher {}
 
 impl Launcher {
     /// What the record holds: nothing — what is being searched is the window's own, and the
     /// keys that search are settings.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -39,15 +28,10 @@ impl Launcher {
 )]
 impl Launcher {}
 
-/// What anyone can do with the launcher. Opening, typing, narrowing and
-/// moving the selection only change what the launcher shows. Choosing a row,
-/// stepping its value or answering the step it asks for runs what the row
-/// stands for as the person: whoever acts for them is asked first, as the
-/// row may do anything the person can.
+/// What anyone can do with the launcher.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.launcher.search")]
 pub enum LauncherEffect {
-    /// Open search
     #[effect(view, own_device, idempotent, icon = "search")]
     Open {
         #[param("Where to search: app (the app in front), workspace or everywhere")]
@@ -55,13 +39,11 @@ pub enum LauncherEffect {
         #[param("What to search for")]
         query: Option<String>,
     },
-    /// Search for
     #[effect(view, own_device, idempotent)]
     Search {
         #[param("What to search for")]
         query: String,
     },
-    /// Show only results of kinds
     #[effect(view, own_device, idempotent)]
     Filter {
         #[param(
@@ -69,16 +51,13 @@ pub enum LauncherEffect {
         )]
         kinds: Vec<String>,
     },
-    /// Search one place wider
     #[effect(view, own_device)]
     Widen,
-    /// Move the selection
     #[effect(view, own_device)]
     MoveSelection {
         #[param("Rows to move by; negative moves up")]
         by: i64,
     },
-    /// Choose result
     #[effect(own_device, attended)]
     Choose {
         #[param("The result to choose; the selected one when left out")]
@@ -86,7 +65,6 @@ pub enum LauncherEffect {
         #[param("How to open it: here (as a tab here), beside, or more (its other actions)")]
         how: Option<String>,
     },
-    /// Step the value of a result
     #[effect(own_device, attended)]
     Adjust {
         #[param("The result whose value to step; the selected one when left out")]
@@ -94,21 +72,17 @@ pub enum LauncherEffect {
         #[param("1 steps up, -1 down")]
         delta: i64,
     },
-    /// Answer the step on screen
     #[effect(own_device, attended)]
     Answer {
         #[param("The value the step asks for")]
         value: String,
     },
-    /// Go back a step
     #[effect(view, own_device)]
     Back,
-    /// Close search
     #[effect(view, own_device, idempotent)]
     Dismiss,
 }
 
-/// The screenshot scenarios.
 pub(crate) const SCENARIOS: &[&str] = &[
     "launcher",
     "results",
@@ -132,7 +106,6 @@ impl ResourceApp for LauncherShell {
     const TITLE: &'static str = "Search";
     const TITLE_KEY: &'static str = "launcher-app-title";
     const ICON: Option<&'static str> = Some("search");
-    // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
