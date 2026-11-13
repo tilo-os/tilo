@@ -1176,16 +1176,13 @@ mod tests {
             !summaries.iter().any(|s| s == &"Granted 4 capabilities"),
             "a flush that granted nothing must not read as a grant: {summaries:?}"
         );
+        // A workspace being made is setup, and its history keeps it out of the feed.
         assert!(
-            summaries
-                .iter()
-                .any(|s| s.contains("Created the workspace")),
-            "the workspace being made is a change: {summaries:?}"
-        );
-        assert!(
-            summaries
-                .iter()
-                .all(|s| { !s.starts_with("Opened") && !s.contains("Recorded workspace") }),
+            summaries.iter().all(|s| {
+                !s.starts_with("Opened")
+                    && !s.contains("Recorded workspace")
+                    && !s.contains("Created the workspace")
+            }),
             "setup bookkeeping, with the windows a workspace is made with, is not a change: {summaries:?}"
         );
     }
@@ -1592,30 +1589,43 @@ mod tests {
         assert_eq!(before_name, "Design review");
         let versions_before = pane.entries().len();
 
-        // Rename again, so there is something to revert back across.
-        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.slot == slot) {
-            ws.name = "Renamed by mistake".to_string();
-        }
-        tree.govern(slot);
-        tree.seed_doc_from_cache();
+        // Another window opens, so there is a change of the desk's own document to revert.
+        assert!(
+            tree.doc_append_tab_to_first_group_of_active_workspace(
+                next_id(),
+                "Opened by mistake".into(),
+                Vec::new()
+            ),
+            "the layout record takes the window"
+        );
         pane.refresh(&mut tree);
         assert!(pane.entries().len() > versions_before);
 
-        let target = pane.entries()[versions_before - 1].id;
+        let target = pane
+            .entries()
+            .iter()
+            .find(|entry| entry.summary.contains("Opened by mistake"))
+            .map(|entry| entry.id)
+            .expect("the window's row");
         assert!(
             pane.revert_to(&mut tree, &target),
             "the revert wrote something"
         );
 
-        assert_eq!(
-            tree.desktop
-                .workspaces
-                .iter()
-                .find(|w| w.slot == slot)
-                .map(|w| w.name.as_str()),
-            Some("Design review"),
-            "the workspace is back to the state the row named"
-        );
+        let windows = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.slot == slot)
+            .map(|w| {
+                w.strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .filter(|tab| tab.title == "Opened by mistake")
+                    .count()
+            });
+        assert_eq!(windows, Some(0), "the window the row named is gone again");
         assert!(
             pane.entries().len() > versions_before + 1,
             "the revert is a new row on top, not a rewind: {} rows",

@@ -1707,6 +1707,14 @@ impl WorkspaceActivityPane {
             .collect();
         self.derived
             .compact_sort_by_key(|(entry, _)| entry.timestamp);
+        // One window over the workspace's history, whichever of its documents the rows came from.
+        let excess = self
+            .derived
+            .len()
+            .saturating_sub(ui::history_source::DEFAULT_MAX_ENTRIES);
+        if excess > 0 {
+            self.derived.drain(..excess);
+        }
         // Names come out of the same document as the changes, so a peer's name arrives with their
         // edits.
         self.named = ui::history_groups::read_named_ranges(tree.document(), self.source.authors());
