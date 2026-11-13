@@ -62,7 +62,10 @@ fn native_primary_directory_matches_existing_workspace_document() {
         app_state::DocStore::workspace_primary_dir_at(root.path(), package, workspace_id).unwrap();
     assert_eq!(
         path,
-        root.path().join(package).join("rooms").join(workspace_id)
+        root.path()
+            .join(package)
+            .join("workspaces")
+            .join(workspace_id)
     );
     let mut owner = app_state::DocStore::open_canonical_at(package, &path).unwrap();
     let mut doc = owner.new_document();
