@@ -1,8 +1,7 @@
-//! Live-installer internal mode (USB-free install, design spec §6).
-//!
-//! Drives the helper's command line against fixture efivars, a fixture
-//! staging ESP, fixture lsblk output and an in-process efibootmgr. Nothing
-//! here touches a real disk or firmware variable.
+//! Live-installer internal mode of the USB-free install: the helper's command
+//! line driven against fixture efivars, a fixture staging ESP, fixture lsblk
+//! output and an in-process efibootmgr. Nothing here touches a real disk or
+//! firmware variable.
 
 #![allow(
     clippy::unwrap_used,
@@ -42,7 +41,8 @@ const ESP_UUID: &str = "aaaaaaaa-0000-4000-8000-000000000001";
 const ROOT_UUID: &str = "bbbbbbbb-0000-4000-8000-000000000002";
 const TARGET_ESP_UUID: &str = "cccccccc-0000-4000-8000-000000000003";
 const DISK_SECTORS: i64 = 256 * GIB / 512;
-// [ Windows ESP | C: | 1 MiB gap | target 64 GiB | staging ESP 1 GiB | staging root 40 GiB | free ]
+// [ Windows ESP | C: | 1 MiB gap | target 64 GiB | staging ESP 1 GiB | staging root
+// 40 GiB | free ]
 const WIN_ESP: (i64, i64) = (2048, 2048 + 204_800 - 1);
 const WINDOWS: (i64, i64) = (206_848, 100 * GIB / 512 - 1);
 const TARGET: (i64, i64) = (
@@ -397,8 +397,8 @@ fn exact_staged_plan_is_accepted_and_reports_its_facts() {
     );
 }
 
-/// lsblk without a udev database: every GPT identity field is empty, and
-/// sfdisk reports the GPT itself.
+/// lsblk without a udev database: every GPT identity field is empty, and sfdisk
+/// reports the GPT itself.
 fn udevless(fixture: &Fixture, edit: impl Fn(&mut Value)) {
     let mut document = lsblk_document();
     let disk = &mut document["blockdevices"][0];
@@ -513,8 +513,8 @@ fn refusals_name_invalid_fields_with_bounded_diagnostics() {
     fixture.set_handoff(&document, false);
     assert_refused(
         &fixture.check("guided", &[]),
-        // The shared native profile parser names the same invalid field,
-        // rather than repeating the Python parser's size-specific wording.
+        // The shared native profile parser names the same invalid field, rather than
+        // repeating the Python parser's size-specific wording.
         "handoff profile field hostname is not a bounded string",
     );
 }
@@ -1245,9 +1245,9 @@ fn accepted_candidate_migrations_revalidate_source_identity_before_install() {
 fn native_retained_runtime() -> tempfile::TempDir {
     let helper = tilo_test_env::package_binary!("tilo-staging-handoff");
     let helper = helper.as_path();
-    // The package-local target compiles the production extractor source,
-    // not a replacement implementation. The explicit path also supports
-    // runners that provision the separately built imager binary.
+    // The package-local target compiles the production extractor source, not a
+    // replacement implementation; the explicit path also supports runners that
+    // provision the separately built imager binary.
     let extractor = std::env::var_os("TILO_PREPARED_EXTRACT_BINARY")
         .map(PathBuf::from)
         .or_else(|| {
@@ -1277,8 +1277,8 @@ fn native_retained_runtime() -> tempfile::TempDir {
     runtime
 }
 
-/// Exercise the shipped ELF entry point, including argument parsing and stdin.
-/// No interpreter or fixture executable participates in this command path.
+/// Exercise the shipped ELF entry point, including argument parsing and stdin:
+/// no interpreter or fixture executable participates in this command path.
 fn native_retained_command(command: &str, args: &[&str], input: &[u8]) -> Output {
     let runtime = native_retained_runtime();
     let mut child = Command::new(runtime.path().join("tilo-staging-handoff"))

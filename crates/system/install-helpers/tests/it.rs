@@ -1,4 +1,4 @@
-// One test binary instead of one per file; #[path] keeps the files in place.
+// One test binary instead of one per file; `#[path]` keeps the files in place.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

@@ -5,12 +5,6 @@
 //! installed composefs tree remain unchanged; the ESP entry and origin boot
 //! representation use installed root discovery, retaining bootc's
 //! SHA256(kernel + initrd) identity.
-//!
-//! A split-kernel target arrives with a UKI the CI runner built from its exact
-//! kernel, initramfs and pinned DTB (`os/dev/dev-target-uki.py`), carried
-//! beside the OCI layout. The live medium has no UKI constructor: it checks
-//! that UKI's payload against the selected image and writes only the installed
-//! command line into the command-line room the runner reserved.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -80,8 +74,8 @@ const PAYLOAD: [&str; 4] = [".linux", ".initrd", ".cmdline", ".dtb"];
 /// The installer VM the projection runs in. The provided methods are the
 /// production behaviour; tests replace them.
 pub trait Host {
-    /// A tool's stripped standard output (180 s timeout, nonzero exit
-    /// refused with its standard error).
+    /// A tool's stripped standard output (180 s timeout, nonzero exit refused with
+    /// its standard error).
     fn command(&self, argv: &[&str]) -> Result<String> {
         let output = crate::process::run(argv, None, TIMEOUT)?;
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -102,22 +96,18 @@ pub trait Host {
         Ok(strip(&String::from_utf8_lossy(&output.stdout)).to_owned())
     }
 
-    /// Whether this process runs as root.
     fn is_root(&self) -> bool {
         rustix::process::geteuid().is_root()
     }
 
-    /// The marker only the VM-only development installer carries.
     fn marker(&self) -> PathBuf {
         PathBuf::from("/usr/share/tilo/unverified-vm-install")
     }
 
-    /// The live medium's image flavour.
     fn flavour(&self) -> PathBuf {
         PathBuf::from("/usr/lib/tilo/image-flavour")
     }
 
-    /// Whether the install proof's dedicated virtio port is present.
     fn proof_port(&self) -> bool {
         fs::metadata("/dev/virtio-ports/org.tilo.vm-install-proof")
             .is_ok_and(|info| info.file_type().is_char_device())
@@ -128,7 +118,6 @@ pub trait Host {
         std::env::var("REQUIRE_TPM_PREDICTION").unwrap_or_else(|_| "0".into())
     }
 
-    /// The selected development target's receipt.
     fn receipt(&self) -> PathBuf {
         PathBuf::from("/run/tilo-installer/offline-target.json")
     }
@@ -154,7 +143,6 @@ pub trait Host {
     }
 }
 
-/// The installer VM as it is.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -268,12 +256,10 @@ impl Inputs {
     }
 }
 
-/// `validate-image`: the selected image's boot inputs, checked before any
-/// disk is touched.
-///
-/// # Errors
-/// Not a development image, not exactly one kernel, an invalid hardware
-/// profile, or a sealed or transported UKI that differs from the image.
+/// `validate-image`: the selected image's boot inputs, checked before any disk
+/// is touched. Not a development image, not exactly one kernel, an invalid
+/// hardware profile, or a sealed or transported UKI that differs from the image
+/// is refused.
 pub fn image_inputs(host: &dyn Host, root: &Path) -> Result<Inputs> {
     require(
         read(&regular(root, "usr/lib/tilo/image-flavour")?)? == b"dev\n",
@@ -444,14 +430,13 @@ fn fields(raw: &str) -> Result<BTreeMap<String, String>> {
     Ok(values)
 }
 
-/// Drops the words `bootc install` adds to name this disk's filesystems.
-///
-/// A split-kernel install leaves a BLS entry whose options start with
+/// Drops the words `bootc install` adds to name this disk's filesystems. A
+/// split-kernel install leaves a BLS entry whose options start with
 /// `root=UUID=<fs> rootflags=... rw boot=UUID=<boot>` and the matching
 /// `systemd.mount-extra=UUID=<boot>:/boot:auto:ro`, ahead of the image's own
 /// kargs. The installed UKI finds its root and /boot the way every Tilo UKI
-/// does (root=tilo-auto and the `TILO_BOOT` mount), so only those words go;
-/// any other root or /boot mount still fails the identity checks.
+/// does (`root=tilo-auto` and the `TILO_BOOT` mount), so only those words go;
+/// any other root or /boot mount is refused.
 fn without_install_disk_identity(words: Vec<String>) -> Result<Vec<String>> {
     let roots: Vec<&String> = words
         .iter()
@@ -488,10 +473,6 @@ pub struct Selected {
 
 /// Refuses outside the development installer VM; returns the verified
 /// development target's selection.
-///
-/// # Errors
-/// Not root, not the VM-only development installer, a TPM prediction
-/// requested, or no verified development target receipt.
 pub fn gate(host: &dyn Host) -> Result<Selected> {
     let marker = host.marker();
     let flavour = host.flavour();
@@ -605,8 +586,6 @@ fn installed_uki(
     Ok((words, sealed_install))
 }
 
-/// Copies every extended attribute of `from` (its `SELinux` label among them)
-/// onto `to`.
 fn copy_xattrs(from: &Path, to: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt as _;
     let mut names = vec![0u8; 65536];
@@ -628,8 +607,6 @@ fn copy_xattrs(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Rewrites the split-kernel BLS entry to select the new UKI, and the
-/// origin's boot representation to `uki`: manifest, origin and digest stay.
 fn transition_to_uki(entry: &Path, origin: &Path, ini: &mut Ini, relative: &str) -> Result<()> {
     let text = read_text(entry)?;
     let kept: Vec<&str> = splitlines(&text)
@@ -649,9 +626,6 @@ fn transition_to_uki(entry: &Path, origin: &Path, ini: &mut Ini, relative: &str)
     .map_err(io(&new_entry))?;
     fs::set_permissions(&new_entry, fs::Permissions::from_mode(0o644)).map_err(io(&new_entry))?;
     fs::rename(&new_entry, entry).map_err(io(entry))?;
-    // bootc 1.16.4 boot.rs hashes identical kernel+initrd bytes for bls and
-    // uki. Transition only the representation; retain manifest, origin and
-    // digest.
     ini.set("boot", "boot_type", "uki")?;
     let mut name = origin.as_os_str().to_owned();
     name.push(".tmp");
@@ -666,8 +640,6 @@ fn transition_to_uki(entry: &Path, origin: &Path, ini: &mut Ini, relative: &str)
     fs::rename(&temporary, origin).map_err(io(origin))
 }
 
-/// Writes the target UKI for `cmdline` to `destination`, through private
-/// scratch on the ESP: from the installed UKI, the runner's UKI, or `ukify`.
 fn project(
     host: &dyn Host,
     image_root: &Path,
@@ -681,9 +653,6 @@ fn project(
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(io(parent))?;
     }
-    // Only private scratch and final ESP bytes are written. No image commit,
-    // tag, or rootfs layer is created, and no target identity fields are
-    // altered.
     let work = tempfile::Builder::new()
         .prefix("tilo-dev-target-")
         .tempdir_in(esp)
@@ -692,10 +661,6 @@ fn project(
     fs::write(&cmdline_file, format!("{cmdline}\n")).map_err(io(&cmdline_file))?;
     let output = work.path().join("target.efi");
     if installed.boot_type == "uki" {
-        // The CI UKI already contains every verified payload. Change only its
-        // bounded command-line section with the runtime editor that ships in
-        // this installer; rebuilding needs absent build-time tools and would
-        // discard unrelated CI PE sections.
         fs::copy(destination, &output).map_err(io(destination))?;
         if installed.sealed_install {
             uki::remove_cmdline(&output, b"tilo.install").map_err(|e| Error::new(e.0))?;
@@ -704,8 +669,6 @@ fn project(
             uki::append_cmdline(&output, MOUNT.as_bytes()).map_err(|e| Error::new(e.0))?;
         }
     } else if let Some(transported) = transported {
-        // The runner built this UKI from the same verified payload; only the
-        // installed command line is written into its reserved room.
         fs::copy(transported, &output).map_err(io(transported))?;
         write_cmdline(&output, cmdline)?;
     } else {
@@ -752,7 +715,6 @@ fn project(
     Ok(())
 }
 
-/// The one installed composefs deployment's digest.
 fn deployment(target_root: &Path) -> Result<String> {
     let deploy = target_root.join("state/deploy");
     let mut deployments = Vec::new();
@@ -771,8 +733,6 @@ fn deployment(target_root: &Path) -> Result<String> {
     }
 }
 
-/// The origin's boot type, once its manifest and origin are the selected
-/// CI development image's.
 fn installed_boot_type(ini: &Ini, selected: &Selected) -> Result<String> {
     let same_manifest = ini.get("image", "manifest_digest")? == selected.target_digest;
     let same_origin = same_manifest && {
@@ -815,12 +775,6 @@ fn loader_entry(esp: &Path) -> Result<PathBuf> {
     regular(esp, &format!("loader/entries/{entry_name}"))
 }
 
-/// `promote`: writes the installed deployment's target UKI onto `esp` and
-/// returns its composefs digest.
-///
-/// # Errors
-/// Any boot input, origin or loader entry that differs from the selected CI
-/// development image; nothing is changed then.
 pub fn promote(
     host: &dyn Host,
     image_root: &Path,
@@ -908,7 +862,6 @@ fn usage_error(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// The command line after `dev-target-uki`: a refusal exits 1, a usage error 2.
 pub fn main(host: &dyn Host, args: &[OsString]) -> ExitCode {
     let values = match args::parse(&COMMAND, args) {
         Ok(args::Parsed::Help(text)) => {

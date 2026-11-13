@@ -1,6 +1,6 @@
-//! The development code-refresh probe's cached-target check, on a real
-//! boot-input fixture archive with the device, the validator and the
-//! promotion observed rather than reached.
+//! The development code-refresh probe's cached-target check, on a real boot-input
+//! fixture archive with the device, the validator and the promotion observed
+//! rather than reached.
 #![cfg(target_os = "linux")]
 #![allow(
     clippy::unwrap_used,

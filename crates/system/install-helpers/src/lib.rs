@@ -1,26 +1,11 @@
-//! Privileged helpers of the live installer and its backend (`tilo-install`).
+//! Privileged helpers of the live installer and its backend (`tilo-install`):
+//! account handoff, the handoff copy, dev SSH, the VM helpers, offline import,
+//! staging handoff, install proof and code refresh.
 //!
-//! Each was a Python script under `/usr/libexec`; each is now a binary of this
-//! crate at the same path without the `.py`, with the same command line, the
-//! same checks in the same order and the same exit statuses: 0 on success, 1
-//! when a check refuses or an operation fails (the message on stderr), 2 for a
-//! usage error, as `argparse` reported it.
-//!
-//! * [`account_handoff`]: the online accounts the live installer hands to the
-//!   installed system's first boot, which `tilo-firstboot-home-seeds` imports
-//! * [`handoff_copy`]: `tilo-install-handoff-copy SOURCE DESTINATION`
-//! * [`dev_ssh`]: `tilo-install-dev-ssh --etc ETC --username USERNAME --key KEY`
-//! * [`bootc_copy_cache`]: `tilo-vm-bootc-copy-cache check|record` (VMs only)
-//! * [`offline_target`]: `tilo-installer-offline-target verify|import`
-//! * [`dev_target_uki`]: `tilo-installer-offline-target dev-target-uki
-//!   validate-image|promote` (development installer VMs only)
-//! * [`staging_handoff`]: `tilo-staging-handoff detect|check-install|…`, and
-//!   the installer backend's own checks (`check-device-label`, `gpt`, …)
-//! * [`install_proof`]: `tilo-vm-install-proof --target-root … --output OUTPUT`
-//!   (VMs only)
-//! * [`code_refresh`]: `tilo-vm-install-proof code-refresh`, the development
-//!   VM's installer helper refresh daemon, its marker check and
-//!   ([`code_refresh_probe`]) its probe of the refreshed backend
+//! Each is a binary under `/usr/libexec` whose command line, checks and exit
+//! statuses are part of the contract with `tilo-install`: 0 on success, 1 when
+//! a check refuses or an operation fails (the message on stderr), 2 for a usage
+//! error.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -42,12 +27,10 @@ pub mod py;
 pub mod staging_handoff;
 pub mod target_transport;
 
-/// Why a helper refused or failed: the message it prints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);
 
 impl Error {
-    /// A refusal with this message.
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
@@ -79,17 +62,12 @@ impl From<rustix::io::Errno> for Error {
     }
 }
 
-/// A helper's result.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// `require(ok, message)`: refuses with `message` unless `ok`.
 pub fn require(ok: bool, message: &str) -> Result<()> {
     if ok { Ok(()) } else { Err(Error::new(message)) }
 }
 
-/// Runs one helper's `main`: parses `args` (without the program name) against
-/// `command`, then `run`; prints help, usage errors and failures as the script
-/// did, and returns its exit status.
 pub fn main(
     command: &args::Command,
     args: &[OsString],

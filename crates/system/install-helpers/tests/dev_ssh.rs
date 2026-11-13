@@ -1,5 +1,4 @@
-//! Owner-key provisioning and its refusals on an offline deployment (formerly
-//! `os/tests/test_install_dev_ssh.py`).
+//! Owner-key provisioning and its refusals on an offline deployment.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,8 +23,8 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
 
-/// Records labels instead of calling `matchpathcon`/`chcon`; the keys are
-/// still checked by the real `ssh-keygen`.
+/// Records labels instead of calling `matchpathcon`/`chcon`; the keys are still
+/// checked by the real `ssh-keygen`.
 #[derive(Default)]
 struct Labels(RefCell<Vec<String>>);
 

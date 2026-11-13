@@ -5,8 +5,7 @@
 //! Directories that already exist keep their ownership, mode and security
 //! label; a new directory is 0755 so its contents stay reachable. Every copied
 //! file is 0600: `tilo-install` then applies the explicit network profile,
-//! identity-key and public-key policies. A symlink on either side, or anything
-//! that is neither a regular file nor a directory, refuses the copy.
+//! identity-key and public-key policies.
 
 use std::fs::{self, DirBuilder, File, Permissions};
 use std::io;
@@ -18,7 +17,6 @@ use rustix::fs::{Mode, OFlags};
 use crate::args::{Arg, Command};
 use crate::{Error, Result};
 
-/// The command line.
 pub const COMMAND: Command = Command {
     prog: "tilo-install-handoff-copy",
     usage: "usage: tilo-install-handoff-copy [-h] source destination\n",
@@ -39,11 +37,9 @@ fn is_real_dir(path: &Path) -> bool {
     !path.is_symlink() && path.is_dir()
 }
 
-/// Copies the tree under `source` into `destination`.
-///
-/// # Errors
-/// A symlink, a special file or a type mismatch on either side, refused before
-/// that entry is written; or an I/O failure.
+/// Copies the tree under `source` into `destination`. A symlink, a special
+/// file or a type mismatch on either side is refused before that entry is
+/// written.
 pub fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     if !is_real_dir(source) {
         return Err(Error::new("handoff source must be a real directory"));
@@ -81,7 +77,7 @@ pub fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A new file starts private and never follows a planted link.
+// A new file starts private and never follows a planted link.
 fn copy_file(entry: &Path, target: &Path) -> Result<()> {
     let descriptor = rustix::fs::open(
         target,
@@ -96,9 +92,6 @@ fn copy_file(entry: &Path, target: &Path) -> Result<()> {
 }
 
 /// The command: `copy_tree(source, destination)`.
-///
-/// # Errors
-/// As [`copy_tree`].
 pub fn run(values: &crate::args::Values) -> Result<()> {
     copy_tree(
         Path::new(values.required("source")?),
