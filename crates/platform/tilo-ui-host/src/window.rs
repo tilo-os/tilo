@@ -2029,7 +2029,12 @@ impl AppWindow {
         while !shown.is_char_boundary(start) {
             start = start.saturating_sub(1);
         }
-        (start, delete, insert)
+        // The field may show less than the person replaced: they replace what is left of it.
+        let mut end = start.saturating_add(delete).min(shown.len());
+        while !shown.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        (start, end.saturating_sub(start), insert)
     }
 
     /// What the person typed into the field of a resource the lane left: an edit of the resource
