@@ -86,8 +86,15 @@ pub fn address(mac: &str) -> Option<Ipv4Addr> {
     ))
 }
 
+/// Where the NIC sits on the machine's root bus (q35 and aarch64 `virt` both name it `pcie.0`):
+/// a slot libvirt never gives its own devices, which it places from slot 1 up (the display at
+/// 1, root ports from 2). Without one, QEMU put the NIC in the first free slot, 1, and the
+/// display libvirt had placed there failed to start ("slot 1 function 0 not available for
+/// virtio-vga, in use by virtio-net-pci", e2e-branch r658951873b).
+pub const PCI_PLACE: &str = "bus=pcie.0,addr=0x10";
+
 /// The QEMU arguments of the NIC with MAC `mac`: the socket on the host's loopback, and a virtio
-/// NIC on it.
+/// NIC on it, at [`PCI_PLACE`].
 #[must_use]
 pub fn qemu_args(mac: &str) -> [String; 4] {
     [
@@ -97,7 +104,7 @@ pub fn qemu_args(mac: &str) -> [String; 4] {
             port()
         ),
         "-device".into(),
-        format!("virtio-net-pci,netdev=tilolan,mac={mac}"),
+        format!("virtio-net-pci,netdev=tilolan,mac={mac},{PCI_PLACE}"),
     ]
 }
 
@@ -161,8 +168,8 @@ mod tests {
             args[1]
         );
         assert_eq!(
-            args[3],
-            "virtio-net-pci,netdev=tilolan,mac=52:54:01:00:01:02"
+            args[3], "virtio-net-pci,netdev=tilolan,mac=52:54:01:00:01:02,bus=pcie.0,addr=0x10",
+            "the NIC names its own slot, which libvirt leaves free"
         );
         assert!((46_000..65_000).contains(&port()));
     }

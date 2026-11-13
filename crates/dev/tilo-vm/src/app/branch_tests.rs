@@ -1182,7 +1182,7 @@ fn a_libvirt_vm_on_the_host_network_has_a_second_nic_it_keeps() {
     <qemu:arg value='-netdev'/>
     <qemu:arg value='socket,id=tilolan,mcast=239.255.84.76:{port},localaddr=127.0.0.1'/>
     <qemu:arg value='-device'/>
-    <qemu:arg value='virtio-net-pci,netdev=tilolan,mac={DEV_LAN}'/>
+    <qemu:arg value='virtio-net-pci,netdev=tilolan,mac={DEV_LAN},bus=pcie.0,addr=0x10'/>
   </qemu:commandline>
 </domain>
 "
