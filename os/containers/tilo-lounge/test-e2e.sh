@@ -212,7 +212,10 @@ export TILO_SH_CLI_DIR=$release TILO_SH_TILO_BIN=$tilo_bin
 trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
 # Its flows' people arrive as strangers and enter the Lounge as guests: the
 # door open to anyone, not production's, which takes people by invitation.
-TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open} bash "$tilo_sh/stack.sh" up --fresh
+# Exported, so the restart flow's `stack.sh restart relay` brings the relay
+# back with the same door (the wait-list and onboarding flows set their own).
+export TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open}
+bash "$tilo_sh/stack.sh" up --fresh
 # Sourced after it is up, for its addresses and its helpers (find_tilo,
 # sdk_python): the site, the relay and the door every flow meets, and the one
 # tilo command they run.
