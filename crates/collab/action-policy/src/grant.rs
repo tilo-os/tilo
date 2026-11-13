@@ -213,7 +213,7 @@ impl Grantee {
     pub fn as_member(&self) -> Option<&crate::MemberId> {
         match self {
             Self::Member(member) => Some(member),
-            _ => None,
+            Self::Role(_) => None,
         }
     }
 
@@ -221,7 +221,9 @@ impl Grantee {
     pub fn person_id(&self) -> Option<&str> {
         match self {
             Self::Member(crate::MemberId::Person(person)) => Some(person),
-            _ => None,
+            Self::Member(crate::MemberId::Agent(_) | crate::MemberId::Bot(_)) | Self::Role(_) => {
+                None
+            }
         }
     }
 
@@ -229,7 +231,9 @@ impl Grantee {
     pub fn agent_id(&self) -> Option<&str> {
         match self {
             Self::Member(crate::MemberId::Agent(agent)) => Some(agent),
-            _ => None,
+            Self::Member(crate::MemberId::Person(_) | crate::MemberId::Bot(_)) | Self::Role(_) => {
+                None
+            }
         }
     }
 
@@ -237,7 +241,8 @@ impl Grantee {
     pub fn bot_id(&self) -> Option<&str> {
         match self {
             Self::Member(crate::MemberId::Bot(bot)) => Some(bot),
-            _ => None,
+            Self::Member(crate::MemberId::Person(_) | crate::MemberId::Agent(_))
+            | Self::Role(_) => None,
         }
     }
 
@@ -245,7 +250,7 @@ impl Grantee {
     pub fn role_of(&self) -> Option<Role> {
         match self {
             Self::Role(role) => Some(*role),
-            _ => None,
+            Self::Member(_) => None,
         }
     }
 }

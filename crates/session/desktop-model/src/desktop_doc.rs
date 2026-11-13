@@ -709,13 +709,13 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
                     .iter()
                     .position(|r| *r == role)
                     .unwrap_or(Role::ALL.len()),
-                _ => Role::ALL.len(),
+                Grantee::Member(_) => Role::ALL.len(),
             }
         }
         fn role_index(grant: &Grant) -> Option<u64> {
             match grant.grantee {
                 Grantee::Role(_) => grant.id.0.rsplit(':').next()?.parse().ok(),
-                _ => None,
+                Grantee::Member(_) => None,
             }
         }
         grants.compact_sort_by(|left, right| {

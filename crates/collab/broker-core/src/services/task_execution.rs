@@ -294,7 +294,6 @@ pub fn issue_answer_id(
 
 /// The answers a person gave for `run`'s issue, as the tracker decides the
 /// run with them.
-#[must_use]
 pub fn issue_answers<'a>(
     policy: &'a tilo_action_policy::WorkspacePolicy,
     run: &TrackerRun,

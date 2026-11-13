@@ -37,11 +37,15 @@ pub(in crate::state) fn member_authority<'a>(
     delegate: Option<&'a crate::state::ActingAs>,
 ) -> Authority<'a> {
     let authority = policy.person_on_device(person, foreign);
-    match delegate.and_then(|delegation| delegation.grantee()) {
-        Some(grantee) => {
-            let delegation = delegate.expect("a grantee comes from a delegation");
-            authority.also_as(policy.party_of(grantee).with_grants(&delegation.grants))
-        }
+    match delegate {
+        // An automation is its owner's: only a member's delegation is a bound
+        // of its own.
+        Some(delegation) => match delegation.grantee() {
+            Some(grantee) => {
+                authority.also_as(policy.party_of(grantee).with_grants(&delegation.grants))
+            }
+            None => authority,
+        },
         None => authority,
     }
 }
