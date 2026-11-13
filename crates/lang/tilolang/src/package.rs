@@ -61,6 +61,9 @@ struct Analysis {
     env: Env,
     ir: ir::Module,
     ids: IdsLock,
+    /// The package's templates as the source they were written in, by the module's own span
+    /// space: what a package that imports this one expands where it calls them.
+    templates: Vec<crate::meta::TemplateMeta>,
 }
 
 fn analyze(
@@ -70,7 +73,12 @@ fn analyze(
     rng: &mut dyn Entropy,
 ) -> Result<Analysis, Vec<Diagnostic>> {
     let module = parse(source)?;
-    analyze_module(module, ids, imports, rng).map_err(|diags| finish(diags, source))
+    let files = [Placed {
+        path: "app.tl",
+        text: source,
+        base: 0,
+    }];
+    analyze_module(module, ids, imports, rng, &files).map_err(|diags| finish(diags, source))
 }
 
 /// Resolves and checks a parsed module; the diagnostics are not yet located.
@@ -79,6 +87,7 @@ fn analyze_module(
     ids: &IdsLock,
     imports: &[PackageMeta],
     rng: &mut dyn Entropy,
+    files: &[Placed<'_>],
 ) -> Result<Analysis, Vec<Diagnostic>> {
     let mut lock = ids.clone();
     lock.sync(&declared_names(&module), rng);
@@ -87,6 +96,7 @@ fn analyze_module(
     let ir = checker::check_module(&env, &module, &mut diags);
     if diags.is_empty() {
         Ok(Analysis {
+            templates: template_meta(&module, files),
             module,
             env,
             ir,
@@ -215,7 +225,7 @@ fn analyze_package(
 ) -> Result<Analysis, Vec<Diagnostic>> {
     let module = parse_package(source)?;
     let files = placed(source);
-    analyze_module(module, ids, imports, rng).map_err(|diags| finish_files(diags, &files))
+    analyze_module(module, ids, imports, rng, &files).map_err(|diags| finish_files(diags, &files))
 }
 
 /// Compiles a package of one or more files with ids drawn from the operating system's
@@ -300,6 +310,10 @@ fn emit_package(a: Analysis) -> Compiled {
         .extend(row_views(&a.ir, &a.env.app, &fx, &a.ir.states));
     meta.words.clone_from(&a.ir.words);
     meta.at_event = at_event_fns(&a.ir, &a.env.app);
+    // A template's body is carried in the metadata JSON, which is how a `PackageMeta` handed to
+    // another compiler reaches it; the module hash is taken over the code alone, so the body
+    // never reaches it.
+    meta.templates = a.templates;
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);
     let wasm = codegen::emit(&a.ir, Some(&meta.to_json_bytes()));
@@ -308,6 +322,37 @@ fn emit_package(a: Analysis) -> Compiled {
         meta,
         ids: a.ids,
     }
+}
+
+/// The package's `template view`s as the source they were written in: another package that
+/// imports this one expands them where it calls them, so their body is carried as text (a
+/// template is never a module function, and a caller elsewhere cannot reach the AST this
+/// compilation parsed without it).
+fn template_meta(module: &ast::Module, files: &[Placed<'_>]) -> Vec<crate::meta::TemplateMeta> {
+    let mut out = Vec::new();
+    for view in module.items.iter().filter_map(|item| match item {
+        ast::Item::View(v) if crate::checker::is_template(v) => Some(v),
+        _ => None,
+    }) {
+        // The file the declaration is written in, by the span the parser gave it.
+        let Some(file) = files.iter().rev().find(|file| {
+            view.span.start >= file.base
+                && view.span.start < file.base.saturating_add(file.text.len() + 1)
+        }) else {
+            continue;
+        };
+        let start = view.span.start.saturating_sub(file.base);
+        let end = view.span.end.saturating_sub(file.base);
+        let Some(source) = file.text.get(start..end) else {
+            continue;
+        };
+        out.push(crate::meta::TemplateMeta {
+            name: view.name.name.clone(),
+            file: file.path.to_owned(),
+            source: source.to_owned(),
+        });
+    }
+    out
 }
 
 /// Compiles a package with ids drawn from the operating system's randomness.
@@ -1072,4 +1117,41 @@ fn toggled_field(env: &Env, action: &ast::ActionDecl, params: &[ParamInfo]) -> O
     };
     let field = env.type_info(key)?.field(&name.name)?;
     (field.ty == Ty::Bool).then(|| field.id.clone())
+}
+
+#[cfg(test)]
+mod template_export_tests {
+    use super::*;
+
+    /// A package's `template view`s travel in its metadata, through the JSON a compiled module
+    /// carries, so a package that imports it expands them where it calls them with a block.
+    #[test]
+    fn a_template_travels_in_the_packages_metadata() {
+        let src = "app probe.lib \"Lib\"\n\n/// Chrome\ntemplate view wrap(body: View) {\n    stack {\n        body\n    }\n}\n";
+        let compiled = compile_package_source(
+            &PackageSource::single(src),
+            &crate::ids::IdsLock::new(),
+            &[],
+        )
+        .expect("lib compiles");
+        assert!(
+            compiled.meta.templates.iter().any(|t| t.name == "wrap"),
+            "the metadata carries the template: {:?}",
+            compiled.meta.templates
+        );
+        let back = PackageMeta::from_wasm(&compiled.wasm).expect("meta");
+        assert!(
+            back.templates.iter().any(|t| t.name == "wrap"),
+            "the wasm's metadata carries it: {:?}",
+            back.templates
+        );
+        let consumer = compile_package_source(
+            &PackageSource::single(
+                "app probe.c \"C\"\n\nuse probe.lib as lib\n\nview mine() {\n    text(\"x\")\n}\n\nview sheet() {\n    lib.wrap {\n        mine()\n    }\n}\n",
+            ),
+            &crate::ids::IdsLock::new(),
+            &[back],
+        );
+        assert!(consumer.is_ok(), "{consumer:#?}");
+    }
 }

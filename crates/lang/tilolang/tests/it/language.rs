@@ -448,17 +448,25 @@ fn a_function_argument_binds_the_type_its_result_names() {
         crate::common::compile_with(&format!("app t.x \"X\"\n{C}{ROWS}{rest}"), &[])
             .unwrap_or_else(|d| panic!("{rest}\n{d:#?}"))
     };
+    // What the code emits: the metadata section carries the package's declarations as text
+    // (a template's body among them), so the scan is over the module without it.
+    let code = |c: &tilolang::Compiled| {
+        tilolang::meta::without_section(&c.wasm, tilolang::meta::META_SECTION)
+    };
     let day = compiled("view w(c: C) {\n    rows(c.items, group: .due)\n}");
-    let has = |name: &str| day.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&day);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(has("group:as"), "a day's heading is dated for the host");
     crate::common::validate(&day.wasm);
     let word = compiled("view w(c: C) {\n    rows(c.items, group: x -> .some(x.t))\n}");
-    let has = |name: &str| word.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&word);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(!has("group:as"), "a word's heading is the word it is");
     crate::common::validate(&word.wasm);
     // A list that groups nothing names no key at all, and rows keep no heading.
     let plain = compiled("view w(c: C) {\n    rows(c.items)\n}");
-    let has = |name: &str| plain.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&plain);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(!has("group"), "a plain list has no heading");
     crate::common::validate(&plain.wasm);
     // A function that makes something else than the key is told so.
@@ -577,4 +585,47 @@ fn check_fails_on_a_stale_ids_lock_and_writes_it_when_asked() {
     );
     assert!(!dir.join("app.wasm").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- a template view another package calls with a block --------------------------------
+
+/// Compiles `lib` as one package, then `app` against the metadata it publishes: the templates a
+/// package carries for its importers travel there.
+fn compile_against(lib: &str, app: &str) -> Result<(), Vec<tilolang::Diagnostic>> {
+    let lib = crate::common::compile(&format!("app probe.lib \"Lib\"\n{lib}\n")).meta;
+    let src = format!("app probe.consumer \"Consumer\"\n{app}\n");
+    crate::common::compile_with(&src, &[lib]).map(|_| ())
+}
+
+/// A `template view` another package calls with a block compiles, and the block is the
+/// template's `View` parameter: a template is the language's way to take a block, so a package
+/// that imports it calls it as its own does (`shell.desk_style(a, false) { ... }`).
+///
+/// The template's body reaches only what a plain name resolves to; the body here calls nothing
+/// of its own package, so this holds the import and the block. A body that names its package's
+/// own helpers (`desk_lists`) needs the importer to resolve a plain name in the template's
+/// package, which is the next step toward a style that draws the desk.
+#[test]
+fn a_template_view_called_from_another_package_takes_its_block() {
+    let lib = "template view frame(body: View) {\n    stack {\n        text(\"head\")\n        body\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view mine() {\n    text(\"mine\")\n}\n\
+               view sheet() {\n    lib.frame {\n        mine()\n    }\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("{diags:#?}");
+    }
+}
+
+/// A plain view of another package still takes no child block: only a template is the
+/// language's way to take one, so a plain view called with a block is `E063` there as here.
+#[test]
+fn a_plain_view_called_from_another_package_still_takes_no_block() {
+    let lib = "view plain() {\n    text(\"plain\")\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.plain {\n        text(\"no\")\n    }\n}";
+    let diags = compile_against(lib, app).err().unwrap_or_default();
+    assert!(
+        diags.iter().any(|d| d.code == "E063"),
+        "a plain view with a block is E063: {diags:#?}"
+    );
 }

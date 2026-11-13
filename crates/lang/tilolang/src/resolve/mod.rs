@@ -287,6 +287,27 @@ impl Env {
                 .collect(),
             previously: meta.previously.clone(),
         });
+        // The package's `template view`s: a caller elsewhere writes `alias.name(...)` with a
+        // block, and the template is expanded in this package's namespace, so its body reaches
+        // the package's own helpers. Each is carried as source and parsed here; one that does
+        // not parse is left out, and a call of it then reads as a view the package does not
+        // declare, rather than failing the importer's whole compile.
+        for template in &meta.templates {
+            let source = format!("app {} \"{}\"\n{}", meta.app, meta.title, template.source);
+            let Ok(module) = crate::package::parse(&source) else {
+                continue;
+            };
+            for item in module.items {
+                if let ast::Item::View(view) = item
+                    && crate::checker::is_template(&view)
+                {
+                    self.templates.push(Template {
+                        ns: Some(meta.app.clone()),
+                        decl: view,
+                    });
+                }
+            }
+        }
         let app = meta.app.clone();
         let field_info = |f: &crate::meta::FieldMeta| FieldInfo {
             name: f.name.clone(),
@@ -2129,16 +2150,29 @@ impl Resolver<'_> {
 
 /// Resolves a type written inside a body (a `let` annotation).
 pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) -> Ty {
+    resolve_type_expr_in(env, None, te, diags)
+}
+
+/// [`resolve_type_expr`], with a plain type name read as the package `ns` declares it: the
+/// package whose `template view` is expanding, so the template's own body names its package's
+/// types (`a: Arrangement`), never the caller's of the same name.
+pub fn resolve_type_expr_in(
+    env: &Env,
+    ns: Option<&str>,
+    te: &TypeExpr,
+    diags: &mut Vec<Diagnostic>,
+) -> Ty {
+    let app = ns.unwrap_or(&env.app);
     let own_types = env
         .types
         .iter()
-        .filter(|t| t.key.app == env.app)
+        .filter(|t| t.key.app == app)
         .map(|t| t.key.name.clone())
         .collect();
     let own_enums = env
         .enums
         .iter()
-        .filter(|t| t.key.app == env.app)
+        .filter(|t| t.key.app == app)
         .map(|t| t.key.name.clone())
         .collect();
     let mut r = Resolver {
