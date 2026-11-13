@@ -19785,18 +19785,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-lockdown-policy"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "tilo-files",
- "tilo-lock",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-mail-engine"
 version = "0.1.0"
 dependencies = [
@@ -20678,7 +20666,6 @@ dependencies = [
  "tilo-documents",
  "tilo-files",
  "tilo-lock",
- "tilo-lockdown-policy",
  "tilo-notifications-service",
  "tilo-paths",
  "tilo-power-mgmt",
@@ -28590,7 +28577,6 @@ dependencies = [
  "tilo-locale",
  "tilo-location",
  "tilo-lock",
- "tilo-lockdown-policy",
  "tilo-media",
  "tilo-messaging",
  "tilo-messaging-protocol",
