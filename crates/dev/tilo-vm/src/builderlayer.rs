@@ -440,6 +440,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn builder_layers_are_framed_and_packed_on_the_builder;
 
         phase a_framed_layer_streams_byte_for_byte_and_damage_is_refused;

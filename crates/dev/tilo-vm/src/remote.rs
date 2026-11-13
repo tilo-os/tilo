@@ -609,6 +609,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn remote_commands_keep_their_policy;
 
         phase imported_daemon_command_preserves_rpc_policy_and_refuses_untrusted_paths;

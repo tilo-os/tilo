@@ -508,6 +508,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn reach_describes_the_lease_and_a_devices_net_facts;
 
         phase the_lease_says_until_when_and_why;

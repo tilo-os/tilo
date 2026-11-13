@@ -368,6 +368,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn cargo_is_asked_for_the_right_build_and_its_metadata;
 
         phase builds_pick_the_right_cargo_features_and_tools;

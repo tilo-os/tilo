@@ -549,6 +549,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn published_disks_and_their_boot_companions_are_verified;
 
         phase direct_boot_companions_are_bound_to_the_disk_manifest_and_rehashed;

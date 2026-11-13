@@ -101,6 +101,10 @@ fn change(request: &mut ArtifactSwap, mutate: impl FnOnce(&mut serde_json::Value
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn layer_artifact_cohorts_are_verified_before_use;
 
     phase valid_full_cohort_is_verified_before_any_daemon_or_builder_use;

@@ -1190,6 +1190,10 @@ mod tests {
             clippy::too_many_lines,
             reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
         )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn the_guest_is_probed_and_the_image_staged_once;
 
         phase bootcs_space_refusal_reads_as_plain_language;

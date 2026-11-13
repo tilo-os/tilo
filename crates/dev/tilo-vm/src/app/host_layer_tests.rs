@@ -90,6 +90,10 @@ fn import_case(cached: bool, component: &str, corrupt: bool) {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn host_built_layers_and_apps_reach_the_daemon_whole_or_not_at_all;
 
     phase host_layer_cache_skips_upload_only_for_identical_component_content;
