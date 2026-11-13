@@ -182,10 +182,12 @@ fn written_text(
         .rev()
         .find_map(|segment| segment.get("field")?.as_str())?
         .to_owned();
+    // Past the end of the text is clamped by the reader; saturating keeps a
+    // nonsensical offset from wrapping into the start of it.
     let end = if inserted == 0 {
-        at + del
+        at.saturating_add(del)
     } else {
-        at + inserted
+        at.saturating_add(inserted)
     };
     Some((region, block, at, end))
 }
