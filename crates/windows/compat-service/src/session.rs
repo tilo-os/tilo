@@ -1288,7 +1288,6 @@ impl SessionClient {
         }
     }
 
-    /// Take ownership of the launcher-inherited `compat` descriptor.
     pub fn from_env() -> Result<Self, SessionError> {
         let raw = std::env::var("TILO_SVC_COMPAT_FD")
             .map_err(|_| SessionError::ServiceFdMissing)?
@@ -1361,7 +1360,6 @@ fn recv_length_with_fd(stream: &UnixStream) -> Result<([u8; 4], Option<OwnedFd>)
         return Err(SessionError::DescriptorInvalid);
     }
 
-    // Accept at most one SCM_RIGHTS descriptor; anything else is closed.
     let mut descriptor = None;
     for message in control.drain() {
         let RecvAncillaryMessage::ScmRights(fds) = message else {

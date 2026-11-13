@@ -73,8 +73,6 @@ pub struct VmInventory {
     pub applications: Vec<VmPublishedApplication>,
 }
 
-/// The inspected, digest-bound package metadata passed to the singleton VM.
-/// It contains neither a host path nor an installer command line.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmInstallerInput {
     pub source_name: String,
@@ -222,7 +220,6 @@ pub struct ExplainStatus {
     pub security_profile: String,
     pub vm_fallback_was_explicit: bool,
     pub access: AccessSummary,
-    /// Human-facing reason suitable for the Windows manager details panel.
     pub summary: String,
 }
 
@@ -373,8 +370,6 @@ pub trait VmDelegate: Send + Sync {
         Ok(self.installation_status(workspace_id))
     }
 
-    /// Publishes a candidate selected by its server-owned entry ID. The
-    /// delegate rechecks that the candidate belongs to the active operation.
     fn publish_install_candidate(
         &self,
         _workspace_id: &str,
@@ -389,8 +384,6 @@ pub trait VmDelegate: Send + Sync {
         None
     }
 
-    /// Explicitly refreshes the active guest uninstaller without allowing a
-    /// client to probe arbitrary guest operation IDs.
     fn refresh_uninstallation_status(
         &self,
         workspace_id: &str,
@@ -545,7 +538,6 @@ pub struct CompatibilityService<R, B, E, V> {
     executor: E,
     vm: V,
     session: HostSession,
-    /// Prefix setup and recipe checks are serialized by the singleton service.
     capsule_gate: Mutex<()>,
     /// Setup/removal is a mutation transaction. It does not block ordinary
     /// application launches, but two managers cannot concurrently replace or
@@ -829,9 +821,6 @@ where
         })
     }
 
-    /// Starts the ordinary Wine/Proton transaction after a second local
-    /// confirmation. The portal descriptor is re-inspected against the
-    /// session-owned pending digest before anything reaches a capsule.
     pub fn install_in_capsule(
         &self,
         mut source: File,
@@ -958,10 +947,6 @@ where
         )
     }
 
-    /// Move a failed or unsatisfactory Wine/Proton setup into the singleton
-    /// Windows appliance without asking the user to find the installer again.
-    /// The retained file is reopened through the capsule's no-follow directory
-    /// chain and fully re-inspected before the authenticated guest upload.
     pub fn escalate_install_to_vm(
         &self,
         capsule_id: &str,
