@@ -33,23 +33,27 @@ impl tilo_platform_caps::Feature for Feature {
 mod tests {
     use super::*;
 
-    #[test]
-    fn spawn_thread_agrees_with_threads_availability() {
-        let spawned = crate::spawn_thread("tilo-rt-caps-test", || 5);
-        match availability(Feature::Threads) {
-            Availability::Available | Availability::Prompt => {
-                assert_eq!(spawned.unwrap().join().unwrap(), 5);
-            }
-            Availability::Unsupported(_) => assert!(spawned.is_err()),
-        }
-    }
+    tilo_test_env::scenario! {
+        fn threads_and_block_on_agree_with_their_availability;
 
-    #[test]
-    fn block_on_agrees_with_block_on_availability() {
-        let result = crate::block_on(async { 3 });
-        match availability(Feature::BlockOn) {
-            Availability::Available | Availability::Prompt => assert_eq!(result.unwrap(), 3),
-            Availability::Unsupported(_) => assert!(result.is_err()),
+        phase spawn_thread_agrees_with_threads_availability;
+        {
+            let spawned = crate::spawn_thread("tilo-rt-caps-test", || 5);
+            match availability(Feature::Threads) {
+                Availability::Available | Availability::Prompt => {
+                    assert_eq!(spawned.unwrap().join().unwrap(), 5);
+                }
+                Availability::Unsupported(_) => assert!(spawned.is_err()),
+            }
+        }
+
+        phase block_on_agrees_with_block_on_availability;
+        {
+            let result = crate::block_on(async { 3 });
+            match availability(Feature::BlockOn) {
+                Availability::Available | Availability::Prompt => assert_eq!(result.unwrap(), 3),
+                Availability::Unsupported(_) => assert!(result.is_err()),
+            }
         }
     }
 }

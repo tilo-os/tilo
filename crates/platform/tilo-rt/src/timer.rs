@@ -80,16 +80,20 @@ mod imp {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sleep_waits_on_the_runtime_timer() {
-        let started = tilo_clock::now();
-        crate::block_on(sleep(Duration::from_millis(30))).unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(30));
-    }
+    tilo_test_env::scenario! {
+        fn sleep_waits_on_the_runtime_timer_and_is_send;
 
-    #[test]
-    fn sleep_is_send() {
-        fn send<T: Send>(_: &T) {}
-        send(&sleep(Duration::ZERO));
+        phase sleep_waits_on_the_runtime_timer;
+        {
+            let started = tilo_clock::now();
+            crate::block_on(sleep(Duration::from_millis(30))).unwrap();
+            assert!(started.elapsed() >= Duration::from_millis(30));
+        }
+
+        phase sleep_is_send;
+        {
+            fn send<T: Send>(_: &T) {}
+            send(&sleep(Duration::ZERO));
+        }
     }
 }

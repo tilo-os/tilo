@@ -190,160 +190,164 @@ mod tests {
 
     use std::time::Duration;
 
-    #[test]
-    fn the_app_runtime_runs_on_its_own_thread_and_drives_spawned_tasks() {
+    tilo_test_env::scenario! {
+        fn the_app_runtime_drives_tasks_on_its_own_thread_and_blocks_only_callers_off_it;
+
+        phase the_app_runtime_runs_on_its_own_thread_and_drives_spawned_tasks;
         {
-            let runtime = app();
-            let caller = std::thread::current().id();
-            let (tx, rx) = mpsc::channel();
-            runtime.spawn(async move {
-                let current = std::thread::current();
-                tx.send((current.id(), current.name().map(str::to_owned)))
+            {
+                let runtime = app();
+                let caller = std::thread::current().id();
+                let (tx, rx) = mpsc::channel();
+                runtime.spawn(async move {
+                    let current = std::thread::current();
+                    tx.send((current.id(), current.name().map(str::to_owned)))
+                        .unwrap();
+                });
+                let (ran_on, name) = tilo_test_env::recv("the task's thread and name", &rx);
+                assert_ne!(ran_on, caller);
+                assert_eq!(ran_on, runtime.thread_id());
+                assert_eq!(name.as_deref(), Some(APP_THREAD));
+                assert!(!runtime.is_runtime_thread());
+            }
+            {
+                let runtime = app();
+                let _task = runtime.spawn(async {});
+                assert!(!crate::in_runtime());
+            }
+            {
+                let (tx, rx) = mpsc::channel();
+                app().spawn_then(
+                    async {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        "slept"
+                    },
+                    move |out| tx.send(out).unwrap(),
+                );
+                assert_eq!(tilo_test_env::recv("the slept task's output", &rx), "slept");
+            }
+            {
+                let (tx, rx) = mpsc::channel();
+                app().spawn_pinned(move || async move {
+                    let pinned = std::rc::Rc::new(4);
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    tx.send(*pinned + 1).unwrap();
+                });
+                assert_eq!(tilo_test_env::recv("the pinned task's value", &rx), 5);
+            }
+        }
+
+        phase blocking_is_allowed_off_the_runtime_thread_only;
+        {
+            {
+                let runtime = app();
+                assert_eq!(runtime.block_on(async { 3 }).unwrap(), 3);
+                let nested = runtime
+                    .block_on(async { app().block_on(async {}) })
                     .unwrap();
-            });
-            let (ran_on, name) = tilo_test_env::recv("the task's thread and name", &rx);
-            assert_ne!(ran_on, caller);
-            assert_eq!(ran_on, runtime.thread_id());
-            assert_eq!(name.as_deref(), Some(APP_THREAD));
-            assert!(!runtime.is_runtime_thread());
-        }
-        {
-            let runtime = app();
-            let _task = runtime.spawn(async {});
-            assert!(!crate::in_runtime());
-        }
-        {
-            let (tx, rx) = mpsc::channel();
-            app().spawn_then(
-                async {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                    "slept"
-                },
-                move |out| tx.send(out).unwrap(),
-            );
-            assert_eq!(tilo_test_env::recv("the slept task's output", &rx), "slept");
-        }
-        {
-            let (tx, rx) = mpsc::channel();
-            app().spawn_pinned(move || async move {
-                let pinned = std::rc::Rc::new(4);
-                tokio::time::sleep(Duration::from_millis(2)).await;
-                tx.send(*pinned + 1).unwrap();
-            });
-            assert_eq!(tilo_test_env::recv("the pinned task's value", &rx), 5);
-        }
-    }
-
-    #[test]
-    fn blocking_is_allowed_off_the_runtime_thread_only() {
-        {
-            let runtime = app();
-            assert_eq!(runtime.block_on(async { 3 }).unwrap(), 3);
-            let nested = runtime
-                .block_on(async { app().block_on(async {}) })
-                .unwrap();
-            assert!(matches!(nested, Err(Error::InsideRuntime)));
-        }
-        {
-            let label = String::from("borrowed");
-            let seen = app()
-                .block_on(async {
-                    tokio::time::sleep(Duration::from_millis(2)).await;
-                    label.len()
-                })
-                .unwrap();
-            assert_eq!(seen, label.len());
-        }
-        {
-            let runtime = app();
-            let (release, gate) = mpsc::channel::<()>();
-            let blocked = runtime.spawn_blocking(move || gate.recv().unwrap());
-            // With the blocking call parked, the runtime thread still serves
-            // other tasks.
-            assert_eq!(runtime.block_on(async { 5 }).unwrap(), 5);
-            release.send(()).unwrap();
-            runtime.block_on(blocked).unwrap().unwrap();
-        }
-    }
-
-    #[test]
-    fn a_caller_inside_another_runtime_waits_with_the_app_drivers() {
-        {
-            let foreign = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let seen = foreign.block_on(async {
-                app().block_on(async {
-                    tokio::time::sleep(Duration::from_millis(2)).await;
-                    7
-                })
-            });
-            assert_eq!(seen.unwrap(), 7);
-        }
-        {
-            fn radios() -> u32 {
-                app()
+                assert!(matches!(nested, Err(Error::InsideRuntime)));
+            }
+            {
+                let label = String::from("borrowed");
+                let seen = app()
                     .block_on(async {
                         tokio::time::sleep(Duration::from_millis(2)).await;
-                        11
+                        label.len()
                     })
-                    .unwrap()
+                    .unwrap();
+                assert_eq!(seen, label.len());
             }
-            let foreign = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let seen = tokio::task::LocalSet::new().block_on(&foreign, async { radios() });
-            assert_eq!(seen, 11);
+            {
+                let runtime = app();
+                let (release, gate) = mpsc::channel::<()>();
+                let blocked = runtime.spawn_blocking(move || gate.recv().unwrap());
+                // With the blocking call parked, the runtime thread still serves
+                // other tasks.
+                assert_eq!(runtime.block_on(async { 5 }).unwrap(), 5);
+                release.send(()).unwrap();
+                runtime.block_on(blocked).unwrap().unwrap();
+            }
         }
-        {
-            let foreign = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let seen = foreign.block_on(async {
-                app().block_on(async {
-                    let task = app().spawn(async {
-                        tokio::time::sleep(Duration::from_millis(2)).await;
-                        5
-                    });
-                    task.await.unwrap()
-                })
-            });
-            assert_eq!(seen.unwrap(), 5);
-        }
-        {
-            let entered = app().handle().enter();
-            let seen = app().block_on(async { 13 }).unwrap();
-            drop(entered);
-            assert_eq!(seen, 13);
-        }
-        {
-            let foreign = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let nested = foreign
-                .block_on(async { app().block_on(async { app().block_on(async {}) }) })
-                .unwrap();
-            assert!(matches!(nested, Err(Error::InsideRuntime)));
-        }
-    }
 
-    #[test]
-    fn a_ui_thread_inside_another_runtime_is_refused() {
-        let result = crate::spawn_thread("ui-app-block-on", || {
-            crate::mark_ui_thread();
-            let foreign = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            foreign.block_on(async { app().block_on(async { 1 }) })
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-        assert!(matches!(result, Err(Error::UiThread)));
+        phase a_caller_inside_another_runtime_waits_with_the_app_drivers;
+        {
+            {
+                let foreign = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let seen = foreign.block_on(async {
+                    app().block_on(async {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        7
+                    })
+                });
+                assert_eq!(seen.unwrap(), 7);
+            }
+            {
+                fn radios() -> u32 {
+                    app()
+                        .block_on(async {
+                            tokio::time::sleep(Duration::from_millis(2)).await;
+                            11
+                        })
+                        .unwrap()
+                }
+                let foreign = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let seen = tokio::task::LocalSet::new().block_on(&foreign, async { radios() });
+                assert_eq!(seen, 11);
+            }
+            {
+                let foreign = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let seen = foreign.block_on(async {
+                    app().block_on(async {
+                        let task = app().spawn(async {
+                            tokio::time::sleep(Duration::from_millis(2)).await;
+                            5
+                        });
+                        task.await.unwrap()
+                    })
+                });
+                assert_eq!(seen.unwrap(), 5);
+            }
+            {
+                let entered = app().handle().enter();
+                let seen = app().block_on(async { 13 }).unwrap();
+                drop(entered);
+                assert_eq!(seen, 13);
+            }
+            {
+                let foreign = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let nested = foreign
+                    .block_on(async { app().block_on(async { app().block_on(async {}) }) })
+                    .unwrap();
+                assert!(matches!(nested, Err(Error::InsideRuntime)));
+            }
+        }
+
+        phase a_ui_thread_inside_another_runtime_is_refused;
+        {
+            let result = crate::spawn_thread("ui-app-block-on", || {
+                crate::mark_ui_thread();
+                let foreign = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                foreign.block_on(async { app().block_on(async { 1 }) })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+            assert!(matches!(result, Err(Error::UiThread)));
+        }
     }
 }
