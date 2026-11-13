@@ -130,6 +130,10 @@ d-3cetzzm3 = Nachricht
 
 d-peb7lz2j = Senden
     .doc = Veröffentlicht eine Nachricht in einem Kanal, einem Thread oder einer Direktunterhaltung als der, der es aufträgt, und antwortet auf eine andere, wenn `reply_to` eine nennt.
+    .did = { $count ->
+        [one] schrieb eine Nachricht
+       *[other] schrieb { $count } Nachrichten
+    }
 
 d-qaa5kdra = Eine Ansicht senden
     .doc = Sendet eine Ansicht als Nachricht: ihren Titel als das, was die Nachricht sagt, ihre Definition, damit jeder, der sie liest, sie den eigenen Ansichten hinzufügen kann.

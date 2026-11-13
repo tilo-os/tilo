@@ -477,7 +477,7 @@ impl Core {
         // words for the action (`did:`) where it declares them, else what the change itself
         // says (`self.changes_value`), and for one that made or removed the resource, that.
         // Read through the catalogue, so a translation says it in the reader's language.
-        let declared_did = self.declared_did(&v);
+        let declared_did = self.declared_did(&v, 1);
         let did = match v.kind {
             crate::store::VersionKind::Created if declared_did.is_empty() => {
                 self.word("tilolang-did-created", "created it")
@@ -529,8 +529,9 @@ impl Core {
     }
 
     /// The words the action that made `v` declares it does (`did:`), read through the
-    /// catalogue, or empty where it declares none.
-    fn declared_did(&self, v: &crate::store::Version) -> String {
+    /// catalogue, or empty where it declares none. `count` is how many changes the words speak
+    /// of: an action whose words say how many ("wrote 7 messages") reads its catalogue with it.
+    fn declared_did(&self, v: &crate::store::Version, count: usize) -> String {
         self.registry
             .borrow()
             .action_package(&v.action)
@@ -538,10 +539,32 @@ impl Core {
             .map_or_else(String::new, |a| match (&a.did, &a.id) {
                 (Some(source), id) => {
                     let key = format!("{}.did", tilolang::messages::key_of(id));
-                    self.word_args(&key, &[], source)
+                    self.word_args(&key, &[("count".to_owned(), count.to_string())], source)
                 }
                 (None, _) => String::new(),
             })
+    }
+
+    /// The words a step of `versions` says its changes with, where every change it folds is the
+    /// same action's and that action's words say how many ("wrote 7 messages"): the sentence a
+    /// history entry and a catch-up row read in place of the newest change's words and a count
+    /// beside them. `None` where the step reads its newest change's words, with how many changes
+    /// it folds said beside them.
+    pub(crate) fn counted_said(
+        &self,
+        versions: &[crate::store::Version],
+        changes: usize,
+    ) -> Option<String> {
+        if changes < 2 {
+            return None;
+        }
+        let newest = versions.last()?;
+        if !versions.iter().all(|v| v.action == newest.action) {
+            return None;
+        }
+        let one = self.declared_did(newest, 1);
+        let many = self.declared_did(newest, changes);
+        (!one.is_empty() && many != one).then_some(many)
     }
 
     /// What a version of `of` did, as one line of text: the sentence history says of it
@@ -570,7 +593,7 @@ impl Core {
                 "changed { $count }",
             );
         }
-        let declared = self.declared_did(v);
+        let declared = self.declared_did(v, 1);
         if !declared.is_empty() {
             return declared;
         }
@@ -1110,6 +1133,11 @@ impl Core {
                 }
                 count
             };
+            // What the step did, where its changes are one action's and its words say how many:
+            // the count stands in the sentence, not beside it.
+            let said = self
+                .counted_said(&step, changes)
+                .map_or_else(|| Value::Text(String::new()), Value::Text);
             let versions = step
                 .into_iter()
                 .map(|v| self.version_value(v, at))
@@ -1123,6 +1151,7 @@ impl Core {
                 Value::Int(i64::try_from(changes).unwrap_or(i64::MAX)),
                 Value::Bool(opens),
                 Value::Bool(latest),
+                said,
             ]));
         }
         Ok(Value::List(out))

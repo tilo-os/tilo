@@ -541,6 +541,54 @@ fn window_mark(tree: &tilo_ui_host::UiNode) -> Option<tilo_ui_host::UiNode> {
         .cloned()
 }
 
+/// What a window's mark opens, one line of text per catch-up row: each row's item, its sentence,
+/// its posts counted in that sentence where the app's words say how many, and the count of changes
+/// it folds beside it where they do not.
+fn catch_up_rows(tree: &tilo_ui_host::UiNode) -> Vec<String> {
+    let window = window_mark(tree).expect("the window says what changed since the person looked");
+    let content = window
+        .children
+        .iter()
+        .find(|child| {
+            child.kind == "slot"
+                && child.props.get("name")
+                    == Some(&tilo_render_protocol::patch::Value::text("content"))
+        })
+        .and_then(|slot| slot.children.first())
+        .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
+    let said = |node: &tilo_ui_host::UiNode| match node.props.get("value") {
+        Some(tilo_render_protocol::patch::Value::Text(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let mut found = Vec::new();
+    nodes(content, "stack", &mut found);
+    let mut rows: Vec<&tilo_ui_host::UiNode> = found
+        .into_iter()
+        .filter(|stack| {
+            stack
+                .key
+                .rsplit_once("~since-")
+                .is_some_and(|(_, row)| row.chars().all(|c| c.is_ascii_digit()))
+        })
+        .collect();
+    rows.sort_by_key(|stack| stack.key.clone());
+    rows.into_iter()
+        .map(|stack| {
+            let mut words = Vec::new();
+            let mut inside = Vec::new();
+            nodes(stack, "ui.Text", &mut inside);
+            for node in inside {
+                if node.kind == "ui.Text"
+                    && (node.key.contains("~step") || node.key.ends_with("~changes"))
+                {
+                    words.extend(said(node));
+                }
+            }
+            words.join(" ")
+        })
+        .collect()
+}
+
 /// The window's own tabs under `root`: the strip a `TabStrip` draws (it draws as the toolkit's
 /// bar), never a tab bar an app puts in its own content.
 fn tab_strips(root: &dyn Widget) -> Vec<&dyn Widget> {
@@ -2187,7 +2235,64 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
                 && sheet.y1 >= frame - 24.0,
             "the catch-up stands as a sheet across the window's foot: {sheet:?} of {frame}"
         );
+        // What it says: history's words for a post, never the action's own label, and how many
+        // changes the step folds beside them, since the channel's posts are not all it holds.
+        let composed = channels.composed().expect("the page composes");
+        let rows = catch_up_rows(&composed);
+        assert!(
+            rows.iter().any(|row| row.contains("wrote a message")),
+            "the row says what was done in history's words: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|row| !row.contains("Send")),
+            "never the action's own label: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("7 changes")),
+            "the step of posts and a thread says how many changes it folds: {rows:?}"
+        );
     });
+}
+
+/// A catch-up row says what a person did in the app's own words, and how many messages a step of
+/// posts holds, once: the count stands in the sentence, not as a count beside it.
+#[test]
+fn a_catch_up_row_counts_the_messages_a_step_holds_in_its_sentence() {
+    tilo_ui_host::i18n::ensure();
+    ui::clock::freeze_for_capture();
+    let packages = app_packages("chat");
+    // A thread two people wrote in: two posts, by two people, and nothing else since.
+    let mut thread = stage::Staged::over(
+        "so.tilo.lang.chat",
+        &packages,
+        "a thread",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    thread
+        .lay_out((1280, 800), ui::Theme::light(), input_at((1280, 800)), 1.0)
+        .expect("the app lays out");
+    let mark = shown_floating_rect(&thread, "ChangeMark").expect("the header shows its mark");
+    thread
+        .press_at(mark.center().x, mark.center().y)
+        .expect("the mark presses");
+    thread
+        .freshen()
+        .expect("the app lays out with its catch-up open");
+    let composed = thread.composed().expect("the page composes");
+    let rows = catch_up_rows(&composed);
+    assert_eq!(rows.len(), 1, "the thread stands as one row: {rows:?}");
+    assert!(
+        rows[0].contains("wrote 2 messages"),
+        "the row counts its posts in its own words: {rows:?}"
+    );
+    assert!(
+        !rows[0].contains("changes"),
+        "and says it once, never as a count beside the sentence: {rows:?}"
+    );
 }
 
 #[test]

@@ -146,12 +146,13 @@ action message_person(all: Conversations, who: Principal) -> Direct (
 }
 
 /// Posts a message in a channel, a thread or a direct conversation as the invoker, answering
-/// another when `reply_to` names one.
+/// another when `reply_to` names one. History and the catch-up say what a person did in its own
+/// words, counting the messages a step of them holds.
 action send(
     to: TextChannel | Thread | Direct,
     body: RichText,
     reply_to: Option<Message> = .none,
-) -> Message (icon: .send, label: "Send") {
+) -> Message (icon: .send, label: "Send", did: "wrote a message") {
     let m = Message(body: body, reply_to: reply_to)
     match to {
         c: TextChannel => c.messages.insert(m),

@@ -832,11 +832,19 @@ impl Core {
         let Some(newest) = versions.last() else {
             return held;
         };
-        held.children
-            .push(self.step_line(&format!("{row_key}~step"), rid, versions, viewer));
+        // What the step did, where its changes are one action's and its words say how many: the
+        // count stands in the sentence ("wrote 7 messages"), as history says it.
+        let counted = self.counted_said(versions, *changes);
+        held.children.push(self.step_line(
+            &format!("{row_key}~step"),
+            rid,
+            versions,
+            viewer,
+            counted.as_deref(),
+        ));
         // Changed more than once since the person looked: the row says how many, as history
-        // says the changes a step folds.
-        if *changes > 1 {
+        // says the changes a step folds, where its sentence does not.
+        if *changes > 1 && counted.is_none() {
             let mut many = UiNode::empty("ui.Text", &format!("{row_key}~changes"));
             many.props.insert(
                 "value".to_owned(),
@@ -873,13 +881,15 @@ impl Core {
     }
 
     /// One step of a catch-up: the faces of everyone who made one of `versions`, their names, and
-    /// what the newest of them did in the words history says it in, and when.
+    /// what they did in the words history says it in — `said` where the step's own sentence names
+    /// how many changes it folds, else the newest change's — and when.
     fn step_line(
         &self,
         key: &str,
         of: &ResourceRef,
         versions: &[Version],
         viewer: &Principal,
+        said: Option<&str>,
     ) -> UiNode {
         let mut line = UiNode::empty("row", key);
         line.props.insert("gap".to_owned(), Value::text("tight"));
@@ -921,13 +931,15 @@ impl Core {
         let Some(newest) = versions.last() else {
             return line;
         };
-        let mut said = UiNode::empty("ui.Text", &format!("{key}~said"));
-        said.props.insert(
+        let mut what = UiNode::empty("ui.Text", &format!("{key}~said"));
+        what.props.insert(
             "value".to_owned(),
-            Value::Text(self.version_line(newest, of, &viewer.0)),
+            Value::Text(
+                said.map_or_else(|| self.version_line(newest, of, &viewer.0), str::to_owned),
+            ),
         );
-        said.props.insert("truncate".to_owned(), Value::Bool(true));
-        told.children.push(said);
+        what.props.insert("truncate".to_owned(), Value::Bool(true));
+        told.children.push(what);
         line.children.push(told);
         // The time stands at the line's end, out of the sentence's way: what they did reads
         // first, and when it happened lines up down the panel's edge.

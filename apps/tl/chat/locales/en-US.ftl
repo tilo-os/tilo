@@ -137,8 +137,13 @@ d-3cetzzm3 = Message
 
 d-3cetzzm3-who = Who
 
+# refined
 d-peb7lz2j = Send
     .doc = Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one.
+    .did = { $count ->
+        [one] wrote a message
+       *[other] wrote { $count } messages
+    }
 
 d-peb7lz2j-to = To
 
