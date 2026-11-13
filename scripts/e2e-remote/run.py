@@ -1096,7 +1096,12 @@ ip -o addr show dev "$dev"
         tab of its own, as a window that runs on B: a share is the workspace's, so nobody asks for
         it on A. What A's desk lists under the window's own tab is A's own view of it, opened on
         A, and is left as it is; what B shares is what runs on B, which is what a person
-        reviewing the tab from another machine has to see."""
+        reviewing the tab from another machine has to see, and to go on seeing: the step judges
+        by what the two sessions publish of the share, when the first picture came and again
+        some seconds later."""
+        # How long after the first picture the share is read again: longer than a plane that
+        # lost its relay takes to say so, and than the wait before it asks the relay again.
+        stays_live_s = 20
         def desk(box: Box) -> dict:
             dump = box.vm.state()
             return dump.get("state") or dump
@@ -1153,6 +1158,17 @@ ip -o addr show dev "$dev"
             `starting`, `watching`, `received`, and `live`, the workspaces' live planes."""
             return (state.get("sharing") or {}).get(part) or []
 
+        def show_tab(box: Box, shown) -> str:
+            """Bring the tab `shown` to the front of `box`'s desk with the desk's own `focus`,
+            as picking the window from the desk's list does: no pointer moves. What the desk
+            answered, for the step's facts."""
+            try:
+                answer = box.vm.invoke("so.tilo.session", "desktop:desk\x1ffocus",
+                                       {"tab": str(shown)})
+            except VmError as exc:
+                return f"not brought into view: {str(exc)[:200]}"
+            return json.dumps(answer, ensure_ascii=False)[:300]
+
         def plane(state: dict) -> dict | None:
             """The live plane of the workspace the window is shared in, as a session says it
             stands: `state` is `open`, or what it lacks, with `waiting_for` in words and `relay`
@@ -1198,9 +1214,23 @@ ip -o addr show dev "$dev"
                         return rows
                 return []
 
-            def pictured_on_a() -> list:
-                rows = held_on_a()
-                return rows if "Live" in json.dumps(rows, ensure_ascii=False) else []
+            def received_on_a(state: dict) -> dict | None:
+                """What A's session says it received of the window: its `received` row for the
+                tab, there from the track's first keyframe on, which says `pictured` once the
+                tab's tile decoded a picture."""
+                return next((row for row in shares(state, "received")
+                             if str(row.get("tab")) == str(tab)), None)
+
+            def sharing_on_b(state: dict) -> dict | None:
+                """What B's session says of the window it shares: its `sharing` row for the tab,
+                with `streaming` while it sends the window and `waiting_for` in words while
+                something its pictures travel is missing."""
+                return next((row for row in shares(state, "sharing")
+                             if str(row.get("tab")) == str(tab)), None)
+
+            def pictured_on_a() -> dict | None:
+                row = received_on_a(desk(a))
+                return row if row and row.get("pictured") is True else None
 
             def hosted_on_a(state: dict) -> dict | None:
                 """The tab of A's desk that holds B's window as one running on another device: the
@@ -1217,10 +1247,17 @@ ip -o addr show dev "$dev"
 
             # The window's pictures travel the workspace's live plane, on a track of its own that
             # A's plane asks B's for while A's desk holds the window's tab: a tab of its own, made
-            # when the share reached A's desk. Its row is there once the track's first keyframe
-            # reached A, and says Live once its tile decoded it.
-            rows = wait_until(pictured_on_a, 120, 2.0) or held_on_a()
-            res.facts["peer_surface_rows"] = json.dumps(rows or [], ensure_ascii=False)[:1500]
+            # when the share reached A's desk. What A's session publishes says how far they came:
+            # the window's `received` row is there once the track's first keyframe reached A, and
+            # says `pictured` once its tile decoded it. The rows A lists for the tile
+            # (`desktop.peer-surface`) are its actions, "Move the pointer" and the like: they say
+            # nothing of the picture, and are kept as a fact only.
+            pictured = wait_until(pictured_on_a, 120, 2.0)
+            # A's person looks at the window: the tab that holds it comes to the front of A's
+            # desk, so A's picture below shows the window and not the strip beside it.
+            shown_in = (hosted_on_a(desk(a)) or {}).get("tab") or tab
+            res.facts["shown_on_a"] = show_tab(a, shown_in)
+            res.facts["peer_surface_rows"] = json.dumps(held_on_a(), ensure_ascii=False)[:1500]
             # How far the share came, on each end: the governance that names it, and what each
             # session says it shares, watches and received. `received` holds a window from its
             # first keyframe on; `viewers` are the devices that told B they view it, which is
@@ -1245,7 +1282,7 @@ ip -o addr show dev "$dev"
                     box.vm.shot(self.out / f"shot-watch-{box.letter}.png")
                 except VmError as exc:
                     res.facts[f"shot_{box.letter}"] = str(exc)[:200]
-            if not rows or not seen["hosted_tab_on_a"]:
+            if not pictured or not seen["hosted_tab_on_a"]:
                 res.facts["windows_on_a"] = a.vm.raw({"op": "windows"})
                 viewers = [viewer for shared in seen["sharing_on_b"]
                            for viewer in shared.get("viewers") or []]
@@ -1293,12 +1330,50 @@ ip -o addr show dev "$dev"
                            f"pictures none of them: {res.facts['hosted_tab_on_a'][:300]}; A received "
                            f"{res.facts['received_on_a'][:300]}")
                 raise Failed(f"A's desk never pictured the window B shares: {why}")
-            if "Live" not in res.facts["peer_surface_rows"]:
-                raise Failed("A's desk holds the shared window in a tab of its own and no picture of "
-                             "it came: "
-                             f"{res.facts['peer_surface_rows'][:400]}; A received: "
-                             f"{res.facts['received_on_a'][:200]}; B shares: "
-                             f"{res.facts['sharing_on_b'][:200]}")
+            # A share is not a moment. Some seconds on, the window is still received and pictured
+            # on A, the workspace's live plane reads open on both, and B still sends the window
+            # and waits for nothing: a stream that started and died fails here, by what the two
+            # sessions publish.
+            time.sleep(stays_live_s)
+            on_a, on_b = desk(a), desk(b)
+            later = {
+                "received_on_a_later": received_on_a(on_a),
+                "sharing_on_b_later": sharing_on_b(on_b),
+                "live_on_b_later": plane(on_b), "live_on_a_later": plane(on_a),
+            }
+            for name, value in later.items():
+                res.facts[name] = json.dumps(value, ensure_ascii=False)[:800]
+            # The first thing that no longer holds, in the order a share travels. A session that
+            # publishes no live plane cannot say its plane is open.
+            closed = next(((letter, stands) for letter, stands
+                           in (("B", later["live_on_b_later"]), ("A", later["live_on_a_later"]))
+                           if stands is None or stands.get("state") != "open"), None)
+            sent, kept = later["sharing_on_b_later"], later["received_on_a_later"]
+            why = None
+            if closed:
+                letter, stands = closed
+                stands = stands or {"state": "unpublished",
+                                    "waiting_for": "its session publishes no live plane"}
+                relay = stands.get("relay_name") or stands.get("relay") or "no device"
+                why = (f"the workspace's live plane is not open on {letter} "
+                       f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
+            elif sent is None:
+                why = "B no longer says it shares the window"
+            elif sent.get("streaming") is not True:
+                why = "B no longer sends the window"
+            elif sent.get("waiting_for"):
+                why = f"B's share waits: {sent.get('waiting_for')}"
+            elif kept is None:
+                why = "A no longer holds the window it received"
+            elif kept.get("pictured") is not True:
+                why = "A holds the window it received and no longer pictures it"
+            if why:
+                raise Failed(f"the window B shares was pictured on A and did not stay live for "
+                             f"{stays_live_s} s: {why}; B shares: "
+                             f"{res.facts['sharing_on_b_later'][:300]}; A received: "
+                             f"{res.facts['received_on_a_later'][:300]}; B's plane: "
+                             f"{res.facts['live_on_b_later'][:300]}; A's plane: "
+                             f"{res.facts['live_on_a_later'][:300]}")
         finally:
             # The share ends with the step: what follows finds B as it was.
             try:
