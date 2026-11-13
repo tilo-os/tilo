@@ -810,6 +810,53 @@ fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     assert!(handle.read(|tree| tree.workspaces.is_empty()));
 }
 
+/// A person's own window (their Settings) stands on their desk in a shared workspace and is never
+/// what the workspace is sent; one that arrives from someone else's desk is not laid on this one.
+#[test]
+fn a_persons_own_window_stays_on_their_desk_and_never_reaches_the_workspace() {
+    let (mut surface, handle) = desktop(3);
+    let state = AutoCommit::new();
+    surface.update(&state, &ui::automerge::ROOT);
+    let settings = |tab: &mut Tab| {
+        tab.title = "Settings".into();
+        tab.tile = tilo_desktop_model::TileContent::LocalApp {
+            app_id: "so.tilo.settings".into(),
+            label: "Settings".into(),
+            note: String::new(),
+        };
+    };
+    let mut local = handle.read(Clone::clone);
+    let strip = &mut local.workspaces[0].strips[0];
+    let mine = strip.window_groups[2].tabs[0].id;
+    settings(&mut strip.window_groups[2].tabs[0]);
+    handle.replace_tree(local.clone());
+    surface.update(&state, &ui::automerge::ROOT);
+
+    let sent = handle.shared_tree();
+    assert!(sent.tab(mine).is_none(), "the workspace is never sent it");
+    assert_eq!(sent.tabs().count(), local.tabs().count() - 1);
+
+    // The workspace's desk as it comes back, with someone else's Settings window an older page
+    // placed there.
+    let mut incoming = sent;
+    let mut theirs = incoming.workspaces[0].strips[0].window_groups[0].clone();
+    theirs.id = 9_000;
+    theirs.tabs.truncate(1);
+    theirs.tabs[0].id = 9_001;
+    theirs.active_tab = 9_001;
+    settings(&mut theirs.tabs[0]);
+    incoming.workspaces[0].strips[0].window_groups.push(theirs);
+    handle.replace_shared_tree(incoming, &[]);
+    surface.update(&state, &ui::automerge::ROOT);
+    handle.read(|tree| {
+        assert!(
+            tree.tab(mine).is_some(),
+            "their own Settings stays on their desk"
+        );
+        assert!(tree.tab(9_001).is_none(), "someone else's is not laid here");
+    });
+}
+
 #[test]
 fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
     struct Relaunch;

@@ -430,6 +430,18 @@ impl Parts {
 /// when it holds no workspace there.
 #[must_use]
 pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+    let mut desktop = read_as_kept(doc, heads)?;
+    // A person's own window is never the workspace's ([`crate::personal`]): one an older build
+    // placed here shows nobody, and the next write takes it out.
+    crate::personal::leave_out(&mut desktop);
+    Some(desktop)
+}
+
+/// The desk `doc` holds, every window as kept, a person's own windows included: for the copy of a
+/// desk no workspace shares, which is that person's alone. A workspace's desk is read with
+/// [`read`].
+#[must_use]
+pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
     let mut desktop = if crate::desktop_doc::holds(doc) {
         desk_of(doc, heads)?
     } else {
@@ -633,6 +645,11 @@ pub fn write(
     doc: &mut AutoCommit,
     desktop: &SharedDesktop,
 ) -> Result<bool, automerge::AutomergeError> {
+    // A person's own windows stay on their desk ([`crate::personal`]), and one the record holds
+    // from an older build is taken out.
+    let mut shared = desktop.clone();
+    crate::personal::leave_out(&mut shared);
+    let desktop = &shared;
     // A record that became the desk's own document
     // ([`crate::desktop_doc`]) keeps the same desk, so a writer that knows
     // only this shape — a build from before the desk was one document —

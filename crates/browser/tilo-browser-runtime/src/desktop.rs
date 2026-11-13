@@ -1789,7 +1789,15 @@ pub(crate) fn mount(
     take_up_feedback(&shared, &mut inputs, &store, &notify);
     let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
     let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);
-    let tree = if let Some(stored) = tilo_desktop_model::shared_record::read(&document, None) {
+    // In a workspace the profile keeps the workspace's desk, which holds nobody's own windows
+    // (`tilo_desktop_model::personal`); a desk no workspace shares is this person's alone, all of
+    // it.
+    let stored = if inputs.peer.is_some() {
+        tilo_desktop_model::shared_record::read(&document, None)
+    } else {
+        tilo_desktop_model::shared_record::read_as_kept(&document, None)
+    };
+    let tree = if let Some(stored) = stored {
         let (bound, unbound) = adopted_records(&stored);
         *shared.records.borrow_mut() = bound;
         *shared.unbound.borrow_mut() = unbound;

@@ -74,7 +74,7 @@ pub(crate) fn adopt(state: &Path, document: &Path, actor: automerge::ActorId) ->
             desktop_doc::set_author_names(&mut doc, &names);
         }
         for change in log.get_changes(&[]) {
-            let Some(desktop) = shared_record::read(log, Some(&[change.hash()])) else {
+            let Some(desktop) = shared_record::read_as_kept(log, Some(&[change.hash()])) else {
                 continue;
             };
             doc.set_actor(actor_of(&change));

@@ -60,6 +60,11 @@ pub enum DesktopRefusal {
         "{writer} may not bind window {window} to another record: it shows its record for good"
     )]
     Rebound { writer: String, window: TabId },
+    /// It places a person's own window ([`crate::personal`]) on the workspace's desktop.
+    #[error(
+        "{writer} may not place window {window} on the shared desktop: it is a person's own and stays on their desk"
+    )]
+    Personal { writer: String, window: TabId },
     /// It is not a desktop, or not one that can be read.
     #[error("not a shared desktop: {0}")]
     Unreadable(String),
@@ -87,8 +92,23 @@ pub fn judge(
     writer: &Writer<'_>,
 ) -> Result<(), DesktopRefusal> {
     for change in doc.committed_document().get_changes(before) {
-        let seen = super::read(doc, Some(change.deps())).unwrap_or_default();
-        let left = super::read(doc, Some(&[change.hash()])).unwrap_or_default();
+        let seen_kept = super::read_as_kept(doc, Some(change.deps())).unwrap_or_default();
+        let left_kept = super::read_as_kept(doc, Some(&[change.hash()])).unwrap_or_default();
+        // One that was there before (an older build's) is no new placement: the write may be
+        // the one taking it out, or about something else.
+        let was_personal = crate::personal::personal_tabs(&seen_kept.tree);
+        if let Some(window) = crate::personal::personal_tabs(&left_kept.tree)
+            .into_iter()
+            .find(|window| !was_personal.contains(window))
+        {
+            return Err(DesktopRefusal::Personal {
+                writer: writer.person.to_owned(),
+                window,
+            });
+        }
+        let (mut seen, mut left) = (seen_kept, left_kept);
+        crate::personal::leave_out(&mut seen);
+        crate::personal::leave_out(&mut left);
         if let Some(window) = rebound_windows(&seen, &left).first() {
             return Err(DesktopRefusal::Rebound {
                 writer: writer.person.to_owned(),
