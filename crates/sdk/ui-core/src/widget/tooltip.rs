@@ -876,179 +876,183 @@ mod host_tests {
         (Rect::new(0.0, 0.0, 40.0, 40.0), label.to_string())
     }
 
-    #[test]
-    fn a_shown_tooltip_reads_its_region_again() {
-        let _settled = crate::motion::testing::settled();
-        let mut host = TooltipHost::new().with_dwell(Duration::ZERO);
-        let now = crate::time::now();
-        host.on_pointer(Some(tip("Hide layer")), now);
-        host.tick(now);
-        host.refresh(Some(tip("Show layer")));
-        assert_eq!(host.visible().map(|(label, _)| label), Some("Show layer"));
-        host.refresh(None);
-        assert!(host.visible().is_none(), "the region is gone");
-    }
+    tilo_test_env::scenario! {
+        fn a_tooltip_host_reveals_places_and_dismisses_its_chip;
 
-    #[test]
-    fn a_control_acted_on_shows_no_tooltip_until_the_pointer_leaves_it() {
-        let mut host = TooltipHost::new();
-        let t0 = crate::time::now();
-        let at = |ms: u64| t0.checked_add(Duration::from_millis(ms)).unwrap_or(t0);
-        let dwell = u64::try_from(HOVER_DWELL.as_millis()).unwrap_or(u64::MAX);
-        host.on_pointer(Some(tip("Pinned messages")), at(0));
-        host.tick(at(dwell + 1));
-        assert!(host.visible().is_some(), "the hint shows after its dwell");
-
-        assert!(host.dismiss(), "the press clears the shown hint");
-        host.on_pointer(Some(tip("Pinned messages")), at(dwell + 10));
-        host.tick(at(4 * dwell));
-        assert!(
-            host.visible().is_none() && host.reveal_at().is_none(),
-            "the pointer resting on the pressed control brings no hint back"
-        );
-
-        host.on_pointer(None, at(4 * dwell + 1));
-        host.on_pointer(Some(tip("Pinned messages")), at(4 * dwell + 2));
-        host.tick(at(6 * dwell));
-        assert!(
-            host.visible().is_some(),
-            "leaving the control and coming back shows its hint again"
-        );
-    }
-
-    #[test]
-    fn tooltip_host_dwell_reveals_restarts_and_dismisses() {
-        let _settled = crate::motion::testing::settled();
+        phase a_shown_tooltip_reads_its_region_again;
         {
-            let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
+            let _settled = crate::motion::testing::settled();
+            let mut host = TooltipHost::new().with_dwell(Duration::ZERO);
+            let now = crate::time::now();
+            host.on_pointer(Some(tip("Hide layer")), now);
+            host.tick(now);
+            host.refresh(Some(tip("Show layer")));
+            assert_eq!(host.visible().map(|(label, _)| label), Some("Show layer"));
+            host.refresh(None);
+            assert!(host.visible().is_none(), "the region is gone");
+        }
+
+        phase a_control_acted_on_shows_no_tooltip_until_the_pointer_leaves_it;
+        {
+            let mut host = TooltipHost::new();
             let t0 = crate::time::now();
+            let at = |ms: u64| t0.checked_add(Duration::from_millis(ms)).unwrap_or(t0);
+            let dwell = u64::try_from(HOVER_DWELL.as_millis()).unwrap_or(u64::MAX);
+            host.on_pointer(Some(tip("Pinned messages")), at(0));
+            host.tick(at(dwell + 1));
+            assert!(host.visible().is_some(), "the hint shows after its dwell");
+
+            assert!(host.dismiss(), "the press clears the shown hint");
+            host.on_pointer(Some(tip("Pinned messages")), at(dwell + 10));
+            host.tick(at(4 * dwell));
             assert!(
-                h.on_pointer(Some(tip("Search")), t0),
-                "new target changes state"
+                host.visible().is_none() && host.reveal_at().is_none(),
+                "the pointer resting on the pressed control brings no hint back"
             );
-            assert!(h.visible().is_none(), "not shown before the dwell elapses");
-            assert!(h.needs_frame(), "a reveal is pending");
+
+            host.on_pointer(None, at(4 * dwell + 1));
+            host.on_pointer(Some(tip("Pinned messages")), at(4 * dwell + 2));
+            host.tick(at(6 * dwell));
+            assert!(
+                host.visible().is_some(),
+                "leaving the control and coming back shows its hint again"
+            );
+        }
+
+        phase tooltip_host_dwell_reveals_restarts_and_dismisses;
+        {
+            let _settled = crate::motion::testing::settled();
+            {
+                let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
+                let t0 = crate::time::now();
+                assert!(
+                    h.on_pointer(Some(tip("Search")), t0),
+                    "new target changes state"
+                );
+                assert!(h.visible().is_none(), "not shown before the dwell elapses");
+                assert!(h.needs_frame(), "a reveal is pending");
+                assert_eq!(
+                    h.reveal_at(),
+                    Some(t0 + Duration::from_millis(500)),
+                    "the host wakes when the dwell runs out"
+                );
+
+                h.tick(t0 + Duration::from_millis(300));
+                assert!(h.visible().is_none());
+
+                assert!(h.tick(t0 + Duration::from_millis(600)), "becomes visible");
+                let (label, anchor) = h.visible().expect("revealed after dwell");
+                assert_eq!(label, "Search");
+                assert_eq!(anchor, Rect::new(0.0, 0.0, 40.0, 40.0));
+                assert!(!h.needs_frame(), "no frame pump once shown");
+                assert_eq!(h.reveal_at(), None, "nothing left to wake for");
+
+                assert!(h.on_pointer(None, t0 + Duration::from_millis(650)));
+                assert!(h.visible().is_none(), "hides on leave");
+            }
+
+            {
+                let mut h = TooltipHost::new().with_dwell(Duration::ZERO);
+                let t0 = crate::time::now();
+                h.on_pointer(Some(tip("Zoom in")), t0);
+                assert!(h.visible().is_some(), "zero-dwell shows on hover");
+                assert!(h.dismiss(), "dismiss reports it was showing");
+                assert!(h.visible().is_none(), "click/scroll/key hides it");
+                h.on_pointer(Some(tip("Zoom in")), t0);
+                assert!(h.visible().is_none());
+            }
+
+            {
+                let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
+                let t0 = crate::time::now();
+                h.on_pointer(Some(tip("Back")), t0);
+                h.tick(t0 + Duration::from_millis(450));
+                assert!(h.visible().is_none());
+                let other = Some((Rect::new(50.0, 0.0, 90.0, 40.0), "Forward".to_string()));
+                assert!(h.on_pointer(other, t0 + Duration::from_millis(460)));
+                h.tick(t0 + Duration::from_millis(600));
+                assert!(h.visible().is_none(), "dwell restarted on the new region");
+                h.tick(t0 + Duration::from_millis(960));
+                assert_eq!(h.visible().map(|(l, _)| l), Some("Forward"));
+            }
+
+            {
+                let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
+                let t0 = crate::time::now();
+                h.on_pointer(Some(tip("Search")), t0);
+                // The pointer keeps reporting the same region (a stable rect+label)
+                // as it jitters — the accumulated dwell must not reset.
+                h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(200));
+                h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(400));
+                assert!(
+                    h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(550)),
+                    "crossing the threshold on a jitter move flips to visible"
+                );
+                assert_eq!(h.visible().map(|(l, _)| l), Some("Search"));
+            }
+        }
+
+        phase a_rail_chip_sits_beside_its_tool_and_covers_no_neighbour;
+        {
+            let _settled = crate::motion::testing::settled();
+            let theme = Theme::dark();
+            let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let size = (120.0, 24.0);
+            let tool = Rect::new(8.0, 100.0, 48.0, 140.0);
+            let next = Rect::new(8.0, 144.0, 48.0, 184.0);
+            let r = chip_rect_on(&theme, TooltipSide::Beside, tool, size, vp);
+            assert!(r.x0 >= tool.x1, "after the tool: {r:?}");
+            assert!(r.intersect(next).area() <= 0.0, "covers the next tool");
+            assert!(
+                (r.center().y - tool.center().y).abs() < 0.01,
+                "level with it"
+            );
+            let right = Rect::new(752.0, 100.0, 792.0, 140.0);
+            let r = chip_rect_on(&theme, TooltipSide::Beside, right, size, vp);
+            assert!(r.x1 <= right.x0, "before the tool: {r:?}");
             assert_eq!(
-                h.reveal_at(),
-                Some(t0 + Duration::from_millis(500)),
-                "the host wakes when the dwell runs out"
+                chip_rect_on(&theme, TooltipSide::Below, tool, size, vp),
+                chip_rect(&theme, tool, size, vp)
             );
-
-            h.tick(t0 + Duration::from_millis(300));
-            assert!(h.visible().is_none());
-
-            assert!(h.tick(t0 + Duration::from_millis(600)), "becomes visible");
-            let (label, anchor) = h.visible().expect("revealed after dwell");
-            assert_eq!(label, "Search");
-            assert_eq!(anchor, Rect::new(0.0, 0.0, 40.0, 40.0));
-            assert!(!h.needs_frame(), "no frame pump once shown");
-            assert_eq!(h.reveal_at(), None, "nothing left to wake for");
-
-            assert!(h.on_pointer(None, t0 + Duration::from_millis(650)));
-            assert!(h.visible().is_none(), "hides on leave");
         }
 
+        phase chip_rect_flips_above_and_clamps_horizontally;
         {
-            let mut h = TooltipHost::new().with_dwell(Duration::ZERO);
-            let t0 = crate::time::now();
-            h.on_pointer(Some(tip("Zoom in")), t0);
-            assert!(h.visible().is_some(), "zero-dwell shows on hover");
-            assert!(h.dismiss(), "dismiss reports it was showing");
-            assert!(h.visible().is_none(), "click/scroll/key hides it");
-            h.on_pointer(Some(tip("Zoom in")), t0);
-            assert!(h.visible().is_none());
-        }
+            let _settled = crate::motion::testing::settled();
+            let theme = Theme::dark();
+            let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let size = (120.0, 24.0);
 
-        {
-            let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
-            let t0 = crate::time::now();
-            h.on_pointer(Some(tip("Back")), t0);
-            h.tick(t0 + Duration::from_millis(450));
-            assert!(h.visible().is_none());
-            let other = Some((Rect::new(50.0, 0.0, 90.0, 40.0), "Forward".to_string()));
-            assert!(h.on_pointer(other, t0 + Duration::from_millis(460)));
-            h.tick(t0 + Duration::from_millis(600));
-            assert!(h.visible().is_none(), "dwell restarted on the new region");
-            h.tick(t0 + Duration::from_millis(960));
-            assert_eq!(h.visible().map(|(l, _)| l), Some("Forward"));
-        }
-
-        {
-            let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
-            let t0 = crate::time::now();
-            h.on_pointer(Some(tip("Search")), t0);
-            // The pointer keeps reporting the same region (a stable rect+label)
-            // as it jitters — the accumulated dwell must not reset.
-            h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(200));
-            h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(400));
+            let bottom_anchor = Rect::new(400.0, 580.0, 440.0, 596.0);
+            let r = chip_rect(&theme, bottom_anchor, size, vp);
             assert!(
-                h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(550)),
-                "crossing the threshold on a jitter move flips to visible"
+                r.y1 <= bottom_anchor.y0,
+                "flips above when it would overflow the bottom"
             );
-            assert_eq!(h.visible().map(|(l, _)| l), Some("Search"));
+
+            let right_anchor = Rect::new(790.0, 10.0, 800.0, 30.0);
+            let r = chip_rect(&theme, right_anchor, size, vp);
+            assert!(
+                r.x1 <= vp.x1 - ChipMetrics::of(&theme).margin + 0.01,
+                "clamped to the right edge"
+            );
+            assert!(r.x0 >= vp.x0, "never off the left edge");
+
+            let left_anchor = Rect::new(0.0, 10.0, 10.0, 30.0);
+            let r = chip_rect(&theme, left_anchor, size, vp);
+            assert!(
+                r.x0 >= vp.x0 + ChipMetrics::of(&theme).margin - 0.01,
+                "clamped to the left margin"
+            );
+
+            let center = Rect::new(390.0, 100.0, 410.0, 120.0);
+            let r = chip_rect(&theme, center, size, vp);
+            assert!(r.y0 >= center.y1, "placed below when there is room");
+            assert!(
+                (r.center().x - center.center().x).abs() < 0.5,
+                "centred under the anchor"
+            );
         }
-    }
-
-    #[test]
-    fn a_rail_chip_sits_beside_its_tool_and_covers_no_neighbour() {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let size = (120.0, 24.0);
-        let tool = Rect::new(8.0, 100.0, 48.0, 140.0);
-        let next = Rect::new(8.0, 144.0, 48.0, 184.0);
-        let r = chip_rect_on(&theme, TooltipSide::Beside, tool, size, vp);
-        assert!(r.x0 >= tool.x1, "after the tool: {r:?}");
-        assert!(r.intersect(next).area() <= 0.0, "covers the next tool");
-        assert!(
-            (r.center().y - tool.center().y).abs() < 0.01,
-            "level with it"
-        );
-        let right = Rect::new(752.0, 100.0, 792.0, 140.0);
-        let r = chip_rect_on(&theme, TooltipSide::Beside, right, size, vp);
-        assert!(r.x1 <= right.x0, "before the tool: {r:?}");
-        assert_eq!(
-            chip_rect_on(&theme, TooltipSide::Below, tool, size, vp),
-            chip_rect(&theme, tool, size, vp)
-        );
-    }
-
-    #[test]
-    fn chip_rect_flips_above_and_clamps_horizontally() {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let size = (120.0, 24.0);
-
-        let bottom_anchor = Rect::new(400.0, 580.0, 440.0, 596.0);
-        let r = chip_rect(&theme, bottom_anchor, size, vp);
-        assert!(
-            r.y1 <= bottom_anchor.y0,
-            "flips above when it would overflow the bottom"
-        );
-
-        let right_anchor = Rect::new(790.0, 10.0, 800.0, 30.0);
-        let r = chip_rect(&theme, right_anchor, size, vp);
-        assert!(
-            r.x1 <= vp.x1 - ChipMetrics::of(&theme).margin + 0.01,
-            "clamped to the right edge"
-        );
-        assert!(r.x0 >= vp.x0, "never off the left edge");
-
-        let left_anchor = Rect::new(0.0, 10.0, 10.0, 30.0);
-        let r = chip_rect(&theme, left_anchor, size, vp);
-        assert!(
-            r.x0 >= vp.x0 + ChipMetrics::of(&theme).margin - 0.01,
-            "clamped to the left margin"
-        );
-
-        let center = Rect::new(390.0, 100.0, 410.0, 120.0);
-        let r = chip_rect(&theme, center, size, vp);
-        assert!(r.y0 >= center.y1, "placed below when there is room");
-        assert!(
-            (r.center().x - center.center().x).abs() < 0.5,
-            "centred under the anchor"
-        );
     }
 }
 
@@ -1065,142 +1069,147 @@ mod tests {
         crate::testing::dispatch(t, &ev);
     }
 
-    #[test]
-    fn anchored_tooltip_reveals_after_delay_and_is_inert_without_an_anchor() {
-        let _settled = crate::motion::testing::settled();
+    tilo_test_env::scenario! {
+        fn an_anchored_tooltip_reveals_wraps_and_stays_on_screen;
+
+        phase anchored_tooltip_reveals_after_delay_and_is_inert_without_an_anchor;
         {
-            let mut t = Tooltip::new("Save")
-                .with_delay(Duration::ZERO)
-                .with_anchor(Rect::new(0.0, 0.0, 100.0, 30.0));
-            assert!(!t.is_visible());
-            feed(&mut t, Point::new(50.0, 15.0)); // inside anchor
-            assert!(t.is_visible(), "zero-delay tooltip shows on hover-enter");
-            feed(&mut t, Point::new(500.0, 500.0)); // outside
-            assert!(!t.is_visible(), "hides on hover-leave");
+            let _settled = crate::motion::testing::settled();
+            {
+                let mut t = Tooltip::new("Save")
+                    .with_delay(Duration::ZERO)
+                    .with_anchor(Rect::new(0.0, 0.0, 100.0, 30.0));
+                assert!(!t.is_visible());
+                feed(&mut t, Point::new(50.0, 15.0)); // inside anchor
+                assert!(t.is_visible(), "zero-delay tooltip shows on hover-enter");
+                feed(&mut t, Point::new(500.0, 500.0)); // outside
+                assert!(!t.is_visible(), "hides on hover-leave");
+            }
+
+            {
+                let mut t = Tooltip::new("Later")
+                    .with_delay(Duration::from_millis(600))
+                    .with_anchor(Rect::new(0.0, 0.0, 80.0, 24.0));
+                assert_eq!(t.next_wake_deadline(), None);
+                feed(&mut t, Point::new(10.0, 10.0)); // enter
+                assert!(!t.needs_animation_frame(), "a dwell is not motion");
+                let due = t.next_wake_deadline().expect("the reveal is scheduled");
+                assert!(!t.is_visible());
+                let doc = automerge::AutoCommit::new();
+                assert!(
+                    crate::time::testing::with_monotonic_time(due, || {
+                        Widget::update(&mut t, &doc, &automerge::ROOT)
+                    }),
+                    "the due reveal asks for a frame"
+                );
+                assert!(t.is_visible());
+                assert_eq!(t.next_wake_deadline(), None);
+            }
+
+            {
+                use crate::a11y::Role;
+                // A freshly-built tooltip is not yet visible → hidden from the tree.
+                let mut t = Tooltip::new("Save").with_delay(Duration::ZERO);
+                let node = Widget::accessibility(&t).expect("tooltip is not presentational");
+                assert_eq!(node.role, Role::Tooltip);
+                assert_eq!(node.name.as_deref(), Some("Save"));
+                assert!(node.state.hidden, "an unrevealed tooltip is hidden");
+
+                t.on_hover_enter(Duration::ZERO);
+                assert!(t.is_visible());
+                let node = Widget::accessibility(&t).unwrap();
+                assert!(
+                    !node.state.hidden,
+                    "a revealed tooltip is visible to the AT"
+                );
+            }
+
+            {
+                let mut t = Tooltip::new("x");
+                feed(&mut t, Point::new(5.0, 5.0));
+                assert!(!t.is_visible());
+                t.on_hover_enter(Duration::ZERO);
+                t.tick(Duration::from_millis(700));
+                assert!(t.is_visible());
+            }
         }
 
+        phase tooltip_long_hint_wraps_inside_the_scaled_viewport;
         {
-            let mut t = Tooltip::new("Later")
-                .with_delay(Duration::from_millis(600))
-                .with_anchor(Rect::new(0.0, 0.0, 80.0, 24.0));
-            assert_eq!(t.next_wake_deadline(), None);
-            feed(&mut t, Point::new(10.0, 10.0)); // enter
-            assert!(!t.needs_animation_frame(), "a dwell is not motion");
-            let due = t.next_wake_deadline().expect("the reveal is scheduled");
-            assert!(!t.is_visible());
-            let doc = automerge::AutoCommit::new();
-            assert!(
-                crate::time::testing::with_monotonic_time(due, || {
-                    Widget::update(&mut t, &doc, &automerge::ROOT)
-                }),
-                "the due reveal asks for a frame"
-            );
-            assert!(t.is_visible());
-            assert_eq!(t.next_wake_deadline(), None);
+            let _settled = crate::motion::testing::settled();
+            let label = "Close applications and end this session, then return to the login screen.";
+            for (theme, width) in [
+                (Theme::dark(), 800.0),
+                (Theme::light(), 280.0),
+                (Theme::dark().with_text_scale(2.0), 320.0),
+                (Theme::high_contrast().with_ui_scale(1.5), 360.0),
+            ] {
+                let viewport = Rect::new(0.0, 0.0, width, 480.0);
+                let mut tip = Tooltip::new(label)
+                    .with_delay(Duration::ZERO)
+                    .with_anchor(Rect::new(width - 60.0, 100.0, width - 20.0, 132.0));
+                let pointer = tip.anchor.center();
+                feed(&mut tip, pointer);
+                let presence = PresenceCtx::default();
+                presence.viewport.set(Some(viewport));
+                let mut text = TextRenderer::new();
+                tip.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &presence,
+                );
+                let rect = tip.get_rect();
+                assert!(
+                    viewport.contains_rect(rect),
+                    "tooltip exceeds viewport: {rect:?}"
+                );
+                let (_, height) = text.measure_style(
+                    label,
+                    Some(f32_of_f64(
+                        (rect.width() - 2.0 * ChipMetrics::of(&theme).pad_x).max(0.0),
+                    )),
+                    &theme.text(TextRole::Caption),
+                );
+                assert!(
+                    rect.height() + 0.01 >= f64::from(height) + 2.0 * ChipMetrics::of(&theme).pad_y,
+                    "complete wrapped hint must fit its painted box: {rect:?}, text height {height}"
+                );
+                assert_eq!(
+                    tip.accessibility()
+                        .expect("tooltip semantics")
+                        .name
+                        .as_deref(),
+                    Some(label)
+                );
+            }
         }
 
+        phase a_tooltip_near_the_screens_edge_stays_on_the_screen_inside_a_wider_window;
         {
-            use crate::a11y::Role;
-            // A freshly-built tooltip is not yet visible → hidden from the tree.
-            let mut t = Tooltip::new("Save").with_delay(Duration::ZERO);
-            let node = Widget::accessibility(&t).expect("tooltip is not presentational");
-            assert_eq!(node.role, Role::Tooltip);
-            assert_eq!(node.name.as_deref(), Some("Save"));
-            assert!(node.state.hidden, "an unrevealed tooltip is hidden");
-
-            t.on_hover_enter(Duration::ZERO);
-            assert!(t.is_visible());
-            let node = Widget::accessibility(&t).unwrap();
-            assert!(
-                !node.state.hidden,
-                "a revealed tooltip is visible to the AT"
-            );
-        }
-
-        {
-            let mut t = Tooltip::new("x");
-            feed(&mut t, Point::new(5.0, 5.0));
-            assert!(!t.is_visible());
-            t.on_hover_enter(Duration::ZERO);
-            t.tick(Duration::from_millis(700));
-            assert!(t.is_visible());
-        }
-    }
-    #[test]
-    fn tooltip_long_hint_wraps_inside_the_scaled_viewport() {
-        let _settled = crate::motion::testing::settled();
-        let label = "Close applications and end this session, then return to the login screen.";
-        for (theme, width) in [
-            (Theme::dark(), 800.0),
-            (Theme::light(), 280.0),
-            (Theme::dark().with_text_scale(2.0), 320.0),
-            (Theme::high_contrast().with_ui_scale(1.5), 360.0),
-        ] {
-            let viewport = Rect::new(0.0, 0.0, width, 480.0);
-            let mut tip = Tooltip::new(label)
-                .with_delay(Duration::ZERO)
-                .with_anchor(Rect::new(width - 60.0, 100.0, width - 20.0, 132.0));
-            let pointer = tip.anchor.center();
-            feed(&mut tip, pointer);
+            let theme = Theme::light();
+            let window = Rect::new(0.0, 0.0, 900.0, 844.0);
+            let screen = Rect::new(0.0, 0.0, 390.0, 844.0);
             let presence = PresenceCtx::default();
-            presence.viewport.set(Some(viewport));
+            presence.viewport.set(Some(screen));
+            let room = on_screen(&presence, window);
+            assert_eq!(room, screen, "the window's part of the screen");
+            let anchor = Rect::new(228.0, 12.0, 382.0, 40.0);
             let mut text = TextRenderer::new();
-            tip.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &presence,
-            );
-            let rect = tip.get_rect();
+            let label = "Fill Jane Doe's visa application";
+            let size = chip_size_in_viewport(label, &mut text, &theme, room);
+            let rect = chip_rect_on(&theme, TooltipSide::Below, anchor, size, room);
+            let margin = ChipMetrics::of(&theme).margin;
             assert!(
-                viewport.contains_rect(rect),
-                "tooltip exceeds viewport: {rect:?}"
+                rect.x1 <= screen.x1 - margin + 0.5 && rect.x0 >= screen.x0,
+                "the chip stays on the screen: {rect:?}"
             );
-            let (_, height) = text.measure_style(
-                label,
-                Some(f32_of_f64(
-                    (rect.width() - 2.0 * ChipMetrics::of(&theme).pad_x).max(0.0),
-                )),
-                &theme.text(TextRole::Caption),
-            );
-            assert!(
-                rect.height() + 0.01 >= f64::from(height) + 2.0 * ChipMetrics::of(&theme).pad_y,
-                "complete wrapped hint must fit its painted box: {rect:?}, text height {height}"
-            );
-            assert_eq!(
-                tip.accessibility()
-                    .expect("tooltip semantics")
-                    .name
-                    .as_deref(),
-                Some(label)
-            );
+            assert!(rect.y0 >= anchor.y1, "and under its control: {rect:?}");
+            let wide = chip_rect_on(&theme, TooltipSide::Below, anchor, size, window);
+            assert!(wide.x1 > screen.x1, "{wide:?}");
+            // A frame that names no screen keeps the window.
+            assert_eq!(on_screen(&PresenceCtx::default(), window), window);
         }
-    }
-
-    #[test]
-    fn a_tooltip_near_the_screens_edge_stays_on_the_screen_inside_a_wider_window() {
-        let theme = Theme::light();
-        let window = Rect::new(0.0, 0.0, 900.0, 844.0);
-        let screen = Rect::new(0.0, 0.0, 390.0, 844.0);
-        let presence = PresenceCtx::default();
-        presence.viewport.set(Some(screen));
-        let room = on_screen(&presence, window);
-        assert_eq!(room, screen, "the window's part of the screen");
-        let anchor = Rect::new(228.0, 12.0, 382.0, 40.0);
-        let mut text = TextRenderer::new();
-        let label = "Fill Jane Doe's visa application";
-        let size = chip_size_in_viewport(label, &mut text, &theme, room);
-        let rect = chip_rect_on(&theme, TooltipSide::Below, anchor, size, room);
-        let margin = ChipMetrics::of(&theme).margin;
-        assert!(
-            rect.x1 <= screen.x1 - margin + 0.5 && rect.x0 >= screen.x0,
-            "the chip stays on the screen: {rect:?}"
-        );
-        assert!(rect.y0 >= anchor.y1, "and under its control: {rect:?}");
-        let wide = chip_rect_on(&theme, TooltipSide::Below, anchor, size, window);
-        assert!(wide.x1 > screen.x1, "{wide:?}");
-        // A frame that names no screen keeps the window.
-        assert_eq!(on_screen(&PresenceCtx::default(), window), window);
     }
 }

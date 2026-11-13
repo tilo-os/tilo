@@ -2400,193 +2400,404 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bound_commands_queue_the_same_action_in_the_row_and_overflow_and_obey_availability() {
-        use crate::widget::controls::{
-            control_action_bindings, refresh_control_action_availability, take_control_invocation,
-        };
-        let _settled = crate::motion::testing::settled();
-        let resource = tilo_actions::ResourceSpec::new("doc:toolbar", "doc", "Document")
-            .with_action(
-                tilo_actions::ActionSpec::operation(
-                    "save",
-                    "Save",
-                    tilo_actions::OperationKind::Effect,
-                    "test.save",
-                    &(),
-                )
-                .unwrap(),
-            );
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
-        for width in [800.0, 45.0] {
-            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-            let callback = calls.clone();
-            let mut toolbar = Toolbar::new(Orientation::Horizontal)
-                .push_button("Save document", move || callback.set(callback.get() + 1))
-                .with_action(binding.clone())
-                .push_button("Another command", || {});
-            let mut text = TextRenderer::new();
+    tilo_test_env::scenario! {
+        fn a_toolbar_lays_out_names_and_runs_its_commands;
+
+        phase bound_commands_queue_the_same_action_in_the_row_and_overflow_and_obey_availability;
+        {
+            use crate::widget::controls::{
+                control_action_bindings, refresh_control_action_availability, take_control_invocation,
+            };
+            let _settled = crate::motion::testing::settled();
+            let resource = tilo_actions::ResourceSpec::new("doc:toolbar", "doc", "Document")
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "save",
+                        "Save",
+                        tilo_actions::OperationKind::Effect,
+                        "test.save",
+                        &(),
+                    )
+                    .unwrap(),
+                );
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+            for width in [800.0, 45.0] {
+                let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                let callback = calls.clone();
+                let mut toolbar = Toolbar::new(Orientation::Horizontal)
+                    .push_button("Save document", move || callback.set(callback.get() + 1))
+                    .with_action(binding.clone())
+                    .push_button("Another command", || {});
+                let mut text = TextRenderer::new();
+                let theme = Theme::dark();
+                let rect = Rect::new(0.0, 0.0, width, 40.0);
+                toolbar.lay_out_in(rect, &mut text, &theme);
+                if width < 100.0 {
+                    assert!(toolbar.has_overflow());
+                    assert!(!toolbar.is_shown(0));
+                    toolbar.open_overflow();
+                }
+                let mut doc = automerge::AutoCommit::new();
+                assert!(toolbar.perform_semantic_action(
+                    "toolbar.item.0",
+                    &Action::Activate,
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT
+                ));
+                let invocation =
+                    take_control_invocation(&mut toolbar).expect("the canonical action is queued");
+                assert_eq!(
+                    invocation.address,
+                    tilo_actions::ActionAddress::new("doc:toolbar", "save")
+                );
+                assert_eq!(
+                    calls.get(),
+                    0,
+                    "bound commands never run the imperative callback"
+                );
+                assert!(take_control_invocation(&mut toolbar).is_none());
+                assert_eq!(
+                    control_action_bindings(&toolbar).len(),
+                    1,
+                    "after selecting, only the visible Save or overflow opener is mounted"
+                );
+                refresh_control_action_availability(&mut toolbar, &std::collections::HashSet::new());
+                toolbar.lay_out_in(rect, &mut text, &theme);
+                if toolbar.has_overflow() {
+                    toolbar.open_overflow();
+                }
+                assert!(!toolbar.perform_semantic_action(
+                    "toolbar.item.0",
+                    &Action::Activate,
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT
+                ));
+                assert!(
+                    take_control_invocation(&mut toolbar).is_none(),
+                    "withdrawn actions cannot be queued from overflow"
+                );
+                assert_eq!(calls.get(), 0);
+            }
+        }
+
+        phase separators_only_stand_between_shown_commands;
+        // A separator never stands first, last or beside another separator of
+        // what is shown: a row that starts after a group boundary, or ends at
+        // one, shows no stray rule.
+        {
+            let _settled = crate::motion::testing::settled();
+            let tb = Toolbar::new(Orientation::Horizontal)
+                .push_separator()
+                .push_button("Cut", || {})
+                .push_separator()
+                .push_separator()
+                .push_button("Paste", || {})
+                .push_spacer()
+                .push_separator();
+            let mut tb = tb;
+            tb.visible_count = tb.items.len();
+            let shown: Vec<bool> = (0..tb.items.len())
+                .filter(|index| matches!(tb.items.get(*index), Some(ToolbarItem::Separator)))
+                .map(|index| tb.separator_shown(index))
+                .collect();
+            assert_eq!(shown, [false, true, false, false]);
+        }
+
+        phase glyph_commands_are_named_squares_the_host_paints;
+        {
+            use std::cell::Cell;
+            let _settled = crate::motion::testing::settled();
+            thread_local!(static PAINTED: Cell<Option<Rect>> = const { Cell::new(None) });
+            fn mark(_: &mut Scene, _: Affine, rect: Rect, _: &Theme) {
+                PAINTED.with(|painted| painted.set(Some(rect)));
+            }
             let theme = Theme::dark();
-            let rect = Rect::new(0.0, 0.0, width, 40.0);
-            toolbar.lay_out_in(rect, &mut text, &theme);
-            if width < 100.0 {
-                assert!(toolbar.has_overflow());
-                assert!(!toolbar.is_shown(0));
-                toolbar.open_overflow();
-            }
-            let mut doc = automerge::AutoCommit::new();
-            assert!(toolbar.perform_semantic_action(
-                "toolbar.item.0",
-                &Action::Activate,
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT
-            ));
-            let invocation =
-                take_control_invocation(&mut toolbar).expect("the canonical action is queued");
+            let mut text = TextRenderer::new();
+            let mut tb = Toolbar::new(Orientation::Horizontal).push_glyph(mark, "Product menu", || {});
+            tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
+            let square = tb.item_rects[0];
             assert_eq!(
-                invocation.address,
-                tilo_actions::ActionAddress::new("doc:toolbar", "save")
+                square.width(),
+                f64::from(theme.tokens.metrics.min_pointer_target)
             );
-            assert_eq!(
-                calls.get(),
-                0,
-                "bound commands never run the imperative callback"
+            let node = Widget::accessibility(&tb).expect("toolbar semantics");
+            assert_eq!(node.children[0].name.as_deref(), Some("Product menu"));
+            let mut scene = Scene::new();
+            tb.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
             );
-            assert!(take_control_invocation(&mut toolbar).is_none());
-            assert_eq!(
-                control_action_bindings(&toolbar).len(),
-                1,
-                "after selecting, only the visible Save or overflow opener is mounted"
-            );
-            refresh_control_action_availability(&mut toolbar, &std::collections::HashSet::new());
-            toolbar.lay_out_in(rect, &mut text, &theme);
-            if toolbar.has_overflow() {
-                toolbar.open_overflow();
-            }
-            assert!(!toolbar.perform_semantic_action(
-                "toolbar.item.0",
-                &Action::Activate,
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT
-            ));
-            assert!(
-                take_control_invocation(&mut toolbar).is_none(),
-                "withdrawn actions cannot be queued from overflow"
-            );
-            assert_eq!(calls.get(), 0);
+            let painted = PAINTED.with(Cell::get).expect("the host painted its mark");
+            assert!((painted.center() - square.center()).hypot() < 0.5);
         }
-    }
 
-    /// A separator never stands first, last or beside another separator of
-    /// what is shown: a row that starts after a group boundary, or ends at
-    /// one, shows no stray rule.
-    #[test]
-    fn separators_only_stand_between_shown_commands() {
-        let _settled = crate::motion::testing::settled();
-        let tb = Toolbar::new(Orientation::Horizontal)
-            .push_separator()
-            .push_button("Cut", || {})
-            .push_separator()
-            .push_separator()
-            .push_button("Paste", || {})
-            .push_spacer()
-            .push_separator();
-        let mut tb = tb;
-        tb.visible_count = tb.items.len();
-        let shown: Vec<bool> = (0..tb.items.len())
-            .filter(|index| matches!(tb.items.get(*index), Some(ToolbarItem::Separator)))
-            .map(|index| tb.separator_shown(index))
-            .collect();
-        assert_eq!(shown, [false, true, false, false]);
-    }
+        phase icon_commands_and_toggles_lay_out_in_a_painted_host;
+        {
+            let _settled = crate::motion::testing::settled();
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut tb = Toolbar::new(Orientation::Horizontal)
+                .push_icon(crate::icons::Icon::Search, "Find", || {})
+                .push_toggle("Bold", true, || {})
+                .push_button("Insert table", || {});
+            tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
+            let icon = tb.item_rects[0];
+            assert_eq!(
+                icon.width(),
+                f64::from(theme.tokens.metrics.min_pointer_target)
+            );
+            assert!(!tb.has_overflow());
+            let node = Widget::accessibility(&tb).expect("toolbar semantics");
+            assert_eq!(node.children[0].name.as_deref(), Some("Find"));
+            assert_eq!(node.children[1].role, Role::ToggleButton);
+            assert_eq!(node.children[1].state.checked, Some(true));
+            tb.set_active(1, false);
+            let node = Widget::accessibility(&tb).expect("toolbar semantics");
+            assert_eq!(node.children[1].state.checked, Some(false));
 
-    #[test]
-    fn glyph_commands_are_named_squares_the_host_paints() {
-        use std::cell::Cell;
-        let _settled = crate::motion::testing::settled();
-        thread_local!(static PAINTED: Cell<Option<Rect>> = const { Cell::new(None) });
-        fn mark(_: &mut Scene, _: Affine, rect: Rect, _: &Theme) {
-            PAINTED.with(|painted| painted.set(Some(rect)));
+            tb.lay_out_in(Rect::new(0.0, 0.0, 90.0, 40.0), &mut text, &theme);
+            assert!(tb.has_overflow());
+            let reachable = tb.visible_count + tb.menu_indices.iter().flatten().count();
+            assert_eq!(reachable, 3);
         }
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut tb = Toolbar::new(Orientation::Horizontal).push_glyph(mark, "Product menu", || {});
-        tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
-        let square = tb.item_rects[0];
-        assert_eq!(
-            square.width(),
-            f64::from(theme.tokens.metrics.min_pointer_target)
-        );
-        let node = Widget::accessibility(&tb).expect("toolbar semantics");
-        assert_eq!(node.children[0].name.as_deref(), Some("Product menu"));
-        let mut scene = Scene::new();
-        tb.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        let painted = PAINTED.with(Cell::get).expect("the host painted its mark");
-        assert!((painted.center() - square.center()).hypot() < 0.5);
-    }
 
-    #[test]
-    fn icon_commands_and_toggles_lay_out_in_a_painted_host() {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut tb = Toolbar::new(Orientation::Horizontal)
-            .push_icon(crate::icons::Icon::Search, "Find", || {})
-            .push_toggle("Bold", true, || {})
-            .push_button("Insert table", || {});
-        tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
-        let icon = tb.item_rects[0];
-        assert_eq!(
-            icon.width(),
-            f64::from(theme.tokens.metrics.min_pointer_target)
-        );
-        assert!(!tb.has_overflow());
-        let node = Widget::accessibility(&tb).expect("toolbar semantics");
-        assert_eq!(node.children[0].name.as_deref(), Some("Find"));
-        assert_eq!(node.children[1].role, Role::ToggleButton);
-        assert_eq!(node.children[1].state.checked, Some(true));
-        tb.set_active(1, false);
-        let node = Widget::accessibility(&tb).expect("toolbar semantics");
-        assert_eq!(node.children[1].state.checked, Some(false));
+        phase a_colour_well_is_a_square_command_named_for_its_colour;
+        {
+            let _settled = crate::motion::testing::settled();
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let yellow = vello::peniko::Color::from_rgb8(250, 204, 21);
+            let green = vello::peniko::Color::from_rgb8(74, 222, 128);
+            let mut tb = Toolbar::new(Orientation::Horizontal)
+                .push_swatch(yellow, "Marker colour: Yellow", || {})
+                .push_button("Insert table", || {});
+            tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
+            assert_eq!(
+                tb.item_rects[0].width(),
+                f64::from(theme.tokens.metrics.min_pointer_target)
+            );
+            tb.set_swatch(0, green, "Marker colour: Green");
+            assert_eq!(tb.command(0).and_then(|c| c.swatch), Some(green));
+            let node = Widget::accessibility(&tb).expect("toolbar semantics");
+            assert_eq!(
+                node.children[0].name.as_deref(),
+                Some("Marker colour: Green")
+            );
 
-        tb.lay_out_in(Rect::new(0.0, 0.0, 90.0, 40.0), &mut text, &theme);
-        assert!(tb.has_overflow());
-        let reachable = tb.visible_count + tb.menu_indices.iter().flatten().count();
-        assert_eq!(reachable, 3);
-    }
+            tb.lay_out_in(Rect::new(0.0, 0.0, 60.0, 40.0), &mut text, &theme);
+            assert!(tb.has_overflow());
+            assert!(tb.menu_indices.contains(&Some(0)) || tb.is_shown(0));
+        }
 
-    #[test]
-    fn a_colour_well_is_a_square_command_named_for_its_colour() {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let yellow = vello::peniko::Color::from_rgb8(250, 204, 21);
-        let green = vello::peniko::Color::from_rgb8(74, 222, 128);
-        let mut tb = Toolbar::new(Orientation::Horizontal)
-            .push_swatch(yellow, "Marker colour: Yellow", || {})
-            .push_button("Insert table", || {});
-        tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
-        assert_eq!(
-            tb.item_rects[0].width(),
-            f64::from(theme.tokens.metrics.min_pointer_target)
-        );
-        tb.set_swatch(0, green, "Marker colour: Green");
-        assert_eq!(tb.command(0).and_then(|c| c.swatch), Some(green));
-        let node = Widget::accessibility(&tb).expect("toolbar semantics");
-        assert_eq!(
-            node.children[0].name.as_deref(),
-            Some("Marker colour: Green")
-        );
+        phase toolbar_lays_out_named_commands_separators_and_overflow;
+        {
+            let _settled = crate::motion::testing::settled();
+            {
+                let tb = lay_out(n_button_toolbar(3), 100.0);
+                assert!(tb.is_focusable());
+                let node = tb.accessibility().unwrap();
+                assert!(!node.children.is_empty());
+                assert!(node.children.iter().all(|c| c.name.is_some()));
+            }
 
-        tb.lay_out_in(Rect::new(0.0, 0.0, 60.0, 40.0), &mut text, &theme);
-        assert!(tb.has_overflow());
-        assert!(tb.menu_indices.contains(&Some(0)) || tb.is_shown(0));
+            {
+                use crate::a11y::Role;
+                let tb = n_button_toolbar(3);
+                let node = Widget::accessibility(&tb).expect("toolbar is a semantic strip");
+                assert_eq!(node.role, Role::Toolbar);
+                assert_eq!(node.name, None, "toolbar carries no name of its own");
+            }
+
+            // Case `toolbar_with_three_buttons_paints_three_button_rects`.
+            // Three buttons + ample width must lay out three non-empty rects
+            // and the draw pass must emit at least three `DrawTag::COLOR`
+            // entries (one per button background fill).
+            {
+                let mut tb = lay_out(n_button_toolbar(3), 800.0);
+                assert_eq!(
+                    tb.item_rects.len(),
+                    3,
+                    "three buttons must produce three item rects (got {})",
+                    tb.item_rects.len()
+                );
+                for (i, r) in tb.item_rects.iter().enumerate() {
+                    assert!(
+                        !r.is_zero_area(),
+                        "item_rects[{i}] must be non-empty (got {r:?})"
+                    );
+                }
+                assert_eq!(tb.visible_count(), 3);
+                assert!(!tb.has_overflow());
+
+                let scene = render(&mut tb);
+                let fills = count_color_fills(&scene);
+                assert!(
+                    fills >= 3,
+                    "expected at least 3 COLOR fills (one per button bg), got {fills}",
+                );
+            }
+
+            // Case `toolbar_overflow_creates_overflow_button`.
+            // Ten buttons in a width that only fits ~4 must collapse the rest
+            // into the overflow chip. `has_overflow()` true, `visible_count()`
+            // strictly less than 10.
+            {
+                // Ten buttons at ~30px each (~320px total) in a 150px budget must
+                // overflow, fitting only a handful with room for the chip (24px).
+                let tb = lay_out(n_button_toolbar(10), 150.0);
+                assert!(
+                    tb.has_overflow(),
+                    "10 buttons in 150 px must overflow (visible_count={}, items={})",
+                    tb.visible_count(),
+                    tb.items.len()
+                );
+                assert!(
+                    tb.visible_count() < 10,
+                    "visible_count must drop below 10 when overflowing (got {})",
+                    tb.visible_count()
+                );
+                for i in 0..tb.visible_count() {
+                    assert!(
+                        !tb.item_rects[i].is_zero_area(),
+                        "visible item_rects[{i}] must be non-empty"
+                    );
+                }
+                assert!(
+                    !tb.overflow_rect.is_zero_area(),
+                    "overflow chip rect must be populated when has_overflow() is true"
+                );
+            }
+
+            // Case `minimum_hit_rect_reads_the_pointer_target_not_the_spacing_scale`.
+            // `[Button, Separator, Button]` — the divider paints as a thin filled
+            // rect (an extra COLOR draw tag). `separator_count` pins the structural
+            // contract independently of the scene-encoding check.
+            // The minimum hit rect is a metric, not a spacing step: halving the
+            // spacing scale (what a dense custom-theme `spacing_px` does) must leave
+            // every button at the 32 px pointer target. Before this read
+            // `metrics.min_pointer_target`, the same fixture gave 16 px buttons.
+            {
+                let mut dense = Theme::dark();
+                dense.tokens.spacing = crate::tokens::Spacing::BASE.scaled(0.5);
+                assert!(
+                    dense.tokens.spacing.s8 < dense.tokens.metrics.min_pointer_target,
+                    "fixture must make s8 ({}) smaller than the target ({})",
+                    dense.tokens.spacing.s8,
+                    dense.tokens.metrics.min_pointer_target
+                );
+                let mut tb = Toolbar::new(Orientation::Horizontal)
+                    .push_button("A", || {})
+                    .push_button("Bb", || {});
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                tb.build_layout(&mut taffy, &dense, &mut node_map);
+                let mut text = TextRenderer::new();
+                tb.update_measurements(&mut text);
+                let target = dense.tokens.metrics.min_pointer_target;
+                assert_eq!(tb.minimum, target);
+                for (index, extent) in tb.extents.iter().enumerate() {
+                    assert!(
+                        extent.width >= target && extent.height >= target,
+                        "button {index} extent {extent:?} is under the {target} px pointer target"
+                    );
+                }
+                tb.lay_out_in(Rect::new(0.0, 0.0, 400.0, 40.0), &mut text, &dense);
+                assert_eq!(tb.visible_count(), 2);
+            }
+
+            {
+                let mut tb = Toolbar::new(Orientation::Horizontal)
+                    .push_button("A", || {})
+                    .push_separator()
+                    .push_button("B", || {});
+                tb = lay_out(tb, 400.0);
+
+                assert_eq!(
+                    tb.separator_count(),
+                    1,
+                    "expected exactly one Separator item (got {})",
+                    tb.separator_count()
+                );
+                assert_eq!(tb.visible_count(), 3);
+
+                let scene = render(&mut tb);
+                let fills = count_color_fills(&scene);
+                // Two button backgrounds + the separator line = at least 3
+                // COLOR fills. Strictly greater than a no-separator baseline,
+                // proving the separator actually contributed paint.
+                assert!(
+                    fills >= 3,
+                    "expected at least 3 COLOR fills (2 buttons + 1 separator), got {fills}"
+                );
+
+                let mut bare = lay_out(
+                    Toolbar::new(Orientation::Horizontal)
+                        .push_button("A", || {})
+                        .push_button("B", || {}),
+                    400.0,
+                );
+                let bare_scene = render(&mut bare);
+                let bare_fills = count_color_fills(&bare_scene);
+                assert!(
+                    fills > bare_fills,
+                    "separator must add at least one COLOR fill (with={fills}, without={bare_fills})"
+                );
+            }
+
+            {
+                let mut tb = Toolbar::new(Orientation::Horizontal)
+                    .push_button("WWW", || {})
+                    .push_button("iii", || {});
+                let theme = Theme::dark();
+                let mut text = TextRenderer::new();
+                let mut tree = TaffyTree::new();
+                let node = tb.build_layout(&mut tree, &theme, &mut HashMap::new());
+                tb.adjust_layout_style(&mut tree, node, &mut text);
+                tree.set_style(
+                    node,
+                    Style {
+                        size: Size::from_lengths(500.0, 40.0),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                tree.compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::MaxContent,
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                )
+                .unwrap();
+                tb.apply_layout(&tree, node, Point::ZERO);
+                assert!(
+                    tb.item_rects[0].width() > tb.item_rects[1].width(),
+                    "renderer widths must replace character counting"
+                );
+                tree.set_style(
+                    node,
+                    Style {
+                        size: Size::from_lengths(5.0, 40.0),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                tree.compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::MaxContent,
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                )
+                .unwrap();
+                tb.apply_layout(&tree, node, Point::ZERO);
+                assert!(tb.overflow_rect.x0 >= tb.rect.x0);
+                assert!(tb.item_rects.iter().all(|r| *r == Rect::ZERO));
+            }
+        }
     }
 
     /// Build a toolbar with `n` no-op buttons. Convenience for the
@@ -2644,213 +2855,6 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
-    }
-
-    #[test]
-    fn toolbar_lays_out_named_commands_separators_and_overflow() {
-        let _settled = crate::motion::testing::settled();
-        {
-            let tb = lay_out(n_button_toolbar(3), 100.0);
-            assert!(tb.is_focusable());
-            let node = tb.accessibility().unwrap();
-            assert!(!node.children.is_empty());
-            assert!(node.children.iter().all(|c| c.name.is_some()));
-        }
-
-        {
-            use crate::a11y::Role;
-            let tb = n_button_toolbar(3);
-            let node = Widget::accessibility(&tb).expect("toolbar is a semantic strip");
-            assert_eq!(node.role, Role::Toolbar);
-            assert_eq!(node.name, None, "toolbar carries no name of its own");
-        }
-
-        // Case `toolbar_with_three_buttons_paints_three_button_rects`.
-        // Three buttons + ample width must lay out three non-empty rects
-        // and the draw pass must emit at least three `DrawTag::COLOR`
-        // entries (one per button background fill).
-        {
-            let mut tb = lay_out(n_button_toolbar(3), 800.0);
-            assert_eq!(
-                tb.item_rects.len(),
-                3,
-                "three buttons must produce three item rects (got {})",
-                tb.item_rects.len()
-            );
-            for (i, r) in tb.item_rects.iter().enumerate() {
-                assert!(
-                    !r.is_zero_area(),
-                    "item_rects[{i}] must be non-empty (got {r:?})"
-                );
-            }
-            assert_eq!(tb.visible_count(), 3);
-            assert!(!tb.has_overflow());
-
-            let scene = render(&mut tb);
-            let fills = count_color_fills(&scene);
-            assert!(
-                fills >= 3,
-                "expected at least 3 COLOR fills (one per button bg), got {fills}",
-            );
-        }
-
-        // Case `toolbar_overflow_creates_overflow_button`.
-        // Ten buttons in a width that only fits ~4 must collapse the rest
-        // into the overflow chip. `has_overflow()` true, `visible_count()`
-        // strictly less than 10.
-        {
-            // Ten buttons at ~30px each (~320px total) in a 150px budget must
-            // overflow, fitting only a handful with room for the chip (24px).
-            let tb = lay_out(n_button_toolbar(10), 150.0);
-            assert!(
-                tb.has_overflow(),
-                "10 buttons in 150 px must overflow (visible_count={}, items={})",
-                tb.visible_count(),
-                tb.items.len()
-            );
-            assert!(
-                tb.visible_count() < 10,
-                "visible_count must drop below 10 when overflowing (got {})",
-                tb.visible_count()
-            );
-            for i in 0..tb.visible_count() {
-                assert!(
-                    !tb.item_rects[i].is_zero_area(),
-                    "visible item_rects[{i}] must be non-empty"
-                );
-            }
-            assert!(
-                !tb.overflow_rect.is_zero_area(),
-                "overflow chip rect must be populated when has_overflow() is true"
-            );
-        }
-
-        // Case `minimum_hit_rect_reads_the_pointer_target_not_the_spacing_scale`.
-        // `[Button, Separator, Button]` — the divider paints as a thin filled
-        // rect (an extra COLOR draw tag). `separator_count` pins the structural
-        // contract independently of the scene-encoding check.
-        // The minimum hit rect is a metric, not a spacing step: halving the
-        // spacing scale (what a dense custom-theme `spacing_px` does) must leave
-        // every button at the 32 px pointer target. Before this read
-        // `metrics.min_pointer_target`, the same fixture gave 16 px buttons.
-        {
-            let mut dense = Theme::dark();
-            dense.tokens.spacing = crate::tokens::Spacing::BASE.scaled(0.5);
-            assert!(
-                dense.tokens.spacing.s8 < dense.tokens.metrics.min_pointer_target,
-                "fixture must make s8 ({}) smaller than the target ({})",
-                dense.tokens.spacing.s8,
-                dense.tokens.metrics.min_pointer_target
-            );
-            let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_button("A", || {})
-                .push_button("Bb", || {});
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            tb.build_layout(&mut taffy, &dense, &mut node_map);
-            let mut text = TextRenderer::new();
-            tb.update_measurements(&mut text);
-            let target = dense.tokens.metrics.min_pointer_target;
-            assert_eq!(tb.minimum, target);
-            for (index, extent) in tb.extents.iter().enumerate() {
-                assert!(
-                    extent.width >= target && extent.height >= target,
-                    "button {index} extent {extent:?} is under the {target} px pointer target"
-                );
-            }
-            tb.lay_out_in(Rect::new(0.0, 0.0, 400.0, 40.0), &mut text, &dense);
-            assert_eq!(tb.visible_count(), 2);
-        }
-
-        {
-            let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_button("A", || {})
-                .push_separator()
-                .push_button("B", || {});
-            tb = lay_out(tb, 400.0);
-
-            assert_eq!(
-                tb.separator_count(),
-                1,
-                "expected exactly one Separator item (got {})",
-                tb.separator_count()
-            );
-            assert_eq!(tb.visible_count(), 3);
-
-            let scene = render(&mut tb);
-            let fills = count_color_fills(&scene);
-            // Two button backgrounds + the separator line = at least 3
-            // COLOR fills. Strictly greater than a no-separator baseline,
-            // proving the separator actually contributed paint.
-            assert!(
-                fills >= 3,
-                "expected at least 3 COLOR fills (2 buttons + 1 separator), got {fills}"
-            );
-
-            let mut bare = lay_out(
-                Toolbar::new(Orientation::Horizontal)
-                    .push_button("A", || {})
-                    .push_button("B", || {}),
-                400.0,
-            );
-            let bare_scene = render(&mut bare);
-            let bare_fills = count_color_fills(&bare_scene);
-            assert!(
-                fills > bare_fills,
-                "separator must add at least one COLOR fill (with={fills}, without={bare_fills})"
-            );
-        }
-
-        {
-            let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_button("WWW", || {})
-                .push_button("iii", || {});
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let mut tree = TaffyTree::new();
-            let node = tb.build_layout(&mut tree, &theme, &mut HashMap::new());
-            tb.adjust_layout_style(&mut tree, node, &mut text);
-            tree.set_style(
-                node,
-                Style {
-                    size: Size::from_lengths(500.0, 40.0),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            tree.compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::MaxContent,
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-            )
-            .unwrap();
-            tb.apply_layout(&tree, node, Point::ZERO);
-            assert!(
-                tb.item_rects[0].width() > tb.item_rects[1].width(),
-                "renderer widths must replace character counting"
-            );
-            tree.set_style(
-                node,
-                Style {
-                    size: Size::from_lengths(5.0, 40.0),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            tree.compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::MaxContent,
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-            )
-            .unwrap();
-            tb.apply_layout(&tree, node, Point::ZERO);
-            assert!(tb.overflow_rect.x0 >= tb.rect.x0);
-            assert!(tb.item_rects.iter().all(|r| *r == Rect::ZERO));
-        }
     }
 }
 
@@ -2981,427 +2985,433 @@ mod lifecycle_tests {
         }
         (tb, counts)
     }
-    #[test]
-    fn commands_are_reachable_once_by_every_route_with_matching_semantic_bounds() {
-        let _settled = crate::motion::testing::settled();
-        {
-            let (mut tb, counts) = counted(2);
-            settle(&mut tb, 350.0, 45.0, 1.0);
-            let p = tb.item_rects[0].center();
-            cursor(&mut tb, p);
-            mouse(&mut tb, ElementState::Pressed);
-            settle(&mut tb, 350.0, 45.0, 1.0);
-            mouse(&mut tb, ElementState::Released);
-            assert_eq!(*counts.borrow(), vec![1, 0]);
-        }
+    tilo_test_env::scenario! {
+        fn a_toolbar_keeps_its_commands_reachable_through_its_lifecycle;
 
+        phase commands_are_reachable_once_by_every_route_with_matching_semantic_bounds;
         {
-            let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_button("First", || {})
-                .push_separator()
-                .push_spacer()
-                .push_button("Last", || {});
-            settle(&mut tb, 350.0, 45.0, 1.0);
-            tb.set_focus(true);
-            assert_eq!(tb.focus, Some(Target::Item(0)));
-            key(&mut tb, NamedKey::ArrowRight);
-            assert_eq!(tb.focus, Some(Target::Item(3)));
-        }
+            let _settled = crate::motion::testing::settled();
+            {
+                let (mut tb, counts) = counted(2);
+                settle(&mut tb, 350.0, 45.0, 1.0);
+                let p = tb.item_rects[0].center();
+                cursor(&mut tb, p);
+                mouse(&mut tb, ElementState::Pressed);
+                settle(&mut tb, 350.0, 45.0, 1.0);
+                mouse(&mut tb, ElementState::Released);
+                assert_eq!(*counts.borrow(), vec![1, 0]);
+            }
 
-        {
-            for route in 0..3 {
-                let (mut tb, counts) = counted(8);
-                settle(&mut tb, 180.0, 45.0, 1.0);
+            {
+                let mut tb = Toolbar::new(Orientation::Horizontal)
+                    .push_button("First", || {})
+                    .push_separator()
+                    .push_spacer()
+                    .push_button("Last", || {});
+                settle(&mut tb, 350.0, 45.0, 1.0);
                 tb.set_focus(true);
-                for index in 0..8 {
-                    if index < tb.visible_count {
-                        match route {
-                            0 => {
-                                let p = tb.item_rects[index].center();
-                                cursor(&mut tb, p);
-                                mouse(&mut tb, ElementState::Pressed);
-                                mouse(&mut tb, ElementState::Released);
-                            }
-                            1 => {
-                                tb.focus = Some(Target::Item(index));
-                                key(&mut tb, NamedKey::Enter);
-                            }
-                            _ => {
-                                assert!(tb.perform_semantic_action(
-                                    &format!("toolbar.item.{index}"),
-                                    &Action::Activate,
-                                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                                    &automerge::ROOT
-                                ));
-                            }
-                        }
-                    } else {
-                        tb.focus = Some(Target::Overflow);
-                        key(&mut tb, NamedKey::Space);
-                        settle(&mut tb, 180.0, 45.0, 1.0);
-                        let row = tb
-                            .menu_indices
-                            .iter()
-                            .position(|entry| *entry == Some(index))
-                            .unwrap();
-                        while tb.menu.hovered() != Some(row) {
-                            key(&mut tb, NamedKey::ArrowDown);
-                        }
-                        match route {
-                            0 => {
-                                let p = tb.menu.item_rect(row).unwrap().center();
-                                cursor(&mut tb, p);
-                                mouse(&mut tb, ElementState::Pressed);
-                                mouse(&mut tb, ElementState::Released);
-                            }
-                            1 => {
-                                key(&mut tb, NamedKey::Enter);
-                            }
-                            _ => {
-                                assert!(tb.perform_semantic_action(
-                                    &format!("toolbar.item.{index}"),
-                                    &Action::Activate,
-                                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                                    &automerge::ROOT
-                                ));
-                            }
-                        }
-                        assert!(!tb.menu.is_open());
-                        assert_eq!(tb.focus, Some(Target::Overflow));
-                    }
-                }
-                assert_eq!(*counts.borrow(), vec![1; 8], "route {route}");
+                assert_eq!(tb.focus, Some(Target::Item(0)));
+                key(&mut tb, NamedKey::ArrowRight);
+                assert_eq!(tb.focus, Some(Target::Item(3)));
             }
-        }
 
-        {
-            let (mut tb, _) = counted(12);
-            settle(&mut tb, 120.0, 45.0, 1.0);
-            tb.set_focus(true);
-            tb.open_menu(true);
-            let menu_child = tb.targets().len();
-            let node = tb.accessibility().unwrap();
-            assert_eq!(node.children[menu_child].role, Role::Menu);
-            assert!(
-                node.children[menu_child]
-                    .children
-                    .iter()
-                    .all(|child| child.action_target.is_some())
-            );
-            let last = node.children[menu_child].children.len() - 1;
-            assert!(tb.focus_synthetic_accessibility(&[menu_child, last]));
-            let rect = tb
-                .synthetic_accessibility_rect(&[menu_child, last])
-                .unwrap();
-            assert!(rect.y0 >= tb.menu.get_rect().y0 && rect.y1 <= tb.menu.get_rect().y1);
-            assert!(
-                tb.accessibility().unwrap().children[menu_child].children[last]
-                    .state
-                    .focused
-            );
-        }
-
-        {
-            let (mut tb, _) = counted(12);
-            settle(&mut tb, 180.0, 45.0, 1.0);
-            let node = tb.accessibility().unwrap();
-            for (child, target) in node.children.iter().zip(tb.targets()) {
-                assert_eq!(
-                    child.bounds.map(|bounds| bounds.to_rect()),
-                    tb.target_rect(target)
-                );
-            }
-            tb.open_menu(true);
-            let menu_child = tb.targets().len();
-            let first = tb.menu.item_rect(0).unwrap();
-            tb.menu.focus_item(tb.menu_indices.len() - 1);
-            let node = tb.accessibility().unwrap();
-            let menu = &node.children[menu_child];
-            assert_eq!(menu.bounds.unwrap().to_rect(), tb.menu.get_rect());
-            // Every command keeps the box it holds in the rows, on screen or scrolled past the
-            // panel's edge: a reader that focuses it says where it is, not that it is nowhere.
-            for (row, child) in menu.children.iter().enumerate() {
-                let bounds = child.bounds.unwrap().to_rect();
-                assert_eq!(
-                    bounds.height(),
-                    first.height(),
-                    "command {row} of {} keeps its box: {bounds:?}",
-                    menu.children.len()
-                );
-                assert_eq!(bounds.width(), first.width());
-            }
-            assert!(
-                !menu.children[0].state.hidden,
-                "offscreen commands retain semantic focus access"
-            );
-            assert!(tb.focus_synthetic_accessibility(&[menu_child, 0]));
-            let shown = tb.accessibility().unwrap().children[menu_child].children[0]
-                .bounds
-                .unwrap()
-                .to_rect();
-            assert!(
-                shown.y0 >= tb.menu.get_rect().y0 && shown.y1 <= tb.menu.get_rect().y1,
-                "focusing a command scrolls it into the panel, where it is whole: {shown:?}"
-            );
-        }
-    }
-    #[test]
-    fn toolbar_lifecycle_measures_scales_orients_and_reconciles_overflow() {
-        let _settled = crate::motion::testing::settled();
-        {
-            for orientation in [Orientation::Horizontal, Orientation::Vertical] {
-                let mut tb = Toolbar::new(orientation)
-                    .push_button("WWW", || {})
-                    .push_button("iii", || {})
-                    .push_button("共有 العربية e\u{301} 😀", || {})
-                    .push_button("Eine sehr lange übersetzte Aktion", || {});
-                settle(&mut tb, 140.0, 90.0, 1.0);
-                assert!(tb.extents[0].width > tb.extents[1].width);
-                let small = tb.extents.clone();
-                tb.open_menu(true);
-                settle(&mut tb, 140.0, 90.0, 2.0);
-                assert!(tb.extents[2].width > small[2].width);
-                assert!(tb.extents[2].height > small[2].height);
-                assert!(
-                    tb.item_rects
-                        .iter()
-                        .skip(tb.visible_count)
-                        .all(|rect| *rect == Rect::ZERO)
-                );
-                assert!(tb.menu.is_open());
-                assert!(tb.menu.get_rect().x0 >= 0.0 && tb.menu.get_rect().x1 <= 360.0);
-                settle(&mut tb, 2000.0, 1000.0, 2.0);
-                assert!(!tb.has_overflow());
-                assert!(!tb.menu.is_open());
-                assert!(tb.targets().contains(&tb.focus.unwrap()));
-            }
-        }
-
-        {
-            let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_button("A", || {})
-                .push_separator()
-                .push_spacer();
-            settle(&mut tb, 100.0, 45.0, 1.0);
-            let exact = tb.extents[0].width;
-            settle(&mut tb, exact, 45.0, 1.0);
-            assert_eq!(tb.visible_count, 1);
-            assert!(!tb.has_overflow());
-            assert_eq!(tb.overflow_rect, Rect::ZERO);
-            settle(&mut tb, exact - 1.0, 45.0, 1.0);
-            assert!(tb.has_overflow());
-            assert!(tb.menu_indices.iter().all(Option::is_some));
-        }
-
-        {
-            let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_separator()
-                .push_button("One", || {})
-                .push_separator()
-                .push_separator()
-                .push_spacer()
-                .push_button("Two", || {})
-                .push_separator()
-                .push_button("Three", || {})
-                .push_separator();
-            settle(&mut tb, 5.0, 45.0, 1.0);
-            assert_eq!(tb.menu_indices, vec![Some(1), None, Some(5), None, Some(7)]);
-            assert!(tb.overflow_rect.x0 >= tb.rect.x0);
-            tb.open_menu(true);
-            tb.menu.focus_item(4);
-            let width = tb
-                .extents
-                .iter()
-                .take(5)
-                .map(|size| size.width)
-                .sum::<f32>()
-                + tb.gap * 5.0
-                + tb.chip_extent.width;
-            settle(&mut tb, width, 45.0, 1.0);
-            assert!(tb.menu.is_open());
-            assert_eq!(tb.menu_indices, vec![Some(5), None, Some(7)]);
-            assert_eq!(tb.menu.hovered(), Some(2));
-            assert!(tb.menu.get_rect().x0 >= 0.0 && tb.menu.get_rect().x1 <= 360.0);
-        }
-
-        {
-            let mut tb = Toolbar::new(Orientation::Vertical)
-                .push_button("One", || {})
-                .push_separator()
-                .push_button("Two", || {});
-            settle(&mut tb, 120.0, 180.0, 1.0);
-            tb.set_focus(true);
-            key(&mut tb, NamedKey::ArrowDown);
-            assert_eq!(tb.focus, Some(Target::Item(2)));
-            key(&mut tb, NamedKey::ArrowUp);
-            assert_eq!(tb.focus, Some(Target::Item(0)));
-            settle(&mut tb, 120.0, 5.0, 2.0);
-            assert!(tb.has_overflow());
-            assert!(tb.overflow_rect.y0 >= tb.rect.y0 && tb.overflow_rect.y1 <= tb.rect.y1);
-            assert!(tb.item_rects.iter().all(|rect| *rect == Rect::ZERO));
-        }
-    }
-    #[test]
-    fn overflow_popup_dismissal_restores_focus_without_click_through() {
-        let _settled = crate::motion::testing::settled();
-        {
-            let (mut tb, counts) = counted(5);
-            settle(&mut tb, 180.0, 45.0, 1.0);
-            tb.set_focus(true);
-            tb.focus = Some(Target::Overflow);
-            key(&mut tb, NamedKey::Enter);
-            assert!(tb.traps_focus() && tb.wants_pointer_capture());
-            key(&mut tb, NamedKey::Escape);
-            assert!(!tb.traps_focus());
-            assert!(tb.is_focused());
-            assert_eq!(tb.focus, Some(Target::Overflow));
-            key(&mut tb, NamedKey::Enter);
-            let p = tb.item_rects[0].center();
-            cursor(&mut tb, p);
-            mouse(&mut tb, ElementState::Pressed);
-            mouse(&mut tb, ElementState::Released);
-            assert_eq!(*counts.borrow(), vec![0; 5]);
-        }
-
-        {
-            for pointer_open in [false, true] {
-                for relayout in [false, true] {
+            {
+                for route in 0..3 {
                     let (mut tb, counts) = counted(8);
                     settle(&mut tb, 180.0, 45.0, 1.0);
-                    let point = if pointer_open {
-                        tb.overflow_rect.center()
-                    } else {
-                        tb.item_rects[0].center()
-                    };
-                    cursor(&mut tb, point);
-                    if pointer_open {
-                        mouse(&mut tb, ElementState::Pressed);
-                        mouse(&mut tb, ElementState::Released);
-                    } else {
-                        tb.set_focus(true);
-                        while tb.focus != Some(Target::Overflow) {
-                            key(&mut tb, NamedKey::ArrowRight);
+                    tb.set_focus(true);
+                    for index in 0..8 {
+                        if index < tb.visible_count {
+                            match route {
+                                0 => {
+                                    let p = tb.item_rects[index].center();
+                                    cursor(&mut tb, p);
+                                    mouse(&mut tb, ElementState::Pressed);
+                                    mouse(&mut tb, ElementState::Released);
+                                }
+                                1 => {
+                                    tb.focus = Some(Target::Item(index));
+                                    key(&mut tb, NamedKey::Enter);
+                                }
+                                _ => {
+                                    assert!(tb.perform_semantic_action(
+                                        &format!("toolbar.item.{index}"),
+                                        &Action::Activate,
+                                        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                                        &automerge::ROOT
+                                    ));
+                                }
+                            }
+                        } else {
+                            tb.focus = Some(Target::Overflow);
+                            key(&mut tb, NamedKey::Space);
+                            settle(&mut tb, 180.0, 45.0, 1.0);
+                            let row = tb
+                                .menu_indices
+                                .iter()
+                                .position(|entry| *entry == Some(index))
+                                .unwrap();
+                            while tb.menu.hovered() != Some(row) {
+                                key(&mut tb, NamedKey::ArrowDown);
+                            }
+                            match route {
+                                0 => {
+                                    let p = tb.menu.item_rect(row).unwrap().center();
+                                    cursor(&mut tb, p);
+                                    mouse(&mut tb, ElementState::Pressed);
+                                    mouse(&mut tb, ElementState::Released);
+                                }
+                                1 => {
+                                    key(&mut tb, NamedKey::Enter);
+                                }
+                                _ => {
+                                    assert!(tb.perform_semantic_action(
+                                        &format!("toolbar.item.{index}"),
+                                        &Action::Activate,
+                                        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                                        &automerge::ROOT
+                                    ));
+                                }
+                            }
+                            assert!(!tb.menu.is_open());
+                            assert_eq!(tb.focus, Some(Target::Overflow));
                         }
-                        key(&mut tb, NamedKey::Space);
                     }
-                    let hidden = tb.menu_indices[0].unwrap();
-                    let point = tb.menu.item_rect(0).unwrap().center();
-                    assert!(!tb.rect.contains(point));
-                    cursor(&mut tb, point);
-                    mouse(&mut tb, ElementState::Pressed);
-                    mouse(&mut tb, ElementState::Released);
-                    if relayout {
-                        settle(&mut tb, 180.0, 45.0, 1.0);
-                    }
-                    mouse(&mut tb, ElementState::Pressed);
-                    mouse(&mut tb, ElementState::Released);
-                    let mut expected = vec![0; 8];
-                    expected[hidden] = 1;
+                    assert_eq!(*counts.borrow(), vec![1; 8], "route {route}");
+                }
+            }
+
+            {
+                let (mut tb, _) = counted(12);
+                settle(&mut tb, 120.0, 45.0, 1.0);
+                tb.set_focus(true);
+                tb.open_menu(true);
+                let menu_child = tb.targets().len();
+                let node = tb.accessibility().unwrap();
+                assert_eq!(node.children[menu_child].role, Role::Menu);
+                assert!(
+                    node.children[menu_child]
+                        .children
+                        .iter()
+                        .all(|child| child.action_target.is_some())
+                );
+                let last = node.children[menu_child].children.len() - 1;
+                assert!(tb.focus_synthetic_accessibility(&[menu_child, last]));
+                let rect = tb
+                    .synthetic_accessibility_rect(&[menu_child, last])
+                    .unwrap();
+                assert!(rect.y0 >= tb.menu.get_rect().y0 && rect.y1 <= tb.menu.get_rect().y1);
+                assert!(
+                    tb.accessibility().unwrap().children[menu_child].children[last]
+                        .state
+                        .focused
+                );
+            }
+
+            {
+                let (mut tb, _) = counted(12);
+                settle(&mut tb, 180.0, 45.0, 1.0);
+                let node = tb.accessibility().unwrap();
+                for (child, target) in node.children.iter().zip(tb.targets()) {
                     assert_eq!(
-                        *counts.borrow(),
-                        expected,
-                        "pointer_open={pointer_open}, relayout={relayout}"
-                    );
-                    assert!(
-                        !tb.menu.is_open(),
-                        "stale overflow hover must not reopen the menu"
+                        child.bounds.map(|bounds| bounds.to_rect()),
+                        tb.target_rect(target)
                     );
                 }
+                tb.open_menu(true);
+                let menu_child = tb.targets().len();
+                let first = tb.menu.item_rect(0).unwrap();
+                tb.menu.focus_item(tb.menu_indices.len() - 1);
+                let node = tb.accessibility().unwrap();
+                let menu = &node.children[menu_child];
+                assert_eq!(menu.bounds.unwrap().to_rect(), tb.menu.get_rect());
+                // Every command keeps the box it holds in the rows, on screen or scrolled past the
+                // panel's edge: a reader that focuses it says where it is, not that it is nowhere.
+                for (row, child) in menu.children.iter().enumerate() {
+                    let bounds = child.bounds.unwrap().to_rect();
+                    assert_eq!(
+                        bounds.height(),
+                        first.height(),
+                        "command {row} of {} keeps its box: {bounds:?}",
+                        menu.children.len()
+                    );
+                    assert_eq!(bounds.width(), first.width());
+                }
+                assert!(
+                    !menu.children[0].state.hidden,
+                    "offscreen commands retain semantic focus access"
+                );
+                assert!(tb.focus_synthetic_accessibility(&[menu_child, 0]));
+                let shown = tb.accessibility().unwrap().children[menu_child].children[0]
+                    .bounds
+                    .unwrap()
+                    .to_rect();
+                assert!(
+                    shown.y0 >= tb.menu.get_rect().y0 && shown.y1 <= tb.menu.get_rect().y1,
+                    "focusing a command scrolls it into the panel, where it is whole: {shown:?}"
+                );
             }
         }
 
+        phase toolbar_lifecycle_measures_scales_orients_and_reconciles_overflow;
         {
-            for button in [MouseButton::Right, MouseButton::Middle] {
-                let (toolbar, _) = counted(8);
-                let (sibling, count) = counted(1);
-                let mut host = crate::widget::Row::new()
-                    .no_wrap()
-                    .push(Box::new(toolbar))
-                    .push(Box::new(sibling));
-                let mut tree = TaffyTree::new();
-                let mut nodes = HashMap::new();
-                let theme = Theme::dark();
-                let node = host.build_layout(&mut tree, &theme, &mut nodes);
-                let children = tree.children(node).unwrap();
-                for (child, width) in children.iter().zip([180.0, 150.0]) {
-                    let mut style = tree.style(*child).unwrap().clone();
-                    style.size = Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(45.0),
-                    };
-                    tree.set_style(*child, style).unwrap();
+            let _settled = crate::motion::testing::settled();
+            {
+                for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+                    let mut tb = Toolbar::new(orientation)
+                        .push_button("WWW", || {})
+                        .push_button("iii", || {})
+                        .push_button("共有 العربية e\u{301} 😀", || {})
+                        .push_button("Eine sehr lange übersetzte Aktion", || {});
+                    settle(&mut tb, 140.0, 90.0, 1.0);
+                    assert!(tb.extents[0].width > tb.extents[1].width);
+                    let small = tb.extents.clone();
+                    tb.open_menu(true);
+                    settle(&mut tb, 140.0, 90.0, 2.0);
+                    assert!(tb.extents[2].width > small[2].width);
+                    assert!(tb.extents[2].height > small[2].height);
+                    assert!(
+                        tb.item_rects
+                            .iter()
+                            .skip(tb.visible_count)
+                            .all(|rect| *rect == Rect::ZERO)
+                    );
+                    assert!(tb.menu.is_open());
+                    assert!(tb.menu.get_rect().x0 >= 0.0 && tb.menu.get_rect().x1 <= 360.0);
+                    settle(&mut tb, 2000.0, 1000.0, 2.0);
+                    assert!(!tb.has_overflow());
+                    assert!(!tb.menu.is_open());
+                    assert!(tb.targets().contains(&tb.focus.unwrap()));
                 }
-                let mut text = TextRenderer::new();
-                let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
-                unsafe {
-                    bindings.rebuild(&host, &tree, node, &nodes);
-                    crate::widget::compute_widget_layout(
-                        &mut tree,
-                        node,
-                        Size {
-                            width: taffy::AvailableSpace::Definite(360.0),
-                            height: taffy::AvailableSpace::Definite(220.0),
-                        },
-                        &nodes,
-                        &bindings,
+            }
+
+            {
+                let mut tb = Toolbar::new(Orientation::Horizontal)
+                    .push_button("A", || {})
+                    .push_separator()
+                    .push_spacer();
+                settle(&mut tb, 100.0, 45.0, 1.0);
+                let exact = tb.extents[0].width;
+                settle(&mut tb, exact, 45.0, 1.0);
+                assert_eq!(tb.visible_count, 1);
+                assert!(!tb.has_overflow());
+                assert_eq!(tb.overflow_rect, Rect::ZERO);
+                settle(&mut tb, exact - 1.0, 45.0, 1.0);
+                assert!(tb.has_overflow());
+                assert!(tb.menu_indices.iter().all(Option::is_some));
+            }
+
+            {
+                let mut tb = Toolbar::new(Orientation::Horizontal)
+                    .push_separator()
+                    .push_button("One", || {})
+                    .push_separator()
+                    .push_separator()
+                    .push_spacer()
+                    .push_button("Two", || {})
+                    .push_separator()
+                    .push_button("Three", || {})
+                    .push_separator();
+                settle(&mut tb, 5.0, 45.0, 1.0);
+                assert_eq!(tb.menu_indices, vec![Some(1), None, Some(5), None, Some(7)]);
+                assert!(tb.overflow_rect.x0 >= tb.rect.x0);
+                tb.open_menu(true);
+                tb.menu.focus_item(4);
+                let width = tb
+                    .extents
+                    .iter()
+                    .take(5)
+                    .map(|size| size.width)
+                    .sum::<f32>()
+                    + tb.gap * 5.0
+                    + tb.chip_extent.width;
+                settle(&mut tb, width, 45.0, 1.0);
+                assert!(tb.menu.is_open());
+                assert_eq!(tb.menu_indices, vec![Some(5), None, Some(7)]);
+                assert_eq!(tb.menu.hovered(), Some(2));
+                assert!(tb.menu.get_rect().x0 >= 0.0 && tb.menu.get_rect().x1 <= 360.0);
+            }
+
+            {
+                let mut tb = Toolbar::new(Orientation::Vertical)
+                    .push_button("One", || {})
+                    .push_separator()
+                    .push_button("Two", || {});
+                settle(&mut tb, 120.0, 180.0, 1.0);
+                tb.set_focus(true);
+                key(&mut tb, NamedKey::ArrowDown);
+                assert_eq!(tb.focus, Some(Target::Item(2)));
+                key(&mut tb, NamedKey::ArrowUp);
+                assert_eq!(tb.focus, Some(Target::Item(0)));
+                settle(&mut tb, 120.0, 5.0, 2.0);
+                assert!(tb.has_overflow());
+                assert!(tb.overflow_rect.y0 >= tb.rect.y0 && tb.overflow_rect.y1 <= tb.rect.y1);
+                assert!(tb.item_rects.iter().all(|rect| *rect == Rect::ZERO));
+            }
+        }
+
+        phase overflow_popup_dismissal_restores_focus_without_click_through;
+        {
+            let _settled = crate::motion::testing::settled();
+            {
+                let (mut tb, counts) = counted(5);
+                settle(&mut tb, 180.0, 45.0, 1.0);
+                tb.set_focus(true);
+                tb.focus = Some(Target::Overflow);
+                key(&mut tb, NamedKey::Enter);
+                assert!(tb.traps_focus() && tb.wants_pointer_capture());
+                key(&mut tb, NamedKey::Escape);
+                assert!(!tb.traps_focus());
+                assert!(tb.is_focused());
+                assert_eq!(tb.focus, Some(Target::Overflow));
+                key(&mut tb, NamedKey::Enter);
+                let p = tb.item_rects[0].center();
+                cursor(&mut tb, p);
+                mouse(&mut tb, ElementState::Pressed);
+                mouse(&mut tb, ElementState::Released);
+                assert_eq!(*counts.borrow(), vec![0; 5]);
+            }
+
+            {
+                for pointer_open in [false, true] {
+                    for relayout in [false, true] {
+                        let (mut tb, counts) = counted(8);
+                        settle(&mut tb, 180.0, 45.0, 1.0);
+                        let point = if pointer_open {
+                            tb.overflow_rect.center()
+                        } else {
+                            tb.item_rects[0].center()
+                        };
+                        cursor(&mut tb, point);
+                        if pointer_open {
+                            mouse(&mut tb, ElementState::Pressed);
+                            mouse(&mut tb, ElementState::Released);
+                        } else {
+                            tb.set_focus(true);
+                            while tb.focus != Some(Target::Overflow) {
+                                key(&mut tb, NamedKey::ArrowRight);
+                            }
+                            key(&mut tb, NamedKey::Space);
+                        }
+                        let hidden = tb.menu_indices[0].unwrap();
+                        let point = tb.menu.item_rect(0).unwrap().center();
+                        assert!(!tb.rect.contains(point));
+                        cursor(&mut tb, point);
+                        mouse(&mut tb, ElementState::Pressed);
+                        mouse(&mut tb, ElementState::Released);
+                        if relayout {
+                            settle(&mut tb, 180.0, 45.0, 1.0);
+                        }
+                        mouse(&mut tb, ElementState::Pressed);
+                        mouse(&mut tb, ElementState::Released);
+                        let mut expected = vec![0; 8];
+                        expected[hidden] = 1;
+                        assert_eq!(
+                            *counts.borrow(),
+                            expected,
+                            "pointer_open={pointer_open}, relayout={relayout}"
+                        );
+                        assert!(
+                            !tb.menu.is_open(),
+                            "stale overflow hover must not reopen the menu"
+                        );
+                    }
+                }
+            }
+
+            {
+                for button in [MouseButton::Right, MouseButton::Middle] {
+                    let (toolbar, _) = counted(8);
+                    let (sibling, count) = counted(1);
+                    let mut host = crate::widget::Row::new()
+                        .no_wrap()
+                        .push(Box::new(toolbar))
+                        .push(Box::new(sibling));
+                    let mut tree = TaffyTree::new();
+                    let mut nodes = HashMap::new();
+                    let theme = Theme::dark();
+                    let node = host.build_layout(&mut tree, &theme, &mut nodes);
+                    let children = tree.children(node).unwrap();
+                    for (child, width) in children.iter().zip([180.0, 150.0]) {
+                        let mut style = tree.style(*child).unwrap().clone();
+                        style.size = Size {
+                            width: Dimension::length(width),
+                            height: Dimension::length(45.0),
+                        };
+                        tree.set_style(*child, style).unwrap();
+                    }
+                    let mut text = TextRenderer::new();
+                    let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
+                    unsafe {
+                        bindings.rebuild(&host, &tree, node, &nodes);
+                        crate::widget::compute_widget_layout(
+                            &mut tree,
+                            node,
+                            Size {
+                                width: taffy::AvailableSpace::Definite(360.0),
+                                height: taffy::AvailableSpace::Definite(220.0),
+                            },
+                            &nodes,
+                            &bindings,
+                            &mut text,
+                        )
+                        .unwrap();
+                    }
+                    host.apply_layout(&tree, node, Point::ZERO);
+                    let presence = PresenceCtx::default();
+                    presence
+                        .viewport
+                        .set(Some(Rect::new(0.0, 0.0, 360.0, 220.0)));
+                    host.draw(
+                        &mut Scene::new(),
+                        Affine::IDENTITY,
                         &mut text,
-                    )
-                    .unwrap();
+                        &theme,
+                        &presence,
+                    );
+                    assert!(host.children_mut()[0].perform_semantic_action(
+                        "toolbar.overflow",
+                        &Action::Activate,
+                        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                        &automerge::ROOT
+                    ));
+                    drain_native_controls(&mut host);
+                    let send = |host: &mut crate::widget::Row, event: WindowEvent| {
+                        crate::testing::Dispatch::new()
+                            .layout(&tree, node)
+                            .send(host, &event);
+                    };
+                    let mouse_event =
+                        |button, state| crate::synthetic_input::mouse_input(state, button);
+                    send(&mut host, mouse_event(button, ElementState::Pressed));
+                    send(&mut host, mouse_event(button, ElementState::Released));
+                    send(&mut host, key_event(NamedKey::Escape));
+                    assert!(
+                        !host.wants_pointer_capture(),
+                        "{button:?} must not leave capture stuck"
+                    );
+                    let point = host.children()[1]
+                        .synthetic_accessibility_rect(&[0])
+                        .unwrap()
+                        .center();
+                    send(
+                        &mut host,
+                        crate::synthetic_input::cursor_moved(point.x, point.y),
+                    );
+                    send(
+                        &mut host,
+                        mouse_event(MouseButton::Left, ElementState::Pressed),
+                    );
+                    send(
+                        &mut host,
+                        mouse_event(MouseButton::Left, ElementState::Released),
+                    );
+                    assert_eq!(
+                        *count.borrow(),
+                        vec![1],
+                        "next sibling click must arrive through Row"
+                    );
                 }
-                host.apply_layout(&tree, node, Point::ZERO);
-                let presence = PresenceCtx::default();
-                presence
-                    .viewport
-                    .set(Some(Rect::new(0.0, 0.0, 360.0, 220.0)));
-                host.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &presence,
-                );
-                assert!(host.children_mut()[0].perform_semantic_action(
-                    "toolbar.overflow",
-                    &Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                    &automerge::ROOT
-                ));
-                drain_native_controls(&mut host);
-                let send = |host: &mut crate::widget::Row, event: WindowEvent| {
-                    crate::testing::Dispatch::new()
-                        .layout(&tree, node)
-                        .send(host, &event);
-                };
-                let mouse_event =
-                    |button, state| crate::synthetic_input::mouse_input(state, button);
-                send(&mut host, mouse_event(button, ElementState::Pressed));
-                send(&mut host, mouse_event(button, ElementState::Released));
-                send(&mut host, key_event(NamedKey::Escape));
-                assert!(
-                    !host.wants_pointer_capture(),
-                    "{button:?} must not leave capture stuck"
-                );
-                let point = host.children()[1]
-                    .synthetic_accessibility_rect(&[0])
-                    .unwrap()
-                    .center();
-                send(
-                    &mut host,
-                    crate::synthetic_input::cursor_moved(point.x, point.y),
-                );
-                send(
-                    &mut host,
-                    mouse_event(MouseButton::Left, ElementState::Pressed),
-                );
-                send(
-                    &mut host,
-                    mouse_event(MouseButton::Left, ElementState::Released),
-                );
-                assert_eq!(
-                    *count.borrow(),
-                    vec![1],
-                    "next sibling click must arrive through Row"
-                );
             }
         }
     }
@@ -3509,146 +3519,150 @@ mod command_state_tests {
         }
     }
 
-    #[test]
-    fn icon_toggles_disabled_commands_and_labels_follow_the_model() {
-        let _settled = crate::motion::testing::settled();
-        let ran = Rc::new(Cell::new(0));
-        let r = Rc::clone(&ran);
-        let mut tb = Toolbar::new(Orientation::Horizontal)
-            .push_icon_toggle(Icon::List, "Show outline", true, move || r.set(r.get() + 1))
-            .push_button("Reset", || {})
-            .push_toggle("Aa", false, || {})
-            .with_accessible_name("Match case");
-        lay(&mut tb, 600.0);
-        let node = Widget::accessibility(&tb).unwrap();
-        assert_eq!(node.children[0].role, Role::ToggleButton);
-        assert_eq!(node.children[0].state.checked, Some(true));
-        assert_eq!(node.children[2].name.as_deref(), Some("Match case"));
-        tb.set_enabled(1, false);
-        let node = Widget::accessibility(&tb).unwrap();
-        assert!(node.children[1].state.disabled);
-        let reset = tb.item_rect(1).unwrap();
-        click(&mut tb, reset.center());
-        assert_eq!(tb.take_activated(), None);
-        let toggle = tb.item_rect(0).unwrap();
-        click(&mut tb, toggle.center());
-        assert_eq!(ran.get(), 1);
-        assert_eq!(tb.take_activated(), Some(0));
-        assert_eq!(tb.take_activated(), None, "once");
-        let before = tb.item_rect(1).unwrap().width();
-        tb.set_label(1, "Reset all adjustments");
-        lay(&mut tb, 600.0);
-        assert!(tb.item_rect(1).unwrap().width() > before);
-        tb.set_dot(0, true);
-        let mut scene = Scene::new();
-        tb.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-    }
+    tilo_test_env::scenario! {
+        fn commands_show_their_state_and_give_way_by_priority;
 
-    #[test]
-    fn priority_keeps_a_pair_together_and_the_more_menu_shows_state() {
-        let _settled = crate::motion::testing::settled();
-        let mut tb = Toolbar::new(Orientation::Horizontal)
-            .push_button("Insert table", || {})
-            .with_priority(-1)
-            .push_button("Insert image", || {})
-            .with_priority(-1)
-            .push_icon(Icon::Minus, "Zoom out", || {})
-            .with_priority(1)
-            .push_icon(Icon::Plus, "Zoom in", || {})
-            .with_priority(1)
-            .push_icon_toggle(Icon::Eye, "Preview", true, || {});
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let full = tb.intrinsic_size(&mut text, &theme).width;
-        // Narrow enough that something must give.
-        lay(&mut tb, full - 40.0);
-        assert!(tb.has_overflow());
-        assert!(
-            tb.item_rect(2).is_some() && tb.item_rect(3).is_some(),
-            "the zoom pair stays"
-        );
-        assert!(
-            tb.item_rect(0).is_none() || tb.item_rect(1).is_none(),
-            "the low priority gives way"
-        );
-        let shown = (0..5).filter(|i| tb.item_rect(*i).is_some()).count();
-        assert_eq!(shown + tb.menu_indices.iter().flatten().count(), 5);
-        lay(&mut tb, 120.0);
-        tb.open_overflow();
-        assert!(tb.is_overflow_open());
-        let preview = tb
-            .menu_indices
-            .iter()
-            .position(|i| *i == Some(4))
-            .and_then(|row| tb.menu.items().get(row))
-            .and_then(MenuItem::checked);
-        assert_eq!(preview, Some(true));
-    }
-
-    #[test]
-    fn joined_commands_give_way_together() {
-        let _settled = crate::motion::testing::settled();
-        let mut tb = Toolbar::new(Orientation::Horizontal)
-            .push_button("Compile", || {})
-            .push_icon(Icon::Minus, "Zoom out", || {})
-            .push_icon(Icon::Plus, "Zoom in", || {})
-            .joined();
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let full = tb.intrinsic_size(&mut text, &theme).width;
-        for width in (60..(full as i32 + 10)).step_by(4) {
-            lay(&mut tb, f64::from(width));
-            assert_eq!(
-                tb.item_rect(1).is_some(),
-                tb.item_rect(2).is_some(),
-                "at {width} px the pair stands or folds together"
+        phase icon_toggles_disabled_commands_and_labels_follow_the_model;
+        {
+            let _settled = crate::motion::testing::settled();
+            let ran = Rc::new(Cell::new(0));
+            let r = Rc::clone(&ran);
+            let mut tb = Toolbar::new(Orientation::Horizontal)
+                .push_icon_toggle(Icon::List, "Show outline", true, move || r.set(r.get() + 1))
+                .push_button("Reset", || {})
+                .push_toggle("Aa", false, || {})
+                .with_accessible_name("Match case");
+            lay(&mut tb, 600.0);
+            let node = Widget::accessibility(&tb).unwrap();
+            assert_eq!(node.children[0].role, Role::ToggleButton);
+            assert_eq!(node.children[0].state.checked, Some(true));
+            assert_eq!(node.children[2].name.as_deref(), Some("Match case"));
+            tb.set_enabled(1, false);
+            let node = Widget::accessibility(&tb).unwrap();
+            assert!(node.children[1].state.disabled);
+            let reset = tb.item_rect(1).unwrap();
+            click(&mut tb, reset.center());
+            assert_eq!(tb.take_activated(), None);
+            let toggle = tb.item_rect(0).unwrap();
+            click(&mut tb, toggle.center());
+            assert_eq!(ran.get(), 1);
+            assert_eq!(tb.take_activated(), Some(0));
+            assert_eq!(tb.take_activated(), None, "once");
+            let before = tb.item_rect(1).unwrap().width();
+            tb.set_label(1, "Reset all adjustments");
+            lay(&mut tb, 600.0);
+            assert!(tb.item_rect(1).unwrap().width() > before);
+            tb.set_dot(0, true);
+            let mut scene = Scene::new();
+            tb.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
             );
         }
-    }
 
-    #[test]
-    fn a_menu_command_opens_its_menu_under_itself() {
-        let _settled = crate::motion::testing::settled();
-        let sorted = Rc::new(Cell::new(false));
-        let mut tb = Toolbar::new(Orientation::Horizontal).push_menu(
-            "Sort",
-            vec![
-                MenuItem::action("By name", || {}),
-                MenuItem::action("By date", || {}),
-            ],
-        );
-        lay(&mut tb, 400.0);
-        tb.viewport = Some(Rect::new(0.0, 0.0, 400.0, 400.0));
-        let sort = tb.item_rect(0).unwrap();
-        click(&mut tb, sort.center());
-        let (index, menu) = tb.item_menu.as_ref().expect("the command's menu opens");
-        assert_eq!(*index, 0);
-        assert!(menu.get_rect().y0 >= sort.y1 - 0.5, "under the command");
-        let node = Widget::accessibility(&tb).unwrap();
-        assert_eq!(node.children[0].state.expanded, Some(true));
-        let _ = sorted;
-    }
+        phase priority_keeps_a_pair_together_and_the_more_menu_shows_state;
+        {
+            let _settled = crate::motion::testing::settled();
+            let mut tb = Toolbar::new(Orientation::Horizontal)
+                .push_button("Insert table", || {})
+                .with_priority(-1)
+                .push_button("Insert image", || {})
+                .with_priority(-1)
+                .push_icon(Icon::Minus, "Zoom out", || {})
+                .with_priority(1)
+                .push_icon(Icon::Plus, "Zoom in", || {})
+                .with_priority(1)
+                .push_icon_toggle(Icon::Eye, "Preview", true, || {});
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let full = tb.intrinsic_size(&mut text, &theme).width;
+            // Narrow enough that something must give.
+            lay(&mut tb, full - 40.0);
+            assert!(tb.has_overflow());
+            assert!(
+                tb.item_rect(2).is_some() && tb.item_rect(3).is_some(),
+                "the zoom pair stays"
+            );
+            assert!(
+                tb.item_rect(0).is_none() || tb.item_rect(1).is_none(),
+                "the low priority gives way"
+            );
+            let shown = (0..5).filter(|i| tb.item_rect(*i).is_some()).count();
+            assert_eq!(shown + tb.menu_indices.iter().flatten().count(), 5);
+            lay(&mut tb, 120.0);
+            tb.open_overflow();
+            assert!(tb.is_overflow_open());
+            let preview = tb
+                .menu_indices
+                .iter()
+                .position(|i| *i == Some(4))
+                .and_then(|row| tb.menu.items().get(row))
+                .and_then(MenuItem::checked);
+            assert_eq!(preview, Some(true));
+        }
 
-    #[test]
-    fn layout_from_cached_measurements_needs_no_renderer() {
-        let _settled = crate::motion::testing::settled();
-        let mut tb = Toolbar::new(Orientation::Horizontal)
-            .push_button("Bold", || {})
-            .push_button("Italic", || {});
-        let theme = Theme::dark();
-        tb.lay_out_at(Rect::new(0.0, 0.0, 400.0, 40.0), &theme);
-        let first = tb.item_rect(1).unwrap();
-        tb.lay_out_at(Rect::new(20.0, 0.0, 420.0, 40.0), &theme);
-        let moved = tb.item_rect(1).unwrap();
-        assert!((moved.x0 - first.x0 - 20.0).abs() < 1e-9);
-        assert!(!Widget::is_layout_dirty(&tb), "nothing changed since");
-        tb.set_label(0, "Bold text");
-        assert!(Widget::is_layout_dirty(&tb));
+        phase joined_commands_give_way_together;
+        {
+            let _settled = crate::motion::testing::settled();
+            let mut tb = Toolbar::new(Orientation::Horizontal)
+                .push_button("Compile", || {})
+                .push_icon(Icon::Minus, "Zoom out", || {})
+                .push_icon(Icon::Plus, "Zoom in", || {})
+                .joined();
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let full = tb.intrinsic_size(&mut text, &theme).width;
+            for width in (60..(full as i32 + 10)).step_by(4) {
+                lay(&mut tb, f64::from(width));
+                assert_eq!(
+                    tb.item_rect(1).is_some(),
+                    tb.item_rect(2).is_some(),
+                    "at {width} px the pair stands or folds together"
+                );
+            }
+        }
+
+        phase a_menu_command_opens_its_menu_under_itself;
+        {
+            let _settled = crate::motion::testing::settled();
+            let sorted = Rc::new(Cell::new(false));
+            let mut tb = Toolbar::new(Orientation::Horizontal).push_menu(
+                "Sort",
+                vec![
+                    MenuItem::action("By name", || {}),
+                    MenuItem::action("By date", || {}),
+                ],
+            );
+            lay(&mut tb, 400.0);
+            tb.viewport = Some(Rect::new(0.0, 0.0, 400.0, 400.0));
+            let sort = tb.item_rect(0).unwrap();
+            click(&mut tb, sort.center());
+            let (index, menu) = tb.item_menu.as_ref().expect("the command's menu opens");
+            assert_eq!(*index, 0);
+            assert!(menu.get_rect().y0 >= sort.y1 - 0.5, "under the command");
+            let node = Widget::accessibility(&tb).unwrap();
+            assert_eq!(node.children[0].state.expanded, Some(true));
+            let _ = sorted;
+        }
+
+        phase layout_from_cached_measurements_needs_no_renderer;
+        {
+            let _settled = crate::motion::testing::settled();
+            let mut tb = Toolbar::new(Orientation::Horizontal)
+                .push_button("Bold", || {})
+                .push_button("Italic", || {});
+            let theme = Theme::dark();
+            tb.lay_out_at(Rect::new(0.0, 0.0, 400.0, 40.0), &theme);
+            let first = tb.item_rect(1).unwrap();
+            tb.lay_out_at(Rect::new(20.0, 0.0, 420.0, 40.0), &theme);
+            let moved = tb.item_rect(1).unwrap();
+            assert!((moved.x0 - first.x0 - 20.0).abs() < 1e-9);
+            assert!(!Widget::is_layout_dirty(&tb), "nothing changed since");
+            tb.set_label(0, "Bold text");
+            assert!(Widget::is_layout_dirty(&tb));
+        }
     }
 }

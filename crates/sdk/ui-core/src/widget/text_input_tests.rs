@@ -186,89 +186,93 @@ mod multiline;
 #[path = "text_input_pointer_tests.rs"]
 mod pointer;
 
-/// The field a command opens takes the keyboard once, and never asks again: a person who
-/// points elsewhere keeps the keyboard where they put it.
-#[test]
-fn a_field_that_asks_for_the_keyboard_asks_once() {
-    let mut field = TextInput::local()
-        .with_placeholder("New task")
-        .wants_focus();
-    assert_eq!(
-        field.take_focus_request().as_deref(),
-        Some(field.test_id().unwrap_or_default()),
-        "it asks as the window lays it out"
-    );
-    assert_eq!(
-        field.take_focus_request(),
-        None,
-        "and keeps its place after"
-    );
-    let mut quiet = TextInput::local().with_placeholder("New task");
-    assert_eq!(
-        quiet.take_focus_request(),
-        None,
-        "a field that says nothing asks nothing"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_field_asks_names_and_shows_what_it_holds;
 
-#[test]
-fn a_large_title_field_shows_its_pages_title_and_a_body_field_does_not() {
-    let field = |role: TextRole| {
-        TextInput::local()
-            .with_initial_value("Call the landlord about the boiler")
-            .with_text_role(role)
-    };
-    assert_eq!(
-        Widget::own_page_title(&field(TextRole::LargeTitle)).as_deref(),
-        Some("Call the landlord about the boiler"),
-        "the page's title is the words its large-title field shows"
-    );
-    assert_eq!(
-        Widget::own_page_title(&field(TextRole::Body)),
-        None,
-        "a field of the body is no heading, however it is worded"
-    );
-    assert_eq!(
-        Widget::own_page_title(&TextInput::local().with_text_role(TextRole::LargeTitle)),
-        None,
-        "a blank title names nothing"
-    );
-}
+    phase a_field_that_asks_for_the_keyboard_asks_once;
+    // The field a command opens takes the keyboard once, and never asks again: a person who
+    // points elsewhere keeps the keyboard where they put it.
+    {
+        let mut field = TextInput::local()
+            .with_placeholder("New task")
+            .wants_focus();
+        assert_eq!(
+            field.take_focus_request().as_deref(),
+            Some(field.test_id().unwrap_or_default()),
+            "it asks as the window lays it out"
+        );
+        assert_eq!(
+            field.take_focus_request(),
+            None,
+            "and keeps its place after"
+        );
+        let mut quiet = TextInput::local().with_placeholder("New task");
+        assert_eq!(
+            quiet.take_focus_request(),
+            None,
+            "a field that says nothing asks nothing"
+        );
+    }
 
-/// A one-line field is as wide as its text plus [`TextInput::field_room`] before it scrolls: at
-/// that width the whole value shows, from its first letter; anything narrower scrolls to the
-/// caret and cuts the start off.
-#[test]
-fn a_field_given_its_text_and_its_room_shows_all_of_it() {
-    let _settled = crate::motion::testing::settled();
-    let theme = Theme::dark();
-    let mut input = TextInput::local().with_initial_value("Meeting notes");
-    input.set_focus(true);
-    input.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 40.0));
-    draw_with_theme(&mut input, &theme);
-    let text_w = *input
-        .char_x_positions()
-        .last()
-        .expect("the value is measured");
-    assert!(text_w > 20.0, "fixture: the name is measured: {text_w}");
-    let room = input.field_room(&theme);
-    assert!(
-        room > 4.0,
-        "a field keeps its inset on both edges and its carets: {room}"
-    );
+    phase a_large_title_field_shows_its_pages_title_and_a_body_field_does_not;
+    {
+        let field = |role: TextRole| {
+            TextInput::local()
+                .with_initial_value("Call the landlord about the boiler")
+                .with_text_role(role)
+        };
+        assert_eq!(
+            Widget::own_page_title(&field(TextRole::LargeTitle)).as_deref(),
+            Some("Call the landlord about the boiler"),
+            "the page's title is the words its large-title field shows"
+        );
+        assert_eq!(
+            Widget::own_page_title(&field(TextRole::Body)),
+            None,
+            "a field of the body is no heading, however it is worded"
+        );
+        assert_eq!(
+            Widget::own_page_title(&TextInput::local().with_text_role(TextRole::LargeTitle)),
+            None,
+            "a blank title names nothing"
+        );
+    }
 
-    input.apply_layout_external(Rect::new(0.0, 0.0, text_w + room, 40.0));
-    draw_with_theme(&mut input, &theme);
-    assert_eq!(
-        input.scroll_x(),
-        0.0,
-        "the field's own room shows the name whole, from its first letter"
-    );
+    phase a_field_given_its_text_and_its_room_shows_all_of_it;
+    // A one-line field is as wide as its text plus [`TextInput::field_room`] before it scrolls: at
+    // that width the whole value shows, from its first letter; anything narrower scrolls to the
+    // caret and cuts the start off.
+    {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark();
+        let mut input = TextInput::local().with_initial_value("Meeting notes");
+        input.set_focus(true);
+        input.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 40.0));
+        draw_with_theme(&mut input, &theme);
+        let text_w = *input
+            .char_x_positions()
+            .last()
+            .expect("the value is measured");
+        assert!(text_w > 20.0, "fixture: the name is measured: {text_w}");
+        let room = input.field_room(&theme);
+        assert!(
+            room > 4.0,
+            "a field keeps its inset on both edges and its carets: {room}"
+        );
 
-    input.apply_layout_external(Rect::new(0.0, 0.0, text_w + 4.0, 40.0));
-    draw_with_theme(&mut input, &theme);
-    assert!(
-        input.scroll_x() > 0.0,
-        "narrower than its room, the field scrolls to the caret"
-    );
+        input.apply_layout_external(Rect::new(0.0, 0.0, text_w + room, 40.0));
+        draw_with_theme(&mut input, &theme);
+        assert_eq!(
+            input.scroll_x(),
+            0.0,
+            "the field's own room shows the name whole, from its first letter"
+        );
+
+        input.apply_layout_external(Rect::new(0.0, 0.0, text_w + 4.0, 40.0));
+        draw_with_theme(&mut input, &theme);
+        assert!(
+            input.scroll_x() > 0.0,
+            "narrower than its room, the field scrolls to the caret"
+        );
+    }
 }

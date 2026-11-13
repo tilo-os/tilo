@@ -426,118 +426,122 @@ mod tests {
         Rect::new(0.0, 0.0, 800.0, 40.0)
     }
 
-    #[test]
-    fn a_folded_cards_collapse_control_points_up() {
-        assert_eq!(Resize::of_window(false, true, false), Resize::Snap);
-        assert_eq!(Resize::of_window(false, true, true), Resize::Expand);
-        assert_eq!(
-            WindowControl::Minimize.icon(Resize::Snap),
-            icons::Icon::ChevronDown
-        );
-        assert_eq!(
-            WindowControl::Minimize.icon(Resize::Expand),
-            icons::Icon::ChevronUp
-        );
-        assert_eq!(
-            WindowControl::Minimize.name_key(Resize::Expand),
-            "host-window-expand"
-        );
-        assert_eq!(
-            WindowControl::Minimize.name_key(Resize::Snap),
-            "host-window-collapse"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn window_controls_stand_in_one_pill_past_the_content;
 
-    #[test]
-    fn close_is_outermost_and_both_controls_share_one_pill() {
-        let c = WindowControls::lay_out(row());
-        assert!(c.close.x1 < row().x1 && c.close.x1 > row().x1 - 2.0 * EDGE_INSET);
-        assert!(c.maximize.x1 <= c.close.x0, "maximize stands before close");
-        assert_eq!(c.iter().count(), 2);
-        assert!(
-            c.pill.contains(c.maximize.center()) && c.pill.contains(c.close.center()),
-            "both controls stand inside the one pill",
-        );
-        assert_eq!(c.pill.x1, row().x1 - EDGE_INSET);
-        assert!(
-            (c.pill.height() - (CONTROL_PX + 2.0 * PILL_PAD)).abs() < f64::EPSILON,
-            "the pill is a bar control tall on each side",
-        );
-        assert!(
-            (c.pill.center().y - row().center().y).abs() < f64::EPSILON,
-            "the pill is centred on the tab row",
-        );
-        assert!(
-            (c.pill.width() - (2.0 * CONTROL_PX + 3.0 * PILL_PAD)).abs() < f64::EPSILON,
-            "two faces and the padding around and between them",
-        );
-    }
+        phase a_folded_cards_collapse_control_points_up;
+        {
+            assert_eq!(Resize::of_window(false, true, false), Resize::Snap);
+            assert_eq!(Resize::of_window(false, true, true), Resize::Expand);
+            assert_eq!(
+                WindowControl::Minimize.icon(Resize::Snap),
+                icons::Icon::ChevronDown
+            );
+            assert_eq!(
+                WindowControl::Minimize.icon(Resize::Expand),
+                icons::Icon::ChevronUp
+            );
+            assert_eq!(
+                WindowControl::Minimize.name_key(Resize::Expand),
+                "host-window-expand"
+            );
+            assert_eq!(
+                WindowControl::Minimize.name_key(Resize::Snap),
+                "host-window-collapse"
+            );
+        }
 
-    #[test]
-    fn a_window_that_is_not_ones_to_close_keeps_one_control_in_a_round_pill() {
-        let c = WindowControls::lay_out(row());
-        let held = c.without_close();
-        assert_eq!(held.iter().count(), 1);
-        assert_eq!(held.close, Rect::ZERO);
-        assert_eq!(
-            held.maximize, c.close,
-            "the outermost control stays outermost"
-        );
-        assert!(
-            (held.pill.width() - held.pill.height()).abs() < f64::EPSILON,
-            "one control's pill is a round pill",
-        );
-        assert!(held.content_limit(row()) > c.content_limit(row()));
-        assert_eq!(held.hit(c.close.center()), Some(WindowControl::Maximize));
-    }
+        phase close_is_outermost_and_both_controls_share_one_pill;
+        {
+            let c = WindowControls::lay_out(row());
+            assert!(c.close.x1 < row().x1 && c.close.x1 > row().x1 - 2.0 * EDGE_INSET);
+            assert!(c.maximize.x1 <= c.close.x0, "maximize stands before close");
+            assert_eq!(c.iter().count(), 2);
+            assert!(
+                c.pill.contains(c.maximize.center()) && c.pill.contains(c.close.center()),
+                "both controls stand inside the one pill",
+            );
+            assert_eq!(c.pill.x1, row().x1 - EDGE_INSET);
+            assert!(
+                (c.pill.height() - (CONTROL_PX + 2.0 * PILL_PAD)).abs() < f64::EPSILON,
+                "the pill is a bar control tall on each side",
+            );
+            assert!(
+                (c.pill.center().y - row().center().y).abs() < f64::EPSILON,
+                "the pill is centred on the tab row",
+            );
+            assert!(
+                (c.pill.width() - (2.0 * CONTROL_PX + 3.0 * PILL_PAD)).abs() < f64::EPSILON,
+                "two faces and the padding around and between them",
+            );
+        }
 
-    #[test]
-    fn content_stops_before_the_controls() {
-        let c = WindowControls::lay_out(row());
-        assert!(c.content_limit(row()) <= c.pill.x0 - LEAD_GAP + f64::EPSILON);
-        assert_eq!(c.hit(c.close.center()), Some(WindowControl::Close));
-        assert_eq!(c.hit(c.maximize.center()), Some(WindowControl::Maximize));
-        assert_eq!(c.hit(Point::new(10.0, 22.0)), None);
-        assert!(c.on_pill(Point::new(c.pill.x0 + 1.0, c.pill.center().y)));
-        assert!(!c.on_pill(Point::new(10.0, 22.0)));
-    }
+        phase a_window_that_is_not_ones_to_close_keeps_one_control_in_a_round_pill;
+        {
+            let c = WindowControls::lay_out(row());
+            let held = c.without_close();
+            assert_eq!(held.iter().count(), 1);
+            assert_eq!(held.close, Rect::ZERO);
+            assert_eq!(
+                held.maximize, c.close,
+                "the outermost control stays outermost"
+            );
+            assert!(
+                (held.pill.width() - held.pill.height()).abs() < f64::EPSILON,
+                "one control's pill is a round pill",
+            );
+            assert!(held.content_limit(row()) > c.content_limit(row()));
+            assert_eq!(held.hit(c.close.center()), Some(WindowControl::Maximize));
+        }
 
-    #[test]
-    fn the_window_s_controls_stand_in_one_pill_inside_its_bar() {
-        let bar = Rect::new(0.0, 0.0, 800.0, crate::widget::tabs::TAB_BAR_HEIGHT);
-        let controls = Rect::new(700.0, 8.0, 788.0, 36.0);
-        let pill = WindowControls::around(bar, controls);
-        assert!(
-            pill.contains(controls.center()) && pill.area() > controls.area(),
-            "the pill holds the controls with room around them: {pill:?} for {controls:?}"
-        );
-        assert!(pill.height() <= bar.height() + f64::EPSILON);
-        assert!(
-            (pill.x1 - (bar.x1 - EDGE_INSET)).abs() < f64::EPSILON,
-            "the pill stands the window's own inset from its trailing edge: {pill:?}"
-        );
-        assert!(
-            (pill.center().y - bar.center().y).abs() < f64::EPSILON,
-            "the pill is centred on the bar",
-        );
-        assert_eq!(WindowControls::around(bar, Rect::ZERO), Rect::ZERO);
-    }
+        phase content_stops_before_the_controls;
+        {
+            let c = WindowControls::lay_out(row());
+            assert!(c.content_limit(row()) <= c.pill.x0 - LEAD_GAP + f64::EPSILON);
+            assert_eq!(c.hit(c.close.center()), Some(WindowControl::Close));
+            assert_eq!(c.hit(c.maximize.center()), Some(WindowControl::Maximize));
+            assert_eq!(c.hit(Point::new(10.0, 22.0)), None);
+            assert!(c.on_pill(Point::new(c.pill.x0 + 1.0, c.pill.center().y)));
+            assert!(!c.on_pill(Point::new(10.0, 22.0)));
+        }
 
-    #[test]
-    fn a_cards_title_stops_before_its_controls() {
-        let c = WindowControls::lay_out_card(row());
-        assert_eq!(c.pill, Rect::ZERO, "a card's controls stand with no pill");
-        assert!(
-            c.content_limit(row()) <= c.minimize.x0 - LEAD_GAP + f64::EPSILON,
-            "the title ellipsizes before the collapse, snap and close: {c:?}"
-        );
-    }
+        phase the_window_s_controls_stand_in_one_pill_inside_its_bar;
+        {
+            let bar = Rect::new(0.0, 0.0, 800.0, crate::widget::tabs::TAB_BAR_HEIGHT);
+            let controls = Rect::new(700.0, 8.0, 788.0, 36.0);
+            let pill = WindowControls::around(bar, controls);
+            assert!(
+                pill.contains(controls.center()) && pill.area() > controls.area(),
+                "the pill holds the controls with room around them: {pill:?} for {controls:?}"
+            );
+            assert!(pill.height() <= bar.height() + f64::EPSILON);
+            assert!(
+                (pill.x1 - (bar.x1 - EDGE_INSET)).abs() < f64::EPSILON,
+                "the pill stands the window's own inset from its trailing edge: {pill:?}"
+            );
+            assert!(
+                (pill.center().y - bar.center().y).abs() < f64::EPSILON,
+                "the pill is centred on the bar",
+            );
+            assert_eq!(WindowControls::around(bar, Rect::ZERO), Rect::ZERO);
+        }
 
-    #[test]
-    fn a_row_with_no_room_has_no_controls() {
-        let c = WindowControls::lay_out(Rect::ZERO);
-        assert_eq!(c, WindowControls::default());
-        assert_eq!(c.iter().count(), 0);
-        assert_eq!(c.content_limit(row()), row().x1);
+        phase a_cards_title_stops_before_its_controls;
+        {
+            let c = WindowControls::lay_out_card(row());
+            assert_eq!(c.pill, Rect::ZERO, "a card's controls stand with no pill");
+            assert!(
+                c.content_limit(row()) <= c.minimize.x0 - LEAD_GAP + f64::EPSILON,
+                "the title ellipsizes before the collapse, snap and close: {c:?}"
+            );
+        }
+
+        phase a_row_with_no_room_has_no_controls;
+        {
+            let c = WindowControls::lay_out(Rect::ZERO);
+            assert_eq!(c, WindowControls::default());
+            assert_eq!(c.iter().count(), 0);
+            assert_eq!(c.content_limit(row()), row().x1);
+        }
     }
 }

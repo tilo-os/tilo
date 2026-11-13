@@ -273,65 +273,69 @@ mod tests {
         crate::testing::answer_controls(group);
     }
 
-    #[test]
-    fn a_strip_too_narrow_for_its_labels_folds_into_a_menu_of_every_segment() {
-        let chosen = Rc::new(RefCell::new(Vec::new()));
-        let wide = chooser(640.0, Rc::clone(&chosen));
-        assert!(!wide.is_folded(), "with room, every label shows whole");
+    tilo_test_env::scenario! {
+        fn a_folded_strip_offers_every_segment_and_shows_focus;
 
-        let mut narrow = chooser(160.0, Rc::clone(&chosen));
-        assert!(narrow.is_folded(), "too narrow: a picker, not cut labels");
-        frame(&mut narrow);
-        let center = narrow.rect.center();
-        click(&mut narrow, center);
-        assert!(narrow.menu_is_open(), "a press opens the menu");
-        let rows: Vec<&str> = narrow
-            .menu
-            .items()
-            .iter()
-            .filter_map(MenuItem::label)
-            .collect();
-        assert_eq!(rows, LABELS, "the menu lists every segment, whole");
-        assert_eq!(narrow.menu.items()[1].checked(), Some(true));
-        let node = Widget::accessibility(&narrow).expect("the strip reaches assistive technology");
-        assert_eq!(node.state.expanded, Some(true));
-        // Folded, the strip draws one picker and no segment: the one control a person reaches is
-        // the picker, at the whole strip's target, and the menu it opens lists every case.
-        assert_eq!(
-            node.children.len(),
-            1,
-            "the picker is the one control, not segments that are not drawn"
-        );
-        let picker = &node.children[0];
-        assert_eq!(picker.name.as_deref(), Some("Dissolve"), "what it holds");
-        let bounds = picker.bounds.expect("the picker's own target").to_rect();
-        assert!(
-            bounds.width() >= narrow.rect.width() - 1.0,
-            "the picker stands the whole strip wide, not {} of {}",
-            bounds.width(),
-            narrow.rect.width()
-        );
+        phase a_strip_too_narrow_for_its_labels_folds_into_a_menu_of_every_segment;
+        {
+            let chosen = Rc::new(RefCell::new(Vec::new()));
+            let wide = chooser(640.0, Rc::clone(&chosen));
+            assert!(!wide.is_folded(), "with room, every label shows whole");
 
-        for index in [3, 0, 4] {
-            if !narrow.menu_is_open() {
-                click(&mut narrow, center);
-            }
+            let mut narrow = chooser(160.0, Rc::clone(&chosen));
+            assert!(narrow.is_folded(), "too narrow: a picker, not cut labels");
             frame(&mut narrow);
-            let row = narrow.menu.item_rect(index).expect("the row is laid out");
-            click(&mut narrow, row.center());
-            assert_eq!(narrow.selected(), index, "row {index} chooses its segment");
-            assert!(!narrow.menu_is_open(), "choosing closes the menu");
-        }
-        assert_eq!(*chosen.borrow(), [3, 0, 4]);
-    }
+            let center = narrow.rect.center();
+            click(&mut narrow, center);
+            assert!(narrow.menu_is_open(), "a press opens the menu");
+            let rows: Vec<&str> = narrow
+                .menu
+                .items()
+                .iter()
+                .filter_map(MenuItem::label)
+                .collect();
+            assert_eq!(rows, LABELS, "the menu lists every segment, whole");
+            assert_eq!(narrow.menu.items()[1].checked(), Some(true));
+            let node = Widget::accessibility(&narrow).expect("the strip reaches assistive technology");
+            assert_eq!(node.state.expanded, Some(true));
+            // Folded, the strip draws one picker and no segment: the one control a person reaches is
+            // the picker, at the whole strip's target, and the menu it opens lists every case.
+            assert_eq!(
+                node.children.len(),
+                1,
+                "the picker is the one control, not segments that are not drawn"
+            );
+            let picker = &node.children[0];
+            assert_eq!(picker.name.as_deref(), Some("Dissolve"), "what it holds");
+            let bounds = picker.bounds.expect("the picker's own target").to_rect();
+            assert!(
+                bounds.width() >= narrow.rect.width() - 1.0,
+                "the picker stands the whole strip wide, not {} of {}",
+                bounds.width(),
+                narrow.rect.width()
+            );
 
-    #[test]
-    fn a_folded_strip_shows_keyboard_focus() {
-        let mut narrow = chooser(160.0, Rc::new(RefCell::new(Vec::new())));
-        assert!(narrow.is_folded());
-        let unfocused = frame(&mut narrow);
-        Widget::set_focus(&mut narrow, true);
-        assert!(narrow.focus_visible(), "keyboard focus shows the ring");
-        assert_ne!(frame(&mut narrow), unfocused, "focus rings the picker");
+            for index in [3, 0, 4] {
+                if !narrow.menu_is_open() {
+                    click(&mut narrow, center);
+                }
+                frame(&mut narrow);
+                let row = narrow.menu.item_rect(index).expect("the row is laid out");
+                click(&mut narrow, row.center());
+                assert_eq!(narrow.selected(), index, "row {index} chooses its segment");
+                assert!(!narrow.menu_is_open(), "choosing closes the menu");
+            }
+            assert_eq!(*chosen.borrow(), [3, 0, 4]);
+        }
+
+        phase a_folded_strip_shows_keyboard_focus;
+        {
+            let mut narrow = chooser(160.0, Rc::new(RefCell::new(Vec::new())));
+            assert!(narrow.is_folded());
+            let unfocused = frame(&mut narrow);
+            Widget::set_focus(&mut narrow, true);
+            assert!(narrow.focus_visible(), "keyboard focus shows the ring");
+            assert_ne!(frame(&mut narrow), unfocused, "focus rings the picker");
+        }
     }
 }

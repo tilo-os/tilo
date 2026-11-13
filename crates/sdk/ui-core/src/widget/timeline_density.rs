@@ -62,36 +62,40 @@ impl TimelineDensity {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_narrow_column_gives_short_blocks_two_lines_and_a_taller_hour() {
-        let theme = Theme::dark();
-        let line = f64::from(theme.text(TextRole::Caption).line_height_px());
-        let edge = TimelineDensity::narrow_below(&theme);
-        let narrow = TimelineDensity::of(edge - 1.0, &theme);
-        let regular = TimelineDensity::of(edge + 1.0, &theme);
-        assert_eq!(narrow, TimelineDensity::Narrow);
-        assert_eq!(regular, TimelineDensity::Regular);
-        assert!(
-            narrow.min_hour_height(&theme, line) >= 2.0 * (2.0 * line),
-            "a narrow half hour holds two title lines"
-        );
-        assert!(narrow.min_hour_height(&theme, line) > regular.min_hour_height(&theme, line));
-        assert!(!narrow.chip_marker() && regular.chip_marker());
-    }
+    tilo_test_env::scenario! {
+        fn timeline_density_follows_the_column_and_the_text_scale;
 
-    #[test]
-    fn the_hour_grows_with_the_text_scale() {
-        let one = Theme::dark();
-        let two = Theme::dark().with_text_scale(2.0);
-        let line = |t: &Theme| f64::from(t.text(TextRole::Caption).line_height_px());
-        for density in [TimelineDensity::Regular, TimelineDensity::Narrow] {
-            let at_one = density.min_hour_height(&one, line(&one));
-            let at_two = density.min_hour_height(&two, line(&two));
+        phase a_narrow_column_gives_short_blocks_two_lines_and_a_taller_hour;
+        {
+            let theme = Theme::dark();
+            let line = f64::from(theme.text(TextRole::Caption).line_height_px());
+            let edge = TimelineDensity::narrow_below(&theme);
+            let narrow = TimelineDensity::of(edge - 1.0, &theme);
+            let regular = TimelineDensity::of(edge + 1.0, &theme);
+            assert_eq!(narrow, TimelineDensity::Narrow);
+            assert_eq!(regular, TimelineDensity::Regular);
             assert!(
-                at_two >= 1.5 * at_one,
-                "{density:?}: an hour at 2x text is {at_two}, at 1x {at_one}"
+                narrow.min_hour_height(&theme, line) >= 2.0 * (2.0 * line),
+                "a narrow half hour holds two title lines"
             );
+            assert!(narrow.min_hour_height(&theme, line) > regular.min_hour_height(&theme, line));
+            assert!(!narrow.chip_marker() && regular.chip_marker());
         }
-        assert!(TimelineDensity::narrow_below(&two) > TimelineDensity::narrow_below(&one));
+
+        phase the_hour_grows_with_the_text_scale;
+        {
+            let one = Theme::dark();
+            let two = Theme::dark().with_text_scale(2.0);
+            let line = |t: &Theme| f64::from(t.text(TextRole::Caption).line_height_px());
+            for density in [TimelineDensity::Regular, TimelineDensity::Narrow] {
+                let at_one = density.min_hour_height(&one, line(&one));
+                let at_two = density.min_hour_height(&two, line(&two));
+                assert!(
+                    at_two >= 1.5 * at_one,
+                    "{density:?}: an hour at 2x text is {at_two}, at 1x {at_one}"
+                );
+            }
+            assert!(TimelineDensity::narrow_below(&two) > TimelineDensity::narrow_below(&one));
+        }
     }
 }

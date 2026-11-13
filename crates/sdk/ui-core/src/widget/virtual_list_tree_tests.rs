@@ -103,403 +103,824 @@ fn press<M: ListModel + 'static>(
     }
 }
 
-#[test]
-fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = nested().with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert_eq!(
-        shape(&list, &marks),
-        vec![
-            (0, 0, true, false),
-            (1, 1, true, true),
-            (2, 2, false, true),
-            (3, 0, false, false),
-            // The list keeps its order: a row whose parent the sort put elsewhere stands on
-            // its own and names it, rather than indenting under nothing.
-            (4, 0, false, false),
-        ],
-        "what stands under what"
-    );
-    let row = 20.0;
-    assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
+tilo_test_env::scenario! {
+    fn a_tree_indents_folds_and_keeps_its_rows;
 
-    assert!(list.fold_row(&0, true), "the row has subtasks to fold");
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    assert!(list.row_folded(&0));
-    assert!((list.viewport.content_extent() - 3.0 * row).abs() < 0.5);
-    assert_eq!(list.viewport.item_height(1), Some(0.0));
-    assert_eq!(list.viewport.item_height(2), Some(0.0), "the whole chain");
-    assert_eq!(list.viewport.item_height(3), Some(row));
+    phase a_list_indents_a_row_under_the_row_it_names_and_folds_it_away;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = nested().with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert_eq!(
+            shape(&list, &marks),
+            vec![
+                (0, 0, true, false),
+                (1, 1, true, true),
+                (2, 2, false, true),
+                (3, 0, false, false),
+                // The list keeps its order: a row whose parent the sort put elsewhere stands on
+                // its own and names it, rather than indenting under nothing.
+                (4, 0, false, false),
+            ],
+            "what stands under what"
+        );
+        let row = 20.0;
+        assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
 
-    let at = list
-        .disclosure_rect(&0)
-        .expect("the folded row shows its disclosure")
-        .center();
-    press(&mut list, at.x, at.y, &taffy, node);
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    assert!(!list.row_folded(&0), "the press unfolded it");
-    assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
+        assert!(list.fold_row(&0, true), "the row has subtasks to fold");
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        assert!(list.row_folded(&0));
+        assert!((list.viewport.content_extent() - 3.0 * row).abs() < 0.5);
+        assert_eq!(list.viewport.item_height(1), Some(0.0));
+        assert_eq!(list.viewport.item_height(2), Some(0.0), "the whole chain");
+        assert_eq!(list.viewport.item_height(3), Some(row));
 
-    let at = list
-        .disclosure_rect(&1)
-        .expect("the branch one depth in shows its disclosure")
-        .center();
-    press(&mut list, at.x, at.y, &taffy, node);
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert!(
-        list.row_folded(&1) && !list.row_folded(&0),
-        "the press read the row it stands on"
-    );
-    assert!((list.viewport.content_extent() - 4.0 * row).abs() < 0.5);
-}
+        let at = list
+            .disclosure_rect(&0)
+            .expect("the folded row shows its disclosure")
+            .center();
+        press(&mut list, at.x, at.y, &taffy, node);
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        assert!(!list.row_folded(&0), "the press unfolded it");
+        assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
 
-/// A row that starts a group stands at the group's own first level: its parent is a row of the
-/// group above, under another heading, so indenting it would put it under a row that is not
-/// there. It says what it is in instead, and the rows that stay in their parent's group keep
-/// their nesting.
-#[test]
-fn a_row_whose_parent_stands_in_another_group_stands_on_the_groups_first_level() {
-    let marks = Rc::new(TreeMarks::default());
-    let model = Nested {
-        keys: vec![0, 1, 2, 3],
-        parents: HashMap::from([(1, 0), (2, 0), (3, 2)]),
-        groups: HashMap::from([
-            (0, "Monday".to_owned()),
-            (1, "Monday".to_owned()),
-            (2, "Thursday".to_owned()),
-            (3, "Thursday".to_owned()),
-        ]),
-    };
-    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-        Box::new(super::tests::ProbeRow::new(
-            key.to_string(),
-            20.0,
-            false,
-            Rc::new(Cell::new(0)),
-        ))
-    })
-    .with_viewport_height(200.0)
-    .with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert_eq!(
-        shape(&list, &marks),
-        vec![
-            (0, 0, true, false),
-            (1, 1, false, true),
-            (2, 0, true, false),
-            // A row whose parent stands in its own group keeps its place under it.
-            (3, 1, false, true),
-        ],
-        "what stands under what"
-    );
-}
+        let at = list
+            .disclosure_rect(&1)
+            .expect("the branch one depth in shows its disclosure")
+            .center();
+        press(&mut list, at.x, at.y, &taffy, node);
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert!(
+            list.row_folded(&1) && !list.row_folded(&0),
+            "the press read the row it stands on"
+        );
+        assert!((list.viewport.content_extent() - 4.0 * row).abs() < 0.5);
+    }
 
-#[test]
-fn a_row_standing_open_folds_its_branch_and_closing_it_brings_the_rows_back() {
-    let marks = Rc::new(TreeMarks::default());
-    let list = OpenableTree {
-        keys: vec![0, 1, 2, 3],
-        parents: HashMap::from([(1, 0), (2, 1)]),
-    };
-    let mut list = VirtualList::new(list, 20.0, |_, _, key| {
-        Box::new(super::tests::ProbeRow::new(
-            key.to_string(),
-            20.0,
-            false,
-            Rc::new(Cell::new(0)),
-        ))
-    })
-    .with_viewport_height(400.0)
-    .with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    let row = 20.0;
-    assert!(
-        (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
-        "every row shows before anything opens"
-    );
-
-    list.set_open(Some(0));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert_eq!(
-        list.viewport.item_height(1),
-        Some(0.0),
-        "the branch folds under the row standing open"
-    );
-    assert_eq!(
-        list.viewport.item_height(2),
-        Some(0.0),
-        "all the way down its chain"
-    );
-    assert_eq!(
-        list.viewport.item_height(3),
-        Some(row),
-        "a row beside the open one shows"
-    );
-
-    list.set_open(None);
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert_eq!(
-        list.viewport.item_height(1),
-        Some(row),
-        "closing the row brings its branch back"
-    );
-    assert_eq!(
-        list.viewport.item_height(2),
-        Some(row),
-        "as deep as it stood"
-    );
-    assert!(
-        (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
-        "the whole list stands as it did"
-    );
-}
-
-/// A tree whose first level folds nothing keeps no column for a chevron: its rows stand on
-/// the column the words over them do, and one with a branch to fold keeps the step.
-#[test]
-fn a_tree_with_nothing_to_fold_keeps_no_chevrons_column() {
-    let marks = Rc::new(TreeMarks::default());
-    let list = VirtualList::new(
-        OpenableTree {
-            keys: vec![0, 1],
-            parents: HashMap::new(),
-        },
-        20.0,
-        |_, _, key| {
+    phase a_row_whose_parent_stands_in_another_group_stands_on_the_groups_first_level;
+    // A row that starts a group stands at the group's own first level: its parent is a row of the
+    // group above, under another heading, so indenting it would put it under a row that is not
+    // there. It says what it is in instead, and the rows that stay in their parent's group keep
+    // their nesting.
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let model = Nested {
+            keys: vec![0, 1, 2, 3],
+            parents: HashMap::from([(1, 0), (2, 0), (3, 2)]),
+            groups: HashMap::from([
+                (0, "Monday".to_owned()),
+                (1, "Monday".to_owned()),
+                (2, "Thursday".to_owned()),
+                (3, "Thursday".to_owned()),
+            ]),
+        };
+        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
             Box::new(super::tests::ProbeRow::new(
                 key.to_string(),
                 20.0,
                 false,
                 Rc::new(Cell::new(0)),
             ))
-        },
-    )
-    .with_viewport_height(200.0)
-    .with_tree(Rc::clone(&marks));
-    let mut list = list;
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert_eq!(list.row_depth(&0), 0);
-    assert!(!list.row_is_branch(&0));
-    assert!(
-        (list.lead - list.bleed).abs() < 0.5,
-        "no chevron stands in front of the first level, so its rows keep no column: \
-         {} in from {}",
-        list.lead,
-        list.bleed
-    );
+        })
+        .with_viewport_height(200.0)
+        .with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert_eq!(
+            shape(&list, &marks),
+            vec![
+                (0, 0, true, false),
+                (1, 1, false, true),
+                (2, 0, true, false),
+                // A row whose parent stands in its own group keeps its place under it.
+                (3, 1, false, true),
+            ],
+            "what stands under what"
+        );
+    }
 
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = VirtualList::new(
-        Nested {
-            keys: vec![0, 1],
-            parents: HashMap::from([(1, 0)]),
-            groups: HashMap::new(),
-        },
-        20.0,
-        |_, _, key| {
+    phase a_row_standing_open_folds_its_branch_and_closing_it_brings_the_rows_back;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let list = OpenableTree {
+            keys: vec![0, 1, 2, 3],
+            parents: HashMap::from([(1, 0), (2, 1)]),
+        };
+        let mut list = VirtualList::new(list, 20.0, |_, _, key| {
             Box::new(super::tests::ProbeRow::new(
                 key.to_string(),
                 20.0,
                 false,
                 Rc::new(Cell::new(0)),
             ))
-        },
-    )
-    .with_viewport_height(200.0)
-    .with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert!(
-        list.lead > list.bleed + 0.5,
-        "a row with subtasks hands its chevron a column: {} in from {}",
-        list.lead,
-        list.bleed
-    );
+        })
+        .with_viewport_height(400.0)
+        .with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        let row = 20.0;
+        assert!(
+            (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
+            "every row shows before anything opens"
+        );
+
+        list.set_open(Some(0));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert_eq!(
+            list.viewport.item_height(1),
+            Some(0.0),
+            "the branch folds under the row standing open"
+        );
+        assert_eq!(
+            list.viewport.item_height(2),
+            Some(0.0),
+            "all the way down its chain"
+        );
+        assert_eq!(
+            list.viewport.item_height(3),
+            Some(row),
+            "a row beside the open one shows"
+        );
+
+        list.set_open(None);
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert_eq!(
+            list.viewport.item_height(1),
+            Some(row),
+            "closing the row brings its branch back"
+        );
+        assert_eq!(
+            list.viewport.item_height(2),
+            Some(row),
+            "as deep as it stood"
+        );
+        assert!(
+            (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
+            "the whole list stands as it did"
+        );
+    }
+
+    phase a_model_change_keeps_the_rows_where_they_stood;
+    // A model change is read as the rows stand: the column the tree's first level keeps is what it
+    // showed before, so a rename that re-reads every row moves none of them sideways for a frame.
+    {
+        let probe = |_: &OpenableTree, _: usize, key: &u64| -> Element {
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        };
+        let mut list = VirtualList::new(
+            OpenableTree {
+                keys: vec![0, 1],
+                parents: HashMap::new(),
+            },
+            20.0,
+            probe,
+        )
+        .with_viewport_height(200.0)
+        .with_tree(Rc::new(TreeMarks::default()));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        let column = list.lead;
+        assert!(
+            (column - list.bleed).abs() < 0.5,
+            "nothing of the first level folds, so its rows keep no column: {column} in from {}",
+            list.bleed
+        );
+
+        list.update_model(|model| model.keys = vec![0, 1, 2]);
+        // The frame settles its rows' column before the rows it re-reads are mounted: the column
+        // stands where the tree showed it, not where a first level nobody has read yet would put it.
+        list.settle_lead();
+        assert!(
+            (list.lead - column).abs() < 0.5,
+            "a model change moves no row sideways: {} against {column}",
+            list.lead
+        );
+    }
+
+    phase a_tree_reads_as_a_tree_and_says_how_deep_each_row_stands;
+    {
+        use crate::a11y::Role;
+
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = nested().with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        let semantics = list.accessibility().expect("the list has a node");
+        assert_eq!(semantics.role, Role::Tree);
+        let rows: Vec<_> = semantics.children.iter().collect();
+        assert!(
+            rows.iter().all(|row| row.role == Role::TreeItem),
+            "each row is a tree item"
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.level.expect("every row says its depth"))
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 1, 1],
+            "one level deeper for each step under a row"
+        );
+        assert_eq!(
+            rows[0].state.expanded,
+            Some(true),
+            "it shows what is under it"
+        );
+        assert_eq!(rows[1].state.expanded, Some(true));
+        assert_eq!(
+            rows[2].state.expanded, None,
+            "a row with nothing under it has no disclosure"
+        );
+
+        assert!(list.fold_row(&0, true));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        let semantics = list.accessibility().expect("the list has a node");
+        assert_eq!(
+            semantics.children.len(),
+            3,
+            "only the rows that show stand in the tree"
+        );
+        assert_eq!(semantics.children[0].state.expanded, Some(false));
+    }
+
+    phase a_pointer_resting_on_a_folded_branch_shows_what_it_holds;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = movable(vec![0, 1, 2], &[(1, 0)])
+            .with_tree(Rc::clone(&marks))
+            .with_reorder(|_, source, target| source != &target.key, land);
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let laid_out = (&taffy, node);
+        assert!(list.fold_row(&0, true));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        list.reorder = crate::reorder::ReorderController::new()
+            .with_drag_threshold(0.0)
+            .with_hover_expand_delay(crate::time::Duration::ZERO);
+
+        send(
+            &mut list,
+            &crate::synthetic_input::cursor_moved(20.0, 30.0),
+            laid_out,
+        );
+        send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+        send(
+            &mut list,
+            &crate::synthetic_input::cursor_moved(20.0, 10.0),
+            laid_out,
+        );
+        assert_eq!(
+            list.reorder_target(),
+            Some(&DropTarget::new(0, DropPlacement::Inside))
+        );
+        let doc = AutoCommit::new();
+        assert!(
+            list.update(&doc, &automerge::ROOT),
+            "the rest brings its rows into view"
+        );
+        assert!(!list.row_folded(&0), "what it holds comes into view");
+    }
 }
 
-/// A tree whose first level stops folding anything while its rows stay keeps the column it
-/// gave its chevrons: a task ticked off takes its subtasks out of a list of open tasks, and the
-/// rows the person is looking at, the one under their finger too, stay where they stood. Rows
-/// read anew line up with the words over them again, and a row that comes to fold takes its
-/// column at once.
-#[test]
-fn a_tree_keeps_its_chevrons_column_while_its_rows_stay() {
-    let probe = |_: &Nested, _: usize, key: &u64| -> Element {
-        Box::new(super::tests::ProbeRow::new(
-            key.to_string(),
+tilo_test_env::scenario! {
+    fn a_trees_chevrons_and_rows_keep_their_columns;
+
+    phase a_tree_with_nothing_to_fold_keeps_no_chevrons_column;
+    // A tree whose first level folds nothing keeps no column for a chevron: its rows stand on
+    // the column the words over them do, and one with a branch to fold keeps the step.
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let list = VirtualList::new(
+            OpenableTree {
+                keys: vec![0, 1],
+                parents: HashMap::new(),
+            },
             20.0,
-            false,
-            Rc::new(Cell::new(0)),
-        ))
-    };
-    let mut list = VirtualList::new(
-        Nested {
+            |_, _, key| {
+                Box::new(super::tests::ProbeRow::new(
+                    key.to_string(),
+                    20.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ))
+            },
+        )
+        .with_viewport_height(200.0)
+        .with_tree(Rc::clone(&marks));
+        let mut list = list;
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert_eq!(list.row_depth(&0), 0);
+        assert!(!list.row_is_branch(&0));
+        assert!(
+            (list.lead - list.bleed).abs() < 0.5,
+            "no chevron stands in front of the first level, so its rows keep no column: \
+             {} in from {}",
+            list.lead,
+            list.bleed
+        );
+
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = VirtualList::new(
+            Nested {
+                keys: vec![0, 1],
+                parents: HashMap::from([(1, 0)]),
+                groups: HashMap::new(),
+            },
+            20.0,
+            |_, _, key| {
+                Box::new(super::tests::ProbeRow::new(
+                    key.to_string(),
+                    20.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ))
+            },
+        )
+        .with_viewport_height(200.0)
+        .with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert!(
+            list.lead > list.bleed + 0.5,
+            "a row with subtasks hands its chevron a column: {} in from {}",
+            list.lead,
+            list.bleed
+        );
+    }
+
+    phase a_tree_keeps_its_chevrons_column_while_its_rows_stay;
+    // A tree whose first level stops folding anything while its rows stay keeps the column it
+    // gave its chevrons: a task ticked off takes its subtasks out of a list of open tasks, and the
+    // rows the person is looking at, the one under their finger too, stay where they stood. Rows
+    // read anew line up with the words over them again, and a row that comes to fold takes its
+    // column at once.
+    {
+        let probe = |_: &Nested, _: usize, key: &u64| -> Element {
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        };
+        let mut list = VirtualList::new(
+            Nested {
+                keys: vec![0, 1, 2],
+                parents: HashMap::from([(1, 0)]),
+                groups: HashMap::new(),
+            },
+            20.0,
+            probe,
+        )
+        .with_viewport_height(200.0)
+        .with_tree(Rc::new(TreeMarks::default()));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        let column = list.lead;
+        assert!(
+            column > list.bleed + 0.5,
+            "a row with subtasks hands its chevron a column: {column} in from {}",
+            list.bleed
+        );
+
+        list.update_model(|model| model.keys = vec![0, 2]);
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert!(
+            (list.lead - column).abs() < 0.5,
+            "the rows that stay keep their column: {} against {column}",
+            list.lead
+        );
+
+        list.update_model(|model| {
+            model.keys = vec![5, 6];
+            model.parents.clear();
+        });
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert!(
+            (list.lead - list.bleed).abs() < 0.5,
+            "rows read anew with nothing to fold keep no column: {} in from {}",
+            list.lead,
+            list.bleed
+        );
+
+        list.update_model(|model| {
+            model.keys = vec![5, 7, 6];
+            model.parents.insert(7, 5);
+        });
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert!(
+            (list.lead - column).abs() < 0.5,
+            "a first level that comes to fold takes its column: {} against {column}",
+            list.lead
+        );
+    }
+
+    phase a_tree_row_keeps_its_own_height_and_the_ends_and_pages_reach_its_rows;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let model = Movable {
+            labels: (0..3).map(|key| (key, format!("row {key}"))).collect(),
+            keys: vec![0, 1, 2],
+            parents: [(1, 0)].into_iter().collect(),
+            takes_children: (0..3).collect(),
+        };
+        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+            let height = if *key == 1 { 44.0 } else { 20.0 };
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                height,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        })
+        .with_viewport_height(200.0)
+        .with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        // The taller row keeps its height indented under row 0, and the row below it clears it.
+        assert_eq!(marks.depth(&1), 1);
+        assert_eq!(list.viewport.item_height(1), Some(f64::from(44.0_f32)));
+        assert_eq!(
+            list.row_box(2).map(|row| row.y0),
+            Some(64.0),
+            "row 2 starts under row 1's full height"
+        );
+
+        let key = |named| Key::Named(named);
+        assert!(list.on_key(&key(NamedKey::End), false, false));
+        assert_eq!(list.focused_key(), Some(&2), "End reaches the last row");
+        assert!(list.on_key(&key(NamedKey::Home), false, false));
+        assert_eq!(list.focused_key(), Some(&0), "Home the first");
+        assert!(list.on_key(&key(NamedKey::PageDown), false, false));
+        assert_eq!(list.focused_key(), Some(&2), "a page down the flat rows");
+    }
+
+    phase a_first_row_under_a_heading_draws_its_chevron_on_its_own_row;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let model = Headed {
             keys: vec![0, 1, 2],
             parents: HashMap::from([(1, 0)]),
-            groups: HashMap::new(),
-        },
-        20.0,
-        probe,
-    )
-    .with_viewport_height(200.0)
-    .with_tree(Rc::new(TreeMarks::default()));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    let column = list.lead;
-    assert!(
-        column > list.bleed + 0.5,
-        "a row with subtasks hands its chevron a column: {column} in from {}",
-        list.bleed
-    );
+            groups: vec![
+                Some(RowGroup::heading("Jun 30".to_owned())),
+                Some(RowGroup::heading("Jun 30".to_owned())),
+                Some(RowGroup::heading("Jun 30".to_owned())),
+            ],
+        };
+        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        })
+        .with_viewport_height(200.0)
+        .with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::tests::lay_out(&mut list, 300.0);
 
-    list.update_model(|model| model.keys = vec![0, 2]);
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert!(
-        (list.lead - column).abs() < 0.5,
-        "the rows that stay keep their column: {} against {column}",
-        list.lead
-    );
+        let item_height = list.viewport.item_height(0).expect("the first row");
+        let row = list.row_box(0).expect("the first row stands somewhere");
+        let band = list.groups.height;
+        assert!(band > 0.0, "the heading over the row takes a band");
+        assert!(
+            (item_height - (band + row.height())).abs() < 0.5,
+            "the item is the band and the row: {item_height} of {band} and {}",
+            row.height()
+        );
 
-    list.update_model(|model| {
-        model.keys = vec![5, 6];
-        model.parents.clear();
-    });
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert!(
-        (list.lead - list.bleed).abs() < 0.5,
-        "rows read anew with nothing to fold keep no column: {} in from {}",
-        list.lead,
-        list.bleed
-    );
+        let (chevron, folded) = list
+            .chevrons()
+            .rect(&marks, &Theme::dark(), &0, row, false)
+            .expect("the row folds the subtask under it");
+        assert!(!folded, "the group starts open");
+        assert!(
+            (chevron.center().y - row.center().y).abs() < 0.5,
+            "the chevron is centred on its own row: {} against the row's {}",
+            chevron.center().y,
+            row.center().y
+        );
+        assert!(
+            chevron.y0 >= row.y0 - 0.5 && chevron.y1 <= row.y1 + 0.5,
+            "the chevron stands inside the row, not over the heading: {:?} in {row:?}",
+            chevron
+        );
+        let group_center =
+            list.rect.y0 + list.viewport.item_view_top(0).unwrap_or_default() + item_height / 2.0;
+        assert!(
+            (chevron.center().y - group_center).abs() > 1.0,
+            "it is never centred between the heading and the row: {} against {group_center}",
+            chevron.center().y
+        );
 
-    list.update_model(|model| {
-        model.keys = vec![5, 7, 6];
-        model.parents.insert(7, 5);
-    });
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert!(
-        (list.lead - column).abs() < 0.5,
-        "a first level that comes to fold takes its column: {} against {column}",
-        list.lead
-    );
+        let _ = super::tests::lay_out(&mut list, 180.0);
+        let narrow = list.row_box(0).expect("the first row on a phone");
+        let (chevron, _) = list
+            .chevrons()
+            .rect(&marks, &Theme::dark(), &0, narrow, false)
+            .expect("the row folds the subtask under it");
+        assert!(
+            (chevron.center().y - narrow.center().y).abs() < 0.5,
+            "a phone's column keeps the chevron on its row: {} against {}",
+            chevron.center().y,
+            narrow.center().y
+        );
+
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let row = list.row_box(0).expect("the first row stands somewhere");
+        let (chevron, _) = list
+            .chevrons()
+            .rect(&marks, &Theme::dark(), &0, row, false)
+            .expect("the row folds the subtask under it");
+        press(
+            &mut list,
+            chevron.center().x,
+            chevron.center().y,
+            &taffy,
+            node,
+        );
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert!(
+            list.row_folded(&0),
+            "the chevron's press folds the subtask under the row"
+        );
+        let row = list.row_box(0).expect("the folded row stands somewhere");
+        let (chevron, folded) = list
+            .chevrons()
+            .rect(&marks, &Theme::dark(), &0, row, list.row_folded(&0))
+            .expect("a folded row still shows its disclosure");
+        assert!(folded, "the chevron points at what it folded away");
+        assert!(
+            (chevron.center().y - row.center().y).abs() < 0.5,
+            "the folded row's chevron stays on its row: {} against {}",
+            chevron.center().y,
+            row.center().y
+        );
+    }
+
+    phase a_branch_row_starts_on_the_column_its_neighbours_do;
+    // The chevron that folds a row hangs in the step in front of the row's own column, so a row
+    // with something to fold starts on the column its neighbours do and the top level stands its
+    // own one step in from the list's leading edge — never a step for the chevron and another for
+    // the depth on top of it.
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = nested().with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        let branch = list.row_rect(&0).expect("the branch row");
+        let leaf = list.row_rect(&3).expect("a leaf at the same depth");
+        assert_eq!(list.row_depth(&0), 0);
+        assert_eq!(list.row_depth(&3), 0);
+        assert!(
+            (branch.x0 - leaf.x0).abs() < 0.5,
+            "rows at one depth stand on one column: {} and {}",
+            branch.x0,
+            leaf.x0
+        );
+
+        let column = branch.x0 + list.lead;
+        assert!(
+            (column - (branch.x0 + TREE_INDENT)).abs() < 0.5,
+            "the top level stands one step in from the list's leading edge, not two: {column} \
+             from {}",
+            branch.x0
+        );
+        let chevron = list
+            .disclosure_rect(&0)
+            .expect("the branch shows its disclosure");
+        assert!(
+            (chevron.x1 - column).abs() < 0.5,
+            "the chevron ends where the row's box begins: {} against {column}",
+            chevron.x1
+        );
+        assert!(
+            (chevron.x0 - (column - TREE_INDENT)).abs() < 0.5,
+            "it hangs in the step in front of the box: {} against {}",
+            chevron.x0,
+            column - TREE_INDENT
+        );
+        assert!(
+            list.disclosure_rect(&3).is_none(),
+            "a leaf folds nothing, and still keeps the step free"
+        );
+    }
 }
 
-/// A model change is read as the rows stand: the column the tree's first level keeps is what it
-/// showed before, so a rename that re-reads every row moves none of them sideways for a frame.
-#[test]
-fn a_model_change_keeps_the_rows_where_they_stood() {
-    let probe = |_: &OpenableTree, _: usize, key: &u64| -> Element {
-        Box::new(super::tests::ProbeRow::new(
-            key.to_string(),
-            20.0,
-            false,
-            Rc::new(Cell::new(0)),
-        ))
-    };
-    let mut list = VirtualList::new(
-        OpenableTree {
-            keys: vec![0, 1],
-            parents: HashMap::new(),
-        },
-        20.0,
-        probe,
-    )
-    .with_viewport_height(200.0)
-    .with_tree(Rc::new(TreeMarks::default()));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    let column = list.lead;
-    assert!(
-        (column - list.bleed).abs() < 0.5,
-        "nothing of the first level folds, so its rows keep no column: {column} in from {}",
-        list.bleed
-    );
+tilo_test_env::scenario! {
+    fn keys_and_drops_move_rows_through_the_tree;
 
-    list.update_model(|model| model.keys = vec![0, 1, 2]);
-    // The frame settles its rows' column before the rows it re-reads are mounted: the column
-    // stands where the tree showed it, not where a first level nobody has read yet would put it.
-    list.settle_lead();
-    assert!(
-        (list.lead - column).abs() < 0.5,
-        "a model change moves no row sideways: {} against {column}",
-        list.lead
-    );
-}
+    phase the_left_and_right_keys_fold_a_branch_and_step_in_and_out_of_it;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = nested().with_tree(Rc::clone(&marks));
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        let key = |named| Key::Named(named);
+        assert!(list.on_key(&key(NamedKey::ArrowDown), false, false));
+        assert_eq!(
+            list.focused_key,
+            Some(0),
+            "the keyboard starts on the first row"
+        );
 
-#[test]
-fn a_tree_reads_as_a_tree_and_says_how_deep_each_row_stands() {
-    use crate::a11y::Role;
+        assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
+        assert_eq!(list.focused_key, Some(1));
+        assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
+        assert_eq!(list.focused_key, Some(2));
+        assert!(
+            !list.on_key(&key(NamedKey::ArrowRight), false, false),
+            "a row with nothing under it has nowhere to step"
+        );
 
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = nested().with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    let semantics = list.accessibility().expect("the list has a node");
-    assert_eq!(semantics.role, Role::Tree);
-    let rows: Vec<_> = semantics.children.iter().collect();
-    assert!(
-        rows.iter().all(|row| row.role == Role::TreeItem),
-        "each row is a tree item"
-    );
-    assert_eq!(
-        rows.iter()
-            .map(|row| row.level.expect("every row says its depth"))
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3, 1, 1],
-        "one level deeper for each step under a row"
-    );
-    assert_eq!(
-        rows[0].state.expanded,
-        Some(true),
-        "it shows what is under it"
-    );
-    assert_eq!(rows[1].state.expanded, Some(true));
-    assert_eq!(
-        rows[2].state.expanded, None,
-        "a row with nothing under it has no disclosure"
-    );
+        assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
+        assert_eq!(list.focused_key, Some(1));
+        assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
+        assert!(list.row_folded(&1), "the branch folded its subtask away");
+        assert_eq!(
+            list.focused_key,
+            Some(1),
+            "the folded row keeps the keyboard"
+        );
+        assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
+        assert!(!list.row_folded(&1), "right shows what it folded away");
+    }
 
-    assert!(list.fold_row(&0, true));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    let semantics = list.accessibility().expect("the list has a node");
-    assert_eq!(
-        semantics.children.len(),
-        3,
-        "only the rows that show stand in the tree"
-    );
-    assert_eq!(semantics.children[0].state.expanded, Some(false));
-}
+    phase tab_indents_the_focused_row_into_the_row_above_it_and_shift_tab_steps_it_back_out;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = movable(vec![0, 1, 2], &[])
+            .tab_indents(true)
+            .with_tree(Rc::clone(&marks))
+            .with_reorder(|_, source, target| source != &target.key, land);
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let laid_out = (&taffy, node);
+        list.set_focus(true);
+        assert!(list.reveal(&2));
+        assert_eq!(list.focused_key(), Some(&2));
 
-#[test]
-fn the_left_and_right_keys_fold_a_branch_and_step_in_and_out_of_it() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = nested().with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    let key = |named| Key::Named(named);
-    assert!(list.on_key(&key(NamedKey::ArrowDown), false, false));
-    assert_eq!(
-        list.focused_key,
-        Some(0),
-        "the keyboard starts on the first row"
-    );
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::Tab),
+            laid_out
+        ));
+        assert_eq!(
+            list.model().parents.get(&2),
+            Some(&1),
+            "under the row above"
+        );
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert_eq!(marks.depth(&2), 1, "one step deeper");
+        assert_eq!(
+            list.focused_key(),
+            Some(&2),
+            "the moved row keeps the keyboard"
+        );
 
-    assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
-    assert_eq!(list.focused_key, Some(1));
-    assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
-    assert_eq!(list.focused_key, Some(2));
-    assert!(
-        !list.on_key(&key(NamedKey::ArrowRight), false, false),
-        "a row with nothing under it has nowhere to step"
-    );
+        assert!(send_with(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::Tab),
+            winit::keyboard::ModifiersState::SHIFT,
+            laid_out,
+        ));
+        assert_eq!(list.model().parents.get(&2), None, "out of it again");
+        assert_eq!(
+            list.model().keys,
+            vec![0, 1, 2],
+            "beside the row it stood under"
+        );
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert_eq!(marks.depth(&2), 0);
+    }
 
-    assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
-    assert_eq!(list.focused_key, Some(1));
-    assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
-    assert!(list.row_folded(&1), "the branch folded its subtask away");
-    assert_eq!(
-        list.focused_key,
-        Some(1),
-        "the folded row keeps the keyboard"
-    );
-    assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
-    assert!(!list.row_folded(&1), "right shows what it folded away");
+    phase a_tab_that_cannot_move_the_row_is_left_to_focus_traversal;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = movable(vec![0, 1], &[])
+            .tab_indents(true)
+            .with_tree(Rc::clone(&marks))
+            .with_reorder(|_, source, target| source != &target.key, land);
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        list.set_focus(true);
+        assert!(list.reveal(&0));
+        assert!(
+            !send(
+                &mut list,
+                &crate::synthetic_input::named_key(NamedKey::Tab),
+                (&taffy, node)
+            ),
+            "a top row has no row above to indent into"
+        );
+        assert_eq!(list.model().parents.get(&0), None);
+    }
+
+    phase the_alt_arrows_move_a_row_through_its_tree_and_ctrl_moves_it_beside_its_siblings;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = movable(vec![0, 1, 2], &[(1, 0)])
+            .with_tree(Rc::clone(&marks))
+            .with_reorder(|_, source, target| source != &target.key, land);
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let laid_out = (&taffy, node);
+        list.set_focus(true);
+        let alt = winit::keyboard::ModifiersState::ALT;
+        let ctrl = winit::keyboard::ModifiersState::CONTROL;
+
+        assert!(list.reveal(&2));
+        assert!(send_with(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::ArrowRight),
+            alt,
+            laid_out
+        ));
+        assert_eq!(
+            list.model().parents.get(&2),
+            Some(&0),
+            "under the row above it"
+        );
+        assert!(send_with(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::ArrowLeft),
+            alt,
+            laid_out
+        ));
+        assert_eq!(list.model().parents.get(&2), None);
+
+        // Ctrl+Up moves it up through its own depth, never into the branch it passes: row 1
+        // stands under row 0, and row 2 passes both to stand above them, still a top row.
+        assert!(send_with(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::ArrowUp),
+            ctrl,
+            laid_out
+        ));
+        assert_eq!(list.model().parents.get(&2), None, "still a top row");
+        assert_eq!(list.model().keys, vec![2, 0, 1]);
+        assert_eq!(list.focused_key(), Some(&2));
+    }
+
+    phase a_drop_into_the_middle_of_a_row_lands_the_dragged_row_inside_it;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = movable(vec![0, 1, 2], &[])
+            .with_tree(Rc::clone(&marks))
+            .with_reorder(|_, source, target| source != &target.key, land);
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let laid_out = (&taffy, node);
+
+        send(
+            &mut list,
+            &crate::synthetic_input::cursor_moved(20.0, 50.0),
+            laid_out,
+        );
+        send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+        send(
+            &mut list,
+            &crate::synthetic_input::cursor_moved(20.0, 10.0),
+            laid_out,
+        );
+        assert_eq!(
+            list.reorder_target(),
+            Some(&DropTarget::new(0, DropPlacement::Inside)),
+            "the middle of a row that takes subtasks takes the row into it"
+        );
+        assert!(list.reorder_preview().is_some());
+        send(
+            &mut list,
+            &crate::synthetic_input::mouse_release(),
+            laid_out,
+        );
+
+        assert_eq!(list.model().parents.get(&2), Some(&0), "it landed inside");
+        let _ = super::tests::lay_out(&mut list, 300.0);
+        assert_eq!(marks.depth(&2), 1);
+        assert!(marks.is_branch(&0), "the row it landed in holds subtasks");
+    }
+
+    phase the_seam_below_an_open_branch_lands_at_the_first_row_it_holds;
+    {
+        let marks = Rc::new(TreeMarks::default());
+        let mut list = movable(vec![0, 1, 2], &[(1, 0)])
+            .with_tree(Rc::clone(&marks))
+            .with_reorder(|_, source, target| source != &target.key, land);
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let laid_out = (&taffy, node);
+
+        send(
+            &mut list,
+            &crate::synthetic_input::cursor_moved(20.0, 50.0),
+            laid_out,
+        );
+        send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+        send(
+            &mut list,
+            &crate::synthetic_input::cursor_moved(20.0, 18.0),
+            laid_out,
+        );
+        assert_eq!(
+            list.reorder_target(),
+            Some(&DropTarget::new(1, DropPlacement::Before))
+        );
+        let preview = list.reorder_preview().expect("a line where it lands");
+        assert!(
+            (preview.center().y - 20.0).abs() < 2.0,
+            "above the row it holds: {preview:?}"
+        );
+    }
 }
 
 struct Movable {
@@ -652,423 +1073,169 @@ fn send_with<M: ListModel + 'static>(
         .handled
 }
 
-#[test]
-fn tab_indents_the_focused_row_into_the_row_above_it_and_shift_tab_steps_it_back_out() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = movable(vec![0, 1, 2], &[])
-        .tab_indents(true)
-        .with_tree(Rc::clone(&marks))
-        .with_reorder(|_, source, target| source != &target.key, land);
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let laid_out = (&taffy, node);
-    list.set_focus(true);
-    assert!(list.reveal(&2));
-    assert_eq!(list.focused_key(), Some(&2));
+tilo_test_env::scenario! {
+    fn a_tree_row_is_renamed_and_deleted_through_its_host;
 
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::Tab),
-        laid_out
-    ));
-    assert_eq!(
-        list.model().parents.get(&2),
-        Some(&1),
-        "under the row above"
-    );
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert_eq!(marks.depth(&2), 1, "one step deeper");
-    assert_eq!(
-        list.focused_key(),
-        Some(&2),
-        "the moved row keeps the keyboard"
-    );
-
-    assert!(send_with(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::Tab),
-        winit::keyboard::ModifiersState::SHIFT,
-        laid_out,
-    ));
-    assert_eq!(list.model().parents.get(&2), None, "out of it again");
-    assert_eq!(
-        list.model().keys,
-        vec![0, 1, 2],
-        "beside the row it stood under"
-    );
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert_eq!(marks.depth(&2), 0);
-}
-
-#[test]
-fn a_tab_that_cannot_move_the_row_is_left_to_focus_traversal() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = movable(vec![0, 1], &[])
-        .tab_indents(true)
-        .with_tree(Rc::clone(&marks))
-        .with_reorder(|_, source, target| source != &target.key, land);
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    list.set_focus(true);
-    assert!(list.reveal(&0));
-    assert!(
-        !send(
+    phase delete_asks_the_host_and_removes_no_row_itself;
+    {
+        let removed: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&removed);
+        let mut list = movable(vec![0, 1], &[]).on_delete(move |key| seen.borrow_mut().push(key));
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let laid_out = (&taffy, node);
+        list.set_focus(true);
+        assert!(send(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::Tab),
-            (&taffy, node)
-        ),
-        "a top row has no row above to indent into"
-    );
-    assert_eq!(list.model().parents.get(&0), None);
-}
+            &crate::synthetic_input::named_key(NamedKey::ArrowDown),
+            laid_out
+        ));
+        assert_eq!(list.focused_key(), Some(&0));
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::Delete),
+            laid_out
+        ));
+        assert_eq!(
+            *removed.borrow(),
+            vec![0],
+            "the focused row, for the host to remove"
+        );
+        assert_eq!(list.model().len(), 2, "the list removes nothing itself");
+    }
 
-#[test]
-fn the_alt_arrows_move_a_row_through_its_tree_and_ctrl_moves_it_beside_its_siblings() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = movable(vec![0, 1, 2], &[(1, 0)])
-        .with_tree(Rc::clone(&marks))
-        .with_reorder(|_, source, target| source != &target.key, land);
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let laid_out = (&taffy, node);
-    list.set_focus(true);
-    let alt = winit::keyboard::ModifiersState::ALT;
-    let ctrl = winit::keyboard::ModifiersState::CONTROL;
+    phase f2_renames_the_focused_row_in_place_and_reports_the_trimmed_title;
+    {
+        let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&renamed);
+        let mut list =
+            movable(vec![0, 1], &[]).on_rename(move |key, title| seen.borrow_mut().push((key, title)));
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let laid_out = (&taffy, node);
+        list.set_focus(true);
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::ArrowDown),
+            laid_out
+        ));
 
-    assert!(list.reveal(&2));
-    assert!(send_with(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::ArrowRight),
-        alt,
-        laid_out
-    ));
-    assert_eq!(
-        list.model().parents.get(&2),
-        Some(&0),
-        "under the row above it"
-    );
-    assert!(send_with(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::ArrowLeft),
-        alt,
-        laid_out
-    ));
-    assert_eq!(list.model().parents.get(&2), None);
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::F2),
+            laid_out
+        ));
+        assert_eq!(list.renaming(), Some(&0));
+        let field = list.rename_field().expect("the field stands over the row");
+        assert_eq!(field.value(), "row 0", "the row's own title to change");
+        let row = list.row_box(0).expect("the row stands somewhere");
+        assert!(
+            field.get_rect().y0 >= row.y0 - 0.5 && field.get_rect().y1 <= row.y1 + 0.5,
+            "the field sits on the row: {:?} in {row:?}",
+            field.get_rect()
+        );
 
-    // Ctrl+Up moves it up through its own depth, never into the branch it passes: row 1
-    // stands under row 0, and row 2 passes both to stand above them, still a top row.
-    assert!(send_with(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::ArrowUp),
-        ctrl,
-        laid_out
-    ));
-    assert_eq!(list.model().parents.get(&2), None, "still a top row");
-    assert_eq!(list.model().keys, vec![2, 0, 1]);
-    assert_eq!(list.focused_key(), Some(&2));
-}
+        // Typing goes into the field, never the list's type-ahead, and Enter commits.
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::char_key("!"),
+            laid_out
+        ));
+        let semantics = list.accessibility().expect("the list has a node");
+        let field = semantics.children[0]
+            .children
+            .iter()
+            .find(|child| child.role == crate::a11y::Role::TextInput)
+            .expect("the row carries the field over its label, for a reader to reach");
+        assert_eq!(field.value.as_deref(), Some("row 0!"));
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::Enter),
+            laid_out
+        ));
+        assert_eq!(list.renaming(), None, "the field closed");
+        assert_eq!(*renamed.borrow(), vec![(0, "row 0!".to_owned())]);
+    }
 
-#[test]
-fn a_drop_into_the_middle_of_a_row_lands_the_dragged_row_inside_it() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = movable(vec![0, 1, 2], &[])
-        .with_tree(Rc::clone(&marks))
-        .with_reorder(|_, source, target| source != &target.key, land);
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let laid_out = (&taffy, node);
+    phase escape_cancels_a_rename_and_a_press_elsewhere_commits_it;
+    {
+        let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&renamed);
+        let mut list =
+            movable(vec![0, 1], &[]).on_rename(move |key, title| seen.borrow_mut().push((key, title)));
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let laid_out = (&taffy, node);
+        list.set_focus(true);
+        assert!(list.begin_rename(&0));
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::char_key("x"),
+            laid_out
+        ));
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::named_key(NamedKey::Escape),
+            laid_out
+        ));
+        assert_eq!(list.renaming(), None);
+        assert!(
+            renamed.borrow().is_empty(),
+            "a cancelled rename reports nothing"
+        );
 
-    send(
-        &mut list,
-        &crate::synthetic_input::cursor_moved(20.0, 50.0),
-        laid_out,
-    );
-    send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
-    send(
-        &mut list,
-        &crate::synthetic_input::cursor_moved(20.0, 10.0),
-        laid_out,
-    );
-    assert_eq!(
-        list.reorder_target(),
-        Some(&DropTarget::new(0, DropPlacement::Inside)),
-        "the middle of a row that takes subtasks takes the row into it"
-    );
-    assert!(list.reorder_preview().is_some());
-    send(
-        &mut list,
-        &crate::synthetic_input::mouse_release(),
-        laid_out,
-    );
+        assert!(list.begin_rename(&0));
+        assert!(send(
+            &mut list,
+            &crate::synthetic_input::char_key("y"),
+            laid_out
+        ));
+        send(
+            &mut list,
+            &crate::synthetic_input::cursor_moved(20.0, 30.0),
+            laid_out,
+        );
+        send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+        send(
+            &mut list,
+            &crate::synthetic_input::mouse_release(),
+            laid_out,
+        );
+        assert_eq!(*renamed.borrow(), vec![(0, "row 0y".to_owned())]);
+        assert_eq!(
+            list.focused_key(),
+            Some(&1),
+            "the press chose the row below"
+        );
+    }
 
-    assert_eq!(list.model().parents.get(&2), Some(&0), "it landed inside");
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert_eq!(marks.depth(&2), 1);
-    assert!(marks.is_branch(&0), "the row it landed in holds subtasks");
-}
+    phase a_double_click_renames_the_row_it_lands_on_instead_of_opening_it;
+    {
+        let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let opened: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&renamed);
+        let chosen = Rc::clone(&opened);
+        let mut list = movable(vec![0, 1], &[])
+            .on_rename(move |key, title| seen.borrow_mut().push((key, title)))
+            .rename_on_double_click()
+            .on_activate(move |key| chosen.borrow_mut().push(key));
+        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        press(&mut list, 20.0, 10.0, &taffy, node);
+        press(&mut list, 20.0, 10.0, &taffy, node);
 
-#[test]
-fn the_seam_below_an_open_branch_lands_at_the_first_row_it_holds() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = movable(vec![0, 1, 2], &[(1, 0)])
-        .with_tree(Rc::clone(&marks))
-        .with_reorder(|_, source, target| source != &target.key, land);
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let laid_out = (&taffy, node);
-
-    send(
-        &mut list,
-        &crate::synthetic_input::cursor_moved(20.0, 50.0),
-        laid_out,
-    );
-    send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
-    send(
-        &mut list,
-        &crate::synthetic_input::cursor_moved(20.0, 18.0),
-        laid_out,
-    );
-    assert_eq!(
-        list.reorder_target(),
-        Some(&DropTarget::new(1, DropPlacement::Before))
-    );
-    let preview = list.reorder_preview().expect("a line where it lands");
-    assert!(
-        (preview.center().y - 20.0).abs() < 2.0,
-        "above the row it holds: {preview:?}"
-    );
-}
-
-#[test]
-fn a_pointer_resting_on_a_folded_branch_shows_what_it_holds() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = movable(vec![0, 1, 2], &[(1, 0)])
-        .with_tree(Rc::clone(&marks))
-        .with_reorder(|_, source, target| source != &target.key, land);
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let laid_out = (&taffy, node);
-    assert!(list.fold_row(&0, true));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    list.reorder = crate::reorder::ReorderController::new()
-        .with_drag_threshold(0.0)
-        .with_hover_expand_delay(crate::time::Duration::ZERO);
-
-    send(
-        &mut list,
-        &crate::synthetic_input::cursor_moved(20.0, 30.0),
-        laid_out,
-    );
-    send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
-    send(
-        &mut list,
-        &crate::synthetic_input::cursor_moved(20.0, 10.0),
-        laid_out,
-    );
-    assert_eq!(
-        list.reorder_target(),
-        Some(&DropTarget::new(0, DropPlacement::Inside))
-    );
-    let doc = AutoCommit::new();
-    assert!(
-        list.update(&doc, &automerge::ROOT),
-        "the rest brings its rows into view"
-    );
-    assert!(!list.row_folded(&0), "what it holds comes into view");
-}
-
-#[test]
-fn delete_asks_the_host_and_removes_no_row_itself() {
-    let removed: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
-    let seen = Rc::clone(&removed);
-    let mut list = movable(vec![0, 1], &[]).on_delete(move |key| seen.borrow_mut().push(key));
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let laid_out = (&taffy, node);
-    list.set_focus(true);
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::ArrowDown),
-        laid_out
-    ));
-    assert_eq!(list.focused_key(), Some(&0));
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::Delete),
-        laid_out
-    ));
-    assert_eq!(
-        *removed.borrow(),
-        vec![0],
-        "the focused row, for the host to remove"
-    );
-    assert_eq!(list.model().len(), 2, "the list removes nothing itself");
-}
-
-#[test]
-fn f2_renames_the_focused_row_in_place_and_reports_the_trimmed_title() {
-    let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
-    let seen = Rc::clone(&renamed);
-    let mut list =
-        movable(vec![0, 1], &[]).on_rename(move |key, title| seen.borrow_mut().push((key, title)));
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let laid_out = (&taffy, node);
-    list.set_focus(true);
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::ArrowDown),
-        laid_out
-    ));
-
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::F2),
-        laid_out
-    ));
-    assert_eq!(list.renaming(), Some(&0));
-    let field = list.rename_field().expect("the field stands over the row");
-    assert_eq!(field.value(), "row 0", "the row's own title to change");
-    let row = list.row_box(0).expect("the row stands somewhere");
-    assert!(
-        field.get_rect().y0 >= row.y0 - 0.5 && field.get_rect().y1 <= row.y1 + 0.5,
-        "the field sits on the row: {:?} in {row:?}",
-        field.get_rect()
-    );
-
-    // Typing goes into the field, never the list's type-ahead, and Enter commits.
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::char_key("!"),
-        laid_out
-    ));
-    let semantics = list.accessibility().expect("the list has a node");
-    let field = semantics.children[0]
-        .children
-        .iter()
-        .find(|child| child.role == crate::a11y::Role::TextInput)
-        .expect("the row carries the field over its label, for a reader to reach");
-    assert_eq!(field.value.as_deref(), Some("row 0!"));
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::Enter),
-        laid_out
-    ));
-    assert_eq!(list.renaming(), None, "the field closed");
-    assert_eq!(*renamed.borrow(), vec![(0, "row 0!".to_owned())]);
-}
-
-#[test]
-fn escape_cancels_a_rename_and_a_press_elsewhere_commits_it() {
-    let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
-    let seen = Rc::clone(&renamed);
-    let mut list =
-        movable(vec![0, 1], &[]).on_rename(move |key, title| seen.borrow_mut().push((key, title)));
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let laid_out = (&taffy, node);
-    list.set_focus(true);
-    assert!(list.begin_rename(&0));
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::char_key("x"),
-        laid_out
-    ));
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::named_key(NamedKey::Escape),
-        laid_out
-    ));
-    assert_eq!(list.renaming(), None);
-    assert!(
-        renamed.borrow().is_empty(),
-        "a cancelled rename reports nothing"
-    );
-
-    assert!(list.begin_rename(&0));
-    assert!(send(
-        &mut list,
-        &crate::synthetic_input::char_key("y"),
-        laid_out
-    ));
-    send(
-        &mut list,
-        &crate::synthetic_input::cursor_moved(20.0, 30.0),
-        laid_out,
-    );
-    send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
-    send(
-        &mut list,
-        &crate::synthetic_input::mouse_release(),
-        laid_out,
-    );
-    assert_eq!(*renamed.borrow(), vec![(0, "row 0y".to_owned())]);
-    assert_eq!(
-        list.focused_key(),
-        Some(&1),
-        "the press chose the row below"
-    );
-}
-
-#[test]
-fn a_double_click_renames_the_row_it_lands_on_instead_of_opening_it() {
-    let renamed: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
-    let opened: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
-    let seen = Rc::clone(&renamed);
-    let chosen = Rc::clone(&opened);
-    let mut list = movable(vec![0, 1], &[])
-        .on_rename(move |key, title| seen.borrow_mut().push((key, title)))
-        .rename_on_double_click()
-        .on_activate(move |key| chosen.borrow_mut().push(key));
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    press(&mut list, 20.0, 10.0, &taffy, node);
-    press(&mut list, 20.0, 10.0, &taffy, node);
-
-    assert_eq!(
-        list.renaming(),
-        Some(&0),
-        "the second click renames the row"
-    );
-    assert!(opened.borrow().is_empty(), "and does not open it");
-    assert_eq!(
-        list.focused_key(),
-        Some(&0),
-        "the row it renames holds the keyboard"
-    );
-    assert_eq!(
-        list.rename_field().map(|field| field.value()),
-        Some("row 0")
-    );
-}
-
-#[test]
-fn a_tree_row_keeps_its_own_height_and_the_ends_and_pages_reach_its_rows() {
-    let marks = Rc::new(TreeMarks::default());
-    let model = Movable {
-        labels: (0..3).map(|key| (key, format!("row {key}"))).collect(),
-        keys: vec![0, 1, 2],
-        parents: [(1, 0)].into_iter().collect(),
-        takes_children: (0..3).collect(),
-    };
-    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-        let height = if *key == 1 { 44.0 } else { 20.0 };
-        Box::new(super::tests::ProbeRow::new(
-            key.to_string(),
-            height,
-            false,
-            Rc::new(Cell::new(0)),
-        ))
-    })
-    .with_viewport_height(200.0)
-    .with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    // The taller row keeps its height indented under row 0, and the row below it clears it.
-    assert_eq!(marks.depth(&1), 1);
-    assert_eq!(list.viewport.item_height(1), Some(f64::from(44.0_f32)));
-    assert_eq!(
-        list.row_box(2).map(|row| row.y0),
-        Some(64.0),
-        "row 2 starts under row 1's full height"
-    );
-
-    let key = |named| Key::Named(named);
-    assert!(list.on_key(&key(NamedKey::End), false, false));
-    assert_eq!(list.focused_key(), Some(&2), "End reaches the last row");
-    assert!(list.on_key(&key(NamedKey::Home), false, false));
-    assert_eq!(list.focused_key(), Some(&0), "Home the first");
-    assert!(list.on_key(&key(NamedKey::PageDown), false, false));
-    assert_eq!(list.focused_key(), Some(&2), "a page down the flat rows");
+        assert_eq!(
+            list.renaming(),
+            Some(&0),
+            "the second click renames the row"
+        );
+        assert!(opened.borrow().is_empty(), "and does not open it");
+        assert_eq!(
+            list.focused_key(),
+            Some(&0),
+            "the row it renames holds the keyboard"
+        );
+        assert_eq!(
+            list.rename_field().map(|field| field.value()),
+            Some("row 0")
+        );
+    }
 }
 
 struct Headed {
@@ -1113,157 +1280,6 @@ impl ListModel for Headed {
     fn discloses(&self) -> bool {
         self.groups.iter().any(Option::is_some)
     }
-}
-
-#[test]
-fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
-    let marks = Rc::new(TreeMarks::default());
-    let model = Headed {
-        keys: vec![0, 1, 2],
-        parents: HashMap::from([(1, 0)]),
-        groups: vec![
-            Some(RowGroup::heading("Jun 30".to_owned())),
-            Some(RowGroup::heading("Jun 30".to_owned())),
-            Some(RowGroup::heading("Jun 30".to_owned())),
-        ],
-    };
-    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-        Box::new(super::tests::ProbeRow::new(
-            key.to_string(),
-            20.0,
-            false,
-            Rc::new(Cell::new(0)),
-        ))
-    })
-    .with_viewport_height(200.0)
-    .with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    let _ = super::tests::lay_out(&mut list, 300.0);
-
-    let item_height = list.viewport.item_height(0).expect("the first row");
-    let row = list.row_box(0).expect("the first row stands somewhere");
-    let band = list.groups.height;
-    assert!(band > 0.0, "the heading over the row takes a band");
-    assert!(
-        (item_height - (band + row.height())).abs() < 0.5,
-        "the item is the band and the row: {item_height} of {band} and {}",
-        row.height()
-    );
-
-    let (chevron, folded) = list
-        .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row, false)
-        .expect("the row folds the subtask under it");
-    assert!(!folded, "the group starts open");
-    assert!(
-        (chevron.center().y - row.center().y).abs() < 0.5,
-        "the chevron is centred on its own row: {} against the row's {}",
-        chevron.center().y,
-        row.center().y
-    );
-    assert!(
-        chevron.y0 >= row.y0 - 0.5 && chevron.y1 <= row.y1 + 0.5,
-        "the chevron stands inside the row, not over the heading: {:?} in {row:?}",
-        chevron
-    );
-    let group_center =
-        list.rect.y0 + list.viewport.item_view_top(0).unwrap_or_default() + item_height / 2.0;
-    assert!(
-        (chevron.center().y - group_center).abs() > 1.0,
-        "it is never centred between the heading and the row: {} against {group_center}",
-        chevron.center().y
-    );
-
-    let _ = super::tests::lay_out(&mut list, 180.0);
-    let narrow = list.row_box(0).expect("the first row on a phone");
-    let (chevron, _) = list
-        .chevrons()
-        .rect(&marks, &Theme::dark(), &0, narrow, false)
-        .expect("the row folds the subtask under it");
-    assert!(
-        (chevron.center().y - narrow.center().y).abs() < 0.5,
-        "a phone's column keeps the chevron on its row: {} against {}",
-        chevron.center().y,
-        narrow.center().y
-    );
-
-    let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
-    let row = list.row_box(0).expect("the first row stands somewhere");
-    let (chevron, _) = list
-        .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row, false)
-        .expect("the row folds the subtask under it");
-    press(
-        &mut list,
-        chevron.center().x,
-        chevron.center().y,
-        &taffy,
-        node,
-    );
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    assert!(
-        list.row_folded(&0),
-        "the chevron's press folds the subtask under the row"
-    );
-    let row = list.row_box(0).expect("the folded row stands somewhere");
-    let (chevron, folded) = list
-        .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row, list.row_folded(&0))
-        .expect("a folded row still shows its disclosure");
-    assert!(folded, "the chevron points at what it folded away");
-    assert!(
-        (chevron.center().y - row.center().y).abs() < 0.5,
-        "the folded row's chevron stays on its row: {} against {}",
-        chevron.center().y,
-        row.center().y
-    );
-}
-
-/// The chevron that folds a row hangs in the step in front of the row's own column, so a row
-/// with something to fold starts on the column its neighbours do and the top level stands its
-/// own one step in from the list's leading edge — never a step for the chevron and another for
-/// the depth on top of it.
-#[test]
-fn a_branch_row_starts_on_the_column_its_neighbours_do() {
-    let marks = Rc::new(TreeMarks::default());
-    let mut list = nested().with_tree(Rc::clone(&marks));
-    let _ = super::tests::lay_out(&mut list, 300.0);
-    let branch = list.row_rect(&0).expect("the branch row");
-    let leaf = list.row_rect(&3).expect("a leaf at the same depth");
-    assert_eq!(list.row_depth(&0), 0);
-    assert_eq!(list.row_depth(&3), 0);
-    assert!(
-        (branch.x0 - leaf.x0).abs() < 0.5,
-        "rows at one depth stand on one column: {} and {}",
-        branch.x0,
-        leaf.x0
-    );
-
-    let column = branch.x0 + list.lead;
-    assert!(
-        (column - (branch.x0 + TREE_INDENT)).abs() < 0.5,
-        "the top level stands one step in from the list's leading edge, not two: {column} \
-         from {}",
-        branch.x0
-    );
-    let chevron = list
-        .disclosure_rect(&0)
-        .expect("the branch shows its disclosure");
-    assert!(
-        (chevron.x1 - column).abs() < 0.5,
-        "the chevron ends where the row's box begins: {} against {column}",
-        chevron.x1
-    );
-    assert!(
-        (chevron.x0 - (column - TREE_INDENT)).abs() < 0.5,
-        "it hangs in the step in front of the box: {} against {}",
-        chevron.x0,
-        column - TREE_INDENT
-    );
-    assert!(
-        list.disclosure_rect(&3).is_none(),
-        "a leaf folds nothing, and still keeps the step free"
-    );
 }
 
 struct OpenableTree {
