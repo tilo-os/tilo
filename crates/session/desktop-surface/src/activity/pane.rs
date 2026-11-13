@@ -2661,6 +2661,8 @@ fn workspace_touched(
 struct PatchCounts {
     grants: Vec<String>,
     revokes: usize,
+    /// Signed changes to who is in the workspace, their roles and its grants.
+    membership: usize,
     names: Vec<String>,
     owner_set: bool,
     workspace_set: bool,
@@ -2690,17 +2692,22 @@ impl PatchCounts {
         }
         let container = path_tail(p);
         match (&p.action, container.as_str()) {
-            (
-                automerge::PatchAction::PutMap { key, value, .. },
-                map @ ("grants" | "sandbox" | "members"),
-            ) => {
+            (automerge::PatchAction::PutMap { value, .. }, "sandbox") => {
                 self.grants.push(
-                    describe_governance(map, key, &value.0)
-                        .unwrap_or_else(|| t("activity-capability-unknown")),
+                    describe_sandbox(&value.0).unwrap_or_else(|| t("activity-capability-unknown")),
                 );
             }
-            (automerge::PatchAction::DeleteMap { .. }, "grants" | "sandbox" | "members") => {
+            (automerge::PatchAction::DeleteMap { .. }, "sandbox") => {
                 self.revokes = self.revokes.saturating_add(1);
+            }
+            // Who is in the workspace, their roles and its grants: each change
+            // a signed operation under its own root key.
+            (automerge::PatchAction::PutMap { key, .. }, "")
+                if key
+                    .strip_prefix(tilo_desktop_model::projection::WORKSPACE_MEMBERS_KEY)
+                    .is_some_and(|rest| rest.starts_with('/')) =>
+            {
+                self.membership = self.membership.saturating_add(1);
             }
             // A workspace's layout: a window is an entry of its `windows` , and a group closes with
             // its last window. (Older workspaces kept each window under its group's `tabs` .)
@@ -2851,6 +2858,9 @@ impl PatchCounts {
                 EntryKind::Access,
             ));
         }
+        if self.membership > 0 {
+            return Some((t("activity-event-membership"), EntryKind::Access));
+        }
         if self.owner_set {
             return Some((t("activity-event-owner"), EntryKind::Access));
         }
@@ -2932,7 +2942,7 @@ impl PatchCounts {
         if self.workspace_set && self.owner_set {
             return WorkspaceEventKind::Setup;
         }
-        if !self.grants.is_empty() || self.revokes > 0 {
+        if !self.grants.is_empty() || self.revokes > 0 || self.membership > 0 {
             return WorkspaceEventKind::Change;
         }
         if self.owner_set || self.workspace_set {
@@ -2987,114 +2997,17 @@ fn scalar_string(v: &Value<'_>) -> Option<String> {
     }
 }
 
-/// What one entry of a governance map says, in its own words: a grant, a sandbox capability or a
-/// member with their role.
-fn describe_governance(map: &str, key: &str, value: &Value<'_>) -> Option<String> {
+/// What one sandbox capability the workspace records says, in its own words.
+fn describe_sandbox(value: &Value<'_>) -> Option<String> {
     let Value::Scalar(s) = value else {
         return None;
     };
     let ScalarValue::Bytes(blob) = s.as_ref() else {
         return None;
     };
-    match map {
-        "grants" => serde_json::from_slice::<tilo_action_policy::Grant>(blob)
-            .ok()
-            .map(|grant| describe_grant(&grant)),
-        "sandbox" => serde_json::from_slice::<CapOverride>(blob)
-            .ok()
-            .map(|cap| describe_capability(&cap)),
-        _ => serde_json::from_slice::<tilo_action_policy::Role>(blob)
-            .ok()
-            .map(|role| describe_member(key, role)),
-    }
-}
-
-/// A grant in one short phrase: its answer, for which kinds of action, on what, to whom.
-fn describe_grant(grant: &tilo_action_policy::Grant) -> String {
-    use tilo_action_policy::{ActionKind, Answer};
-    let answer = match grant.answer {
-        Answer::Allow => "allow",
-        Answer::Ask => "ask",
-        Answer::Deny => "deny",
-    };
-    let kinds = grant.kinds;
-    let kinds = match (
-        kinds.contains(ActionKind::Read),
-        kinds.contains(ActionKind::Undoable),
-        kinds.contains(ActionKind::Outside),
-    ) {
-        (true, true, true) => "all",
-        (true, true, false) => "read-undoable",
-        (true, false, true) => "read-outside",
-        (false, true, true) => "undoable-outside",
-        (true, false, false) => "read",
-        (false, true, false) => "undoable",
-        (false, false, true) => "outside",
-        (false, false, false) => "none",
-    };
-    t_args(
-        "activity-grant",
-        &[
-            ("answer", answer.into()),
-            ("kinds", kinds.into()),
-            (
-                "node",
-                tilo_action_policy::describe_node(&grant.node, &GrantTree).into(),
-            ),
-            ("subject", describe_grantee(&grant.subject).into()),
-        ],
-    )
-}
-
-/// The grant tree as the activity pane names it: the whole tree in the
-/// window's language, every node below by its id.
-struct GrantTree;
-
-impl tilo_action_policy::Labels for GrantTree {
-    fn everything(&self) -> String {
-        t("activity-grant-everything")
-    }
-}
-
-fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
-    use tilo_action_policy::Subject as Grantee;
-    match subject {
-        Grantee::Person(id) => short(id),
-        Grantee::Role(role) => t_args(
-            "activity-capability-role",
-            &[("role", role_key(*role).into())],
-        ),
-        Grantee::Agent(agent) => t_args("activity-capability-agent", &[("agent", agent.into())]),
-        Grantee::Task(task) => t_args("activity-grant-task", &[("task", short(task).into())]),
-        Grantee::Shortcut(shortcut) => {
-            t_args("activity-grant-shortcut", &[("shortcut", shortcut.into())])
-        }
-        Grantee::App(app) => app.clone(),
-        Grantee::Bot(bot) => t_args("activity-grant-bot", &[("bot", short(bot).into())]),
-        Grantee::ForeignDevice => t("activity-grant-foreign-device"),
-    }
-}
-
-/// The catalogue selector of a role.
-fn role_key(role: tilo_action_policy::Role) -> &'static str {
-    match role {
-        tilo_action_policy::Role::Owner => "owner",
-        tilo_action_policy::Role::Moderator => "moderator",
-        tilo_action_policy::Role::Editor => "editor",
-        tilo_action_policy::Role::Commenter => "commenter",
-        tilo_action_policy::Role::Viewer => "viewer",
-    }
-}
-
-/// A member admitted to the workspace, or their role changed.
-fn describe_member(person: &str, role: tilo_action_policy::Role) -> String {
-    t_args(
-        "activity-member",
-        &[
-            ("person", short(person).into()),
-            ("role", role_key(role).into()),
-        ],
-    )
+    serde_json::from_slice::<CapOverride>(blob)
+        .ok()
+        .map(|cap| describe_capability(&cap))
 }
 
 /// A sandbox capability in one short phrase: what, over what, to whom.

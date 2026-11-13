@@ -228,6 +228,7 @@ activity-event-revoked-capabilities = { $count ->
         [one] Revoked a capability
        *[other] Revoked { $count } capabilities
     }
+activity-event-membership = Changed who is in the workspace
 activity-event-created = Created the workspace
 activity-event-created-named = Created the workspace “{ $name }”
 activity-event-updated = Updated the workspace
@@ -257,38 +258,6 @@ activity-capability-unknown = a capability
 activity-capability-this-workspace = this workspace
 activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
-activity-capability-role = { $role ->
-        [owner] owners
-        [moderator] moderators
-        [editor] editors
-        [commenter] commenters
-       *[viewer] viewers
-    }
-activity-grant = { $answer ->
-        [deny] denied
-        [ask] ask first for
-       *[allow] allowed
-    } { $kinds ->
-        [read] reading
-        [undoable] changes
-        [outside] outside effects
-        [read-undoable] reading and changes
-        [read-outside] reading and outside effects
-        [undoable-outside] changes and outside effects
-        [none] nothing
-       *[all] everything
-    } on { $node } to { $subject }
-activity-grant-task = task { $task }
-activity-grant-shortcut = Shortcut { $shortcut }
-activity-grant-bot = Bot { $bot }
-activity-grant-foreign-device = devices that are not their own
-activity-member = { $person } as { $role ->
-        [owner] owner
-        [moderator] moderator
-        [editor] editor
-        [commenter] commenter
-       *[viewer] viewer
-    }
 activity-capability-a-person = a person
 activity-capability-agent = agent { $agent }
 activity-capability-invite-token = an invite token
@@ -1222,7 +1191,6 @@ task-programs-run-detail = Runs a program as a step of the task, and answers wha
 
 ## What a grant covers when it covers the whole tree
 workspace-settings-scope-everything = Everything
-activity-grant-everything = Everything
 
 ## Actions
 
