@@ -296,12 +296,17 @@ mod tests {
         )
     }
 
-    /// Scrolling back prefetches near the edge and stops when exhausted; opening an old version pages
-    /// until it is loaded; unsolicited or foreign pages change nothing; an empty non-final page is
-    /// asked again.
-    #[test]
-    fn history_paging_fetches_only_what_the_view_needs() {
-        // Phase: scrolling_back_prefetches_near_the_edge_and_stops_when_exhausted.
+    tilo_test_env::scenario! {
+        /// Scrolling back prefetches near the edge and stops when exhausted; opening an old version pages
+        /// until it is loaded; unsolicited or foreign pages change nothing; an empty non-final page is
+        /// asked again.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn history_paging_fetches_only_what_the_view_needs;
+
+        phase scrolling_back_prefetches_near_the_edge_and_stops_when_exhausted;
         {
             let artifact = ArtifactId::new();
             let log: Vec<SignedOp> = (1..=250).map(|seq| op(artifact, seq)).collect();
@@ -329,7 +334,7 @@ mod tests {
             assert_eq!(pager.on_viewport(0), None);
         }
 
-        // Phase: opening_an_old_version_pages_until_it_is_loaded.
+        phase opening_an_old_version_pages_until_it_is_loaded;
         {
             let artifact = ArtifactId::new();
             let log: Vec<SignedOp> = (1..=1000).map(|seq| op(artifact, seq)).collect();
@@ -348,7 +353,7 @@ mod tests {
             assert_eq!(pager.ensure_loaded_back_to(800), None, "already loaded");
         }
 
-        // Phase: unsolicited_or_foreign_pages_change_nothing.
+        phase unsolicited_or_foreign_pages_change_nothing;
         {
             let artifact = ArtifactId::new();
             let mut pager = HistoryPager::new(artifact, 10, 0);
@@ -362,7 +367,7 @@ mod tests {
             assert_eq!(pager.oldest_loaded(), Some(50));
         }
 
-        // Phase: an_empty_page_that_is_not_final_is_asked_again.
+        phase an_empty_page_that_is_not_final_is_asked_again;
         {
             let artifact = ArtifactId::new();
             let mut pager = HistoryPager::new(artifact, 10, 0);

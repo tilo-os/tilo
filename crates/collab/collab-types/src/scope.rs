@@ -105,57 +105,62 @@ mod tests {
 
     const WORKSPACE: &str = "w1";
 
-    #[test]
-    fn a_workspace_scope_keys_under_the_live_record() {
-        let scope = Scope::workspace(WORKSPACE);
-        assert_eq!(
-            scope.channel_id(),
-            ChannelRoute::new(MEDIA_APP, "live").channel(WORKSPACE)
-        );
-        assert_eq!(scope.id(), "workspace");
-    }
+    tilo_test_env::scenario! {
+        /// The channel each kind of scope keys under.
+        fn a_scope_keys_under_its_own_record_or_channel;
 
-    #[test]
-    fn a_channel_scope_keys_under_that_channel() {
-        let route = ChannelRoute::new("so.tilo.sheets", "payroll");
-        let scope = Scope::channel(WORKSPACE, route.channel(WORKSPACE));
-        assert_eq!(scope.channel_id(), route.channel(WORKSPACE));
-        assert_eq!(
-            scope.id(),
-            format!("channel/{}", route.channel(WORKSPACE).0)
-        );
-    }
+        phase a_workspace_scope_keys_under_the_live_record;
+        {
+            let scope = Scope::workspace(WORKSPACE);
+            assert_eq!(
+                scope.channel_id(),
+                ChannelRoute::new(MEDIA_APP, "live").channel(WORKSPACE)
+            );
+            assert_eq!(scope.id(), "workspace");
+        }
 
-    #[test]
-    fn a_record_scope_keys_under_its_own_record() {
-        let scope = Scope::record(WORKSPACE, "notes");
-        assert_eq!(scope.workspace_id(), WORKSPACE);
-        assert_eq!(
-            scope.channel_id(),
-            ChannelRoute::new(MEDIA_APP, "notes").channel(WORKSPACE)
-        );
-        assert_eq!(scope.id(), "record/notes");
-    }
+        phase a_channel_scope_keys_under_that_channel;
+        {
+            let route = ChannelRoute::new("so.tilo.sheets", "payroll");
+            let scope = Scope::channel(WORKSPACE, route.channel(WORKSPACE));
+            assert_eq!(scope.channel_id(), route.channel(WORKSPACE));
+            assert_eq!(
+                scope.id(),
+                format!("channel/{}", route.channel(WORKSPACE).0)
+            );
+        }
 
-    #[test]
-    fn scopes_of_different_members_never_share_a_channel() {
-        let workspace = Scope::workspace(WORKSPACE);
-        let channel = Scope::channel(
-            WORKSPACE,
-            ChannelRoute::new("so.tilo.sheets", "payroll").channel(WORKSPACE),
-        );
-        let record = Scope::record(WORKSPACE, "live");
-        let ids = [
-            workspace.channel_id(),
-            channel.channel_id(),
-            record.channel_id(),
-        ];
-        assert_eq!(ids[0], ids[2], "record/live is the workspace's own record");
-        assert_ne!(ids[0], ids[1]);
-        assert_ne!(
-            workspace.id(),
-            record.id(),
-            "the two scopes keep their names"
-        );
+        phase a_record_scope_keys_under_its_own_record;
+        {
+            let scope = Scope::record(WORKSPACE, "notes");
+            assert_eq!(scope.workspace_id(), WORKSPACE);
+            assert_eq!(
+                scope.channel_id(),
+                ChannelRoute::new(MEDIA_APP, "notes").channel(WORKSPACE)
+            );
+            assert_eq!(scope.id(), "record/notes");
+        }
+
+        phase scopes_of_different_members_never_share_a_channel;
+        {
+            let workspace = Scope::workspace(WORKSPACE);
+            let channel = Scope::channel(
+                WORKSPACE,
+                ChannelRoute::new("so.tilo.sheets", "payroll").channel(WORKSPACE),
+            );
+            let record = Scope::record(WORKSPACE, "live");
+            let ids = [
+                workspace.channel_id(),
+                channel.channel_id(),
+                record.channel_id(),
+            ];
+            assert_eq!(ids[0], ids[2], "record/live is the workspace's own record");
+            assert_ne!(ids[0], ids[1]);
+            assert_ne!(
+                workspace.id(),
+                record.id(),
+                "the two scopes keep their names"
+            );
+        }
     }
 }

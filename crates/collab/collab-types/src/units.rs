@@ -214,90 +214,95 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
 
-    /// A record whose comments are units: a change to one comment writes
-    /// that comment's unit, a change elsewhere the record.
-    #[test]
-    fn a_change_writes_the_units_its_operations_fall_under() {
-        let mut doc = automerge::AutoCommit::new();
-        let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
-        doc.insert(&index, 0, "comments/*").unwrap();
-        let comments = doc.put_object(ROOT, "comments", ObjType::Map).unwrap();
-        let entry = doc.put_object(&comments, "c1", ObjType::Map).unwrap();
-        let value = doc.put_object(&entry, ITEM_VALUE, ObjType::Map).unwrap();
-        doc.put(&value, "text", "first").unwrap();
-        doc.put(ROOT, "body", "hello").unwrap();
-        doc.commit();
-        let before = doc.clone();
+    tilo_test_env::scenario! {
+        /// The units of a record a change writes, read from its operations.
+        fn changes_write_the_units_their_operations_fall_under;
 
-        doc.put(&value, "text", "edited").unwrap();
-        let comment = doc.commit().unwrap();
-        doc.put(ROOT, "body", "changed").unwrap();
-        let body = doc.commit().unwrap();
+        phase a_change_writes_the_units_its_operations_fall_under;
+        // A record whose comments are units: a change to one comment writes
+        // that comment's unit, a change elsewhere the record.
+        {
+            let mut doc = automerge::AutoCommit::new();
+            let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
+            doc.insert(&index, 0, "comments/*").unwrap();
+            let comments = doc.put_object(ROOT, "comments", ObjType::Map).unwrap();
+            let entry = doc.put_object(&comments, "c1", ObjType::Map).unwrap();
+            let value = doc.put_object(&entry, ITEM_VALUE, ObjType::Map).unwrap();
+            doc.put(&value, "text", "first").unwrap();
+            doc.put(ROOT, "body", "hello").unwrap();
+            doc.commit();
+            let before = doc.clone();
 
-        let after = doc.document().clone();
-        let change = |hash| after.get_change_by_hash(&hash).unwrap();
-        assert_eq!(
-            written_units(&before, &change(comment)).unwrap(),
-            vec![vec![
-                PathStep::Field("comments".into()),
-                PathStep::Item("c1".into())
-            ]]
-        );
-        let mut at_comment = before;
-        at_comment.apply_incoming([change(comment)]).unwrap();
-        assert_eq!(
-            written_units(&at_comment, &change(body)).unwrap(),
-            vec![Vec::<PathStep>::new()]
-        );
-    }
+            doc.put(&value, "text", "edited").unwrap();
+            let comment = doc.commit().unwrap();
+            doc.put(ROOT, "body", "changed").unwrap();
+            let body = doc.commit().unwrap();
 
-    /// A record the receiver does not hold yet is read from its first
-    /// changes, which carry its unit index; one that never keeps an index
-    /// has no units to tell apart.
-    #[test]
-    fn a_new_records_units_are_read_from_its_first_changes() {
-        let mut doc = automerge::AutoCommit::new();
-        let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
-        doc.insert(&index, 0, "uploads").unwrap();
-        doc.put(ROOT, "title", "Lounge").unwrap();
-        let first = doc.commit().unwrap();
-        let after = doc.document().clone();
-        let changes = vec![after.get_change_by_hash(&first).unwrap()];
-        let units = units_by_change(AutoCommit::new(), &changes).expect("an indexed record");
-        assert_eq!(
-            units.written.get(&first.0).map(|written| &written.units),
-            Some(&vec![Vec::<PathStep>::new()])
-        );
-        assert!(units.indexes(&vec![PathStep::Field("uploads".into())]));
-        assert!(!units.indexes(&vec![PathStep::Field("title".into())]));
+            let after = doc.document().clone();
+            let change = |hash| after.get_change_by_hash(&hash).unwrap();
+            assert_eq!(
+                written_units(&before, &change(comment)).unwrap(),
+                vec![vec![
+                    PathStep::Field("comments".into()),
+                    PathStep::Item("c1".into())
+                ]]
+            );
+            let mut at_comment = before;
+            at_comment.apply_incoming([change(comment)]).unwrap();
+            assert_eq!(
+                written_units(&at_comment, &change(body)).unwrap(),
+                vec![Vec::<PathStep>::new()]
+            );
+        }
 
-        let mut plain = automerge::AutoCommit::new();
-        plain.put(ROOT, "title", "Lounge").unwrap();
-        let only = plain.commit().unwrap();
-        let after = plain.document().clone();
-        let changes = vec![after.get_change_by_hash(&only).unwrap()];
-        assert!(units_by_change(AutoCommit::new(), &changes).is_none());
-    }
+        phase a_new_records_units_are_read_from_its_first_changes;
+        // A record the receiver does not hold yet is read from its first
+        // changes, which carry its unit index; one that never keeps an index
+        // has no units to tell apart.
+        {
+            let mut doc = automerge::AutoCommit::new();
+            let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
+            doc.insert(&index, 0, "uploads").unwrap();
+            doc.put(ROOT, "title", "Lounge").unwrap();
+            let first = doc.commit().unwrap();
+            let after = doc.document().clone();
+            let changes = vec![after.get_change_by_hash(&first).unwrap()];
+            let units = units_by_change(AutoCommit::new(), &changes).expect("an indexed record");
+            assert_eq!(
+                units.written.get(&first.0).map(|written| &written.units),
+                Some(&vec![Vec::<PathStep>::new()])
+            );
+            assert!(units.indexes(&vec![PathStep::Field("uploads".into())]));
+            assert!(!units.indexes(&vec![PathStep::Field("title".into())]));
 
-    /// An item kept as its order key alone is the scalar under its id; it
-    /// falls under its item's unit like an entry map does.
-    #[test]
-    fn an_item_stored_as_its_order_key_writes_its_own_unit() {
-        let mut doc = automerge::AutoCommit::new();
-        let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
-        doc.insert(&index, 0, "rows/*").unwrap();
-        let rows = doc.put_object(ROOT, "rows", ObjType::Map).unwrap();
-        doc.commit();
-        let before = doc.clone();
-        doc.put(&rows, "r1", "a0").unwrap();
-        let inserted = doc.commit().unwrap();
-        let change = doc.document().get_change_by_hash(&inserted).unwrap();
-        assert_eq!(
-            written_units(&before, &change).unwrap(),
-            vec![vec![
-                PathStep::Field("rows".into()),
-                PathStep::Item("r1".into())
-            ]]
-        );
+            let mut plain = automerge::AutoCommit::new();
+            plain.put(ROOT, "title", "Lounge").unwrap();
+            let only = plain.commit().unwrap();
+            let after = plain.document().clone();
+            let changes = vec![after.get_change_by_hash(&only).unwrap()];
+            assert!(units_by_change(AutoCommit::new(), &changes).is_none());
+        }
+
+        phase an_item_stored_as_its_order_key_writes_its_own_unit;
+        // An item kept as its order key alone is the scalar under its id; it
+        // falls under its item's unit like an entry map does.
+        {
+            let mut doc = automerge::AutoCommit::new();
+            let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
+            doc.insert(&index, 0, "rows/*").unwrap();
+            let rows = doc.put_object(ROOT, "rows", ObjType::Map).unwrap();
+            doc.commit();
+            let before = doc.clone();
+            doc.put(&rows, "r1", "a0").unwrap();
+            let inserted = doc.commit().unwrap();
+            let change = doc.document().get_change_by_hash(&inserted).unwrap();
+            assert_eq!(
+                written_units(&before, &change).unwrap(),
+                vec![vec![
+                    PathStep::Field("rows".into()),
+                    PathStep::Item("r1".into())
+                ]]
+            );
+        }
     }
 }

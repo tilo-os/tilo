@@ -50,23 +50,28 @@ mod tests {
     use super::*;
     use crate::document_channel_id;
 
-    #[test]
-    fn a_workspace_has_one_scope_whatever_its_units() {
-        let workspace = "1f0f2e26-2a9a-4d2c-9b0f-1c8f2c0a9a10";
-        assert_eq!(workspace_scope(workspace), workspace_scope(workspace));
-        assert_ne!(workspace_scope(workspace), workspace_scope("another"));
-    }
+    tilo_test_env::scenario! {
+        /// The scope a workspace's keys are held under.
+        fn a_key_scope_is_the_workspaces_and_never_a_units_channel;
 
-    #[test]
-    fn a_scope_is_never_a_units_channel() {
-        let workspace = "1f0f2e26-2a9a-4d2c-9b0f-1c8f2c0a9a10";
-        let scope = workspace_scope(workspace);
-        for (app, record) in [
-            ("so.tilo.notes", "notes"),
-            ("so.tilo.chat", "messages"),
-            ("so.tilo.media", WORKSPACE_READERS),
-        ] {
-            assert_ne!(scope, document_channel_id(app, workspace, record));
+        phase a_workspace_has_one_scope_whatever_its_units;
+        {
+            let workspace = "1f0f2e26-2a9a-4d2c-9b0f-1c8f2c0a9a10";
+            assert_eq!(workspace_scope(workspace), workspace_scope(workspace));
+            assert_ne!(workspace_scope(workspace), workspace_scope("another"));
+        }
+
+        phase a_scope_is_never_a_units_channel;
+        {
+            let workspace = "1f0f2e26-2a9a-4d2c-9b0f-1c8f2c0a9a10";
+            let scope = workspace_scope(workspace);
+            for (app, record) in [
+                ("so.tilo.notes", "notes"),
+                ("so.tilo.chat", "messages"),
+                ("so.tilo.media", WORKSPACE_READERS),
+            ] {
+                assert_ne!(scope, document_channel_id(app, workspace, record));
+            }
         }
     }
 }

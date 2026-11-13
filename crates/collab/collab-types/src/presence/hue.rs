@@ -412,113 +412,118 @@ pub fn assign_peer_colors_from(
 mod agent_client_tests {
     use super::{PRESENCE_LEN, PresenceHue, agent_client, agent_identity};
 
-    #[test]
-    fn a_run_is_its_clients_and_a_client_has_its_hue() {
-        assert_eq!(agent_client("Claude Code #3"), "Claude Code");
-        assert_eq!(agent_client("Codex #12"), "Codex");
-        assert_eq!(agent_client("Cursor 2"), "Cursor 2");
-        assert_eq!(agent_client("Cursor #2 beta"), "Cursor #2 beta");
-        assert_eq!(
-            PresenceHue::of_agent_client("Claude Code #1"),
-            Some(PresenceHue::Orange)
-        );
-        assert_eq!(
-            PresenceHue::of_agent_client("codex"),
-            Some(PresenceHue::Sky)
-        );
-        assert_eq!(PresenceHue::of_agent_client("Cursor"), None);
-        assert_eq!(
-            PresenceHue::of_agent("Jane Doe's agent #2"),
-            PresenceHue::of_agent("Jane Doe's agent"),
-            "every run of an agent wears one colour"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The hue a person, an agent and an agent's clients wear.
+        fn people_and_their_agents_wear_hues_that_stay_theirs_and_stay_apart;
 
-    /// The id an agent's admission gives it ends in the instance number it was
-    /// admitted as, and that number is not part of what the agent is: the same
-    /// agent admitted again wears the same colour.
-    #[test]
-    fn an_admitted_agent_wears_one_colour_however_often_it_comes() {
-        assert_eq!(agent_identity("agent:helper@host#1"), "helper@host");
-        assert_eq!(agent_identity("agent:helper@host#2"), "helper@host");
-        assert_eq!(agent_identity("helper@host"), "helper@host");
-        assert_eq!(
-            agent_identity("agent:claude-code@env#12"),
-            "claude-code@env"
-        );
-        assert_eq!(agent_identity("agent:helper@host"), "helper@host");
-        assert_eq!(
-            agent_identity("#3"),
-            "#3",
-            "no stem before the number: nothing to take off"
-        );
-        assert_eq!(
-            PresenceHue::of_agent(agent_identity("agent:helper@host#1")),
-            PresenceHue::of_agent(agent_identity("agent:helper@host#4")),
-            "one agent, one colour"
-        );
-        assert_eq!(
-            PresenceHue::of_agent(agent_identity("agent:claude-code@host#9")),
-            PresenceHue::Orange,
-            "a known client keeps the colour it is known by"
-        );
-    }
-
-    /// Software is never painted in the colour of the person it acts for, and never beside it:
-    /// every pair of hues there is lands at least two entries apart, and an agent already clear
-    /// of its person keeps the hue it is known by.
-    #[test]
-    fn an_agent_wears_a_hue_clear_of_its_persons() {
-        let apart = |a: PresenceHue, b: PresenceHue| {
-            let ahead = a
-                .slot()
-                .wrapping_add(PRESENCE_LEN)
-                .wrapping_sub(b.slot())
-                .checked_rem(PRESENCE_LEN)
-                .unwrap_or(0);
-            ahead.min(PRESENCE_LEN.wrapping_sub(ahead))
-        };
-        for person in PresenceHue::ALL {
-            for agent in PresenceHue::ALL {
-                let worn = agent.apart_from(person);
-                assert_ne!(worn, person, "{agent:?} on {person:?}");
-                assert!(apart(worn, person) >= 2, "{worn:?} beside {person:?}");
-            }
-        }
-        // A hue already clear of the person's is the one the agent wears.
-        assert_eq!(
-            PresenceHue::Blue.apart_from(PresenceHue::Red),
-            PresenceHue::Blue
-        );
-        // One that is not steps to the next entry that is.
-        assert_eq!(
-            PresenceHue::Blue.apart_from(PresenceHue::Sky),
-            PresenceHue::Violet,
-            "the entry after its neighbour"
-        );
-        assert_eq!(
-            PresenceHue::Blue.apart_from(PresenceHue::Blue),
-            PresenceHue::Magenta,
-            "and the one after its own neighbour"
-        );
-    }
-
-    /// The colour a person wears is the one they chose, and the one their
-    /// identity derives only while they have chosen none.
-    #[test]
-    fn a_person_wears_what_they_chose_and_derives_it_until_they_do() {
-        let chosen = serde_json::json!({"identity": {"colour": "violet"}});
-        assert_eq!(PresenceHue::worn_in(&chosen, "ada"), PresenceHue::Violet);
-        for unset in [
-            serde_json::json!({"identity": {"colour": null}}),
-            serde_json::json!({"identity": {}}),
-            serde_json::json!({}),
-        ] {
+        phase a_run_is_its_clients_and_a_client_has_its_hue;
+        {
+            assert_eq!(agent_client("Claude Code #3"), "Claude Code");
+            assert_eq!(agent_client("Codex #12"), "Codex");
+            assert_eq!(agent_client("Cursor 2"), "Cursor 2");
+            assert_eq!(agent_client("Cursor #2 beta"), "Cursor #2 beta");
             assert_eq!(
-                PresenceHue::worn_in(&unset, "ada"),
-                PresenceHue::of_identity("ada"),
-                "no choice stored: {unset}"
+                PresenceHue::of_agent_client("Claude Code #1"),
+                Some(PresenceHue::Orange)
             );
+            assert_eq!(
+                PresenceHue::of_agent_client("codex"),
+                Some(PresenceHue::Sky)
+            );
+            assert_eq!(PresenceHue::of_agent_client("Cursor"), None);
+            assert_eq!(
+                PresenceHue::of_agent("Jane Doe's agent #2"),
+                PresenceHue::of_agent("Jane Doe's agent"),
+                "every run of an agent wears one colour"
+            );
+        }
+
+        phase an_admitted_agent_wears_one_colour_however_often_it_comes;
+        // The id an agent's admission gives it ends in the instance number it was
+        // admitted as, and that number is not part of what the agent is: the same
+        // agent admitted again wears the same colour.
+        {
+            assert_eq!(agent_identity("agent:helper@host#1"), "helper@host");
+            assert_eq!(agent_identity("agent:helper@host#2"), "helper@host");
+            assert_eq!(agent_identity("helper@host"), "helper@host");
+            assert_eq!(
+                agent_identity("agent:claude-code@env#12"),
+                "claude-code@env"
+            );
+            assert_eq!(agent_identity("agent:helper@host"), "helper@host");
+            assert_eq!(
+                agent_identity("#3"),
+                "#3",
+                "no stem before the number: nothing to take off"
+            );
+            assert_eq!(
+                PresenceHue::of_agent(agent_identity("agent:helper@host#1")),
+                PresenceHue::of_agent(agent_identity("agent:helper@host#4")),
+                "one agent, one colour"
+            );
+            assert_eq!(
+                PresenceHue::of_agent(agent_identity("agent:claude-code@host#9")),
+                PresenceHue::Orange,
+                "a known client keeps the colour it is known by"
+            );
+        }
+
+        phase an_agent_wears_a_hue_clear_of_its_persons;
+        // Software is never painted in the colour of the person it acts for, and never beside it:
+        // every pair of hues there is lands at least two entries apart, and an agent already clear
+        // of its person keeps the hue it is known by.
+        {
+            let apart = |a: PresenceHue, b: PresenceHue| {
+                let ahead = a
+                    .slot()
+                    .wrapping_add(PRESENCE_LEN)
+                    .wrapping_sub(b.slot())
+                    .checked_rem(PRESENCE_LEN)
+                    .unwrap_or(0);
+                ahead.min(PRESENCE_LEN.wrapping_sub(ahead))
+            };
+            for person in PresenceHue::ALL {
+                for agent in PresenceHue::ALL {
+                    let worn = agent.apart_from(person);
+                    assert_ne!(worn, person, "{agent:?} on {person:?}");
+                    assert!(apart(worn, person) >= 2, "{worn:?} beside {person:?}");
+                }
+            }
+            // A hue already clear of the person's is the one the agent wears.
+            assert_eq!(
+                PresenceHue::Blue.apart_from(PresenceHue::Red),
+                PresenceHue::Blue
+            );
+            // One that is not steps to the next entry that is.
+            assert_eq!(
+                PresenceHue::Blue.apart_from(PresenceHue::Sky),
+                PresenceHue::Violet,
+                "the entry after its neighbour"
+            );
+            assert_eq!(
+                PresenceHue::Blue.apart_from(PresenceHue::Blue),
+                PresenceHue::Magenta,
+                "and the one after its own neighbour"
+            );
+        }
+
+        phase a_person_wears_what_they_chose_and_derives_it_until_they_do;
+        // The colour a person wears is the one they chose, and the one their
+        // identity derives only while they have chosen none.
+        {
+            let chosen = serde_json::json!({"identity": {"colour": "violet"}});
+            assert_eq!(PresenceHue::worn_in(&chosen, "ada"), PresenceHue::Violet);
+            for unset in [
+                serde_json::json!({"identity": {"colour": null}}),
+                serde_json::json!({"identity": {}}),
+                serde_json::json!({}),
+            ] {
+                assert_eq!(
+                    PresenceHue::worn_in(&unset, "ada"),
+                    PresenceHue::of_identity("ada"),
+                    "no choice stored: {unset}"
+                );
+            }
         }
     }
 }

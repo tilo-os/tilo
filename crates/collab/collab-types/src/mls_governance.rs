@@ -570,153 +570,158 @@ mod tests {
     use super::*;
     use crate::generate_keypair;
 
-    #[test]
-    fn a_channel_route_proves_only_its_own_channel() {
-        let route = ChannelRoute::new("so.tilo.sheets", "payroll");
-        let channel = crate::document_channel_id("so.tilo.sheets", "room", "payroll");
-        assert_eq!(route.channel("room"), channel);
-        assert!(route.proves("room", channel));
-        assert!(!route.proves("other", channel));
-        assert!(!ChannelRoute::new("so.tilo.sheets", "budget").proves("room", channel));
-        assert!(!ChannelRoute::new("so.tilo.notes", "payroll").proves("room", channel));
-        let long = "x".repeat(MAX_CHANNEL_ROUTE_ID_BYTES + 1);
-        let oversized = ChannelRoute::new("so.tilo.sheets", long);
-        assert!(!oversized.proves("room", oversized.channel("room")));
-    }
+    tilo_test_env::scenario! {
+        /// The signed frames of channel governance: what each proves, what a signature covers and which frames are refused.
+        fn governance_frames_are_bound_to_what_they_sign_and_refused_when_malformed;
 
-    #[test]
-    fn access_request_is_bound_to_its_device_channel_and_package() {
-        let (device, device_pk) = generate_keypair();
-        let channel = ChannelId::new();
-        let request = MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 7, &device).unwrap();
-        assert_eq!(request.device, device_pk);
-        request.verify().unwrap();
+        phase a_channel_route_proves_only_its_own_channel;
+        {
+            let route = ChannelRoute::new("so.tilo.sheets", "payroll");
+            let channel = crate::document_channel_id("so.tilo.sheets", "room", "payroll");
+            assert_eq!(route.channel("room"), channel);
+            assert!(route.proves("room", channel));
+            assert!(!route.proves("other", channel));
+            assert!(!ChannelRoute::new("so.tilo.sheets", "budget").proves("room", channel));
+            assert!(!ChannelRoute::new("so.tilo.notes", "payroll").proves("room", channel));
+            let long = "x".repeat(MAX_CHANNEL_ROUTE_ID_BYTES + 1);
+            let oversized = ChannelRoute::new("so.tilo.sheets", long);
+            assert!(!oversized.proves("room", oversized.channel("room")));
+        }
 
-        let mut swapped = request.clone();
-        swapped.key_package = vec![9];
-        assert!(swapped.verify().is_err());
-        let mut moved = request.clone();
-        moved.channel = ChannelId::new();
-        assert!(moved.verify().is_err());
-        let (_, other) = generate_keypair();
-        let mut impersonated = request;
-        impersonated.device = other;
-        assert!(impersonated.verify().is_err());
-        let empty = MlsAccessRequestV1::signed(channel, Vec::new(), 7, &device).unwrap();
-        assert_eq!(
-            empty.verify(),
-            Err(MlsGovernanceError::InvalidControlPayload)
-        );
-    }
+        phase access_request_is_bound_to_its_device_channel_and_package;
+        {
+            let (device, device_pk) = generate_keypair();
+            let channel = ChannelId::new();
+            let request = MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 7, &device).unwrap();
+            assert_eq!(request.device, device_pk);
+            request.verify().unwrap();
 
-    #[test]
-    fn a_frame_signed_elsewhere_matches_one_signed_here() {
-        let (signer, signer_pk) = generate_keypair();
-        let channel = ChannelId::new();
-        let expected =
-            MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, &signer)
+            let mut swapped = request.clone();
+            swapped.key_package = vec![9];
+            assert!(swapped.verify().is_err());
+            let mut moved = request.clone();
+            moved.channel = ChannelId::new();
+            assert!(moved.verify().is_err());
+            let (_, other) = generate_keypair();
+            let mut impersonated = request;
+            impersonated.device = other;
+            assert!(impersonated.verify().is_err());
+            let empty = MlsAccessRequestV1::signed(channel, Vec::new(), 7, &device).unwrap();
+            assert_eq!(
+                empty.verify(),
+                Err(MlsGovernanceError::InvalidControlPayload)
+            );
+        }
+
+        phase a_frame_signed_elsewhere_matches_one_signed_here;
+        {
+            let (signer, signer_pk) = generate_keypair();
+            let channel = ChannelId::new();
+            let expected =
+                MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, &signer)
+                    .unwrap();
+            let mut unsigned = MlsGovernanceFrame::unsigned(
+                channel,
+                [0; 32],
+                0,
+                MlsGovernanceAction::Genesis,
+                signer_pk,
+            );
+            assert!(unsigned.verify_signature().is_err());
+            let message = unsigned.signing_bytes().unwrap();
+            unsigned.signature =
+                Signature::from_bytes(ed25519_dalek::Signer::sign(&signer, &message).to_bytes());
+            unsigned.verify_signature().unwrap();
+            assert_eq!(unsigned, expected);
+        }
+
+        phase withholding_join_material_keeps_digest_and_signature;
+        {
+            let (signer, _) = generate_keypair();
+            let (_, joiner) = generate_keypair();
+            let frame = MlsGovernanceFrame::signed(
+                ChannelId::new(),
+                [3; 32],
+                2,
+                MlsGovernanceAction::Commit {
+                    removed: Vec::new(),
+                    added: vec![joiner],
+                    commit: vec![1],
+                    joining: Some(Joining::Material(JoinMaterial {
+                        welcome: vec![2],
+                        key_history: vec![3],
+                    })),
+                    history: None,
+                },
+                &signer,
+            )
+            .unwrap();
+            frame.check().unwrap();
+            let withheld = frame.withheld().unwrap().unwrap();
+            assert!(withheld.join_material().is_none());
+            withheld.check().unwrap();
+            assert_eq!(withheld.digest().unwrap(), frame.digest().unwrap());
+        }
+
+        phase malformed_frames_are_refused;
+        {
+            let (signer, signer_pk) = generate_keypair();
+            let (_, other) = generate_keypair();
+            let channel = ChannelId::new();
+            let frame = |previous, epoch, action| {
+                MlsGovernanceFrame::signed(channel, previous, epoch, action, &signer).unwrap()
+            };
+            let commit = |removed: Vec<Ed25519PublicKey>, added: Vec<Ed25519PublicKey>| {
+                let joining = (!added.is_empty()).then_some(Joining::Withheld([1; 32]));
+                MlsGovernanceAction::Commit {
+                    removed,
+                    added,
+                    commit: vec![1],
+                    joining,
+                    history: None,
+                }
+            };
+            frame([0; 32], 0, MlsGovernanceAction::Genesis)
+                .check()
                 .unwrap();
-        let mut unsigned = MlsGovernanceFrame::unsigned(
-            channel,
-            [0; 32],
-            0,
-            MlsGovernanceAction::Genesis,
-            signer_pk,
-        );
-        assert!(unsigned.verify_signature().is_err());
-        let message = unsigned.signing_bytes().unwrap();
-        unsigned.signature =
-            Signature::from_bytes(ed25519_dalek::Signer::sign(&signer, &message).to_bytes());
-        unsigned.verify_signature().unwrap();
-        assert_eq!(unsigned, expected);
-    }
-
-    #[test]
-    fn withholding_join_material_keeps_digest_and_signature() {
-        let (signer, _) = generate_keypair();
-        let (_, joiner) = generate_keypair();
-        let frame = MlsGovernanceFrame::signed(
-            ChannelId::new(),
-            [3; 32],
-            2,
-            MlsGovernanceAction::Commit {
-                removed: Vec::new(),
-                added: vec![joiner],
-                commit: vec![1],
-                joining: Some(Joining::Material(JoinMaterial {
-                    welcome: vec![2],
-                    key_history: vec![3],
-                })),
-                history: None,
-            },
-            &signer,
-        )
-        .unwrap();
-        frame.check().unwrap();
-        let withheld = frame.withheld().unwrap().unwrap();
-        assert!(withheld.join_material().is_none());
-        withheld.check().unwrap();
-        assert_eq!(withheld.digest().unwrap(), frame.digest().unwrap());
-    }
-
-    #[test]
-    fn malformed_frames_are_refused() {
-        let (signer, signer_pk) = generate_keypair();
-        let (_, other) = generate_keypair();
-        let channel = ChannelId::new();
-        let frame = |previous, epoch, action| {
-            MlsGovernanceFrame::signed(channel, previous, epoch, action, &signer).unwrap()
-        };
-        let commit = |removed: Vec<Ed25519PublicKey>, added: Vec<Ed25519PublicKey>| {
-            let joining = (!added.is_empty()).then_some(Joining::Withheld([1; 32]));
-            MlsGovernanceAction::Commit {
-                removed,
-                added,
-                commit: vec![1],
-                joining,
-                history: None,
-            }
-        };
-        frame([0; 32], 0, MlsGovernanceAction::Genesis)
-            .check()
-            .unwrap();
-        frame([1; 32], 1, commit(vec![other], Vec::new()))
-            .check()
-            .unwrap();
-        // A commit that only hands the members another branch's keys.
-        frame(
-            [1; 32],
-            1,
-            MlsGovernanceAction::Commit {
-                removed: Vec::new(),
-                added: Vec::new(),
-                commit: vec![1],
-                joining: None,
-                history: Some(vec![4]),
-            },
-        )
-        .check()
-        .unwrap();
-        for malformed in [
-            frame([3; 32], 0, MlsGovernanceAction::Genesis),
-            frame([0; 32], 1, MlsGovernanceAction::Genesis),
-            frame([1; 32], 1, commit(Vec::new(), Vec::new())),
-            frame([1; 32], 1, commit(vec![other, other], Vec::new())),
-            frame([1; 32], 1, commit(vec![signer_pk], Vec::new())),
-            frame([1; 32], 0, commit(vec![other], Vec::new())),
+            frame([1; 32], 1, commit(vec![other], Vec::new()))
+                .check()
+                .unwrap();
+            // A commit that only hands the members another branch's keys.
             frame(
                 [1; 32],
                 1,
                 MlsGovernanceAction::Commit {
                     removed: Vec::new(),
-                    added: vec![other],
+                    added: Vec::new(),
                     commit: vec![1],
                     joining: None,
-                    history: None,
+                    history: Some(vec![4]),
                 },
-            ),
-        ] {
-            assert_eq!(malformed.check(), Err(MlsGovernanceError::Malformed));
+            )
+            .check()
+            .unwrap();
+            for malformed in [
+                frame([3; 32], 0, MlsGovernanceAction::Genesis),
+                frame([0; 32], 1, MlsGovernanceAction::Genesis),
+                frame([1; 32], 1, commit(Vec::new(), Vec::new())),
+                frame([1; 32], 1, commit(vec![other, other], Vec::new())),
+                frame([1; 32], 1, commit(vec![signer_pk], Vec::new())),
+                frame([1; 32], 0, commit(vec![other], Vec::new())),
+                frame(
+                    [1; 32],
+                    1,
+                    MlsGovernanceAction::Commit {
+                        removed: Vec::new(),
+                        added: vec![other],
+                        commit: vec![1],
+                        joining: None,
+                        history: None,
+                    },
+                ),
+            ] {
+                assert_eq!(malformed.check(), Err(MlsGovernanceError::Malformed));
+            }
         }
     }
 }

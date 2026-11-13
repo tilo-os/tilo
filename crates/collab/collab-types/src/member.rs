@@ -213,45 +213,50 @@ pub fn assigned_colour(id: &MemberId, for_person: Option<&PersonId>) -> Presence
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_person_wears_their_own_colour_and_software_one_clear_of_it() {
-        let ada = Person::new("ada", "Ada");
-        assert_eq!(ada.colour, PresenceHue::of_identity("ada"));
-        assert_eq!(
-            Person::new("ada", "Ada")
-                .wearing(PresenceHue::Violet)
-                .colour,
-            PresenceHue::Violet
-        );
-        let helper = Member::of_software(MemberId::agent("helper"), "Helper", Some(&ada.id));
-        assert_eq!(helper.colour, assigned_colour(&helper.id, Some(&ada.id)));
-        assert_ne!(helper.colour, ada.colour);
-        assert_eq!(
-            helper.colour,
-            Member::of_software(MemberId::agent("helper"), "Helper", Some(&ada.id)).colour,
-            "the same agent is one colour however often it is worked out"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A member as a stored row: its colour, its encoding and the spelling of its id.
+        fn a_member_row_keeps_its_colour_and_its_stored_spelling;
 
-    #[test]
-    fn a_member_row_is_written_as_it_is_read() {
-        let row = Member::of_person(&Person::new("ada", "Ada"), Some(Role::Editor))
-            .claiming_self()
-            .joined_at(Some(7));
-        let json = serde_json::to_string(&row).unwrap();
-        assert_eq!(serde_json::from_str::<Member>(&json).unwrap(), row);
-    }
-
-    #[test]
-    fn a_stored_id_is_spelt_once() {
-        for id in [
-            MemberId::person("a3"),
-            MemberId::agent("helper"),
-            MemberId::bot("bridge"),
-        ] {
-            assert_eq!(MemberId::parse(&id.key()).as_ref(), Some(&id), "{id}");
+        phase a_person_wears_their_own_colour_and_software_one_clear_of_it;
+        {
+            let ada = Person::new("ada", "Ada");
+            assert_eq!(ada.colour, PresenceHue::of_identity("ada"));
+            assert_eq!(
+                Person::new("ada", "Ada")
+                    .wearing(PresenceHue::Violet)
+                    .colour,
+                PresenceHue::Violet
+            );
+            let helper = Member::of_software(MemberId::agent("helper"), "Helper", Some(&ada.id));
+            assert_eq!(helper.colour, assigned_colour(&helper.id, Some(&ada.id)));
+            assert_ne!(helper.colour, ada.colour);
+            assert_eq!(
+                helper.colour,
+                Member::of_software(MemberId::agent("helper"), "Helper", Some(&ada.id)).colour,
+                "the same agent is one colour however often it is worked out"
+            );
         }
-        assert_eq!(MemberId::parse("ada"), Some(MemberId::person("ada")));
-        assert_eq!(MemberId::parse("agent:"), None);
+
+        phase a_member_row_is_written_as_it_is_read;
+        {
+            let row = Member::of_person(&Person::new("ada", "Ada"), Some(Role::Editor))
+                .claiming_self()
+                .joined_at(Some(7));
+            let json = serde_json::to_string(&row).unwrap();
+            assert_eq!(serde_json::from_str::<Member>(&json).unwrap(), row);
+        }
+
+        phase a_stored_id_is_spelt_once;
+        {
+            for id in [
+                MemberId::person("a3"),
+                MemberId::agent("helper"),
+                MemberId::bot("bridge"),
+            ] {
+                assert_eq!(MemberId::parse(&id.key()).as_ref(), Some(&id), "{id}");
+            }
+            assert_eq!(MemberId::parse("ada"), Some(MemberId::person("ada")));
+            assert_eq!(MemberId::parse("agent:"), None);
+        }
     }
 }

@@ -679,11 +679,12 @@ mod tests {
         out
     }
 
-    /// Small mutations keep the single-frame wire format; over-limit mutations are refused before
-    /// encoding; unsegmented frames above the limit and malformed segment headers are rejected.
-    #[test]
-    fn document_transfer_framing_refuses_what_it_cannot_carry() {
-        // Phase: small_mutations_keep_the_single_frame_wire_format.
+    tilo_test_env::scenario! {
+        /// Small mutations keep the single-frame wire format; over-limit mutations are refused before
+        /// encoding; unsegmented frames above the limit and malformed segment headers are rejected.
+        fn document_transfer_framing_refuses_what_it_cannot_carry;
+
+        phase small_mutations_keep_the_single_frame_wire_format;
         {
             let mutation = DocumentMutation::Incremental(vec![1, 2, 3]);
             let frames = mutation.encode_frames().unwrap();
@@ -694,7 +695,7 @@ mod tests {
             );
         }
 
-        // Phase: over_limit_mutations_are_refused_before_encoding.
+        phase over_limit_mutations_are_refused_before_encoding;
         {
             let mutation = DocumentMutation::Incremental(vec![
                 0;
@@ -710,7 +711,7 @@ mod tests {
             );
         }
 
-        // Phase: wire_rejects_unsegmented_frames_above_the_frame_limit.
+        phase wire_rejects_unsegmented_frames_above_the_frame_limit;
         {
             let mut wire = DOCUMENT_MUTATION_V2_PREFIX.to_vec();
             wire.push(DOCUMENT_INCREMENTAL_TAG);
@@ -722,7 +723,7 @@ mod tests {
             assert!(DocumentMutation::decode(&wire).is_ok());
         }
 
-        // Phase: malformed_segment_headers_are_rejected.
+        phase malformed_segment_headers_are_rejected;
         {
             let mutation = DocumentMutation::Snapshot(bytes(3 * MIB, 3));
             let frames = mutation.encode_frames().unwrap();
@@ -762,11 +763,12 @@ mod tests {
         }
     }
 
-    /// Large mutations round-trip through signed segments, reassemble in any order ignoring
-    /// duplicates, and are discarded when bytes are tampered or headers are inconsistent.
-    #[test]
-    fn segmented_transfers_reassemble_only_intact_consistent_segments() {
-        // Phase: large_mutations_round_trip_through_signed_segments.
+    tilo_test_env::scenario! {
+        /// Large mutations round-trip through signed segments, reassemble in any order ignoring
+        /// duplicates, and are discarded when bytes are tampered or headers are inconsistent.
+        fn segmented_transfers_reassemble_only_intact_consistent_segments;
+
+        phase large_mutations_round_trip_through_signed_segments;
         {
             for (len, snapshot) in [
                 (MIB + 1, false),
@@ -796,7 +798,7 @@ mod tests {
             }
         }
 
-        // Phase: segments_reassemble_in_any_order_and_ignore_duplicates.
+        phase segments_reassemble_in_any_order_and_ignore_duplicates;
         {
             let mutation = DocumentMutation::Incremental(bytes(5 * MIB + 17, 9));
             let mut frames = mutation.encode_frames().unwrap();
@@ -811,7 +813,7 @@ mod tests {
             assert_eq!(got, Some(mutation));
         }
 
-        // Phase: tampered_bytes_fail_the_transfer_digest.
+        phase tampered_bytes_fail_the_transfer_digest;
         {
             let mutation = DocumentMutation::Incremental(bytes(2 * MIB + 5, 4));
             let frames = mutation.encode_frames().unwrap();
@@ -828,7 +830,7 @@ mod tests {
             assert_eq!(reassembler.buffered_bytes(), 0);
         }
 
-        // Phase: inconsistent_headers_discard_the_transfer.
+        phase inconsistent_headers_discard_the_transfer;
         {
             let mutation = DocumentMutation::Incremental(bytes(3 * MIB, 6));
             let frames = mutation.encode_frames().unwrap();
@@ -853,11 +855,16 @@ mod tests {
         }
     }
 
-    /// Transfers from different authors or routes never mix, and memory stays bounded with
-    /// abandonment reported.
-    #[test]
-    fn transfers_stay_isolated_and_bounded() {
-        // Phase: transfers_from_different_authors_or_routes_never_mix.
+    tilo_test_env::scenario! {
+        /// Transfers from different authors or routes never mix, and memory stays bounded with
+        /// abandonment reported.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn transfers_stay_isolated_and_bounded;
+
+        phase transfers_from_different_authors_or_routes_never_mix;
         {
             let mutation = DocumentMutation::Incremental(bytes(2 * MIB + 1, 5));
             let frames = mutation.encode_frames().unwrap();
@@ -890,7 +897,7 @@ mod tests {
             assert!(other_route.is_none(), "another route cannot finish it");
         }
 
-        // Phase: memory_stays_bounded_and_abandonment_is_reported.
+        phase memory_stays_bounded_and_abandonment_is_reported;
         {
             let limits = ReassemblyLimits {
                 max_buffered_bytes: 3 * MIB,

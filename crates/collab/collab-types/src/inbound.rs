@@ -193,59 +193,64 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_op_is_held_once_and_released_in_order() {
-        let mut hold = InboundHold::new(4);
-        hold.hold(key(1), "first");
-        hold.hold(key(2), "second");
-        assert_eq!(hold.hold(key(1), "again"), None);
-        assert_eq!(hold.take(), [(key(1), "first"), (key(2), "second")]);
-        assert!(hold.is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// The ops a receiver holds back: held once, owed past capacity, settled once, cleared, and decided only by a stated verdict.
+        fn inbound_ops_are_held_owed_and_decided_as_stated;
 
-    #[test]
-    fn past_capacity_the_oldest_is_owed_by_history_until_it_supplies_it() {
-        let mut hold = InboundHold::new(2);
-        let owed: Vec<_> = (1..=4).filter_map(|seq| hold.hold(key(seq), seq)).collect();
-        assert_eq!(owed, [key(1), key(2)]);
-        assert_eq!(hold.len(), 2);
-        assert!(hold.is_owed(&key(1)) && hold.is_owed(&key(2)));
-        assert_eq!(hold.owed_pages(), [(key(1).artifact, 3)]);
-        assert!(hold.settle(&key(1)));
-        assert!(!hold.settle(&key(1)));
-        assert_eq!(hold.give_up_owed(key(1).artifact), [key(2)]);
-        assert!(hold.owed_pages().is_empty());
-        assert_eq!(hold.take(), [(key(3), 3), (key(4), 4)]);
-    }
+        phase an_op_is_held_once_and_released_in_order;
+        {
+            let mut hold = InboundHold::new(4);
+            hold.hold(key(1), "first");
+            hold.hold(key(2), "second");
+            assert_eq!(hold.hold(key(1), "again"), None);
+            assert_eq!(hold.take(), [(key(1), "first"), (key(2), "second")]);
+            assert!(hold.is_empty());
+        }
 
-    #[test]
-    fn an_op_history_supplies_is_settled_once() {
-        let mut hold = InboundHold::new(4);
-        hold.hold(key(1), ());
-        assert!(hold.settle(&key(1)));
-        assert!(!hold.settle(&key(1)));
-        assert!(hold.take().is_empty());
-    }
+        phase past_capacity_the_oldest_is_owed_by_history_until_it_supplies_it;
+        {
+            let mut hold = InboundHold::new(2);
+            let owed: Vec<_> = (1..=4).filter_map(|seq| hold.hold(key(seq), seq)).collect();
+            assert_eq!(owed, [key(1), key(2)]);
+            assert_eq!(hold.len(), 2);
+            assert!(hold.is_owed(&key(1)) && hold.is_owed(&key(2)));
+            assert_eq!(hold.owed_pages(), [(key(1).artifact, 3)]);
+            assert!(hold.settle(&key(1)));
+            assert!(!hold.settle(&key(1)));
+            assert_eq!(hold.give_up_owed(key(1).artifact), [key(2)]);
+            assert!(hold.owed_pages().is_empty());
+            assert_eq!(hold.take(), [(key(3), 3), (key(4), 4)]);
+        }
 
-    #[test]
-    fn clearing_forgets_what_was_held_and_owed() {
-        let mut hold = InboundHold::new(1);
-        hold.hold(key(1), ());
-        assert_eq!(hold.hold(key(2), ()), Some(key(1)));
-        hold.clear();
-        assert!(hold.is_empty() && hold.owed_pages().is_empty());
-    }
+        phase an_op_history_supplies_is_settled_once;
+        {
+            let mut hold = InboundHold::new(4);
+            hold.hold(key(1), ());
+            assert!(hold.settle(&key(1)));
+            assert!(!hold.settle(&key(1)));
+            assert!(hold.take().is_empty());
+        }
 
-    #[test]
-    fn only_a_stated_verdict_decides_cleartext() {
-        assert_eq!(OpAdmission::Unstated.admits_cleartext(), None);
-        assert_eq!(
-            OpAdmission::CleartextAdmitted.admits_cleartext(),
-            Some(true)
-        );
-        assert_eq!(
-            OpAdmission::EncryptionRequired.admits_cleartext(),
-            Some(false)
-        );
+        phase clearing_forgets_what_was_held_and_owed;
+        {
+            let mut hold = InboundHold::new(1);
+            hold.hold(key(1), ());
+            assert_eq!(hold.hold(key(2), ()), Some(key(1)));
+            hold.clear();
+            assert!(hold.is_empty() && hold.owed_pages().is_empty());
+        }
+
+        phase only_a_stated_verdict_decides_cleartext;
+        {
+            assert_eq!(OpAdmission::Unstated.admits_cleartext(), None);
+            assert_eq!(
+                OpAdmission::CleartextAdmitted.admits_cleartext(),
+                Some(true)
+            );
+            assert_eq!(
+                OpAdmission::EncryptionRequired.admits_cleartext(),
+                Some(false)
+            );
+        }
     }
 }

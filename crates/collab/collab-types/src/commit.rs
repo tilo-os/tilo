@@ -717,27 +717,138 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_commit_round_trips_and_names_its_parts() {
-        let commit = two_part();
-        let bytes = commit.encode();
-        assert_eq!(WorkspaceCommit::decode(&bytes).as_ref(), Ok(&commit));
-        assert_eq!(commit.id(), WorkspaceCommit::decode(&bytes).unwrap().id());
-        assert!(commit.covers("tasks", "a"));
-        assert!(commit.covers("tasks", "b"));
-        assert!(!commit.covers("tasks", "c"));
-        assert_eq!(commit.part("tasks", "b"), Some(&part("tasks", "b", 2)));
-        assert_eq!(
-            commit.change(&[2; 32]).map(|part| part.record.as_str()),
-            Some("b")
-        );
-        assert_eq!(commit.change(&[3; 32]), None);
-        assert_eq!(commit.author, author([7; 32]));
-        assert_eq!(commit.invocation, Some(uuid::Uuid::from_u128(9)));
-        assert_eq!(
-            commit.run.as_ref().map(|run| run.kind.as_str()),
-            Some("agent-run")
-        );
+    tilo_test_env::scenario! {
+        /// The commit as a stored value: its encoding, its address, what it refuses and the version before this one.
+        fn a_commit_is_a_durable_record_that_names_its_parts;
+
+        phase a_commit_round_trips_and_names_its_parts;
+        {
+            let commit = two_part();
+            let bytes = commit.encode();
+            assert_eq!(WorkspaceCommit::decode(&bytes).as_ref(), Ok(&commit));
+            assert_eq!(commit.id(), WorkspaceCommit::decode(&bytes).unwrap().id());
+            assert!(commit.covers("tasks", "a"));
+            assert!(commit.covers("tasks", "b"));
+            assert!(!commit.covers("tasks", "c"));
+            assert_eq!(commit.part("tasks", "b"), Some(&part("tasks", "b", 2)));
+            assert_eq!(
+                commit.change(&[2; 32]).map(|part| part.record.as_str()),
+                Some("b")
+            );
+            assert_eq!(commit.change(&[3; 32]), None);
+            assert_eq!(commit.author, author([7; 32]));
+            assert_eq!(commit.invocation, Some(uuid::Uuid::from_u128(9)));
+            assert_eq!(
+                commit.run.as_ref().map(|run| run.kind.as_str()),
+                Some("agent-run")
+            );
+        }
+
+        phase a_commit_is_the_same_address_on_every_peer;
+        {
+            let once = two_part().id();
+            let twice = two_part().id();
+            assert_eq!(once, twice);
+            let mut other = two_part();
+            other.at_ms = 1;
+            assert_ne!(once, other.id());
+        }
+
+        phase a_commit_that_names_nothing_or_twice_is_refused;
+        {
+            let mut wrong_kind = two_part();
+            wrong_kind.kind = "tilo.chat".to_owned();
+            assert_eq!(
+                WorkspaceCommit::decode(&wrong_kind.encode()),
+                Err(CommitError::Kind("tilo.chat".to_owned()))
+            );
+
+            let mut wrong_version = two_part();
+            wrong_version.version = 9;
+            assert_eq!(
+                WorkspaceCommit::decode(&wrong_version.encode()),
+                Err(CommitError::Version(9))
+            );
+
+            let mut none = two_part();
+            none.parts.clear();
+            assert_eq!(
+                WorkspaceCommit::decode(&none.encode()),
+                Err(CommitError::NoParts)
+            );
+
+            let mut twice = two_part();
+            twice.parts[1] = part("tasks", "a", 3);
+            assert_eq!(
+                WorkspaceCommit::decode(&twice.encode()),
+                Err(CommitError::DuplicatePart {
+                    app: "tasks".to_owned(),
+                    record: "a".to_owned()
+                })
+            );
+
+            let mut empty = two_part();
+            empty.parts[1].changes.clear();
+            assert_eq!(
+                WorkspaceCommit::decode(&empty.encode()),
+                Err(CommitError::EmptyPart {
+                    app: "tasks".to_owned(),
+                    record: "b".to_owned()
+                })
+            );
+
+            assert!(WorkspaceCommit::decode(b"not a commit").is_err());
+        }
+
+        phase a_commit_is_a_record_kind_of_its_own;
+        {
+            assert_eq!(two_part().kind, COMMIT_RECORD_KIND);
+            assert_eq!(two_part().version, COMMIT_VERSION);
+        }
+
+        phase a_version_1_commit_still_reads_with_nothing_it_never_carried;
+        {
+            let old = V1 {
+                kind: COMMIT_RECORD_KIND.to_owned(),
+                version: COMMIT_VERSION_NAMED_ACTION,
+                workspace: "workspace".to_owned(),
+                author: author([7; 32]),
+                at_ms: 1_700_000_000_000,
+                action: CommitActionV1 {
+                    name: "create".to_owned(),
+                    item: Some("child".to_owned()),
+                    invocation: Some(uuid::Uuid::from_u128(5)),
+                },
+                parts: vec![CommitPartV1 {
+                    app: "tasks".to_owned(),
+                    record: "a".to_owned(),
+                    changes: vec![[5; 32]],
+                }],
+            };
+            let bytes = crate::canonical::canonical_bytes(&old).unwrap();
+            let read = WorkspaceCommit::decode(&bytes).expect("a version 1 commit reads");
+            assert_eq!(read.version, COMMIT_VERSION);
+            assert_eq!(
+                read.invocation,
+                Some(uuid::Uuid::from_u128(5)),
+                "the invocation it ran under carries over"
+            );
+            assert_eq!(read.run, None, "version 1 named no run");
+            assert_eq!(read.parts[0].changes, vec![[5; 32]]);
+            assert_eq!(
+                read.encode(),
+                WorkspaceCommit::new(
+                    "workspace",
+                    author([7; 32]),
+                    1_700_000_000_000,
+                    read.invocation,
+                    read.run.clone(),
+                    read.parts,
+                )
+                .encode(),
+                "a version 1 commit writes as version 2 once read"
+            );
+        }
     }
 
     /// Write one change of `field` = `value` into `doc`, as the action
@@ -776,90 +887,278 @@ mod tests {
         DocumentMutation::Incremental(doc.save_after(&[]))
     }
 
-    #[test]
-    fn the_units_of_one_action_share_one_commit() {
-        let invocation = InvocationId::new();
-        let other = InvocationId::new();
-        let title = action_mutation("title", "a", invocation);
-        let body = action_mutation("body", "b", invocation);
-        let elsewhere = action_mutation("title", "c", other);
-        let mut both = automerge::AutoCommit::new();
-        action_change(&mut both, "title", "d", invocation);
-        action_change(&mut both, "body", "e", other);
-        let mixed = DocumentMutation::Incremental(both.save_after(&[]));
-        let snapshot = DocumentMutation::Snapshot(Vec::new());
-        let units = [
-            UnitMutation {
-                app: "tasks",
-                record: "a",
-                mutation: &title,
-                document: None,
-            },
-            UnitMutation {
-                app: "tasks",
-                record: "b",
-                mutation: &body,
-                document: None,
-            },
-            UnitMutation {
-                app: "chat",
-                record: "t",
-                mutation: &elsewhere,
-                document: None,
-            },
-            UnitMutation {
-                app: "tasks",
-                record: "mixed",
-                mutation: &mixed,
-                document: None,
-            },
-            UnitMutation {
-                app: "tasks",
-                record: "s",
-                mutation: &snapshot,
-                document: None,
-            },
-        ];
-        let commits = WorkspaceCommit::of_units("workspace", &author([0; 32]), &units).unwrap();
-        assert_eq!(commits.len(), units.len(), "one entry per unit");
+    tilo_test_env::scenario! {
+        /// Which commit the changes of one action make, across the units it wrote.
+        fn an_actions_changes_make_one_commit_across_its_units;
 
-        let action = commits[0]
-            .as_ref()
-            .expect("a unit that changed travels under a commit");
-        assert_eq!(
-            commits[1].as_ref(),
-            Some(action),
-            "both units the action wrote travel under its one commit"
-        );
-        assert_eq!(action.parts.len(), 2);
-        assert!(action.covers("tasks", "a") && action.covers("tasks", "b"));
-        assert_eq!(action.parts[0].changes, vec![change_of(&title)]);
-        assert_eq!(action.invocation, Some(invocation.0));
-        assert_eq!(action.author.principal.as_deref(), Some("alice"));
-        assert_eq!(
-            action.author.device, [0; 32],
-            "the transport stamps the device"
-        );
-        assert_eq!(
-            action.at_ms, 1_700_000_000_000,
-            "the action's own change time"
-        );
-        assert_eq!(
-            WorkspaceCommit::decode(&action.encode()).as_ref(),
-            Ok(action),
-            "a commit of an action's units is a valid commit"
-        );
+        phase the_units_of_one_action_share_one_commit;
+        {
+            let invocation = InvocationId::new();
+            let other = InvocationId::new();
+            let title = action_mutation("title", "a", invocation);
+            let body = action_mutation("body", "b", invocation);
+            let elsewhere = action_mutation("title", "c", other);
+            let mut both = automerge::AutoCommit::new();
+            action_change(&mut both, "title", "d", invocation);
+            action_change(&mut both, "body", "e", other);
+            let mixed = DocumentMutation::Incremental(both.save_after(&[]));
+            let snapshot = DocumentMutation::Snapshot(Vec::new());
+            let units = [
+                UnitMutation {
+                    app: "tasks",
+                    record: "a",
+                    mutation: &title,
+                    document: None,
+                },
+                UnitMutation {
+                    app: "tasks",
+                    record: "b",
+                    mutation: &body,
+                    document: None,
+                },
+                UnitMutation {
+                    app: "chat",
+                    record: "t",
+                    mutation: &elsewhere,
+                    document: None,
+                },
+                UnitMutation {
+                    app: "tasks",
+                    record: "mixed",
+                    mutation: &mixed,
+                    document: None,
+                },
+                UnitMutation {
+                    app: "tasks",
+                    record: "s",
+                    mutation: &snapshot,
+                    document: None,
+                },
+            ];
+            let commits = WorkspaceCommit::of_units("workspace", &author([0; 32]), &units).unwrap();
+            assert_eq!(commits.len(), units.len(), "one entry per unit");
 
-        let single = commits[2].as_ref().expect("another action, another commit");
-        assert_ne!(single.id(), action.id());
-        assert_eq!(single.parts.len(), 1);
-        let mixed = commits[3]
-            .as_ref()
-            .expect("a unit of several actions keeps a commit of its own");
-        assert_eq!(mixed.parts.len(), 1, "it joins neither of its actions");
-        assert_eq!(mixed.invocation, None, "several invocations name none");
-        assert_ne!(mixed.id(), action.id());
-        assert_eq!(commits[4], None, "a unit that carries no change has none");
+            let action = commits[0]
+                .as_ref()
+                .expect("a unit that changed travels under a commit");
+            assert_eq!(
+                commits[1].as_ref(),
+                Some(action),
+                "both units the action wrote travel under its one commit"
+            );
+            assert_eq!(action.parts.len(), 2);
+            assert!(action.covers("tasks", "a") && action.covers("tasks", "b"));
+            assert_eq!(action.parts[0].changes, vec![change_of(&title)]);
+            assert_eq!(action.invocation, Some(invocation.0));
+            assert_eq!(action.author.principal.as_deref(), Some("alice"));
+            assert_eq!(
+                action.author.device, [0; 32],
+                "the transport stamps the device"
+            );
+            assert_eq!(
+                action.at_ms, 1_700_000_000_000,
+                "the action's own change time"
+            );
+            assert_eq!(
+                WorkspaceCommit::decode(&action.encode()).as_ref(),
+                Ok(action),
+                "a commit of an action's units is a valid commit"
+            );
+
+            let single = commits[2].as_ref().expect("another action, another commit");
+            assert_ne!(single.id(), action.id());
+            assert_eq!(single.parts.len(), 1);
+            let mixed = commits[3]
+                .as_ref()
+                .expect("a unit of several actions keeps a commit of its own");
+            assert_eq!(mixed.parts.len(), 1, "it joins neither of its actions");
+            assert_eq!(mixed.invocation, None, "several invocations name none");
+            assert_ne!(mixed.id(), action.id());
+            assert_eq!(commits[4], None, "a unit that carries no change has none");
+        }
+
+        phase an_action_publishing_changes_makes_one_commit_naming_them;
+        {
+            use automerge::transaction::Transactable as _;
+
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "title", "child").unwrap();
+            let invocation = InvocationId(uuid::Uuid::from_u128(42));
+            let context = ActionContext {
+                what: Some(Did::Edit(FieldEdit {
+                    ty: "tasks".to_owned(),
+                    field: "title".to_owned(),
+                    path: vec![tilo_actions::PathStep::Field("title".to_owned())],
+                    op: tilo_actions::EditOp::Set,
+                    old: None,
+                    new: None,
+                    args: std::collections::BTreeMap::new(),
+                })),
+                invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+                source_invocation: Some(invocation),
+                ..ActionContext::for_resource("tasks", "tasks", "a")
+            };
+            let mut options = automerge::transaction::CommitOptions::default();
+            options.set_message(context.change_message().unwrap());
+            // The executor stamps a change with the envelope's time (seconds).
+            options.set_time(1_700_000_000);
+            let hash = doc.commit_with(options).unwrap();
+
+            let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
+            let commit = WorkspaceCommit::of_mutation(
+                "workspace",
+                "tasks",
+                "a",
+                &CommitAuthor {
+                    principal: None,
+                    device: [7; 32],
+                },
+                &mutation,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(commit.invocation, Some(invocation.0));
+            assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+            assert_eq!(commit.parts[0].changes, vec![hash.0]);
+            assert_eq!(
+                commit.at_ms, 1_700_000_000_000,
+                "the action keeps the time its changes carry"
+            );
+
+            assert_eq!(
+                WorkspaceCommit::of_mutation(
+                    "workspace",
+                    "tasks",
+                    "a",
+                    &author([7; 32]),
+                    &DocumentMutation::Snapshot(vec![1, 2, 3]),
+                )
+                .unwrap(),
+                None,
+                "a snapshot carries no change to commit"
+            );
+        }
+
+        phase a_change_that_names_no_action_commits_nothing;
+        {
+            use automerge::transaction::Transactable as _;
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "title", "child").unwrap();
+            doc.commit();
+            let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
+            assert!(matches!(
+                WorkspaceCommit::of_mutation("workspace", "tasks", "a", &author([7; 32]), &mutation),
+                Err(CommitError::Unnamed(_))
+            ));
+        }
+
+        phase a_continued_gesture_commits_to_its_action;
+        // The next letter of a typed word continues its first letter's change:
+        // it names its action through that change, in the same mutation or, from
+        // the document, in one an earlier pass carried.
+        {
+            use automerge::transaction::Transactable as _;
+            let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
+            let typed = |text: &str| ActionContext {
+                action: Some(tilo_actions::EncodedAction {
+                    type_id: "notes.type".into(),
+                    payload: format!("{text:?}").into_bytes(),
+                }),
+                invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+                ..ActionContext::default().in_gesture(Some(gesture))
+            };
+            let mut doc = automerge::AutoCommit::new();
+            for (text, message) in [
+                ("a", typed("a").change_message().unwrap()),
+                ("ab", typed("ab").continuation_of(&typed("a")).unwrap()),
+            ] {
+                doc.put(automerge::ROOT, "body", text).unwrap();
+                doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+            }
+            let first = doc.get_changes(&[])[0].hash();
+            let unit = |mutation, document| UnitMutation {
+                app: "notes",
+                record: "",
+                mutation,
+                document,
+            };
+            let whole = DocumentMutation::Incremental(doc.save_after(&[]));
+            let commit =
+                WorkspaceCommit::of_units("workspace", &author([0; 32]), &[unit(&whole, None)])
+                    .unwrap()[0]
+                    .clone()
+                    .expect("both letters are one action");
+            assert_eq!(commit.parts[0].changes.len(), 2);
+
+            let next = DocumentMutation::Incremental(doc.save_after(&[first]));
+            assert!(matches!(
+                WorkspaceCommit::of_units("workspace", &author([0; 32]), &[unit(&next, None)]),
+                Err(CommitError::Unnamed(_))
+            ));
+            let commit = WorkspaceCommit::of_units(
+                "workspace",
+                &CommitAuthor {
+                    principal: None,
+                    device: [0; 32],
+                },
+                &[unit(&next, Some(doc.document()))],
+            )
+            .unwrap()[0]
+                .clone()
+                .expect("the next letter alone is still its action's");
+            assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+        }
+
+        phase a_field_edit_is_a_commit_too;
+        {
+            let (mutation, claims) = field_edit_mutation("tasks", "title", "write").unwrap();
+            let commit =
+                WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([3; 32]), &mutation)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(commit.parts[0].changes, vec![claims[0].change]);
+        }
+
+        phase an_action_names_the_run_it_ran_in_across_its_units;
+        {
+            use automerge::transaction::Transactable as _;
+            let invocation = InvocationId::new();
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "title", "value").unwrap();
+            let context = ActionContext {
+                what: Some(Did::verb(
+                    tilo_actions::ActionKey::new("tasks", "note", "complete"),
+                    std::collections::BTreeMap::new(),
+                )),
+                group: Some(tilo_actions::WorkGroup {
+                    id: "run-1".to_owned(),
+                    label: "Alex".to_owned(),
+                    kind: "agent-run".to_owned(),
+                    title: None,
+                }),
+                invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+                source_invocation: Some(invocation),
+                ..ActionContext::for_resource("tasks", "tasks", "note:1")
+            };
+            let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
+            options.set_message(context.change_message().unwrap());
+            doc.commit_with(options).unwrap();
+            let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
+            let commit =
+                WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([7; 32]), &mutation)
+                    .unwrap()
+                    .unwrap();
+
+            let run = commit.run.as_ref().expect("the run it ran in");
+            assert_eq!(run.id, "run-1");
+            assert_eq!(run.kind, "agent-run");
+            assert_eq!(run.label, "Alex");
+            assert_eq!(
+                WorkspaceCommit::decode(&commit.encode()).as_ref(),
+                Ok(&commit),
+                "the run travels with the commit"
+            );
+        }
     }
 
     /// The one change `mutation` carries.
@@ -873,373 +1172,89 @@ mod tests {
             .unwrap_or_default()
     }
 
-    #[test]
-    fn a_commit_is_the_same_address_on_every_peer() {
-        let once = two_part().id();
-        let twice = two_part().id();
-        assert_eq!(once, twice);
-        let mut other = two_part();
-        other.at_ms = 1;
-        assert_ne!(once, other.id());
-    }
+    tilo_test_env::scenario! {
+        /// Where a commit rides: the document frame, the signed envelope and the plaintext of a sealed part.
+        fn a_commit_travels_with_the_parts_it_names;
 
-    #[test]
-    fn a_commit_that_names_nothing_or_twice_is_refused() {
-        let mut wrong_kind = two_part();
-        wrong_kind.kind = "tilo.chat".to_owned();
-        assert_eq!(
-            WorkspaceCommit::decode(&wrong_kind.encode()),
-            Err(CommitError::Kind("tilo.chat".to_owned()))
-        );
+        phase a_document_frame_carries_its_commit_and_old_frames_still_decode;
+        {
+            let (mutation, _) = field_edit_mutation("tasks", "title", "write").unwrap();
+            let frame = mutation.encode_frames().unwrap().remove(0);
+            assert!(matches!(
+                DocumentFrame::decode(&frame),
+                Ok(DocumentFrame::Whole(DocumentMutation::Incremental(_)))
+            ));
+            assert_eq!(WorkspaceCommit::split(&frame).unwrap().1, None);
 
-        let mut wrong_version = two_part();
-        wrong_version.version = 9;
-        assert_eq!(
-            WorkspaceCommit::decode(&wrong_version.encode()),
-            Err(CommitError::Version(9))
-        );
-
-        let mut none = two_part();
-        none.parts.clear();
-        assert_eq!(
-            WorkspaceCommit::decode(&none.encode()),
-            Err(CommitError::NoParts)
-        );
-
-        let mut twice = two_part();
-        twice.parts[1] = part("tasks", "a", 3);
-        assert_eq!(
-            WorkspaceCommit::decode(&twice.encode()),
-            Err(CommitError::DuplicatePart {
-                app: "tasks".to_owned(),
-                record: "a".to_owned()
-            })
-        );
-
-        let mut empty = two_part();
-        empty.parts[1].changes.clear();
-        assert_eq!(
-            WorkspaceCommit::decode(&empty.encode()),
-            Err(CommitError::EmptyPart {
-                app: "tasks".to_owned(),
-                record: "b".to_owned()
-            })
-        );
-
-        assert!(WorkspaceCommit::decode(b"not a commit").is_err());
-    }
-
-    #[test]
-    fn a_document_frame_carries_its_commit_and_old_frames_still_decode() {
-        let (mutation, _) = field_edit_mutation("tasks", "title", "write").unwrap();
-        let frame = mutation.encode_frames().unwrap().remove(0);
-        assert!(matches!(
-            DocumentFrame::decode(&frame),
-            Ok(DocumentFrame::Whole(DocumentMutation::Incremental(_)))
-        ));
-        assert_eq!(WorkspaceCommit::split(&frame).unwrap().1, None);
-
-        let commit = two_part();
-        let framed = commit.frame(&frame).unwrap();
-        assert_eq!(
-            DocumentFrame::decode(&framed),
-            DocumentFrame::decode(&frame),
-            "a framed document frame decodes as the frame inside it"
-        );
-        let (inner, carried) = WorkspaceCommit::split(&framed).unwrap();
-        assert_eq!(inner, frame);
-        assert_eq!(carried, Some(commit));
-    }
-
-    #[test]
-    fn a_commit_is_read_off_the_envelope_that_signed_it() {
-        let commit = two_part();
-        let framed = commit.frame(b"frame").unwrap();
-        assert_eq!(
-            WorkspaceCommit::of_envelope(&envelope(framed.clone(), [7; 32]))
-                .unwrap()
-                .as_ref(),
-            Some(&commit)
-        );
-        assert_eq!(
-            WorkspaceCommit::of_envelope(&envelope(framed, [8; 32])),
-            Err(CommitError::ForeignDevice),
-            "another device's signature signs nothing of this action"
-        );
-        assert_eq!(
-            WorkspaceCommit::of_envelope(&envelope(b"frame".to_vec(), [7; 32])).unwrap(),
-            None
-        );
-        assert_eq!(
-            WorkspaceCommit::split(b"tilo-commit-frame-v1\0\x20"),
-            Err(CommitError::Truncated)
-        );
-        let mut over = COMMIT_FRAME_PREFIX.to_vec();
-        over.extend_from_slice(&u32::try_from(MAX_COMMIT_BYTES + 1).unwrap().to_le_bytes());
-        assert!(matches!(
-            WorkspaceCommit::split(&over),
-            Err(CommitError::TooLarge { .. })
-        ));
-        assert_eq!(
-            WorkspaceCommit::split(b"tilo-commit-frame-v1\0"),
-            Err(CommitError::Truncated)
-        );
-    }
-
-    #[test]
-    fn a_sealed_part_carries_its_commit_in_the_plaintext() {
-        // A sealed route's envelope holds the ciphertext of the payload; the
-        // commit is inside what only the unit's readers open.
-        let commit = two_part();
-        let cleartext = commit.frame(b"frame").unwrap();
-        let sealed = envelope(b"ciphertext".to_vec(), [7; 32]);
-        assert_eq!(
-            WorkspaceCommit::of_envelope(&sealed).unwrap(),
-            None,
-            "the sealed payload says nothing to a reader without the keys"
-        );
-        assert_eq!(
-            WorkspaceCommit::of_envelope_payload(&sealed, &cleartext)
-                .unwrap()
-                .as_ref(),
-            Some(&commit)
-        );
-        assert_eq!(
-            WorkspaceCommit::of_envelope_payload(&envelope(cleartext.clone(), [8; 32]), &cleartext),
-            Err(CommitError::ForeignDevice)
-        );
-    }
-
-    #[test]
-    fn an_action_publishing_changes_makes_one_commit_naming_them() {
-        use automerge::transaction::Transactable as _;
-
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "title", "child").unwrap();
-        let invocation = InvocationId(uuid::Uuid::from_u128(42));
-        let context = ActionContext {
-            what: Some(Did::Edit(FieldEdit {
-                ty: "tasks".to_owned(),
-                field: "title".to_owned(),
-                path: vec![tilo_actions::PathStep::Field("title".to_owned())],
-                op: tilo_actions::EditOp::Set,
-                old: None,
-                new: None,
-                args: std::collections::BTreeMap::new(),
-            })),
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
-            source_invocation: Some(invocation),
-            ..ActionContext::for_resource("tasks", "tasks", "a")
-        };
-        let mut options = automerge::transaction::CommitOptions::default();
-        options.set_message(context.change_message().unwrap());
-        // The executor stamps a change with the envelope's time (seconds).
-        options.set_time(1_700_000_000);
-        let hash = doc.commit_with(options).unwrap();
-
-        let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
-        let commit = WorkspaceCommit::of_mutation(
-            "workspace",
-            "tasks",
-            "a",
-            &CommitAuthor {
-                principal: None,
-                device: [7; 32],
-            },
-            &mutation,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(commit.invocation, Some(invocation.0));
-        assert_eq!(commit.author.principal.as_deref(), Some("alice"));
-        assert_eq!(commit.parts[0].changes, vec![hash.0]);
-        assert_eq!(
-            commit.at_ms, 1_700_000_000_000,
-            "the action keeps the time its changes carry"
-        );
-
-        assert_eq!(
-            WorkspaceCommit::of_mutation(
-                "workspace",
-                "tasks",
-                "a",
-                &author([7; 32]),
-                &DocumentMutation::Snapshot(vec![1, 2, 3]),
-            )
-            .unwrap(),
-            None,
-            "a snapshot carries no change to commit"
-        );
-    }
-
-    #[test]
-    fn a_change_that_names_no_action_commits_nothing() {
-        use automerge::transaction::Transactable as _;
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "title", "child").unwrap();
-        doc.commit();
-        let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
-        assert!(matches!(
-            WorkspaceCommit::of_mutation("workspace", "tasks", "a", &author([7; 32]), &mutation),
-            Err(CommitError::Unnamed(_))
-        ));
-    }
-
-    /// The next letter of a typed word continues its first letter's change:
-    /// it names its action through that change, in the same mutation or, from
-    /// the document, in one an earlier pass carried.
-    #[test]
-    fn a_continued_gesture_commits_to_its_action() {
-        use automerge::transaction::Transactable as _;
-        let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
-        let typed = |text: &str| ActionContext {
-            action: Some(tilo_actions::EncodedAction {
-                type_id: "notes.type".into(),
-                payload: format!("{text:?}").into_bytes(),
-            }),
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
-            ..ActionContext::default().in_gesture(Some(gesture))
-        };
-        let mut doc = automerge::AutoCommit::new();
-        for (text, message) in [
-            ("a", typed("a").change_message().unwrap()),
-            ("ab", typed("ab").continuation_of(&typed("a")).unwrap()),
-        ] {
-            doc.put(automerge::ROOT, "body", text).unwrap();
-            doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+            let commit = two_part();
+            let framed = commit.frame(&frame).unwrap();
+            assert_eq!(
+                DocumentFrame::decode(&framed),
+                DocumentFrame::decode(&frame),
+                "a framed document frame decodes as the frame inside it"
+            );
+            let (inner, carried) = WorkspaceCommit::split(&framed).unwrap();
+            assert_eq!(inner, frame);
+            assert_eq!(carried, Some(commit));
         }
-        let first = doc.get_changes(&[])[0].hash();
-        let unit = |mutation, document| UnitMutation {
-            app: "notes",
-            record: "",
-            mutation,
-            document,
-        };
-        let whole = DocumentMutation::Incremental(doc.save_after(&[]));
-        let commit =
-            WorkspaceCommit::of_units("workspace", &author([0; 32]), &[unit(&whole, None)])
-                .unwrap()[0]
-                .clone()
-                .expect("both letters are one action");
-        assert_eq!(commit.parts[0].changes.len(), 2);
 
-        let next = DocumentMutation::Incremental(doc.save_after(&[first]));
-        assert!(matches!(
-            WorkspaceCommit::of_units("workspace", &author([0; 32]), &[unit(&next, None)]),
-            Err(CommitError::Unnamed(_))
-        ));
-        let commit = WorkspaceCommit::of_units(
-            "workspace",
-            &CommitAuthor {
-                principal: None,
-                device: [0; 32],
-            },
-            &[unit(&next, Some(doc.document()))],
-        )
-        .unwrap()[0]
-            .clone()
-            .expect("the next letter alone is still its action's");
-        assert_eq!(commit.author.principal.as_deref(), Some("alice"));
-    }
+        phase a_commit_is_read_off_the_envelope_that_signed_it;
+        {
+            let commit = two_part();
+            let framed = commit.frame(b"frame").unwrap();
+            assert_eq!(
+                WorkspaceCommit::of_envelope(&envelope(framed.clone(), [7; 32]))
+                    .unwrap()
+                    .as_ref(),
+                Some(&commit)
+            );
+            assert_eq!(
+                WorkspaceCommit::of_envelope(&envelope(framed, [8; 32])),
+                Err(CommitError::ForeignDevice),
+                "another device's signature signs nothing of this action"
+            );
+            assert_eq!(
+                WorkspaceCommit::of_envelope(&envelope(b"frame".to_vec(), [7; 32])).unwrap(),
+                None
+            );
+            assert_eq!(
+                WorkspaceCommit::split(b"tilo-commit-frame-v1\0\x20"),
+                Err(CommitError::Truncated)
+            );
+            let mut over = COMMIT_FRAME_PREFIX.to_vec();
+            over.extend_from_slice(&u32::try_from(MAX_COMMIT_BYTES + 1).unwrap().to_le_bytes());
+            assert!(matches!(
+                WorkspaceCommit::split(&over),
+                Err(CommitError::TooLarge { .. })
+            ));
+            assert_eq!(
+                WorkspaceCommit::split(b"tilo-commit-frame-v1\0"),
+                Err(CommitError::Truncated)
+            );
+        }
 
-    #[test]
-    fn a_field_edit_is_a_commit_too() {
-        let (mutation, claims) = field_edit_mutation("tasks", "title", "write").unwrap();
-        let commit =
-            WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([3; 32]), &mutation)
-                .unwrap()
-                .unwrap();
-        assert_eq!(commit.parts[0].changes, vec![claims[0].change]);
-    }
-
-    #[test]
-    fn a_commit_is_a_record_kind_of_its_own() {
-        assert_eq!(two_part().kind, COMMIT_RECORD_KIND);
-        assert_eq!(two_part().version, COMMIT_VERSION);
-    }
-
-    #[test]
-    fn a_version_1_commit_still_reads_with_nothing_it_never_carried() {
-        let old = V1 {
-            kind: COMMIT_RECORD_KIND.to_owned(),
-            version: COMMIT_VERSION_NAMED_ACTION,
-            workspace: "workspace".to_owned(),
-            author: author([7; 32]),
-            at_ms: 1_700_000_000_000,
-            action: CommitActionV1 {
-                name: "create".to_owned(),
-                item: Some("child".to_owned()),
-                invocation: Some(uuid::Uuid::from_u128(5)),
-            },
-            parts: vec![CommitPartV1 {
-                app: "tasks".to_owned(),
-                record: "a".to_owned(),
-                changes: vec![[5; 32]],
-            }],
-        };
-        let bytes = crate::canonical::canonical_bytes(&old).unwrap();
-        let read = WorkspaceCommit::decode(&bytes).expect("a version 1 commit reads");
-        assert_eq!(read.version, COMMIT_VERSION);
-        assert_eq!(
-            read.invocation,
-            Some(uuid::Uuid::from_u128(5)),
-            "the invocation it ran under carries over"
-        );
-        assert_eq!(read.run, None, "version 1 named no run");
-        assert_eq!(read.parts[0].changes, vec![[5; 32]]);
-        assert_eq!(
-            read.encode(),
-            WorkspaceCommit::new(
-                "workspace",
-                author([7; 32]),
-                1_700_000_000_000,
-                read.invocation,
-                read.run.clone(),
-                read.parts,
-            )
-            .encode(),
-            "a version 1 commit writes as version 2 once read"
-        );
-    }
-
-    #[test]
-    fn an_action_names_the_run_it_ran_in_across_its_units() {
-        use automerge::transaction::Transactable as _;
-        let invocation = InvocationId::new();
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "title", "value").unwrap();
-        let context = ActionContext {
-            what: Some(Did::verb(
-                tilo_actions::ActionKey::new("tasks", "note", "complete"),
-                std::collections::BTreeMap::new(),
-            )),
-            group: Some(tilo_actions::WorkGroup {
-                id: "run-1".to_owned(),
-                label: "Alex".to_owned(),
-                kind: "agent-run".to_owned(),
-                title: None,
-            }),
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
-            source_invocation: Some(invocation),
-            ..ActionContext::for_resource("tasks", "tasks", "note:1")
-        };
-        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
-        options.set_message(context.change_message().unwrap());
-        doc.commit_with(options).unwrap();
-        let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
-        let commit =
-            WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([7; 32]), &mutation)
-                .unwrap()
-                .unwrap();
-
-        let run = commit.run.as_ref().expect("the run it ran in");
-        assert_eq!(run.id, "run-1");
-        assert_eq!(run.kind, "agent-run");
-        assert_eq!(run.label, "Alex");
-        assert_eq!(
-            WorkspaceCommit::decode(&commit.encode()).as_ref(),
-            Ok(&commit),
-            "the run travels with the commit"
-        );
+        phase a_sealed_part_carries_its_commit_in_the_plaintext;
+        {
+            // A sealed route's envelope holds the ciphertext of the payload; the
+            // commit is inside what only the unit's readers open.
+            let commit = two_part();
+            let cleartext = commit.frame(b"frame").unwrap();
+            let sealed = envelope(b"ciphertext".to_vec(), [7; 32]);
+            assert_eq!(
+                WorkspaceCommit::of_envelope(&sealed).unwrap(),
+                None,
+                "the sealed payload says nothing to a reader without the keys"
+            );
+            assert_eq!(
+                WorkspaceCommit::of_envelope_payload(&sealed, &cleartext)
+                    .unwrap()
+                    .as_ref(),
+                Some(&commit)
+            );
+            assert_eq!(
+                WorkspaceCommit::of_envelope_payload(&envelope(cleartext.clone(), [8; 32]), &cleartext),
+                Err(CommitError::ForeignDevice)
+            );
+        }
     }
 }

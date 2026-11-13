@@ -155,174 +155,179 @@ mod tests {
         AppActionAuthorityProjection::project(&workspace, "so.tilo.store", "person-b", false)
     }
 
-    #[test]
-    fn action_authority_scope_is_bounded() {
-        let original = policy();
-        original.validate().unwrap();
-        let mut invalid = original.clone();
-        invalid.schema_version = 2;
-        assert!(invalid.validate().is_err(), "another schema is refused");
-        for node in [
-            TreePath::workspace("workspace-a").app("so.tilo.settings"),
-            TreePath::workspace("workspace-b"),
-            TreePath::root(),
-        ] {
+    tilo_test_env::scenario! {
+        /// The action authority an app's launch reads: its bounds, what a projection keeps and how it reads back, each case on values of its own.
+        fn an_action_authority_projection_is_bounded_and_keeps_only_what_reaches_the_app;
+
+        phase action_authority_scope_is_bounded;
+        {
+            let original = policy();
+            original.validate().unwrap();
             let mut invalid = original.clone();
-            invalid.policy.grants.push(Grant::new(
+            invalid.schema_version = 2;
+            assert!(invalid.validate().is_err(), "another schema is refused");
+            for node in [
+                TreePath::workspace("workspace-a").app("so.tilo.settings"),
+                TreePath::workspace("workspace-b"),
+                TreePath::root(),
+            ] {
+                let mut invalid = original.clone();
+                invalid.policy.grants.push(Grant::new(
+                    "foreign",
+                    Grantee::person("person-b"),
+                    node,
+                    KindSet::ALL,
+                    Answer::Allow,
+                    Grantee::person("person-a"),
+                ));
+                assert!(invalid.validate().is_err());
+            }
+        }
+
+        phase a_projection_reads_back_as_written;
+        // What the launcher and the app read is what the host projected: the
+        // built-in roles loading as the code defines them adds none of the
+        // grants the projection left out.
+        {
+            let original = policy();
+            assert!(
+                original.policy.grants.len()
+                    < WorkspacePolicy::new("workspace-a", "person-a").grants.len(),
+                "the workspace holds role grants that reach no action of the app"
+            );
+            let read: AppActionAuthorityProjection =
+                serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+            read.validate().unwrap();
+            assert_eq!(read, original);
+        }
+
+        phase every_restored_grant_is_narrowed_on_read;
+        // Every grant a read restores (the roles', the session app's, the
+        // device panel's) is narrowed again, so an app's launch reads back
+        // the projection its host wrote, also for a workspace no one owns yet.
+        {
+            let owned = WorkspacePolicy::new("workspace-a", "person-a");
+            let unowned = WorkspacePolicy::unowned("workspace-a", &Grantee::role(Role::Owner));
+            for workspace in [owned, unowned.with_current_roles()] {
+                for app in ["so.tilo.notes", roles::SESSION_APP, roles::DEVICE_PANEL] {
+                    let written =
+                        AppActionAuthorityProjection::project(&workspace, app, "person-a", false);
+                    written.validate().unwrap();
+                    let read: AppActionAuthorityProjection =
+                        serde_json::from_slice(&serde_json::to_vec(&written).unwrap()).unwrap();
+                    read.validate()
+                        .unwrap_or_else(|error| panic!("{app}'s projection read back: {error}"));
+                    assert_eq!(read, written, "{app}");
+                }
+            }
+        }
+
+        phase a_read_projection_keeps_workspace_grants_for_validation;
+        // A grant the workspace gave that reaches beyond the app is still refused
+        // when read, not dropped.
+        {
+            let mut written = policy();
+            written.policy.grants.push(Grant::new(
                 "foreign",
                 Grantee::person("person-b"),
-                node,
+                TreePath::workspace("workspace-a").app("so.tilo.settings"),
                 KindSet::ALL,
                 Answer::Allow,
                 Grantee::person("person-a"),
             ));
-            assert!(invalid.validate().is_err());
+            let read: AppActionAuthorityProjection =
+                serde_json::from_slice(&serde_json::to_vec(&written).unwrap()).unwrap();
+            assert!(read.validate().is_err());
         }
-    }
 
-    /// What the launcher and the app read is what the host projected: the
-    /// built-in roles loading as the code defines them adds none of the
-    /// grants the projection left out.
-    #[test]
-    fn a_projection_reads_back_as_written() {
-        let original = policy();
-        assert!(
-            original.policy.grants.len()
-                < WorkspacePolicy::new("workspace-a", "person-a").grants.len(),
-            "the workspace holds role grants that reach no action of the app"
-        );
-        let read: AppActionAuthorityProjection =
-            serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
-        read.validate().unwrap();
-        assert_eq!(read, original);
-    }
-
-    /// Every grant a read restores (the roles', the session app's, the
-    /// device panel's) is narrowed again, so an app's launch reads back
-    /// the projection its host wrote, also for a workspace no one owns yet.
-    #[test]
-    fn every_restored_grant_is_narrowed_on_read() {
-        let owned = WorkspacePolicy::new("workspace-a", "person-a");
-        let unowned = WorkspacePolicy::unowned("workspace-a", &Grantee::role(Role::Owner));
-        for workspace in [owned, unowned.with_current_roles()] {
-            for app in ["so.tilo.notes", roles::SESSION_APP, roles::DEVICE_PANEL] {
-                let written =
-                    AppActionAuthorityProjection::project(&workspace, app, "person-a", false);
-                written.validate().unwrap();
-                let read: AppActionAuthorityProjection =
-                    serde_json::from_slice(&serde_json::to_vec(&written).unwrap()).unwrap();
-                read.validate()
-                    .unwrap_or_else(|error| panic!("{app}'s projection read back: {error}"));
-                assert_eq!(read, written, "{app}");
+        phase projection_keeps_only_grants_that_reach_the_app;
+        {
+            let mut workspace = WorkspacePolicy::new("workspace-a", "person-a");
+            workspace.members.insert("person-b".into(), Role::Viewer);
+            for (id, app) in [("store", "so.tilo.store"), ("settings", "so.tilo.settings")] {
+                workspace.grants.push(Grant::new(
+                    id,
+                    Grantee::person("person-b"),
+                    TreePath::workspace("workspace-a").app(app),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                    Grantee::person("person-a"),
+                ));
             }
+            let projection =
+                AppActionAuthorityProjection::project(&workspace, "so.tilo.store", "person-b", false);
+            projection.validate().unwrap();
+            assert!(
+                projection
+                    .policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.id.as_str() == "store")
+            );
+            assert!(
+                !projection
+                    .policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.id.as_str() == "settings")
+            );
+            let node = projection.app_node().action("buy");
+            let cx = Context::at(0);
+            assert_eq!(
+                projection
+                    .authority()
+                    .decide(&node, ActionKind::Undoable, &cx)
+                    .answer,
+                Answer::Allow
+            );
+            assert_eq!(
+                projection
+                    .authority()
+                    .decide(&node, ActionKind::Outside, &cx)
+                    .answer,
+                Answer::Deny
+            );
         }
-    }
 
-    /// A grant the workspace gave that reaches beyond the app is still refused
-    /// when read, not dropped.
-    #[test]
-    fn a_read_projection_keeps_workspace_grants_for_validation() {
-        let mut written = policy();
-        written.policy.grants.push(Grant::new(
-            "foreign",
-            Grantee::person("person-b"),
-            TreePath::workspace("workspace-a").app("so.tilo.settings"),
-            KindSet::ALL,
-            Answer::Allow,
-            Grantee::person("person-a"),
-        ));
-        let read: AppActionAuthorityProjection =
-            serde_json::from_slice(&serde_json::to_vec(&written).unwrap()).unwrap();
-        assert!(read.validate().is_err());
-    }
-
-    #[test]
-    fn projection_keeps_only_grants_that_reach_the_app() {
-        let mut workspace = WorkspacePolicy::new("workspace-a", "person-a");
-        workspace.members.insert("person-b".into(), Role::Viewer);
-        for (id, app) in [("store", "so.tilo.store"), ("settings", "so.tilo.settings")] {
-            workspace.grants.push(Grant::new(
-                id,
-                Grantee::person("person-b"),
-                TreePath::workspace("workspace-a").app(app),
-                KindSet::UNDOABLE,
+        phase a_foreign_device_never_governs;
+        {
+            let workspace = WorkspacePolicy::new("workspace-a", "person-a");
+            let mut projection =
+                AppActionAuthorityProjection::project(&workspace, "so.tilo.store", "person-a", true);
+            projection.policy.grants.push(Grant::new(
+                "governance",
+                Grantee::person("person-a"),
+                roles::workspace_resource("workspace-a"),
+                KindSet::ALL,
                 Answer::Allow,
                 Grantee::person("person-a"),
             ));
+            let cx = Context::at(0);
+            let invite = roles::governance_action("workspace-a", roles::governance::INVITE);
+            assert_eq!(
+                projection
+                    .authority()
+                    .decide(&invite, ActionKind::Undoable, &cx)
+                    .answer,
+                Answer::Deny
+            );
+            let content = projection.app_node().action("buy");
+            assert_eq!(
+                projection
+                    .authority()
+                    .decide(&content, ActionKind::Undoable, &cx)
+                    .answer,
+                Answer::Allow,
+                "content changes go ahead"
+            );
+            assert_eq!(
+                projection
+                    .authority()
+                    .decide(&content, ActionKind::Outside, &cx)
+                    .answer,
+                Answer::Ask,
+                "an outside effect from a device not theirs asks first"
+            );
         }
-        let projection =
-            AppActionAuthorityProjection::project(&workspace, "so.tilo.store", "person-b", false);
-        projection.validate().unwrap();
-        assert!(
-            projection
-                .policy
-                .grants
-                .iter()
-                .any(|grant| grant.id.as_str() == "store")
-        );
-        assert!(
-            !projection
-                .policy
-                .grants
-                .iter()
-                .any(|grant| grant.id.as_str() == "settings")
-        );
-        let node = projection.app_node().action("buy");
-        let cx = Context::at(0);
-        assert_eq!(
-            projection
-                .authority()
-                .decide(&node, ActionKind::Undoable, &cx)
-                .answer,
-            Answer::Allow
-        );
-        assert_eq!(
-            projection
-                .authority()
-                .decide(&node, ActionKind::Outside, &cx)
-                .answer,
-            Answer::Deny
-        );
-    }
-
-    #[test]
-    fn a_foreign_device_never_governs() {
-        let workspace = WorkspacePolicy::new("workspace-a", "person-a");
-        let mut projection =
-            AppActionAuthorityProjection::project(&workspace, "so.tilo.store", "person-a", true);
-        projection.policy.grants.push(Grant::new(
-            "governance",
-            Grantee::person("person-a"),
-            roles::workspace_resource("workspace-a"),
-            KindSet::ALL,
-            Answer::Allow,
-            Grantee::person("person-a"),
-        ));
-        let cx = Context::at(0);
-        let invite = roles::governance_action("workspace-a", roles::governance::INVITE);
-        assert_eq!(
-            projection
-                .authority()
-                .decide(&invite, ActionKind::Undoable, &cx)
-                .answer,
-            Answer::Deny
-        );
-        let content = projection.app_node().action("buy");
-        assert_eq!(
-            projection
-                .authority()
-                .decide(&content, ActionKind::Undoable, &cx)
-                .answer,
-            Answer::Allow,
-            "content changes go ahead"
-        );
-        assert_eq!(
-            projection
-                .authority()
-                .decide(&content, ActionKind::Outside, &cx)
-                .answer,
-            Answer::Ask,
-            "an outside effect from a device not theirs asks first"
-        );
     }
 }

@@ -251,11 +251,12 @@ mod tests {
         )
     }
 
-    /// Op ids are deterministic, change with signature, seq or author, and match their byte view;
-    /// the target-op hash is deterministic and changes with the payload.
-    #[test]
-    fn op_ids_and_target_hashes_identify_exactly_one_op() {
-        // Phase: op_id_is_deterministic_for_the_same_op.
+    tilo_test_env::scenario! {
+        /// Op ids are deterministic, change with signature, seq or author, and match their byte view;
+        /// the target-op hash is deterministic and changes with the payload.
+        fn op_ids_and_target_hashes_identify_exactly_one_op;
+
+        phase op_id_is_deterministic_for_the_same_op;
         {
             let op = dummy_op(7);
             let a = OpId::from_op(&op);
@@ -263,7 +264,7 @@ mod tests {
             assert_eq!(a, b);
         }
 
-        // Phase: op_id_changes_on_signature_change.
+        phase op_id_changes_on_signature_change;
         {
             // OpId is derived from signing-bytes (envelope minus signature), so
             // changing JUST the signature does not change the id — the audit
@@ -275,7 +276,7 @@ mod tests {
             assert_eq!(id_before, id_after);
         }
 
-        // Phase: op_id_changes_on_seq_or_author_change.
+        phase op_id_changes_on_seq_or_author_change;
         {
             let a = dummy_op(7);
             let mut b = a.clone();
@@ -288,13 +289,13 @@ mod tests {
             assert_ne!(OpId::from_op(&a), OpId::from_op(&c));
         }
 
-        // Phase: op_id_byte_view_matches_constructor.
+        phase op_id_byte_view_matches_constructor;
         {
             let id = OpId::from_bytes([0x77; 16]);
             assert_eq!(id.as_bytes(), &[0x77; 16]);
         }
 
-        // Phase: hash_target_op_is_deterministic_and_changes_with_payload.
+        phase hash_target_op_is_deterministic_and_changes_with_payload;
         {
             let mut op = dummy_op(3);
             let h1 = hash_target_op(&op).expect("hash");
@@ -308,15 +309,16 @@ mod tests {
         }
     }
 
-    /// Redact payloads round-trip and reject a wrong op class, an over-long reason and a redactor
-    /// mismatch; the redacted marker and redact request round-trip canonically.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn redaction_payloads_round_trip_and_reject_what_they_cannot_honour() {
-        // Phase: parse_redact_payload_round_trip.
+    tilo_test_env::scenario! {
+        /// Redact payloads round-trip and reject a wrong op class, an over-long reason and a redactor
+        /// mismatch; the redacted marker and redact request round-trip canonically.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn redaction_payloads_round_trip_and_reject_what_they_cannot_honour;
+
+        phase parse_redact_payload_round_trip;
         {
             let (_, pk) = generate_keypair();
             let req = RedactRequest {
@@ -342,7 +344,7 @@ mod tests {
             assert_eq!(parsed, req);
         }
 
-        // Phase: parse_redact_payload_rejects_wrong_op_kind.
+        phase parse_redact_payload_rejects_wrong_op_kind;
         {
             let (_, pk) = generate_keypair();
             let req = RedactRequest {
@@ -371,7 +373,7 @@ mod tests {
             }
         }
 
-        // Phase: parse_redact_payload_rejects_long_reason.
+        phase parse_redact_payload_rejects_long_reason;
         {
             let (_, pk) = generate_keypair();
             let req = RedactRequest {
@@ -400,7 +402,7 @@ mod tests {
             }
         }
 
-        // Phase: parse_redact_payload_rejects_redactor_mismatch.
+        phase parse_redact_payload_rejects_redactor_mismatch;
         {
             // Envelope says "signed by Bob", payload claims "redacted by Alice" —
             // must fail; the validator relies on this to refuse a malicious
@@ -431,7 +433,7 @@ mod tests {
             }
         }
 
-        // Phase: redacted_marker_canonical_round_trip.
+        phase redacted_marker_canonical_round_trip;
         {
             let marker = RedactedMarker::v1();
             let bytes = marker.canonical().expect("encode");
@@ -439,7 +441,7 @@ mod tests {
             assert_eq!(marker, back);
         }
 
-        // Phase: redact_request_canonical_round_trip.
+        phase redact_request_canonical_round_trip;
         // Belt-and-braces: canonical encoding of `RedactRequest` must
         // round-trip through postcard so the wire layer doesn't silently drop
         // fields when the struct grows.

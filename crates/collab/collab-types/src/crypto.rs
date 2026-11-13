@@ -233,11 +233,12 @@ pub fn verify_op(op: &SignedOp) -> Result<(), VerifyError> {
 mod tests {
     use super::*;
 
-    /// Signing matches the known answer, a minimal value signs and verifies, and a wrong key or a
-    /// tampered payload fails.
-    #[test]
-    fn event_signatures_are_known_answer_ed25519_bound_to_key_and_payload() {
-        // Phase: sign_event_matches_known_answer.
+    tilo_test_env::scenario! {
+        /// Signing matches the known answer, a minimal value signs and verifies, and a wrong key or a
+        /// tampered payload fails.
+        fn event_signatures_are_known_answer_ed25519_bound_to_key_and_payload;
+
+        phase sign_event_matches_known_answer;
         // Every signed op on the wire and on disk is an Ed25519 signature over
         // `canonical_bytes`; pin one signature and its postcard encoding.
         {
@@ -258,7 +259,7 @@ mod tests {
             assert_eq!(hex::encode(&wire), format!("40{expected}"));
         }
 
-        // Phase: sign_verify_minimal_value.
+        phase sign_verify_minimal_value;
         {
             let (sk, pk) = generate_keypair();
             let payload: Vec<u8> = b"hello world".to_vec();
@@ -266,7 +267,7 @@ mod tests {
             assert!(verify_event(&payload, &sig, &pk).is_ok());
         }
 
-        // Phase: sign_with_a_verify_with_b_fails.
+        phase sign_with_a_verify_with_b_fails;
         {
             let (sk_a, _) = generate_keypair();
             let (_, pk_b) = generate_keypair();
@@ -278,7 +279,7 @@ mod tests {
             );
         }
 
-        // Phase: tampered_payload_fails.
+        phase tampered_payload_fails;
         {
             let (sk, pk) = generate_keypair();
             let payload: Vec<u8> = b"hello".to_vec();
@@ -291,11 +292,12 @@ mod tests {
         }
     }
 
-    /// A keypair round-trips through serialisation, Debug does not panic, and an invalid public key
-    /// is rejected.
-    #[test]
-    fn keys_serialise_debug_safely_and_reject_invalid_points() {
-        // Phase: keypair_round_trip_serialise.
+    tilo_test_env::scenario! {
+        /// A keypair round-trips through serialisation, Debug does not panic, and an invalid public key
+        /// is rejected.
+        fn keys_serialise_debug_safely_and_reject_invalid_points;
+
+        phase keypair_round_trip_serialise;
         {
             let (_, pk) = generate_keypair();
             let bytes = canonical_bytes(&pk).unwrap();
@@ -303,7 +305,7 @@ mod tests {
             assert_eq!(pk, back);
         }
 
-        // Phase: debug_does_not_panic.
+        phase debug_does_not_panic;
         {
             let (_, pk) = generate_keypair();
             let _ = format!("{pk:?}");
@@ -311,7 +313,7 @@ mod tests {
             let _ = format!("{sig:?}");
         }
 
-        // Phase: invalid_public_key_rejected.
+        phase invalid_public_key_rejected;
         {
             // All-zero bytes are not a valid Ed25519 public key.
             let bad = Ed25519PublicKey([0u8; 32]);

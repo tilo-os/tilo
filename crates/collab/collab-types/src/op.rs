@@ -818,61 +818,63 @@ mod tests {
         assert!(earlier > second, "a backwards clock must still advance");
     }
 
-    /// Signed ops round-trip with and without encryption; encryption metadata changes the signing
-    /// bytes, which exclude the signature; version-one metadata keeps the legacy wire and signing
-    /// bytes; content-key metadata round-trips and is signed.
-    /// The signed envelope's field layout, as the wire and the signature see
-    /// it: a change here is a wire change every peer must make together.
-    #[test]
-    fn signed_op_field_layout() {
-        use sha2::Digest as _;
-        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let mut op = SignedOp::new_unsigned(
-            b"change".to_vec(),
-            document_artifact_id("app", "room", "record"),
-            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-            document_attestation_id("app", "room", "record"),
-            OpKind::Change,
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
-            3,
-        )
-        .with_claims(vec![crate::claim::ChangeClaim {
-            change: [9; 32],
-            action: crate::claim::ClaimedAction::Group(vec![
-                crate::claim::ClaimedAction::Edit {
-                    kind: "k".into(),
-                    path: vec![tilo_actions::PathStep::Field("f".into())],
-                },
-                crate::claim::ClaimedAction::Verb {
-                    action: tilo_actions::ActionKey::new("app", "k", "v"),
-                    item: None,
-                },
-            ]),
-            units: vec![Vec::new()],
-        }])
-        .with_surface(Some([5; 32]));
-        crate::crypto::sign_op(&mut op, &key).unwrap();
-        let bytes = canonical_bytes(&op).unwrap();
-        assert_eq!(from_canonical_bytes::<SignedOp>(&bytes).unwrap(), op);
-        assert_eq!(
-            postcard::from_bytes::<SignedOp>(&postcard::to_allocvec(&op).unwrap()).unwrap(),
-            op
-        );
-        assert_eq!(
-            hex::encode(sha2::Sha256::digest(&bytes)),
-            "4d36ec4cbbb005c0eb17855ec94b0d7ff48f64bd0dcd31ff82e1063b3366176d",
-            "{}",
-            hex::encode(&bytes)
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The first phase pins the field layout of the wire bytes by their digest.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn signed_op_wire_and_signing_bytes_cover_exactly_the_signed_fields;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn signed_op_wire_and_signing_bytes_cover_exactly_the_signed_fields() {
-        // Phase: signed_op_round_trip.
+        phase signed_op_field_layout;
+        // Signed ops round-trip with and without encryption; encryption metadata changes the signing
+        // bytes, which exclude the signature; version-one metadata keeps the legacy wire and signing
+        // bytes; content-key metadata round-trips and is signed.
+        // The signed envelope's field layout, as the wire and the signature see
+        // it: a change here is a wire change every peer must make together.
+        {
+            use sha2::Digest as _;
+            let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+            let mut op = SignedOp::new_unsigned(
+                b"change".to_vec(),
+                document_artifact_id("app", "room", "record"),
+                Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                document_attestation_id("app", "room", "record"),
+                OpKind::Change,
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
+                3,
+            )
+            .with_claims(vec![crate::claim::ChangeClaim {
+                change: [9; 32],
+                action: crate::claim::ClaimedAction::Group(vec![
+                    crate::claim::ClaimedAction::Edit {
+                        kind: "k".into(),
+                        path: vec![tilo_actions::PathStep::Field("f".into())],
+                    },
+                    crate::claim::ClaimedAction::Verb {
+                        action: tilo_actions::ActionKey::new("app", "k", "v"),
+                        item: None,
+                    },
+                ]),
+                units: vec![Vec::new()],
+            }])
+            .with_surface(Some([5; 32]));
+            crate::crypto::sign_op(&mut op, &key).unwrap();
+            let bytes = canonical_bytes(&op).unwrap();
+            assert_eq!(from_canonical_bytes::<SignedOp>(&bytes).unwrap(), op);
+            assert_eq!(
+                postcard::from_bytes::<SignedOp>(&postcard::to_allocvec(&op).unwrap()).unwrap(),
+                op
+            );
+            assert_eq!(
+                hex::encode(sha2::Sha256::digest(&bytes)),
+                "4d36ec4cbbb005c0eb17855ec94b0d7ff48f64bd0dcd31ff82e1063b3366176d",
+                "{}",
+                hex::encode(&bytes)
+            );
+        }
+
+        phase signed_op_round_trip;
         {
             let (_, pk) = generate_keypair();
             let op = SignedOp::new_unsigned(
@@ -889,7 +891,7 @@ mod tests {
             assert_eq!(op, back);
         }
 
-        // Phase: signed_op_with_encryption_round_trip.
+        phase signed_op_with_encryption_round_trip;
         {
             let (_, pk) = generate_keypair();
             let mut op = SignedOp::new_unsigned_with_encryption(
@@ -910,7 +912,7 @@ mod tests {
             assert_eq!(back.encryption.unwrap().epoch, 3);
         }
 
-        // Phase: encryption_metadata_changes_signing_bytes.
+        phase encryption_metadata_changes_signing_bytes;
         {
             // Two ops differing only in `encryption` must NOT have matching
             // signing-bytes — otherwise a peer could strip the metadata to
@@ -931,7 +933,7 @@ mod tests {
             assert_ne!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
         }
 
-        // Phase: signing_bytes_excludes_signature.
+        phase signing_bytes_excludes_signature;
         {
             // Two ops differing only in signature must have identical
             // signing-bytes (so signing/verifying is well-defined).
@@ -951,7 +953,7 @@ mod tests {
             assert_eq!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
         }
 
-        // Phase: version_one_metadata_keeps_the_legacy_wire_and_signing_bytes.
+        phase version_one_metadata_keeps_the_legacy_wire_and_signing_bytes;
         {
             let channel = ChannelId::new();
             let legacy = canonical_bytes(&Some(LegacyMetadata { epoch: 9, channel })).unwrap();
@@ -965,7 +967,7 @@ mod tests {
             assert_eq!(none_legacy, none_current);
         }
 
-        // Phase: content_key_metadata_round_trips_and_is_signed.
+        phase content_key_metadata_round_trips_and_is_signed;
         {
             let (_, pk) = generate_keypair();
             let channel = ChannelId::new();
@@ -1005,10 +1007,11 @@ mod tests {
         }
     }
 
-    /// Typed document mutations preserve kind and bytes and enforce the wire budget before decode.
-    #[test]
-    fn typed_document_mutations_keep_kind_and_bytes_within_the_wire_budget() {
-        // Phase: typed_document_mutations_preserve_kind_and_bytes.
+    tilo_test_env::scenario! {
+        /// Typed document mutations preserve kind and bytes and enforce the wire budget before decode.
+        fn typed_document_mutations_keep_kind_and_bytes_within_the_wire_budget;
+
+        phase typed_document_mutations_preserve_kind_and_bytes;
         {
             for mutation in [
                 DocumentMutation::Snapshot(vec![0, 1, 2]),
@@ -1036,7 +1039,7 @@ mod tests {
             );
         }
 
-        // Phase: typed_document_mutations_enforce_wire_budget_before_decode.
+        phase typed_document_mutations_enforce_wire_budget_before_decode;
         {
             let oversized = DocumentMutation::Incremental(vec![
                 0;
@@ -1080,11 +1083,12 @@ mod tests {
         }
     }
 
-    /// Document route ids are stable and unambiguous; an encrypted route is bound without decoding
-    /// ciphertext and rejects a wrong channel and empty ciphertext.
-    #[test]
-    fn document_routes_are_stable_and_bound_without_decoding() {
-        // Phase: document_route_ids_are_stable_and_unambiguous.
+    tilo_test_env::scenario! {
+        /// Document route ids are stable and unambiguous; an encrypted route is bound without decoding
+        /// ciphertext and rejects a wrong channel and empty ciphertext.
+        fn document_routes_are_stable_and_bound_without_decoding;
+
+        phase document_route_ids_are_stable_and_unambiguous;
         {
             let first = document_artifact_id("so.tilo.notes", "room-a", "record-b");
             assert_eq!(
@@ -1132,7 +1136,7 @@ mod tests {
             );
         }
 
-        // Phase: encrypted_document_route_is_bound_without_decoding_ciphertext.
+        phase encrypted_document_route_is_bound_without_decoding_ciphertext;
         {
             let (app, workspace, record) = ("notes", "workspace", "meeting");
             let op = SignedOp::new_unsigned_with_encryption(
@@ -1158,7 +1162,7 @@ mod tests {
             );
         }
 
-        // Phase: encrypted_document_route_rejects_wrong_channel_and_empty_ciphertext.
+        phase encrypted_document_route_rejects_wrong_channel_and_empty_ciphertext;
         {
             let (app, workspace, record) = ("notes", "workspace", "record");
             let build = |payload, channel| {
