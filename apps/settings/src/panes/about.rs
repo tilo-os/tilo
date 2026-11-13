@@ -221,6 +221,7 @@ fn published<T: serde::de::DeserializeOwned + Send + Sync + 'static>(
 ) -> RecordsCall<T> {
     let resource = resource.to_owned();
     ui::Arriving::local("the crash records", move || {
+        crate::device_read::off_ui_thread();
         let records = ui::collaboration::SessionResource::open(&resource)?;
         let reading = records
             .latest()

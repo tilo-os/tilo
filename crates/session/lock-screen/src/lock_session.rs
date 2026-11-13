@@ -47,6 +47,7 @@ pub fn serve(seat: &LockSeat) {
 /// what the screen asks for as long as the screen is up: the lock ends with
 /// it, so there is nothing to tidy up when the asks end.
 fn follow(showing: LocalStateWriter<Shown>, effects: Receiver<LockEffect>) {
+    ui::rt::off_ui_thread();
     let opened = match SessionResource::open(LOCK) {
         Ok(opened) => opened,
         Err(error) => {

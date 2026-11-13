@@ -119,6 +119,19 @@ pub fn is_ui_thread() -> bool {
     UI_THREAD.with(Cell::get)
 }
 
+/// Mark a call that waits — on the session, the device, a service — and so
+/// may take seconds. A debug build panics when it runs on a window's thread:
+/// the window would stop drawing and answering for as long as it waits, so
+/// a test or a development build that reaches it there fails instead.
+#[track_caller]
+pub fn off_ui_thread() {
+    debug_assert!(
+        !is_ui_thread(),
+        "a call that waits ran on a window's thread; run it off that thread and take its answer \
+         when it lands"
+    );
+}
+
 /// Whether the calling thread is inside a tokio runtime context: a runtime
 /// worker, the thread in a `block_on`, a blocking-pool thread, or a thread
 /// that entered a handle.

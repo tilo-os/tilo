@@ -14,7 +14,7 @@ use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{
     SettingsSection, StatusTone, error_caption, note, row, rows, section_with,
-    semantic_status_pill, setting_row_described, value_row,
+    semantic_status_pill, setting_row_described,
 };
 
 const THIS_DEVICE_KEY: &str = "this-device";
@@ -22,33 +22,31 @@ const THIS_DEVICE_KEY: &str = "this-device";
 struct DeviceEntry<'a> {
     key: String,
     label: String,
-    personal: Option<&'a crate::device_fleet::DeviceView>,
+    personal: Option<&'a super::PersonalDevice>,
     peer: Option<&'a tilo_relay_protocol::HomePeerRegistration>,
     this: bool,
 }
 
 impl Page<'_> {
+    /// This device first, then the person's other devices as the session reads them, then the
+    /// home servers paired here that it does not list.
     fn device_entries(&self) -> Vec<DeviceEntry<'_>> {
-        let peer_of = |device: &crate::device_fleet::DeviceView| {
-            let key = hex::encode(device.key);
+        let devices = self.personal_devices.iter().flatten();
+        let peer_of = |device: &super::PersonalDevice| {
             self.home_peers
                 .iter()
-                .find(|peer| peer.device_node_id.eq_ignore_ascii_case(&key))
+                .find(|peer| peer.device_node_id.eq_ignore_ascii_case(&device.id))
         };
         let mut entries = Vec::new();
-        match self
-            .personal_devices
-            .iter()
-            .find(|device| device.current && !device.revoked)
-        {
+        match devices.clone().find(|device| device.local) {
             Some(device) => entries.push(DeviceEntry {
-                key: hex::encode(device.key),
+                key: device.id.clone(),
                 label: device.label.clone(),
                 personal: Some(device),
                 peer: None,
                 this: true,
             }),
-            // Before the device list answers, this device still has its
+            // Before the session's reading lands, this device still has its
             // settings.
             None => entries.push(DeviceEntry {
                 key: THIS_DEVICE_KEY.to_owned(),
@@ -58,13 +56,9 @@ impl Page<'_> {
                 this: true,
             }),
         }
-        for device in self
-            .personal_devices
-            .iter()
-            .filter(|device| !device.current && !device.revoked)
-        {
+        for device in devices.filter(|device| !device.local) {
             entries.push(DeviceEntry {
-                key: hex::encode(device.key),
+                key: device.id.clone(),
                 label: device.label.clone(),
                 personal: Some(device),
                 peer: peer_of(device),
@@ -85,15 +79,6 @@ impl Page<'_> {
                     this: false,
                 });
             }
-        }
-        for device in self.personal_devices.iter().filter(|device| device.revoked) {
-            entries.push(DeviceEntry {
-                key: hex::encode(device.key),
-                label: device.label.clone(),
-                personal: Some(device),
-                peer: None,
-                this: false,
-            });
         }
         entries
     }
@@ -137,7 +122,7 @@ impl Page<'_> {
                 )
                 .icon(if entry.this {
                     ui::icons::Icon::Monitor
-                } else if entry.peer.is_some() || entry.personal.is_some_and(|d| d.can_host) {
+                } else if entry.peer.is_some() {
                     ui::icons::Icon::HardDrive
                 } else {
                     ui::icons::Icon::MonitorSmartphone
@@ -149,6 +134,8 @@ impl Page<'_> {
             items.push(row(error_caption(&t(
                 "mesh-status-device-list-unavailable",
             ))));
+        } else if self.personal_devices.is_none() {
+            items.push(note(&t("mesh-status-devices-reading")));
         }
 
         let home_label = if pairing && self.pairing_target == PairingTarget::HomePeer {
@@ -187,17 +174,14 @@ impl Page<'_> {
         if entry.this {
             return t("mesh-status-this-device");
         }
-        if entry.personal.is_some_and(|device| device.revoked) {
-            return t("mesh-status-revoked");
-        }
-        if self.nearby.contains(&entry.key.to_ascii_lowercase()) {
+        if entry.personal.is_some_and(|device| device.nearby) {
             return t("mesh-status-nearby");
         }
         if let Some(peer) = entry.peer {
             return self.peer_health(peer);
         }
-        t(if entry.personal.is_some_and(|device| device.can_host) {
-            "mesh-status-home-server"
+        t(if entry.personal.is_some_and(|device| device.online) {
+            "mesh-badge-online"
         } else {
             "mesh-status-trusted"
         })
@@ -218,19 +202,13 @@ impl Page<'_> {
 
     fn device_details(&self, entry: &DeviceEntry<'_>) -> Box<dyn Widget> {
         let mut items = Vec::new();
-        if let Some(device) = entry.personal {
-            items.push(value_row(&t("mesh-fingerprint-label"), &device.fingerprint));
-        }
         if entry.this {
             items.extend(self.this_device_rows());
         }
         if let Some(peer) = entry.peer {
             items.extend(self.home_peer_rows(peer));
         }
-        let removable = entry
-            .personal
-            .is_some_and(|device| !device.current && !device.revoked && !device.can_host);
-        if removable || entry.peer.is_some() {
+        if !entry.this && (entry.personal.is_some() || entry.peer.is_some()) {
             items.extend(self.removal_rows(entry));
         }
         provider_settings_ui::widgets::page(vec![provider_settings_ui::widgets::untitled(rows(

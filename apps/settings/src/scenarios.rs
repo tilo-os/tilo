@@ -201,7 +201,7 @@ pub struct CaptureScene {
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
     pub access: Option<crate::panes::devices_access::AccessSample>,
     pub linked_account: Option<ui::linked_accounts::LinkState>,
-    pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
+    pub personal_devices: Vec<crate::panes::device_mesh::PersonalDevice>,
     pub home_relay: Option<ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting>,
     pub billing: Option<ui::tilo_actions::remote::host_account::HostAccount>,
     pub network: Option<NetworkSample>,
@@ -340,11 +340,11 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
             .then(home_relay_fixture),
         billing: billing_fixture(fixture.scenario()),
-        fleet_devices: if matches!(
+        personal_devices: if matches!(
             fixture.scenario(),
             Some(scenario) if scenario == Category::DeviceMesh.slug()
         ) {
-            fleet_fixture()
+            personal_devices_fixture()
         } else {
             Vec::new()
         },
@@ -382,40 +382,19 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
     });
 }
 
-fn fleet_fixture() -> Vec<ui::tilo_actions::remote::identity_admin::FleetDevice> {
-    use ui::tilo_actions::remote::identity_admin::FleetDevice;
-    let device = |label: &str, key: &str, fingerprint: &str, current, can_host| FleetDevice {
+fn personal_devices_fixture() -> Vec<crate::panes::device_mesh::PersonalDevice> {
+    use crate::panes::device_mesh::PersonalDevice;
+    let device = |label: &str, key: &str, local, nearby| PersonalDevice {
+        id: key.repeat(8),
         label: label.into(),
-        key_hex: key.repeat(8),
-        fingerprint: fingerprint.into(),
-        current,
-        revoked: false,
-        can_host,
-        kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
-        browser: None,
-        agent: None,
-        issued_ms: None,
-        expires_ms: None,
-        last_active_ms: None,
-        online: false,
-        workspace: None,
+        online: local || nearby,
+        nearby,
+        local,
     };
     vec![
-        device(
-            "Ada's MacBook",
-            "4f2a9c1e",
-            "4F 2A 9C 1E 7B D3",
-            true,
-            false,
-        ),
-        device(
-            "Safari on iPhone",
-            "b81d03e6",
-            "B8 1D 03 E6 5A 92",
-            false,
-            false,
-        ),
-        device("Home server", "6c47f2a0", "6C 47 F2 A0 E1 38", false, true),
+        device("Ada's MacBook", "4f2a9c1e", true, false),
+        device("Ada's iPhone", "b81d03e6", false, true),
+        device("Home server", "6c47f2a0", false, false),
     ]
 }
 

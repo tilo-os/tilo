@@ -457,21 +457,13 @@ impl DeviceMeshArea {
             let mut model = DeviceMeshModel::from_read(self.devices, read);
             model.remote = self.remote.clone();
             if self.devices {
-                model.refresh_personal_devices();
+                model.follow_personal_devices();
                 model.refresh_home_relay();
             } else if let Some(scene) = self.scene.as_deref() {
                 model.home_relay.hosting.clone_from(&scene.home_relay);
-                match crate::device_fleet::views(scene.fleet_devices.clone()) {
-                    Ok(devices) => model.personal_devices = devices,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "tilo::settings",
-                            %error,
-                            "the capture's device list is not readable"
-                        );
-                        model.personal_devices_unavailable = true;
-                    }
-                }
+                model.personal_devices = Some(scene.personal_devices.clone());
+            } else {
+                model.personal_devices = Some(Vec::new());
             }
             Rc::new(RefCell::new(model))
         })
@@ -647,13 +639,12 @@ pub struct DeviceMeshModel {
     home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
     home_peer_health: HashMap<String, HomePeerHealth>,
     home_peer_last_seen: HashMap<String, u64>,
-    personal_devices: Vec<crate::device_fleet::DeviceView>,
+    /// The person's devices as the session last read them; `None` until its first reading lands.
+    personal_devices: Option<Vec<PersonalDevice>>,
     personal_devices_unavailable: bool,
-    /// The session's reading of the person's devices, which says which of them it hears on this
-    /// device's local network.
+    /// The session's reading of the person's devices, followed without waiting for it: each
+    /// reading wakes the window.
     session_devices: Option<ui::collaboration::SessionResource>,
-    /// The person's devices reachable without a relay, by key in lowercase hex.
-    nearby: std::collections::BTreeSet<String>,
     device_rows: DisclosureGroup,
     removing: Option<String>,
     roaming_provenance_path: Option<PathBuf>,
@@ -663,7 +654,6 @@ pub struct DeviceMeshModel {
     management_child: Option<bounded_command::AsyncCommand>,
     management_device: Option<String>,
     management_call: Option<(ui::InvocationCall, Option<String>)>,
-    devices_call: Option<ui::InvocationCall>,
     next_peer_health: usize,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
@@ -899,34 +889,45 @@ pub(crate) struct MeshRead {
     home_peer_last_seen: HashMap<String, u64>,
     roaming_provenance_path: Option<PathBuf>,
     roaming_provenance: ProvenanceRead,
-    session_devices: Option<ui::collaboration::SessionResource>,
 }
 
-/// The session's reading of the person's devices, as far as this pane reads it.
+/// The session's reading of the person's devices: the one list Quick Settings shows too.
 const SESSION_DEVICES: &str = "session:devices";
 
 #[derive(serde::Deserialize)]
 struct SessionDevices {
     #[serde(default)]
-    devices: Vec<SessionDevice>,
+    devices: Vec<PersonalDevice>,
 }
 
-#[derive(serde::Deserialize)]
-struct SessionDevice {
-    id: String,
+/// One of the person's devices, as the session reads it off the device fabric.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct PersonalDevice {
+    /// Its key in hex, which names it in the fabric and on its row.
+    pub id: String,
+    pub label: String,
+    /// It has a live session with this device now.
     #[serde(default)]
-    nearby: bool,
+    pub online: bool,
+    /// It is heard on this device's local network.
+    #[serde(default)]
+    pub nearby: bool,
+    /// This machine.
+    #[serde(default)]
+    pub local: bool,
 }
 
-/// The devices `reading` says are nearby, by key in lowercase hex.
-fn nearby_in(reading: &str) -> Option<std::collections::BTreeSet<String>> {
+/// The person's devices `reading` lists; `None` when it does not read.
+fn devices_in(reading: &str) -> Option<Vec<PersonalDevice>> {
     let reading: SessionDevices = serde_json::from_str(reading).ok()?;
     Some(
         reading
             .devices
             .into_iter()
-            .filter(|device| device.nearby)
-            .map(|device| device.id.to_ascii_lowercase())
+            .map(|device| PersonalDevice {
+                id: device.id.to_ascii_lowercase(),
+                ..device
+            })
             .collect(),
     )
 }
@@ -994,19 +995,6 @@ impl MeshRead {
             },
             roaming_provenance_path,
             roaming_provenance,
-            session_devices: devices
-                .then(|| {
-                    ui::collaboration::SessionResource::open(SESSION_DEVICES)
-                        .inspect_err(|error| {
-                            tracing::debug!(
-                                target: "tilo::settings",
-                                %error,
-                                "the session's devices are not read here"
-                            );
-                        })
-                        .ok()
-                })
-                .flatten(),
         }
     }
 }
@@ -1033,12 +1021,9 @@ impl DeviceMeshModel {
             home_peers: read.home_peers,
             home_peer_health: HashMap::new(),
             home_peer_last_seen: read.home_peer_last_seen,
-            personal_devices: Vec::new(),
+            personal_devices: None,
             personal_devices_unavailable: false,
-            session_devices: read.session_devices.inspect(|resource| {
-                resource.attach(ui::WakeHandle::new());
-            }),
-            nearby: std::collections::BTreeSet::new(),
+            session_devices: None,
             device_rows: DisclosureGroup::new(),
             removing: None,
             roaming_provenance_path: read.roaming_provenance_path,
@@ -1048,7 +1033,6 @@ impl DeviceMeshModel {
             management_child: None,
             management_device: None,
             management_call: None,
-            devices_call: None,
             home_relay: home_relay::HomeRelay::default(),
             next_peer_health: 0,
             apply_child: None,
@@ -1146,42 +1130,54 @@ impl DeviceMeshModel {
         }
     }
 
-    fn refresh_personal_devices(&mut self) {
-        if self.devices_call.is_none() {
-            self.devices_call = Some(crate::device_fleet::list(&self.remote));
+    /// Follow the session's reading of the person's devices. Nothing waits for it here: the
+    /// window is woken at each reading, and the list shows that it is being read until the first
+    /// one lands.
+    fn follow_personal_devices(&mut self) {
+        match ui::collaboration::SessionResource::follow(SESSION_DEVICES, ui::WakeHandle::new()) {
+            Ok(followed) => self.session_devices = Some(followed),
+            Err(error) => {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "the session's devices are not followed"
+                );
+                self.personal_devices_unavailable = true;
+            }
+        }
+    }
+
+    /// Take in the session's newest reading of the person's devices.
+    fn take_personal_devices(&mut self) {
+        let Some(reading) = self
+            .session_devices
+            .as_ref()
+            .and_then(ui::collaboration::SessionResource::latest)
+        else {
+            return;
+        };
+        if let Ok(Some(devices)) = reading.map(|reading| devices_in(&reading)) {
+            self.changed |= self.personal_devices_unavailable;
+            self.personal_devices_unavailable = false;
+            if self.personal_devices.as_ref() != Some(&devices) {
+                self.personal_devices = Some(devices);
+                self.changed = true;
+            }
+        } else {
+            tracing::warn!(
+                target: "tilo::settings",
+                "the session's reading of the devices does not read"
+            );
+            self.changed |= !self.personal_devices_unavailable;
+            self.personal_devices_unavailable = true;
         }
     }
 
     fn poll_host_calls(&mut self) {
-        if self.devices_call.is_some()
-            || self.management_call.is_some()
-            || self.home_relay.waiting()
-        {
+        if self.management_call.is_some() || self.home_relay.waiting() {
             self.remote.poll();
         }
         self.poll_home_relay();
-        if let Some(answer) = self
-            .devices_call
-            .as_ref()
-            .and_then(crate::device_fleet::settled)
-        {
-            self.devices_call = None;
-            match answer.and_then(|output| crate::device_fleet::devices(output.value)) {
-                Ok(devices) => {
-                    self.personal_devices = devices;
-                    self.personal_devices_unavailable = false;
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        target: "tilo::settings",
-                        %error,
-                        "the host's device list could not be read"
-                    );
-                    self.personal_devices_unavailable = true;
-                }
-            }
-            self.changed = true;
-        }
         if let Some(answer) = self
             .management_call
             .as_ref()
@@ -1410,7 +1406,8 @@ impl Page<'_> {
         let target_name = self
             .personal_devices
             .iter()
-            .find(|device| !device.current && !device.revoked)
+            .flatten()
+            .find(|device| !device.local)
             .map_or_else(|| t("mesh-no-target"), |device| device.label.clone());
 
         let mut roaming_rows = if self.roaming_provenance_unreadable {
@@ -1745,10 +1742,7 @@ impl DeviceMeshModel {
         self.refresh_runtime_status();
         self.status = match self.pairing_target {
             PairingTarget::HomePeer => MeshStatus::HomeServerPaired,
-            PairingTarget::PersonalDevice => {
-                self.refresh_personal_devices();
-                MeshStatus::DeviceAdded
-            }
+            PairingTarget::PersonalDevice => MeshStatus::DeviceAdded,
         };
         self.pairing_candidate = None;
     }
@@ -1921,24 +1915,9 @@ impl DeviceMeshModel {
         held
     }
 
-    /// Take in what the session last said of which devices are nearby.
-    fn take_nearby(&mut self) {
-        let Some(Ok(reading)) = self
-            .session_devices
-            .as_ref()
-            .and_then(ui::collaboration::SessionResource::latest)
-        else {
-            return;
-        };
-        if let Some(nearby) = nearby_in(&reading).filter(|nearby| *nearby != self.nearby) {
-            self.nearby = nearby;
-            self.changed = true;
-        }
-    }
-
     fn poll(&mut self) -> bool {
         self.poll_background_tasks();
-        self.take_nearby();
+        self.take_personal_devices();
         if let Some(follow) = self.following.upgrade() {
             self.take_followed(&follow);
         } else if ui::time::now() >= self.next_status_refresh {
@@ -2612,21 +2591,14 @@ mod tests {
 
     fn devices_and_a_home_server(dir: &std::path::Path) -> DeviceMeshModel {
         let mut pane = DeviceMeshModel::with_path(&dir.join("relay.toml"));
-        let device = |key: &str, label: &str, current, can_host| crate::device_fleet::DeviceView {
-            label: label.into(),
-            key: hex::decode(key).unwrap().try_into().unwrap(),
-            fingerprint: format!("fp {label}"),
-            current,
-            revoked: false,
-            can_host,
-            kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
-            ..crate::device_fleet::DeviceView::default()
-        };
-        pane.personal_devices = vec![
-            device(THIS_DEVICE, "Ada's Laptop", true, false),
-            device(PHONE, "Ada's Phone", false, false),
-            device(NEARBY_DEVICE, "Kitchen NAS", false, true),
-        ];
+        pane.personal_devices = devices_in(
+            &serde_json::json!({"devices": [
+                {"id": THIS_DEVICE, "label": "Ada's Laptop", "local": true, "online": true},
+                {"id": PHONE, "label": "Ada's Phone"},
+                {"id": NEARBY_DEVICE, "label": "Kitchen NAS", "online": true},
+            ]})
+            .to_string(),
+        );
         pane.home_peers = vec![
             serde_json::from_value(serde_json::json!({
                 "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
@@ -2648,14 +2620,13 @@ mod tests {
         let _settled = ui::motion::testing::settled();
         let dir = tempfile::tempdir().unwrap();
         let mut pane = devices_and_a_home_server(dir.path());
-        pane.nearby = nearby_in(
+        pane.personal_devices = devices_in(
             &serde_json::json!({"devices": [
-                {"id": PHONE.to_ascii_uppercase(), "nearby": true},
-                {"id": THIS_DEVICE, "nearby": false},
+                {"id": THIS_DEVICE, "label": "Ada's Laptop", "local": true, "nearby": false},
+                {"id": PHONE.to_ascii_uppercase(), "label": "Ada's Phone", "nearby": true},
             ]})
             .to_string(),
-        )
-        .unwrap();
+        );
         let mut app = window_on(pane);
         let shown = provider_settings_ui::widgets::announced_text(app.harness().root_widget());
         assert!(
@@ -2730,7 +2701,11 @@ mod tests {
             "{ids:?}"
         );
         assert_eq!(
-            change_model(&mut app, |pane| pane.personal_devices.len()),
+            change_model(&mut app, |pane| pane
+                .personal_devices
+                .iter()
+                .flatten()
+                .count()),
             3
         );
     }
@@ -2832,18 +2807,6 @@ mod tests {
                 })
             } else if request.target.provider == identity_admin::PROVIDER {
                 match request.target.address.action.as_str() {
-                    identity_admin::DEVICES => serde_json::json!([
-                        {
-                            "label": "This laptop", "key_hex": THIS_DEVICE,
-                            "fingerprint": "11 11 11 11 11 11", "current": true,
-                            "revoked": false, "can_host": true,
-                        },
-                        {
-                            "label": "Phone", "key_hex": PHONE,
-                            "fingerprint": "22 22 22 22 22 22", "current": false,
-                            "revoked": false, "can_host": false,
-                        },
-                    ]),
                     identity_admin::HOME_PEER_REMOVE => {
                         serde_json::json!({"decommissioned": true, "files_ready": false})
                     }
@@ -2904,24 +2867,39 @@ mod tests {
         }
     }
 
+    /// The list is the session's reading of the person's devices: until it lands the list says it
+    /// is being read, and a reading that arrives later is drawn without anyone asking again.
     #[test]
-    fn the_device_list_is_the_hosts() {
+    fn the_device_list_is_the_sessions_reading() {
+        let _settled = ui::motion::testing::settled();
         let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        pane.remote = ui::RemoteActions::with_host(
-            Arc::new(PairingHost::default()),
-            ui::tilo_actions::remote::Caller::local_person("owner"),
-        );
+        let pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        assert_eq!(pane.personal_devices, None, "nothing is read in place");
+        let mut app = window_on(pane);
+        let text = |app: &mut TestApp<SettingsShell>| {
+            provider_settings_ui::widgets::announced_text(app.harness().root_widget()).join("\n")
+        };
+        assert!(text(&mut app).contains(&t("mesh-status-devices-reading")));
 
-        pane.refresh_personal_devices();
-        pane.poll_background_tasks();
-        assert_eq!(
-            pane.personal_devices
-                .iter()
-                .map(|device| (device.label.as_str(), device.current))
-                .collect::<Vec<_>>(),
-            [("This laptop", true), ("Phone", false)]
+        let devices = devices_in(
+            &serde_json::json!({"devices": [
+                {"id": THIS_DEVICE, "label": "This laptop", "local": true, "online": true},
+                {"id": PHONE, "label": "Phone", "online": true, "nearby": true},
+            ]})
+            .to_string(),
         );
+        change_model(&mut app, move |pane| {
+            pane.personal_devices = devices;
+            pane.changed = true;
+        });
+        let shown = text(&mut app);
+        assert!(
+            !shown.contains(&t("mesh-status-devices-reading")),
+            "{shown}"
+        );
+        assert!(shown.contains("This laptop, This device"), "{shown}");
+        assert!(shown.contains("Phone, Nearby"), "{shown}");
+        assert_eq!(devices_in("not a reading"), None);
     }
 
     #[test]
@@ -3097,7 +3075,8 @@ mod tests {
             PathBuf::from("/nonexistent/tilo/relay.toml"),
             "a test reads the stand-in configuration"
         );
-        assert!(model.personal_devices.is_empty() && model.home_peers.is_empty());
+        assert_eq!(model.personal_devices, Some(Vec::new()));
+        assert!(model.home_peers.is_empty());
         drop(model);
         assert!(!area.start_read(), "a built model is not read again");
     }

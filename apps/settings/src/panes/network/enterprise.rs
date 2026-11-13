@@ -99,6 +99,7 @@ pub(super) fn join_enterprise(
     config: &EnterpriseWifiConfiguration,
     password: &str,
 ) -> Result<(), String> {
+    crate::device_read::off_ui_thread();
     let network = ui::collaboration::SessionResource::open(NETWORK_RESOURCE)?;
     network.invoke(ENTERPRISE_JOIN, &enterprise_arguments(config, password))
 }

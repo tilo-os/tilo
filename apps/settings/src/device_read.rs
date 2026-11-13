@@ -127,21 +127,9 @@ impl ErasedRead {
     }
 }
 
-/// Mark a call that reaches the device or a service — a command, a D-Bus
-/// call, a walk of a large tree — and so may take seconds. In a debug build
-/// it panics on the UI thread: a pane that makes the window wait on the
-/// device fails its tests and a development build, instead of freezing the
-/// window on a slow device. The stand-ins a test reads mark their calls
-/// too, so a test that opens a pane on the UI thread proves it reads
-/// nothing there.
-#[track_caller]
-pub fn off_ui_thread() {
-    debug_assert!(
-        !ui::rt::is_ui_thread(),
-        "Settings reached the device on the UI thread; read it off the UI thread \
-         (crate::device_read::Reading, DeviceRead or an effect job)"
-    );
-}
+/// Mark a call that reaches the device or a service, read with [`DeviceRead`], [`Reading`] or an
+/// effect job. The stand-ins a test reads mark their calls too.
+pub use ui::rt::off_ui_thread;
 
 /// What an area last read of the device, read again off the UI thread.
 ///

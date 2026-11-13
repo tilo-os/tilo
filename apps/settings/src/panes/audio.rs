@@ -368,6 +368,7 @@ struct SessionSound(ui::collaboration::SessionResource);
 
 impl SessionSound {
     fn open() -> Result<Self, String> {
+        crate::device_read::off_ui_thread();
         ui::collaboration::SessionResource::open(SOUND).map(Self)
     }
 }

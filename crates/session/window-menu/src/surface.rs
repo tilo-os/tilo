@@ -221,6 +221,7 @@ impl WindowMenuSurface {
         let opened = Arc::clone(&self.opened);
         let asking = Arc::clone(&self.asking);
         std::thread::spawn(move || {
+            ui::rt::off_ui_thread();
             if let Ok(reached) = SessionResource::open(WINDOW_MENU) {
                 reached.attach(wake.clone());
                 if let Ok(mut slot) = opened.lock() {
