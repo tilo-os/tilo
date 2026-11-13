@@ -151,8 +151,6 @@ mod desk;
 mod desk_changes;
 pub mod desk_doc;
 #[cfg(target_os = "linux")]
-mod desk_migration;
-#[cfg(target_os = "linux")]
 mod desk_resource;
 #[cfg(target_os = "linux")]
 mod desk_restore;

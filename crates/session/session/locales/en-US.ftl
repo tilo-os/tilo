@@ -77,10 +77,6 @@ desk-not-opened-unreadable-detail = { $path } is there but could not be read ({ 
 
 ## The desk from the version before this one, which was not brought over: it
 ## is still on disk, untouched, and this session has its own desk instead.
-desk-not-opened-old-newer-title = Your old desk was not brought over
-desk-not-opened-old-newer-detail = { $path } is your desk from the version before this one, saved by a newer one (layout { $found }; this one understands { $understood }). It has not been changed and is still on this machine: this session starts on an empty desk.
-desk-not-opened-old-unreadable-title = Your old desk could not be read
-desk-not-opened-old-unreadable-detail = { $path } is your desk from the version before this one, and it could not be read ({ $error }). It has not been changed and is still on this machine: this session starts on an empty desk.
 
 ## A window this device left open whose app did not come back.
 desk-window-not-installed = { $app } is not installed on this machine
