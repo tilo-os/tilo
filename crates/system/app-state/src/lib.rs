@@ -2,7 +2,7 @@
 //!
 //! Every document lives behind a [`durable_store::DurableStore`] key.
 //! [`FsStore`] is the native implementation: one directory per document
-//! (`<data home>/<package-id>/state.automerge` for a package's own document,
+//! (`<data home>/<app-id>/state.automerge` for a app's own document,
 //! below it for workspaces and records), atomic replacement, synced appends,
 //! an actor sidecar for restart continuity and advisory-lock gates for single
 //! or shared ownership. Identifiers are validated so an app can't address
@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use advisory_lock::{FileLock, LockMode, TryLockError};
 use durable_store::{DurableStore, StorageKey, WriteOp};
+use tilo_app_id::AppId;
 
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad};
 
@@ -76,10 +77,10 @@ pub enum StoreError {
     EmptyExistingDocument { path: PathBuf },
     #[error("storage source changed: {path}")]
     SourceChanged { path: PathBuf },
-    #[error("invalid package id {0:?}: {1}")]
-    PackageId(String, &'static str),
+    #[error("invalid app id {0:?}: {1}")]
+    AppId(String, &'static str),
     /// The record key could not be turned into a directory name (distinct from
-    /// [`StoreError::PackageId`] so the message names which input was wrong).
+    /// [`StoreError::AppId`] so the message names which input was wrong).
     #[error("invalid record key {0:?}: {1}")]
     RecordKey(String, &'static str),
     #[error("{context}: {source}")]
@@ -108,43 +109,16 @@ fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
     }
 }
 
-/// Validate a package id as a single directory name — the containment
-/// boundary. `TILO_PACKAGE_ID` is treated as untrusted (an app can set its
-/// own environment), so anything that could escape its own directory is
-/// rejected rather than sanitised.
-fn validate_package_id(id: &str) -> Result<(), StoreError> {
-    if id.is_empty() {
-        return Err(StoreError::PackageId(id.to_string(), "must not be empty"));
-    }
-    if Path::new(id).is_absolute() {
-        return Err(StoreError::PackageId(
-            id.to_string(),
-            "must not be an absolute path",
-        ));
-    }
-    if id.contains('/') || id.contains('\\') {
-        return Err(StoreError::PackageId(
-            id.to_string(),
-            "must not contain a path separator",
-        ));
-    }
-    if id == "." || id == ".." {
-        return Err(StoreError::PackageId(
-            id.to_string(),
-            "must not be a relative directory reference",
-        ));
-    }
-    if id.contains('\0') {
-        return Err(StoreError::PackageId(
-            id.to_string(),
-            "must not contain a NUL byte",
-        ));
-    }
-    Ok(())
+/// The app id an environment or a caller names, checked against the app id
+/// grammar: never a path, so it can be one directory below the data home.
+/// `TILO_PACKAGE_ID` is treated as untrusted (an app can set its own
+/// environment).
+fn checked_app_id(id: &str) -> Result<AppId, StoreError> {
+    AppId::parse(id).map_err(|_| StoreError::AppId(id.to_owned(), "is not an app id"))
 }
 
 /// Validate a record key as a single directory name — same boundary as
-/// [`validate_package_id`], but stricter matters here since a record's
+/// [`checked_app_id`], but stricter matters here since a record's
 /// identity can be a file path where `..` could enable traversal. Rejected
 /// rather than sanitised, since silently rewriting a bad key could make two
 /// records share one file.
@@ -176,19 +150,19 @@ fn validate_record_key(key: &str) -> Result<(), StoreError> {
 /// Validate the identifiers of a workspace-scoped record without resolving
 /// any path, so a caller can refuse a bad namespace before choosing a store.
 pub fn validate_record_identity(
-    package: &str,
+    app: &str,
     workspace: &str,
     record: &str,
 ) -> Result<(), StoreError> {
-    validate_package_id(package)?;
+    checked_app_id(app)?;
     validate_record_key(workspace)?;
     validate_record_key(record)
 }
 
 /// Validate the identifiers of a workspace's index document, as
 /// [`validate_record_identity`] does a record's.
-pub fn validate_workspace_identity(package: &str, workspace: &str) -> Result<(), StoreError> {
-    validate_package_id(package)?;
+pub fn validate_workspace_identity(app: &str, workspace: &str) -> Result<(), StoreError> {
+    checked_app_id(app)?;
     validate_record_key(workspace)
 }
 
@@ -203,7 +177,7 @@ pub fn validate_workspace_identity(package: &str, workspace: &str) -> Result<(),
 /// two live instances of one app keep appending to one document, as they
 /// always have. [`DocStore::open_canonical_at`] takes the exclusive owner.
 pub struct DocStore {
-    package_id: String,
+    app_id: AppId,
     owner: Rc<DocOwner>,
     /// Heads the store is known to hold; empty until the first load or save.
     persisted: Vec<ChangeHash>,
@@ -213,13 +187,13 @@ pub struct DocStore {
 }
 
 impl DocStore {
-    /// Open the store belonging to the running package, via `TILO_PACKAGE_ID` —
+    /// Open the store belonging to the running app, via `TILO_PACKAGE_ID` —
     /// no argument by design, since an app doesn't choose where its state lives.
     ///
     /// # Errors
     ///
     /// Returns an error if `TILO_PACKAGE_ID` is not a valid single directory
-    /// name (see `validate_package_id`), or if the package's state
+    /// name (see `app_id`), or if the app's state
     /// directory can't be created, inspected or locked.
     pub fn open() -> Result<Self, StoreError> {
         Self::open_for(&cli::package_id())
@@ -238,11 +212,11 @@ impl DocStore {
         Arc::new(FsStore::new(cli::data_home()))
     }
 
-    /// Open the store for an explicit package id — for tests and migration
+    /// Open the store for an explicit app id — for tests and migration
     /// tools; rejects any id that is not a single, non-traversing directory name.
-    pub fn open_for(package_id: &str) -> Result<Self, StoreError> {
-        validate_package_id(package_id)?;
-        Self::shared(Self::native_store(), StorageKey::package(package_id))
+    pub fn open_for(app_id: &str) -> Result<Self, StoreError> {
+        checked_app_id(app_id)?;
+        Self::shared(Self::native_store(), StorageKey::package(app_id))
     }
 
     /// Open one record in one workspace.  A record id is only unique
@@ -254,26 +228,26 @@ impl DocStore {
     /// Returns an error when an identifier is invalid or the workspace-scoped
     /// store cannot be created, locked, or loaded.
     pub fn open_workspace_record(
-        package_id: &str,
+        app_id: &str,
         workspace_key: &str,
         record_key: &str,
     ) -> Result<Self, StoreError> {
-        validate_record_identity(package_id, workspace_key, record_key)?;
+        validate_record_identity(app_id, workspace_key, record_key)?;
         Self::shared(
             Self::native_store(),
-            StorageKey::record(package_id, workspace_key, record_key),
+            StorageKey::record(app_id, workspace_key, record_key),
         )
     }
 
     /// Open the index of **one workspace** — the list of which records that
     /// workspace holds. A sibling of the workspace's records, so a workspace
     /// id can never resolve to a record's document and merge the two.
-    pub fn open_workspace(package_id: &str, workspace_key: &str) -> Result<Self, StoreError> {
-        validate_package_id(package_id)?;
+    pub fn open_workspace(app_id: &str, workspace_key: &str) -> Result<Self, StoreError> {
+        checked_app_id(app_id)?;
         validate_record_key(workspace_key)?;
         Self::shared(
             Self::native_store(),
-            StorageKey::workspace_index(package_id, workspace_key),
+            StorageKey::workspace_index(app_id, workspace_key),
         )
     }
 
@@ -282,9 +256,8 @@ impl DocStore {
     /// # Errors
     /// An exclusive owner holds the key, or the store refuses it.
     pub fn shared(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, StoreError> {
-        let package_id = key.package_id().unwrap_or_default().to_owned();
         Ok(Self::from_owner(
-            package_id,
+            key.app_id().cloned().unwrap_or_default(),
             DocOwner::acquire_shared(store, key)?,
         ))
     }
@@ -294,18 +267,20 @@ impl DocStore {
     /// # Errors
     /// Another owner holds the key, or the store refuses it.
     pub fn exclusive(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, StoreError> {
-        let package_id = key.package_id().unwrap_or_default().to_owned();
-        Ok(Self::from_owner(package_id, DocOwner::acquire(store, key)?))
+        Ok(Self::from_owner(
+            key.app_id().cloned().unwrap_or_default(),
+            DocOwner::acquire(store, key)?,
+        ))
     }
 
-    fn from_owner(package_id: String, owner: DocOwner) -> Self {
+    fn from_owner(app_id: AppId, owner: DocOwner) -> Self {
         let directory = owner
             .label()
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_default();
         Self {
-            package_id,
+            app_id,
             owner: Rc::new(owner),
             persisted: Vec::new(),
             has_base: None,
@@ -314,12 +289,12 @@ impl DocStore {
     }
 
     /// A shared writer for the document kept directly in `dir`, for tests
-    /// addressing a directory rather than a package.
+    /// addressing a directory rather than a app.
     #[cfg(test)]
-    fn open_in(package_id: &str, dir: &Path) -> Result<Self, StoreError> {
+    fn open_in(app_id: &str, dir: &Path) -> Result<Self, StoreError> {
         let (store, key) = directory_key(dir)?;
         let mut opened = Self::shared(store, key)?;
-        package_id.clone_into(&mut opened.package_id);
+        opened.app_id = AppId::new(app_id);
         Ok(opened)
     }
 
@@ -327,50 +302,47 @@ impl DocStore {
     /// Never adopts stale files. The ownership gate is cooperative: older
     /// binaries that do not acquire it can still write, so concurrent use of
     /// one profile with those binaries is unsupported.
-    pub fn open_canonical_at(package_id: &str, directory: &Path) -> Result<Self, StoreError> {
-        validate_package_id(package_id)?;
+    pub fn open_canonical_at(app_id: &str, directory: &Path) -> Result<Self, StoreError> {
+        checked_app_id(app_id)?;
         let (store, key) = directory_key(directory)?;
         let mut opened = Self::exclusive(store, key)?;
-        package_id.clone_into(&mut opened.package_id);
+        opened.app_id = AppId::new(app_id);
         Ok(opened)
     }
 
-    /// The existing workspace-scoped package-primary directory, with explicit
+    /// The existing workspace-scoped app-primary directory, with explicit
     /// custody.
     pub fn workspace_primary_dir_at(
         profile_root: &Path,
-        package: &str,
+        app: &str,
         workspace: &str,
     ) -> Result<PathBuf, StoreError> {
-        validate_record_namespace(package, workspace)?;
+        validate_record_namespace(app, workspace)?;
         validate_absolute_directory(profile_root)?;
-        Ok(profile_root
-            .join(package)
-            .join(WORKSPACES_DIR)
-            .join(workspace))
+        Ok(profile_root.join(app).join(WORKSPACES_DIR).join(workspace))
     }
 
     /// Resolve one record under an explicit profile root without consulting the environment.
     pub fn workspace_record_dir_at(
         profile_root: &Path,
-        package: &str,
+        app: &str,
         workspace: &str,
         record: &str,
     ) -> Result<PathBuf, StoreError> {
-        validate_package_id(package)?;
+        checked_app_id(app)?;
         validate_record_key(workspace)?;
         validate_record_key(record)?;
         validate_absolute_directory(profile_root)?;
         Ok(profile_root
-            .join(package)
+            .join(app)
             .join(WORKSPACES_DIR)
             .join(workspace)
             .join(RECORDS_DIR)
             .join(record))
     }
 
-    pub fn package_id(&self) -> &str {
-        &self.package_id
+    pub fn app_id(&self) -> &AppId {
+        &self.app_id
     }
 
     /// The directory holding the document, its actor sidecar and its locks,
@@ -679,9 +651,9 @@ fn decode_canonical_with(
     Ok((doc, repair))
 }
 
-/// Validate a canonical package/workspace identity independently of its storage adapter.
-pub fn validate_record_namespace(package: &str, workspace: &str) -> Result<(), StoreError> {
-    validate_package_id(package)?;
+/// Validate a canonical app/workspace identity independently of its storage adapter.
+pub fn validate_record_namespace(app: &str, workspace: &str) -> Result<(), StoreError> {
+    checked_app_id(app)?;
     validate_record_key(workspace)
 }
 
@@ -1098,11 +1070,11 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_PACKAGE_ID", "so.tilo.monitor");
             let store = DocStore::open().unwrap();
-            assert_eq!(store.package_id(), "so.tilo.monitor");
+            assert_eq!(store.app_id(), "so.tilo.monitor");
             assert_eq!(store.dir(), tmp.path().join("so.tilo.monitor"));
         }
         // Phase `package_id_cannot_escape_the_data_root`.
-        // The containment boundary: an app that lies about its own package id must
+        // The containment boundary: an app that lies about its own app id must
         // not be able to address another app's directory or escape the data root.
         {
             let _tmp = scratch_home();
@@ -1118,10 +1090,10 @@ mod tests {
             ] {
                 let err = DocStore::open_for(bad)
                     .err()
-                    .unwrap_or_else(|| panic!("package id {bad:?} must be rejected"));
+                    .unwrap_or_else(|| panic!("app id {bad:?} must be rejected"));
                 assert!(
-                    matches!(err, StoreError::PackageId(..)),
-                    "package id {bad:?} rejected for the wrong reason: {err}"
+                    matches!(err, StoreError::AppId(..)),
+                    "app id {bad:?} rejected for the wrong reason: {err}"
                 );
             }
         }

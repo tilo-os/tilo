@@ -198,7 +198,7 @@ impl Hosted {
             // the workspace it is open in.
             person: self.person.map(|records| {
                 let own = self.records.as_ref().and_then(|(store, _, _)| {
-                    let (_, workspace) = store.package_and_home();
+                    let (_, workspace) = store.app_and_home();
                     records
                         .in_workspace(&workspace)
                         .map_err(|error| {

@@ -612,7 +612,7 @@ impl CanonicalDestination {
 
 impl CanonicalReceiptSource for CanonicalRecord {
     fn namespace(&self) -> (String, String) {
-        self.records.package_and_home()
+        self.records.app_and_home()
     }
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
         if self

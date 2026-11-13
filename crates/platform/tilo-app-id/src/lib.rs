@@ -47,6 +47,12 @@ impl AppId {
     }
 }
 
+impl Default for AppId {
+    fn default() -> Self {
+        Self(String::new())
+    }
+}
+
 impl fmt::Display for AppId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -102,6 +108,12 @@ impl From<&str> for AppId {
 impl From<String> for AppId {
     fn from(id: String) -> Self {
         Self(id)
+    }
+}
+
+impl From<&AppId> for AppId {
+    fn from(id: &AppId) -> Self {
+        id.clone()
     }
 }
 

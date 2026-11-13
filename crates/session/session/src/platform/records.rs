@@ -502,13 +502,13 @@ impl Noted {
     fn wrote(&self, key: &StorageKey) {
         match key {
             StorageKey::Record {
-                package,
+                app,
                 workspace,
                 record,
-            } => self.changes.note(workspace, package, record, false),
+            } => self.changes.note(workspace, app, record, false),
             // The workspace's list of an app's records moved: a record appeared in it or left.
-            StorageKey::WorkspaceIndex { package, workspace } => {
-                self.changes.note(workspace, package, "", false);
+            StorageKey::WorkspaceIndex { app, workspace } => {
+                self.changes.note(workspace, app, "", false);
             }
             _ => {}
         }

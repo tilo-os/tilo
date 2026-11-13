@@ -322,7 +322,7 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
     let joined = joined.borrow();
     for mounted in joined.mounts.values() {
         for store in mounted.attachment.stores.borrow().iter() {
-            if store.package_and_home().0 != app {
+            if store.app_and_home().0 != app {
                 continue;
             }
             let Some(checkout) = store.open_records().into_iter().find(|checkout| {
@@ -879,9 +879,9 @@ impl Joined {
             let stores = mounted.attachment.stores.borrow();
             stores
                 .iter()
-                .filter(|store| store.package_and_home().1 == self.uuid)
+                .filter(|store| store.app_and_home().1 == self.uuid)
                 .flat_map(|store| {
-                    let app = store.package_and_home().0;
+                    let app = store.app_and_home().0;
                     store.open_records().into_iter().map(move |checkout| {
                         (
                             app.clone(),
@@ -1106,7 +1106,7 @@ impl Joined {
         let plain = tilo_relay_protocol::refusal::plain_reason(reason);
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
-                if store.package_and_home().0 != route.app_id {
+                if store.app_and_home().0 != route.app_id {
                     continue;
                 }
                 let Some(checkout) = store.open_records().into_iter().find(|checkout| {
@@ -1152,7 +1152,7 @@ impl Joined {
         for (&id, mounted) in &self.mounts {
             let mut answered = false;
             for store in mounted.attachment.stores.borrow().iter() {
-                if store.package_and_home().0 != route.app_id {
+                if store.app_and_home().0 != route.app_id {
                     continue;
                 }
                 let record = store
@@ -1183,7 +1183,7 @@ impl Joined {
     fn settle(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
         for (&id, mounted) in &self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
-                if store.package_and_home().0 != route.app_id {
+                if store.app_and_home().0 != route.app_id {
                     continue;
                 }
                 if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
@@ -1215,7 +1215,7 @@ impl Joined {
         let mut merged = false;
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
-                if store.package_and_home().0 != app {
+                if store.app_and_home().0 != app {
                     continue;
                 }
                 let Some(checkout) = store.open_records().into_iter().find(|checkout| {
@@ -1265,7 +1265,7 @@ impl Joined {
     fn is_open(&self, app: &str, record: &str) -> bool {
         self.mounts.values().any(|mounted| {
             mounted.attachment.stores.borrow().iter().any(|store| {
-                store.package_and_home().0 == app
+                store.app_and_home().0 == app
                     && store.open_records().into_iter().any(|checkout| {
                         tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
                     })
@@ -1317,7 +1317,7 @@ impl Joined {
         // newer head) takes it up at its next frame.
         for mounted in self.mounts.values() {
             for store in mounted.attachment.stores.borrow().iter() {
-                if store.package_and_home().0 == app {
+                if store.app_and_home().0 == app {
                     store.note_kept();
                 }
             }
@@ -1433,7 +1433,7 @@ impl Joined {
         let mut opening: Vec<DocumentRoute> = Vec::new();
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
-                let (app, home) = store.package_and_home();
+                let (app, home) = store.app_and_home();
                 if home != self.uuid {
                     continue;
                 }
@@ -1532,7 +1532,7 @@ impl Joined {
         let mut wanted = Vec::new();
         for mounted in self.mounts.values() {
             for store in mounted.attachment.stores.borrow().iter() {
-                let (app, home) = store.package_and_home();
+                let (app, home) = store.app_and_home();
                 if home != self.uuid {
                     continue;
                 }

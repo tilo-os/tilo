@@ -436,11 +436,9 @@ impl crate::DurableStore for MemoryStore {
         let mut held = std::collections::BTreeSet::new();
         for key in state.slots.keys() {
             match key {
-                StorageKey::Record {
-                    package, workspace, ..
-                }
-                | StorageKey::WorkspaceIndex { package, workspace } => {
-                    held.insert((package.clone(), workspace.clone()));
+                StorageKey::Record { app, workspace, .. }
+                | StorageKey::WorkspaceIndex { app, workspace } => {
+                    held.insert((app.to_string(), workspace.clone()));
                 }
                 StorageKey::Package { .. } | StorageKey::View { .. } => {}
             }
@@ -458,7 +456,7 @@ impl crate::DurableStore for MemoryStore {
             .filter(|(_, slot)| slot.current.as_ref().is_some_and(|s| !s.bytes.is_empty()))
             .filter_map(|(key, _)| match key {
                 StorageKey::Record {
-                    package: p,
+                    app: p,
                     workspace: w,
                     record,
                 } if p == package && w == workspace => Some(record.clone()),

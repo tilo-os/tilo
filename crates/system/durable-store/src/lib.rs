@@ -15,6 +15,8 @@ use std::any::Any;
 use std::fmt;
 use std::path::PathBuf;
 
+use tilo_app_id::AppId;
+
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 mod memory;
@@ -30,14 +32,14 @@ pub enum StorageKey {
     /// One record's document within one workspace. A record id is unique
     /// only within its workspace, so the workspace is part of the identity.
     Record {
-        package: String,
+        app: AppId,
         workspace: String,
         record: String,
     },
-    /// A package's own document, outside any workspace.
-    Package { package: String },
-    /// The index of records one workspace holds for a package.
-    WorkspaceIndex { package: String, workspace: String },
+    /// An app's own document, outside any workspace.
+    Package { app: AppId },
+    /// The index of records one workspace holds for an app.
+    WorkspaceIndex { app: AppId, workspace: String },
     /// One application instance's local presentation on one device.
     View {
         device: String,
@@ -48,36 +50,34 @@ pub enum StorageKey {
 
 impl StorageKey {
     pub fn record(
-        package: impl Into<String>,
+        app: impl Into<AppId>,
         workspace: impl Into<String>,
         record: impl Into<String>,
     ) -> Self {
         Self::Record {
-            package: package.into(),
+            app: app.into(),
             workspace: workspace.into(),
             record: record.into(),
         }
     }
 
-    pub fn package(package: impl Into<String>) -> Self {
-        Self::Package {
-            package: package.into(),
-        }
+    pub fn package(app: impl Into<AppId>) -> Self {
+        Self::Package { app: app.into() }
     }
 
-    pub fn workspace_index(package: impl Into<String>, workspace: impl Into<String>) -> Self {
+    pub fn workspace_index(app: impl Into<AppId>, workspace: impl Into<String>) -> Self {
         Self::WorkspaceIndex {
-            package: package.into(),
+            app: app.into(),
             workspace: workspace.into(),
         }
     }
 
-    /// The package owning this key's data, when it has one.
-    pub fn package_id(&self) -> Option<&str> {
+    /// The app owning this key's data, when it has one.
+    pub fn app_id(&self) -> Option<&AppId> {
         match self {
-            Self::Record { package, .. }
-            | Self::Package { package }
-            | Self::WorkspaceIndex { package, .. } => Some(package),
+            Self::Record { app, .. } | Self::Package { app } | Self::WorkspaceIndex { app, .. } => {
+                Some(app)
+            }
             Self::View { .. } => None,
         }
     }
@@ -95,13 +95,13 @@ impl fmt::Display for StorageKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Record {
-                package,
+                app,
                 workspace,
                 record,
-            } => write!(f, "record {package}/{workspace}/{record}"),
-            Self::Package { package } => write!(f, "package {package}"),
-            Self::WorkspaceIndex { package, workspace } => {
-                write!(f, "workspace index {package}/{workspace}")
+            } => write!(f, "record {app}/{workspace}/{record}"),
+            Self::Package { app } => write!(f, "package {app}"),
+            Self::WorkspaceIndex { app, workspace } => {
+                write!(f, "workspace index {app}/{workspace}")
             }
             Self::View {
                 device,

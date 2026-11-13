@@ -186,12 +186,13 @@ impl Inner {
             if self.keeping.get() {
                 continue;
             }
-            if let StorageKey::Record {
-                package, workspace, ..
-            }
-            | StorageKey::WorkspaceIndex { package, workspace } = write.key
+            if let StorageKey::Record { app, workspace, .. }
+            | StorageKey::WorkspaceIndex { app, workspace } = write.key
             {
-                noted |= self.written.borrow_mut().insert((workspace, package));
+                noted |= self
+                    .written
+                    .borrow_mut()
+                    .insert((workspace, app.to_string()));
             }
         }
         if noted {

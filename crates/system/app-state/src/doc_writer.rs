@@ -22,6 +22,8 @@ use durable_store::{
     StoreError as SeamError, WriteOp,
 };
 
+use tilo_app_id::AppId;
+
 use crate::{StoreError, decode_canonical_with, load_hint};
 
 /// Debounce window [`FsStore`](crate::FsStore) applies by default. Long
@@ -230,9 +232,9 @@ impl DocOwner {
         self.actor_stored.set(true);
     }
 
-    /// The package owning this document, when its key names one.
-    pub fn package_id(&self) -> &str {
-        self.key.package_id().unwrap_or_default()
+    /// The app owning this document, when its key names one.
+    pub fn app_id(&self) -> Option<&AppId> {
+        self.key.app_id()
     }
 
     /// The key's stored value, including accepted writes not yet durable.
@@ -536,9 +538,9 @@ impl DocWriter {
         self.owner.as_deref()
     }
 
-    /// The package whose document this is; empty when disabled.
-    pub fn package_id(&self) -> &str {
-        self.owner.as_deref().map_or("", DocOwner::package_id)
+    /// The app whose document this is, when it persists through an owner.
+    pub fn app_id(&self) -> Option<&AppId> {
+        self.owner.as_deref().and_then(DocOwner::app_id)
     }
 
     /// See [`DocOwner::label`]; empty when disabled.

@@ -4235,6 +4235,7 @@ name = "durable-store"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
+ "tilo-app-id",
  "workspace-hack",
 ]
 
@@ -17648,6 +17649,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",
+ "tilo-app-id",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-cli-kit",
@@ -22330,6 +22332,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-app-id",
  "tilo-app-state",
  "tilo-appearance",
  "tilo-automerge",

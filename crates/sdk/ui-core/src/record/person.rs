@@ -166,7 +166,7 @@ impl PersonRecords {
                 ..self.clone()
             });
         }
-        let (package, _) = self.store.package_and_home();
+        let (package, _) = self.store.app_and_home();
         let records = if self.store.backend().is_none() {
             Self::replica_in(&package, workspace, self.author.clone())?
         } else {
@@ -236,7 +236,7 @@ impl PersonRecords {
     /// Whether these are this app's own records: another app's, opened
     /// beside them ([`Self::of_app`]), are a copy this app reads.
     fn owns_records(&self) -> bool {
-        let (package, _) = self.store.package_and_home();
+        let (package, _) = self.store.app_and_home();
         package == self.own_app
     }
 
@@ -257,7 +257,7 @@ impl PersonRecords {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
             {
-                let (package, home) = self.store.package_and_home();
+                let (package, home) = self.store.app_and_home();
                 let replica = Self {
                     member: self.member,
                     // Whose records these are does not change with the
@@ -300,7 +300,7 @@ impl PersonRecords {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
             {
-                let (package, home) = self.store.package_and_home();
+                let (package, home) = self.store.app_and_home();
                 let replica = Self {
                     member: self.member,
                     own_app: self.own_app.clone(),
@@ -566,7 +566,7 @@ impl StoredRecord {
     /// and for one kept on this device only.
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
-        let (package, home) = self.store.package_and_home();
+        let (package, home) = self.store.app_and_home();
         let workspace = uuid::Uuid::parse_str(&home).ok()?;
         Some(
             crate::collaboration::record_content::ContentLane::record_store(
