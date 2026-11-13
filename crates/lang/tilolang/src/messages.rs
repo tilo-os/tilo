@@ -46,6 +46,14 @@ pub fn filter_key(ty: &str, key: &str) -> String {
     key_of(&format!("{ty}-filter-{key}"))
 }
 
+/// The key of the message of the parameter `param` of the action with the stable id `action`:
+/// what the parameter is called where a person gives it (`d-<action>-<param>`). It is keyed by
+/// its name, which an invocation names it by.
+#[must_use]
+pub fn param_key(action: &str, param: &str) -> String {
+    key_of(&format!("{action}-{param}"))
+}
+
 /// The comment that marks a message of the source catalogue as the author's own.
 pub const REFINED: &str = "# refined";
 
@@ -257,6 +265,16 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         // What it tells a person, as a notification shows it (`notify`'s title and body).
         for word in meta.words.iter().filter(|word| word.view == action.id) {
             attribute(&mut out, &word.key, &pattern(&word.text));
+        }
+        // What each argument is called where a person gives it; the subject is the record it
+        // runs on, which nobody gives.
+        for param in meta.arguments(&action.params) {
+            named(
+                &mut out,
+                &param_key(&action.id, &param.name),
+                &label(&param.name),
+                "",
+            );
         }
     }
     // The words a `fn` says (`std.say("...")`) are its attributes; a fn that says none is no word

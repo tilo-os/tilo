@@ -407,9 +407,7 @@ fn item_types(
             tilolang_runtime::meta::Ty::Union(keys) => keys
                 .iter()
                 .filter(|key| key.app == meta.app)
-                .filter_map(|key| {
-                    crate::meta::MetaExt::type_named(meta, &key.name).map(|t| t.id.clone())
-                })
+                .filter_map(|key| meta.type_named(&key.name).map(|t| t.id.clone()))
                 .collect(),
             _ => Vec::new(),
         },

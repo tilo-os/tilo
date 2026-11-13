@@ -118,42 +118,78 @@ d-msf7yzn7 = New channel
     .doc = Adds a text channel to the sidebar.
     .w-new-channel = new-channel
 
+d-msf7yzn7-name = Name
+
 d-26f7sh5k = New category
     .doc = Adds a category to the sidebar.
     .w-new-category = New category
+
+d-26f7sh5k-name = Name
 
 d-abono4ra = New channel
     .doc = Adds a text channel to a category.
     .w-new-channel = new-channel
 
+d-abono4ra-name = Name
+
 d-3cetzzm3 = Message
     .doc = Opens the direct message with `who`, in the sidebar, or the one already open with them: a person has one conversation, not a new empty one each time.
+
+d-3cetzzm3-who = Who
 
 d-peb7lz2j = Send
     .doc = Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one.
 
+d-peb7lz2j-to = To
+
+d-peb7lz2j-body = Body
+
+d-peb7lz2j-reply_to = Reply to
+
 d-qaa5kdra = Send a view
     .doc = Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views.
     .w-the-view-is-empty = The view is empty
+
+d-qaa5kdra-to = To
+
+d-qaa5kdra-title = Title
+
+d-qaa5kdra-definition = Definition
 
 d-255qjx7d = Edit
     .doc = Changes what a message says.
     .w-only-its-author-can-edit-a = Only its author can edit a message
     .w-type-a-message-first = Type a message first
 
+d-255qjx7d-body = Body
+
 d-vhmhrq2t = Delete
     .doc = Deletes a message from the channel or thread it is in.
+
+d-vhmhrq2t-to = To
+
+d-vhmhrq2t-m = M
 
 d-2ojqeubz = Pin
     .doc = Pins a message to its channel, or unpins it.
     .w-pin = Pin
     .w-unpin = Unpin
 
+d-2ojqeubz-pinned = Pinned
+
 d-np3mn65k = React
     .doc = Adds your reaction with an emoji to a message, or takes it back when you had reacted with it.
 
+d-np3mn65k-emoji = Emoji
+
 d-6uysx57s = Start thread
     .doc = Starts a thread from a message of a channel or a direct conversation, named after what the message says.
+
+d-6uysx57s-c = C
+
+d-6uysx57s-m = M
+
+d-6uysx57s-name = Name
 
 d-dgrvpxre = Send view~present
 

@@ -806,6 +806,38 @@ pub fn plural(noun: &str) -> String {
 }
 
 impl PackageMeta {
+    /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.
+    #[must_use]
+    pub fn type_named(&self, name: &str) -> Option<&TypeMeta> {
+        if let Some(found) = self.types.iter().find(|ty| ty.id == name) {
+            return Some(found);
+        }
+        // A qualified name (`so.tilo.todo.Item`) names a type of another app.
+        let (app, last) = name
+            .rsplit_once('.')
+            .map_or((None, name), |(app, last)| (Some(app), last));
+        if app.is_some_and(|app| app != self.app) {
+            return None;
+        }
+        self.types.iter().find(|ty| ty.name == last)
+    }
+
+    /// The type an action is on: that of its first parameter, when it is a declared record.
+    #[must_use]
+    pub fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta> {
+        params.first().and_then(|param| self.type_named(&param.ty))
+    }
+
+    /// The parameters of an action beyond its subject, which the address carries: what an
+    /// invocation gives.
+    #[must_use]
+    pub fn arguments<'a>(&self, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
+        match (self.subject_of(params), params.split_first()) {
+            (Some(_), Some((_, rest))) => rest,
+            _ => params,
+        }
+    }
+
     /// The id of the default view of the type `ty` (an id), when the package declares one.
     pub fn default_view(&self, ty: &str) -> Option<&str> {
         self.default_views

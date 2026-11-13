@@ -52,17 +52,29 @@ d-2lxgfocl = New column
 d-dw7khkq2 = New card
     .doc = Adds a card at the foot of a column, under the title typed in the entry that adds there: a card is named where it is made, not left "Untitled".
 
+d-dw7khkq2-title = Title
+
 d-yp6qgach = Move to
     .doc = Moves a card to the foot of a column.
+
+d-yp6qgach-col = Col
 
 d-xsmkgxl2 = Move before
     .doc = Moves a card to just above another, in that card's column.
 
+d-xsmkgxl2-card = Card
+
+d-xsmkgxl2-next = Next
+
 d-jx22rl4l = Delete
     .doc = Deletes a card.
 
+d-jx22rl4l-card = Card
+
 d-yjwm6mjf = Rename column
     .doc = Renames a column.
+
+d-yjwm6mjf-title = Title
 
 d-t5kjcxjq = Board
 

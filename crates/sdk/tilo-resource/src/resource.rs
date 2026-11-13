@@ -1808,7 +1808,7 @@ pub(crate) fn spec_of_declaration_on(
             label.clone(),
             label,
             ExecutionLocus::ClientLocal,
-            decl.params.clone(),
+            decl.shown_params(),
             encoded,
         )
     };

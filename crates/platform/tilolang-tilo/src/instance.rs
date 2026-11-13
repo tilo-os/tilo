@@ -47,7 +47,6 @@ use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Word
 
 use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package, RootView};
-use crate::meta::MetaExt;
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{

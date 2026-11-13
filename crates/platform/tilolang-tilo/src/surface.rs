@@ -263,15 +263,6 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
     }
 }
 
-/// The parameters of an action beyond its subject resource, which the address carries.
-#[must_use]
-pub fn arguments<'a>(meta: &Meta, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
-    match (meta.subject_of(params), params.split_first()) {
-        (Some(_), Some((_, rest))) => rest,
-        _ => params,
-    }
-}
-
 /// Whether `action` is declared `destructive`: it takes away what a person may want back.
 #[must_use]
 pub fn is_destructive(action: &ActionMeta) -> bool {
@@ -297,7 +288,8 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
         kind: action_kind(action.class),
         destructive: is_destructive(action),
         incoming_message: false,
-        params: arguments(meta, &action.params)
+        params: meta
+            .arguments(&action.params)
             .iter()
             .map(|param| {
                 let published = published_param(meta, param);

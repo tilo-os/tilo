@@ -23,7 +23,7 @@ use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
-use crate::surface::{arguments, is_destructive, published_param};
+use crate::surface::{is_destructive, published_param};
 
 /// What the declaration `id` is called in the reader's language: `source`, its words in the
 /// package's own, when no catalogue of theirs holds it.
@@ -177,9 +177,15 @@ pub fn action_type(
     planner: &Arc<dyn Planner>,
     words: &dyn Words,
 ) -> Arc<ActionType> {
-    let params: Vec<ActionParam> = arguments(meta, &action.params)
+    let params: Vec<ActionParam> = meta
+        .arguments(&action.params)
         .iter()
-        .map(|param| published_param(meta, param))
+        .map(|param| {
+            // What the parameter is called where a person gives it (a form, a consent sheet).
+            let key = tilolang::messages::param_key(&action.id, &param.name);
+            let source = tilolang::messages::label(&param.name);
+            published_param(meta, param).titled(words.word(&key, &[], &source))
+        })
         .collect();
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());
     let planner = Arc::clone(planner);
@@ -256,7 +262,8 @@ pub fn action_type(
     };
     // Every argument has a default (a checkbox's `check(item, done: Bool = not item.done)`): a
     // person choosing it is asked nothing, and an agent may still pass `done:`.
-    let defaulted = arguments(meta, &action.params)
+    let defaulted = meta
+        .arguments(&action.params)
         .iter()
         .all(|param| param.default.is_some());
     let spec = if defaulted && !no_params {

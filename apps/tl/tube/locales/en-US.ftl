@@ -180,6 +180,8 @@ d-thwdswkk-filter-online = Online
 d-tmam46un = Subscribe
     .doc = Subscribes to the channel, or unsubscribes: the button says which it will do.
 
+d-tmam46un-subscribed = Subscribed
+
 d-hcgvcroq = Subscribe
     .doc = Subscribes to the channel, or takes the subscription back.
     .w-unsubscribe = Unsubscribe
@@ -190,10 +192,14 @@ d-weyz2uyl = Like
     .w-unlike = Unlike
     .w-like = Like
 
+d-weyz2uyl-liked = Liked
+
 d-yw4tuoq4 = Watch later
     .doc = Keeps the video to watch later, or takes it off the list.
     .w-remove-from-watch-later = Remove from Watch later
     .w-watch-later = Watch later
+
+d-yw4tuoq4-saved = Saved
 
 d-6ux63onw = Play
     .doc = Plays the video, whether or not it was played before.
@@ -204,6 +210,8 @@ d-s334bmn6 = Resume
 d-jxokfijg = Progress
     .doc = Records how far into the video the person is, and that they watched it now: it moves to the front of the history, and asks the service for the address its bytes play from when that is not known yet.
 
+d-jxokfijg-at = At
+
 d-oqumfxkj = Delete from history
     .doc = Takes one video out of the history.
 
@@ -213,6 +221,8 @@ d-wzt3qvyb = Delete history
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
     .w-type-something-to-search-for = Type something to search for
+
+d-6lgqby4s-query = Query
 
 d-vhf33pa7 = Leave search
     .doc = Leaves the search the feed is showing for the place the person chose: the results stay where the service wrote them (found again by the query that found them), and the client shows the place chosen.
@@ -229,6 +239,8 @@ d-khblapap = Refresh trending
 
 d-yc4rjoeg = Play again
     .doc = Plays the video a history entry names, from where the person left off.
+
+d-yc4rjoeg-h = H
 
 d-qgtk64v3 = Item clock
     .w-live = Live

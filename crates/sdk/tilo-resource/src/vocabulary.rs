@@ -235,6 +235,16 @@ impl Declaration {
             .map_or_else(|| self.label.clone(), crate::label::Word::read)
     }
 
+    /// Its parameters, each called what the person reads it by where its
+    /// catalogue has a word for it ([`crate::label::titled`]).
+    #[must_use]
+    pub fn shown_params(&self) -> Vec<ActionParam> {
+        match &self.word {
+            Some(word) => crate::label::titled(word, self.resource, self.params.clone()),
+            None => self.params.clone(),
+        }
+    }
+
     /// The declaration `id` of the resource `vocabulary`, labelled `label`,
     /// taking `params`, built by `build`.
     pub(crate) fn new(

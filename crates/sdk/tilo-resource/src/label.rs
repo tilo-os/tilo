@@ -58,6 +58,31 @@ impl Word {
     }
 }
 
+/// `params`, each called what the catalogue of `word` calls it where it
+/// holds a word for it: the action's own (`<action key>-<param>`), else the
+/// one every action of `scope` (an operation or a kind) shares
+/// (`<scope>-<param>`). A parameter neither names keeps its schema as it is.
+#[must_use]
+pub fn titled(
+    word: &Word,
+    scope: &str,
+    params: Vec<tilo_actions::ActionParam>,
+) -> Vec<tilo_actions::ActionParam> {
+    let scope = message_key(scope);
+    params
+        .into_iter()
+        .map(|param| {
+            let name = message_key(param.name.as_ref());
+            let title = resolve(word.catalogue, &format!("{}-{name}", word.key))
+                .or_else(|| resolve(word.catalogue, &format!("{scope}-{name}")));
+            match title {
+                Some(title) => param.titled(title),
+                None => param,
+            }
+        })
+        .collect()
+}
+
 /// `key` through the installed resolver, `None` without one.
 fn resolve(catalogue: Option<&'static Catalogue>, key: &str) -> Option<String> {
     let resolver = *RESOLVER

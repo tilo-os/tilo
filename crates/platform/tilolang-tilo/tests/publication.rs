@@ -124,7 +124,7 @@ pub struct Shelf {
     pub name: String,
 }
 
-#[resource(kind = "test.shapes.shelf", label = "Shelf")]
+#[resource(kind = "test.shapes.shelf", catalogue = "tests/locales")]
 impl Shelf {
     /// Resize the shelf.
     #[action]
@@ -236,6 +236,16 @@ fn an_enum_argument_travels_as_the_name_of_its_case() {
     );
 }
 
+/// A parameter's schema without what it is called: the reader's words for it, which each
+/// catalogue gives its own and the surface, the same in every language, leaves out.
+fn untitled(param: &tilo_actions::ActionParam) -> Option<serde_json::Value> {
+    let mut schema = param.schema.as_deref().cloned();
+    if let Some(serde_json::Value::Object(schema)) = schema.as_mut() {
+        schema.remove("title");
+    }
+    schema
+}
+
 #[test]
 fn a_record_parameter_is_published_as_a_pick_of_its_kind() {
     let meta = shapes();
@@ -252,7 +262,7 @@ fn a_record_parameter_is_published_as_a_pick_of_its_kind() {
             })
         );
         assert_eq!(param.pick(), theirs.pick());
-        assert_eq!(param.schema, theirs.schema);
+        assert_eq!(untitled(param), untitled(theirs));
     }
 }
 
@@ -306,7 +316,7 @@ fn the_surface_says_what_the_published_spec_says() {
         assert_eq!(verb.params[0].required, param.required, "{name}");
         assert_eq!(
             Some(&verb.params[0].schema),
-            param.schema.as_deref(),
+            untitled(param).as_ref(),
             "{name}"
         );
     }

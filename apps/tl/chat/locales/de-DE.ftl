@@ -204,3 +204,41 @@ d-dcprca6g = Hier wird im Thread geschrieben
 d-hjw5xd6b = Gesagt
     .w-a-view-to-add-to-your = Eine Ansicht, die du den eigenen hinzufügen kannst
     .w-edited = bearbeitet
+
+# What each argument is called where a person gives it.
+
+d-msf7yzn7-name = Name
+
+d-26f7sh5k-name = Name
+
+d-abono4ra-name = Name
+
+d-3cetzzm3-who = Wer
+
+d-peb7lz2j-to = An
+
+d-peb7lz2j-body = Text
+
+d-peb7lz2j-reply_to = Antwort auf
+
+d-qaa5kdra-to = An
+
+d-qaa5kdra-title = Titel
+
+d-qaa5kdra-definition = Definition
+
+d-255qjx7d-body = Text
+
+d-vhmhrq2t-to = An
+
+d-vhmhrq2t-m = M
+
+d-2ojqeubz-pinned = Angeheftet
+
+d-np3mn65k-emoji = Emoji
+
+d-6uysx57s-c = C
+
+d-6uysx57s-m = M
+
+d-6uysx57s-name = Name

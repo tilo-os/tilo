@@ -314,3 +314,57 @@ d-mtmufg3w = Aufgabenseite
     .w-subtasks = Teilaufgaben
     .w-no-subtasks-yet = Noch keine Teilaufgaben
     .w-add-a-subtask = Eine Teilaufgabe hinzufügen
+
+# What each argument is called where a person gives it.
+
+d-rs3ubifz-p = P
+
+d-rs3ubifz-s = S
+
+d-rs3ubifz-due = Fällig
+
+d-rs3ubifz-at = Wann
+
+d-rs3ubifz-assignee = Zuständig
+
+d-rs3ubifz-title = Titel
+
+d-vwgro4iv-done = Erledigt
+
+d-fykojijd-t = T
+
+d-fykojijd-title = Titel
+
+d-jqhwyztw-due = Fällig
+
+d-3qq23ybf-when = Wann
+
+d-laxsa3x6-p = P
+
+d-c6y4cxdd-who = Wer
+
+d-berwb3de-moved = Verschoben
+
+d-berwb3de-parent = Übergeordnet
+
+d-berwb3de-before = Davor
+
+d-he6qkhh4-above = Darüber
+
+d-23y3zdgu-t = T
+
+d-ojzyzzxu-t = T
+
+d-2xixz4sk-p = P
+
+d-xmsyxvog-name = Name
+
+d-pcn3xgni-title = Titel
+
+d-pcn3xgni-s = S
+
+d-scjlkb6d-s = S
+
+d-scjlkb6d-at = Wann
+
+d-kjbukd2o-name = Name

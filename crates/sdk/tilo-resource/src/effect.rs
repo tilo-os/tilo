@@ -911,6 +911,7 @@ impl EffectDecl {
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
         let label = self.label.read();
+        let params = crate::label::titled(&self.label, operation, params);
         let mut spec = ActionSpec::typed_operation_on(
             self.id,
             label.clone(),

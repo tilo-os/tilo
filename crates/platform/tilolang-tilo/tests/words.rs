@@ -364,3 +364,33 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
         "and neither reads in English"
     );
 }
+
+/// A German reader asked to let an agent file a note reads what it fills in in German: the
+/// consent sheet names each argument by the package's catalogue (`d-<action>-<param>`).
+#[test]
+fn the_consent_sheet_names_file_notes_arguments_in_german() {
+    let (host, package) = notes("de-DE");
+    let notebook = notebook(&host, &package);
+    let id = &package
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "file_note")
+        .expect("the notes app declares it")
+        .id;
+    let descriptor = tilo_actions::door::survey(std::slice::from_ref(&notebook))
+        .into_iter()
+        .find(|descriptor| &descriptor.address.action == id)
+        .expect("filing a note is offered on the notebook");
+    let arguments = serde_json::json!({"title": "Einkauf", "tag": "Haushalt"});
+    let sheet = tilo_actions::Draft::render(
+        &descriptor,
+        arguments.as_object().expect("arguments are an object"),
+    );
+    let labels: Vec<&str> = sheet
+        .fields
+        .iter()
+        .map(|field| field.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Titel", "Schlagwort"], "{sheet:?}");
+}
