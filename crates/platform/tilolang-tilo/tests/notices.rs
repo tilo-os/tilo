@@ -295,10 +295,10 @@ fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
     policy.grants.extend([Grant::new(
         "tells",
         Grantee::person(who),
-        node.clone(),
+        node,
         KindSet::OUTSIDE,
         Answer::Allow,
-        owner.clone(),
+        owner,
     )]);
     Standing::person(policy, who)
 }

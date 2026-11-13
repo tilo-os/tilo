@@ -258,10 +258,10 @@ fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action
     policy.grants.extend([Grant::new(
         "posts",
         Grantee::person(who),
-        node.clone(),
+        node,
         KindSet::OUTSIDE,
         Answer::Allow,
-        owner.clone(),
+        owner,
     )]);
     Standing::person(policy, who)
 }
