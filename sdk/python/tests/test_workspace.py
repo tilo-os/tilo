@@ -7,7 +7,6 @@ import pytest
 from tilo import (
     AskPending,
     AsyncTilo,
-    ProgramAnswer,
     Refused,
     Resource,
     Run,
@@ -221,15 +220,13 @@ async def test_any_path_has_a_link_and_a_bad_one_is_refused(workspace, api):
         await workspace.link("notes/Nothing")
 
 
-async def test_a_run_group_is_undone_as_one_task(workspace, api):
+async def test_a_run_group_is_undone_as_its_run(workspace, api):
     async with workspace.run("Fill Jane's application") as group:
         await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
         undone = await group.undo()
 
-    assert isinstance(undone, ProgramAnswer)
-    assert undone.status == "ok"
-    assert api.asked("POST", "/v1/workspaces/")[-1]["path"].endswith("/programs")
-    assert api.asked("POST", "/v1/workspaces/")[-1]["body"] == b'{"program": "undo task"}'
+    assert undone["status"] == "ok"
+    assert api.undone == [group.runs[-1]]
 
 
 async def test_a_program_answers_its_output_and_steps(workspace, api):

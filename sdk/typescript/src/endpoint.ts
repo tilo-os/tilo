@@ -63,11 +63,26 @@ export class RunGroup {
   readonly workspace: string;
   readonly invocations: string[] = [];
   readonly links: string[] = [];
+  private readonly endpoint: Endpoint;
 
-  constructor(workspace: string, title: string, id: string) {
-    this.workspace = workspace;
+  constructor(endpoint: Endpoint, title: string, id: string) {
+    this.endpoint = endpoint;
+    this.workspace = endpoint.id;
     this.title = title;
     this.id = id;
+  }
+
+  /**
+   * Take back exactly what the run's calls changed, in every record. The
+   * host refuses, changing nothing, when someone else's change stands on top
+   * of the run's in a record.
+   */
+  async undo(): Promise<ActionAnswer> {
+    const last = this.invocations.at(-1);
+    if (last === undefined) {
+      throw new ProtocolError("the run made no call to take back");
+    }
+    return this.endpoint.undo(last);
   }
 
   /** @internal */
@@ -310,7 +325,7 @@ export class Endpoint {
     return actionAnswerOf(await this.answer("POST", routes.runCancel(this.id, run)));
   }
 
-  /** Take back what a run changed: its app's one step. */
+  /** Take back what a run changed: the invocation, or every call of the run it is a step of. */
   async undo(run: string): Promise<ActionAnswer> {
     return actionAnswerOf(await this.answer("POST", routes.runUndo(this.id, run)));
   }

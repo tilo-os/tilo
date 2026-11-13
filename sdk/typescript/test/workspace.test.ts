@@ -227,6 +227,21 @@ describe("a grouped run", () => {
     expect(calls[1]?.headers["tilo-run-title"]).toBe("Two steps");
     expect(calls[1]?.headers["tilo-run"]).toBe(calls[0]?.headers["tilo-run"]);
   });
+
+  it("is taken back as its run, by the run's own route", async () => {
+    const api = new FakeApi();
+    const workspace = open(api).workspace("jane-doe");
+
+    const run = await workspace.run("Write it", async (run) => {
+      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
+      return run;
+    });
+    const undone = await run.undo();
+
+    const last = run.invocations.at(-1);
+    expect(undone.status).toBe("ok");
+    expect(api.asked("POST", `/v1/workspaces/${WORKSPACE_ID}/runs/${last}/undo`)).toHaveLength(1);
+  });
 });
 
 describe("a workspace's stream", () => {

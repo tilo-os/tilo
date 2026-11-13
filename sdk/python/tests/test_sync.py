@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tilo import Key, ProgramAnswer, Refused, Resource, Run, Tilo
+from tilo import Key, Refused, Resource, Run, Tilo
 
 from fake_api import PDF, TODO, WORKSPACE_ID, FakeApi
 
@@ -48,7 +48,8 @@ def test_a_sync_run_group_names_the_run(api):
         assert call["headers"]["tilo-run-title"] == "Fill Jane's application"
 
         undone = group.undo()
-        assert isinstance(undone, ProgramAnswer)
+        assert undone["status"] == "ok"
+        assert api.undone == [group.runs[-1]]
 
 
 def test_a_sync_run_is_followed_to_its_result(api):

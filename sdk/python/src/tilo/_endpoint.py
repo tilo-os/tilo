@@ -95,8 +95,14 @@ class RunGroup:
         return self.links[0] if len(self.links) == 1 else None
 
     def undo(self) -> Any:
-        """Take the run's changes back, each app one step at a time."""
-        return self.endpoint.client.handoff(self.endpoint.program("undo task"))
+        """Take back exactly what the run's calls changed, in every record.
+
+        The host refuses, changing nothing, when someone else's change stands
+        on top of the run's in a record.
+        """
+        if not self.runs:
+            raise ProtocolError("the run made no call to take back")
+        return self.endpoint.client.handoff(self.endpoint.undo(self.runs[-1]))
 
     async def __aenter__(self) -> RunGroup:
         return self
@@ -275,7 +281,8 @@ class Endpoint:
                 return
 
     async def undo(self, run: str) -> Any:
-        """Take back what a run changed."""
+        """Take back what a run changed: the invocation, or every call of the
+        run it is a step of."""
         return await self.json("POST", self._run_path(run) + "/undo", json={}, grouped=False)
 
     async def program(self, source: str, confirm: bool | None = None) -> ProgramAnswer:
