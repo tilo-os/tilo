@@ -34,7 +34,7 @@ use neighbour_wire::{
     SurfaceDecodeLimit, SurfaceId, SurfaceView,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use tilo_action_policy::share::{ShareAccess, is_of_share, share_grants};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionParam, ActionSpec, DoorError, EncodedAction,
@@ -249,6 +249,13 @@ pub(crate) struct WindowShares {
     /// Shares whose viewers' decoders changed, so their stream is encoded again for the codecs all
     /// of them take.
     renegotiate: BTreeSet<TabId>,
+    /// How far each workspace's live plane came on this device, the planes themselves, read
+    /// again when `live_seen` moved, and the windows a member's desk is sent pictures of now: what
+    /// the reading says beside the shares ([`reading`]).
+    live: BTreeMap<String, crate::live::Standing>,
+    live_seen: u64,
+    planes: BTreeMap<String, std::sync::Weak<Plane>>,
+    streaming: BTreeSet<TabId>,
     /// Moves whenever what the resource says changes.
     revision: u64,
     /// The wake a share's encoder thread rings when a frame is ready.
@@ -392,103 +399,6 @@ impl WindowShares {
             .collect()
     }
 
-    /// The resource's reading now.
-    pub(crate) fn reading(&self) -> Value {
-        let sharing: Vec<Value> = self
-            .hosted
-            .iter()
-            .map(|(tab, hosted)| {
-                let viewers: Vec<Value> = self
-                    .viewers(*tab)
-                    .into_iter()
-                    .map(|peer| {
-                        json!({
-                            "peer": peer,
-                            "can_control": hosted.open || hosted.controlled.contains(&peer),
-                        })
-                    })
-                    .collect();
-                json!({
-                    "tab": tab.to_string(),
-                    "window": hosted.window,
-                    "app_id": hosted.app_id,
-                    // Kept as it is: the views that read this know the key.
-                    "room": hosted.workspace,
-                    "input_allowed": viewers.iter().any(|viewer| {
-                        viewer["can_control"].as_bool().unwrap_or(false)
-                    }),
-                    "viewers": viewers,
-                })
-            })
-            .collect();
-        let sharing = {
-            let mut sharing = sharing;
-            for (tab, page) in &self.pages {
-                let viewers: Vec<Value> = self
-                    .viewers(*tab)
-                    .into_iter()
-                    .map(|peer| {
-                        json!({
-                            "peer": peer,
-                            "can_control": false,
-                        })
-                    })
-                    .collect();
-                sharing.push(json!({
-                    "tab": tab.to_string(),
-                    "window": page.window,
-                    "app_id": page.app_id,
-                    "room": page.workspace,
-                    "input_allowed": false,
-                    "viewers": viewers,
-                }));
-            }
-            sharing
-        };
-        let starting: Vec<Value> = self
-            .starting
-            .iter()
-            .map(|start| {
-                json!({
-                    "tab": start.tab.to_string(),
-                    "window": start.window,
-                    "app_id": start.app_id,
-                    "room": start.workspace,
-                    "waiting_for": start.waiting_for,
-                })
-            })
-            .collect();
-        let watching: Vec<Value> = self
-            .watching
-            .iter()
-            .map(|((workspace, tab), watched)| {
-                json!({ "tab": tab.to_string(), "room": workspace, "host": watched.host.to_string() })
-            })
-            .collect();
-        let received: Vec<Value> = self
-            .received
-            .iter()
-            .map(|((from, surface), stream)| {
-                json!({
-                    "tab": stream.tab.to_string(),
-                    "surface": surface,
-                    "from": from,
-                    "app_id": stream.start.app_id,
-                    "width": stream.start.width,
-                    "height": stream.start.height,
-                    "codec": stream.start.codec,
-                    "pictured": stream.shown,
-                })
-            })
-            .collect();
-        json!({
-            "sharing": sharing,
-            "starting": starting,
-            "watching": watching,
-            "received": received,
-        })
-    }
-
     /// Take a command from the resource's actions.
     fn queue(&mut self, command: ShareCommand) {
         self.commands.push(command);
@@ -530,6 +440,7 @@ impl WindowShares {
         // What arrived is read first, so a share that starts this pass already knows who views it
         // and in which codec to encode.
         self.take_received(compositor, desk, sync);
+        self.follow_live(sync);
         // The workspaces' governance is this device's engine's: the one the session holds, which a
         // plane it started itself holds too.
         let engine = engine.or_else(|| sync.engine());
@@ -555,6 +466,7 @@ impl WindowShares {
         self.close_left_seats(compositor);
         self.ask_again(compositor, sync, now);
         self.capture(compositor, sync, now);
+        self.follow_streams();
         // What the members' windows this device shows bring: the pictures and pages the planes
         // sent, and the tracks of a window that left the desk no longer asked for.
         self.follow_windows(desk, sync);
@@ -2824,6 +2736,7 @@ fn unwatch_action() -> ActionSpec {
 }
 
 mod menu;
+mod reading;
 pub(crate) use menu::{follow_asks, reading_for_menus};
 
 #[cfg(all(test, target_os = "linux"))]

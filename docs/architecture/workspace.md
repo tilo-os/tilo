@@ -391,6 +391,25 @@ and shows the window from there. A desk takes the grants into its own copy of
 a workspace only when the device holds no governance of that workspace: one
 that lives on that desk alone, which has no other device to tell.
 
+The window's pictures travel the workspace's live plane, which the device
+hosting the workspace relays for its members, or the members certified to
+host where there are any. A device is in the plane once it holds the keys of
+the workspace's media channel and reached such a device; while none takes it
+in, it asks again, waiting longer each time and at most every fifteen
+seconds, since a device that comes back tells nobody. The share's reading
+says how far that came, since a plane that is not open drops nothing and
+reports nothing by itself: `live` names each workspace's plane as open or by
+what it waits for (the keys, the device that relays it, or that device's
+refusal), a window shared or watched under a plane that is not open says the
+same on its own row (`waiting_for`), and a shared window says whether a
+member's desk asks for it now (`streaming`). An open plane also says the
+epoch it seals under and what it opened and could not open of the other
+devices, which is where two devices that hear nothing of each other read
+why. A device that holds none of the workspace's keys and is lent the keys of
+its own streams by the workspace's host, as the session in a workspace's VM
+is, is in the plane on those (`lent_keys`): it sends what it shares and opens
+nothing another device sends, and a window it watches says so.
+
 ## Presence
 
 Presence is per resource, layout is per person. Inside a resource several

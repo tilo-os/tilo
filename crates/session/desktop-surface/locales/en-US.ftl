@@ -1068,6 +1068,14 @@ session-window-share-param-on = Whether they may control it; leave out to switch
 session-window-share-watch = Show a window another member shares
 session-window-share-unwatch = Stop showing it
 session-window-share-workspace-left = This computer is no longer in the workspace
+session-window-share-live-keys = Waiting for this workspace's keys to reach this device
+session-window-share-live-keyless = This device holds no keys of this workspace
+session-window-share-live-unread = This device cannot read who is in this workspace
+session-window-share-live-no-relay = No device in this workspace carries its calls and shared windows
+session-window-share-live-unreached = Waiting to reach { $device }, the device that carries this workspace's calls and shared windows
+session-window-share-live-refused = { $device } did not let this device into this workspace's calls and shared windows
+session-window-share-live-absent = This computer takes no part in this workspace's calls and shared windows
+session-window-share-live-lent = This device can share its own windows in this workspace and cannot open what others share
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = On-screen readout

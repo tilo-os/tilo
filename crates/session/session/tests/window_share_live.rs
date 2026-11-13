@@ -45,8 +45,8 @@ const LOGGED: &str = "info,tilo_session::live=debug,tilo_session::window_share=d
 /// How many kinds of line a failed step shows of one part of a session's log.
 const SHOWN: usize = 90;
 
-/// What `device`'s session says of its window shares: `sharing`, `starting`, `watching` and
-/// `received`, as its `session:window-share` resource reads.
+/// What `device`'s session says of its window shares: `sharing`, `starting`, `watching`,
+/// `received` and `live`, as its `session:window-share` resource reads.
 fn shares(device: &Device) -> Value {
     device.state()["state"]["sharing"].clone()
 }
@@ -58,6 +58,19 @@ fn row_of(reading: &Value, part: &str, tab: &str) -> Option<Value> {
         .iter()
         .find(|row| row["tab"].as_str() == Some(tab))
         .cloned()
+}
+
+/// How `device`'s session says the live plane of `workspace` stands: the workspace's row in `live`
+/// of the shares' reading, `Null` while the session names no plane for it.
+fn plane_of(device: &Device, workspace: &str) -> Value {
+    shares(device)["live"]
+        .as_array()
+        .and_then(|live| {
+            live.iter()
+                .find(|plane| plane["room"].as_str() == Some(workspace))
+                .cloned()
+        })
+        .unwrap_or(Value::Null)
 }
 
 /// What `device` says of who hosts `workspace` (`workspace_hosts`): `Null` while it does not hold
@@ -358,6 +371,29 @@ fn the_shared_window_arrives(workspace: &str, sharer: &Device, viewer: &Device, 
     let both = [sharer, viewer];
     bring_to_front(sharer, workspace);
     bring_to_front(viewer, workspace);
+    // The pictures travel the workspace's live plane: each device is in it and says so, and both
+    // run through the one device that relays the workspace.
+    for device in both {
+        eventually(
+            &format!(
+                "{} says the live plane of {workspace} is open",
+                device.label
+            ),
+            Duration::from_secs(60),
+            workspace,
+            &both,
+            || {
+                let plane = plane_of(device, workspace);
+                plane["state"] == json!("open") && plane["waiting_for"] == json!("")
+            },
+        );
+    }
+    assert_eq!(
+        plane_of(sharer, workspace)["relay"],
+        plane_of(viewer, workspace)["relay"],
+        "both devices' planes run through one relay\n{}",
+        report(workspace, &both)
+    );
     let _window = sharer.window(NOTES, title);
     eventually(
         &format!("{}'s desk holds the window's tab", sharer.label),
@@ -378,13 +414,20 @@ fn the_shared_window_arrives(workspace: &str, sharer: &Device, viewer: &Device, 
         sharer.label
     );
 
-    // The sharing device captured the window and started its stream.
+    // The sharing device captured the window and started its stream, and nothing its pictures
+    // travel is missing.
     eventually(
-        &format!("{} says it shares tab {tab} ({shows})", sharer.label),
+        &format!(
+            "{} says it shares tab {tab} ({shows}) and waits for nothing",
+            sharer.label
+        ),
         Duration::from_secs(40),
         workspace,
         &both,
-        || row_of(&shares(sharer), "sharing", &tab).is_some(),
+        || {
+            row_of(&shares(sharer), "sharing", &tab)
+                .is_some_and(|row| row["waiting_for"] == json!(""))
+        },
     );
     // The share is the workspace's: the other device reads it there and asks its host for it.
     eventually(
@@ -424,14 +467,20 @@ fn the_shared_window_arrives(workspace: &str, sharer: &Device, viewer: &Device, 
         },
     );
     eventually(
-        &format!("{} names who views tab {tab}", sharer.label),
+        &format!(
+            "{} names who views tab {tab}, and says it sends the window",
+            sharer.label
+        ),
         Duration::from_secs(20),
         workspace,
         &both,
         || {
-            row_of(&shares(sharer), "sharing", &tab)
-                .and_then(|row| row["viewers"].as_array().map(|viewers| !viewers.is_empty()))
-                .unwrap_or(false)
+            row_of(&shares(sharer), "sharing", &tab).is_some_and(|row| {
+                row["streaming"] == json!(true)
+                    && row["viewers"]
+                        .as_array()
+                        .is_some_and(|viewers| !viewers.is_empty())
+            })
         },
     );
 }

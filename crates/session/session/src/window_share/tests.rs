@@ -1145,6 +1145,23 @@ fn a_shared_window_reaches_the_member_showing_it() {
         Some(tab.to_string().as_str()),
         "which window: {reading}"
     );
+    // The workspace's live plane is open here and a member's desk asks it for the window: the
+    // share waits for nothing, and says its pictures go out.
+    assert_eq!(
+        shared["waiting_for"].as_str(),
+        Some(""),
+        "the share waits for nothing: {reading}"
+    );
+    assert_eq!(
+        shared["streaming"].as_bool(),
+        Some(true),
+        "the window is sent to the member showing it: {reading}"
+    );
+    let plane = rows(&reading, "live")
+        .iter()
+        .find(|plane| plane["room"].as_str() == Some(WORKSPACE))
+        .expect("the reading names the workspace's live plane");
+    assert_eq!(plane["state"].as_str(), Some("open"), "{reading}");
     let watching = shared["viewers"].as_array().expect("who is watching");
     assert_eq!(watching.len(), 1, "one member watches it: {reading}");
     assert_eq!(

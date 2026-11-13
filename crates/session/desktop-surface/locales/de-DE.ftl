@@ -1084,6 +1084,14 @@ session-window-share-param-on = Ob sie es bedienen dürfen; weglassen zum Umscha
 session-window-share-watch = Ein Fenster zeigen, das ein anderes Mitglied teilt
 session-window-share-unwatch = Es nicht mehr zeigen
 session-window-share-workspace-left = Dieser Rechner ist nicht mehr im Arbeitsbereich
+session-window-share-live-keys = Wartet darauf, dass die Schlüssel dieses Arbeitsbereichs dieses Gerät erreichen
+session-window-share-live-keyless = Dieses Gerät hat keine Schlüssel dieses Arbeitsbereichs
+session-window-share-live-unread = Dieses Gerät kann nicht lesen, wer in diesem Arbeitsbereich ist
+session-window-share-live-no-relay = Kein Gerät in diesem Arbeitsbereich überträgt seine Anrufe und geteilten Fenster
+session-window-share-live-unreached = Wartet auf die Verbindung zu { $device }, dem Gerät, das die Anrufe und geteilten Fenster dieses Arbeitsbereichs überträgt
+session-window-share-live-refused = { $device } hat dieses Gerät nicht zu den Anrufen und geteilten Fenstern dieses Arbeitsbereichs zugelassen
+session-window-share-live-absent = Dieser Rechner nimmt an den Anrufen und geteilten Fenstern dieses Arbeitsbereichs nicht teil
+session-window-share-live-lent = Dieses Gerät kann in diesem Arbeitsbereich eigene Fenster teilen und nicht öffnen, was andere teilen
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = Bildschirmanzeige

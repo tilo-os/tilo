@@ -633,6 +633,59 @@ impl Seat {
             .unwrap_or_default()
     }
 
+    /// Moves whenever a workspace's live plane stands otherwise or opened again
+    /// ([`crate::live::Live::standings_revision`]): what [`Self::live_standings`] and
+    /// [`Self::planes`] are read again on. It never moves for a session that runs no live plane.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_revision(&self) -> u64 {
+        #[cfg(test)]
+        if !self.test_planes.borrow().is_empty() {
+            // A test's planes are joined before its session runs, and stay.
+            return 1;
+        }
+        self.live().map_or(0, |live| live.standings_revision())
+    }
+
+    /// How far each workspace's live plane came on this device, by workspace
+    /// ([`crate::live::Standing`]): nothing for a session that runs no live plane.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_standings(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::live::Standing> {
+        #[cfg(test)]
+        if !self.test_planes.borrow().is_empty() {
+            // A test's planes are joined on a relay of the test's own: open, as this device's.
+            return self
+                .test_planes
+                .borrow()
+                .iter()
+                .map(|(workspace, plane)| {
+                    let relay = crate::live::Relayer {
+                        device: plane.device(),
+                        name: String::new(),
+                        here: true,
+                    };
+                    let open = crate::live::Standing::Open {
+                        relay,
+                        epoch: 0,
+                        lent: false,
+                    };
+                    (workspace.clone(), open)
+                })
+                .collect();
+        }
+        self.live()
+            .map(|live| {
+                live.standings()
+                    .into_iter()
+                    .map(|(workspace, standing)| (workspace.to_string(), standing))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Show `tracks` of `sender` on `plane`, and no other of its tracks: the plane's readers start
     /// on the runtime the planes run on, not on the session's own thread.
     #[cfg(target_os = "linux")]
@@ -1477,6 +1530,24 @@ impl Client {
         &self,
     ) -> std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>> {
         self.hosting.seat.planes()
+    }
+
+    /// Moves whenever a workspace's live plane stands otherwise or opened again: what
+    /// [`Self::live_standings`] and [`Self::planes`] are read again on.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_revision(&self) -> u64 {
+        self.hosting.seat.live_revision()
+    }
+
+    /// How far each workspace's live plane came on this device, by workspace: open, or what it
+    /// waits for ([`crate::live::Standing`]).
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_standings(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::live::Standing> {
+        self.hosting.seat.live_standings()
     }
 
     /// Join this session to `planes`, by workspace, running on `runtime`, in place of a live plane
