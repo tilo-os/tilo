@@ -7,7 +7,7 @@ import {resolve, join, extname} from 'node:path';
 import {createInterface} from 'node:readline';
 import {performance} from 'node:perf_hooks';
 import {randomUUID} from 'node:crypto';
-import {launch, sleep} from '../../../../../tools/web/chrome.mjs';
+import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../../tools/web/chrome.mjs';
 import {mountChat} from './mount-chat.mjs';
 
 assert.notEqual(process.getuid?.(), 0, 'compiled voice requires an unprivileged sandboxed browser');
@@ -57,11 +57,17 @@ const deadline = setTimeout(() => {
 }, 130_000);
 deadline.unref();
 
+// The two origins the page reaches: its own fixture's certificate, and the
+// host's development one as the host's listener presents it. The page loads
+// these and no other.
+const certificatePins = [{certificate: credentials.cert, host: '127.0.0.1'}, await servedCertificate(fixture.origin)];
+
 // A browser with `prompt` left out has no automatic answer to the
 // microphone prompt: the journey sets the page's permission itself, as the
 // person would in the site settings.
 async function open(device, {prompt = true} = {}) {
-  const browser = await launch({args:['--ignore-certificate-errors', '--enable-features=Vulkan',
+  const browser = await launch({args:[pinnedCertificates(certificatePins),
+    '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-fake-device-for-media-stream',
     ...(prompt ? ['--use-fake-ui-for-media-stream'] : []), '--autoplay-policy=no-user-gesture-required',
     ]});

@@ -31,7 +31,8 @@
 // Two things are the harness's own, not the deployment's: the host's packet
 // relay is plain http here (a deployment's ingress publishes an https one), so
 // Chrome gets --webtransport-developer-mode; and the certificate is made per
-// run and trusted with `TILO_TEST_CA_FILE` by the CLI.
+// run, which the CLI trusts with `TILO_TEST_CA_FILE` and the browser loads as
+// the only certificate it accepts.
 //
 // usage: node agent-shell.mjs --bundle DIR [--out DIR] [--relay BIN] [--tilo BIN]
 //          [--widths 1280,390] [--themes light,dark] [--[no-]video] [--build]
@@ -65,14 +66,14 @@
 // passes `--bundle $CARGO_TARGET_DIR/agent-shell/bundle` and shoots again in a
 // minute, with no bundle build.
 import {spawn, spawnSync} from 'node:child_process';
-import {X509Certificate, createHash, randomBytes} from 'node:crypto';
+import {randomBytes} from 'node:crypto';
 import {appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs';
 import {createServer, request as httpsRequest} from 'node:https';
 import {createServer as netServer} from 'node:net';
 import {createInterface} from 'node:readline';
 import {dirname, extname, join, normalize, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {launch, pinnedCertificates, sleep} from '../../../../tools/web/chrome.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../../../..');
@@ -383,6 +384,10 @@ if (!existsSync(certPath) || !existsSync(keyPath)) {
     '-addext', 'extendedKeyUsage=serverAuth'], {stdio: ['ignore', 'ignore', 'pipe']});
   if (made.status !== 0) throw new Error(`openssl could not make the test certificate: ${String(made.stderr).slice(-400)}`);
 }
+// The pair as every side that reaches these origins uses it: the site and the
+// host serve it, this run's own calls to the host trust exactly it, and the
+// browser loads it and no other certificate.
+const tls = {cert: readFileSync(certPath), key: readFileSync(keyPath)};
 
 // ---------------------------------------------------------------------------
 // The site: the desktop bundle, with the entry configuration the person's
@@ -407,7 +412,7 @@ const linkPort = await freePort();
 const siteLog = line => {
   try { appendFileSync(join(browserDir, 'site.log'), `${new Date().toISOString()} ${line}\n`); } catch {}
 };
-const site = createServer({cert: readFileSync(certPath), key: readFileSync(keyPath)}, (request, response) => {
+const site = createServer(tls, (request, response) => {
   const path = normalize(decodeURIComponent(new URL(request.url, 'https://x').pathname));
   if (path === '/entry.json') {
     const body = Buffer.from(entryJson);
@@ -432,7 +437,7 @@ const site = createServer({cert: readFileSync(certPath), key: readFileSync(keyPa
   // site it was copied from.
   siteLog(`${request.method} ${path} -> the host`);
   const upstream = httpsRequest({host: '127.0.0.1', port: hostPort, path: request.url, method: request.method,
-    headers: {...request.headers, host: `127.0.0.1:${hostPort}`}, rejectUnauthorized: false}, answer => {
+    headers: {...request.headers, host: `127.0.0.1:${hostPort}`}, ca: tls.cert}, answer => {
     response.writeHead(answer.statusCode ?? 502, answer.headers);
     answer.pipe(response);
   });
@@ -766,7 +771,7 @@ function mcpClient() {
 async function postJson(url, body) {
   return new Promise(ok => {
     const request = httpsRequest(url, {method: 'POST', headers: {'content-type': 'application/json'},
-      rejectUnauthorized: false}, response => {
+      ca: tls.cert}, response => {
       let text = '';
       response.on('data', chunk => { text += chunk; });
       response.on('end', () => ok({status: response.statusCode, body: text.slice(0, 400)}));
@@ -1572,13 +1577,9 @@ function watchMemory(tab) {
   };
 }
 
-// The test certificate's key, which the browser takes on the host's WebTransport link too: QUIC
-// verifies its certificate apart from the HTTPS stack `--ignore-certificate-errors` relaxes.
-const testKeySpki = createHash('sha256')
-  .update(new X509Certificate(readFileSync(certPath)).publicKey.export({type: 'spki', format: 'der'}))
-  .digest('base64');
-const browser = await launch({args: ['--ignore-certificate-errors',
-  `--ignore-certificate-errors-spki-list=${testKeySpki}`,
+// One pin for the run's certificate: the page's HTTPS stack loads it, and QUIC verifies it apart
+// from that stack on the host's WebTransport link, which the same key covers.
+const browser = await launch({args: [pinnedCertificates([{certificate: tls.cert, host: '127.0.0.1'}]),
   // A build container runs as root, where Chromium refuses its own sandbox.
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
   // The host's packet relay is plain http (the browser's own WebTransport

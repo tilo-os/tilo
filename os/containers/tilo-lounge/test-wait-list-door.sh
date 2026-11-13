@@ -54,8 +54,8 @@ start_lounge "$bundle" "$work"
 # and the setup screen is what stays. It is the "before" of the pair.
 before_port=$((sink_port + 1))
 node "$here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-  'https://127.0.0.1:9' Lounge 'https://127.0.0.1:9/peer/v1/directory/lounge/' "$before_port" '' \
-  > "$work/site-before.log" 2>&1 &
+  'https://127.0.0.1:9' 'http://127.0.0.1:9' Lounge 'https://127.0.0.1:9/peer/v1/directory/lounge/' \
+  "$before_port" '' > "$work/site-before.log" 2>&1 &
 lounge_pids+=($!)
 for _ in $(seq 300); do
   grep -q '"url"' "$work/site-before.log" && break
@@ -64,7 +64,7 @@ done
 before_origin=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$work/site-before.log")
 [[ -n $before_origin ]] || lounge_fail "the before site did not start: $(cat "$work/site-before.log")"
 
-node "$here/integration/wait-list-door.mjs" "$site_origin" "$work/mail" "$work/wait-list-door" "$before_origin" \
+node "$here/integration/wait-list-door.mjs" "$site_origin" "$relay_origin" "$work/mail" "$work/wait-list-door" "$before_origin" \
   || lounge_fail 'a stranger at the invitation-only door was not kept on its wait list'
 mkdir -p "$out/report" "$out/mail"
 cp -R "$work/wait-list-door/." "$out/report/"

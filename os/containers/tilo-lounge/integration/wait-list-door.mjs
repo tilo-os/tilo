@@ -4,25 +4,29 @@
 // and the tab stays on the wait list when it reloads. The site is the web
 // entry's bundle served beside the relay, as the image serves it.
 //
-// usage: node wait-list-door.mjs SITE_URL MAIL_DIR OUT_DIR [BEFORE_URL]
+// usage: node wait-list-door.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]
 //
 // Prints a JSON report and keeps the screenshots and the tab's console in
 // OUT_DIR; exits non-zero when a step did not happen or the page failed.
 import {mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, deskMetrics} from './waits.mjs';
 
-const [site, mailDir, out, before] = process.argv.slice(2);
-if (!site || !mailDir || !out) {
-  console.error('usage: node wait-list-door.mjs SITE_URL MAIL_DIR OUT_DIR [BEFORE_URL]');
+const [site, relay, mailDir, out, before] = process.argv.slice(2);
+if (!site || !relay || !mailDir || !out) {
+  console.error('usage: node wait-list-door.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
-const report = {site, at: new Date().toISOString()};
+const report = {site, relay, at: new Date().toISOString()};
 
+// The door's page loads the site's and the host's own certificates, and the
+// "before" site's too, which the same mint signs. A browser loads these and no
+// others, as a person's loads what it trusts.
+const siteCertificate = await servedCertificate(site);
 const browser = await launch({args: [
-  '--ignore-certificate-errors',
+  pinnedCertificates([siteCertificate, await servedCertificate(relay)]),
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),

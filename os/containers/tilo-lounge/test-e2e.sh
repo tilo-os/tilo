@@ -99,7 +99,7 @@ if [[ ${1:-} == --flow ]]; then
   site_origin=$E2E_SITE relay_origin=$E2E_RELAY room=$E2E_ROOM owner_socket=$E2E_OWNER_SOCKET
   case $flow in
     directory)
-      page=$(curl -ksS --max-time 5 -X POST "$relay_origin/peer/v1/directory") \
+      page=$(curl -fsS --max-time 5 -X POST "$relay_origin/peer/v1/directory") \
         || { echo 'FAIL: the directory did not answer'; exit 1; }
       E2E_PAGE=$page python3 -c '
 import json, os, sys

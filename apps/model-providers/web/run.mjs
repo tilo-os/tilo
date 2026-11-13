@@ -5,7 +5,7 @@ import {createServer} from 'node:https';
 import {createReadStream, existsSync, readFileSync, statSync} from 'node:fs';
 import {ephemeralTls} from './https-fixture.mjs';
 import {resolve, join, extname, sep} from 'node:path';
-import {launch, sleep} from '../../../tools/web/chrome.mjs';
+import {launch, pinnedCertificates, sleep} from '../../../tools/web/chrome.mjs';
 
 const bundle = resolve(process.argv[2] ?? 'target/tilo-app/web/model-providers/bundle');
 assert(existsSync(join(bundle, 'pkg/tilo_browser_runtime_bg.wasm')), 'build the production app bundle first');
@@ -19,8 +19,11 @@ let releaseFailure;
 const credentials = new Map(), calls = [];
 const snapshot = () => ({config: structuredClone(config), revision: String(revision)});
 const mime = {'.js':'text/javascript', '.mjs':'text/javascript', '.wasm':'application/wasm', '.json':'application/json', '.html':'text/html', '.ttf':'font/ttf', '.otf':'font/otf'};
+// The server's own certificate, made for this run: the browser loads this and
+// nothing else.
+const tls = ephemeralTls();
 try {
-  server = createServer(ephemeralTls(), async (req,res) => {
+  server = createServer(tls, async (req,res) => {
     try {
       if (req.url === '/model/rpc') {
         assert.equal(req.method, 'POST');
@@ -72,7 +75,8 @@ try {
   const gpuArgs = process.platform === 'linux'
     ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
     : [];
-  browser = await launch({args:['--ignore-certificate-errors', '--window-size=1200,2000', ...gpuArgs, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+  browser = await launch({args:[pinnedCertificates([{certificate: tls.cert, host: '127.0.0.1'}]),
+    '--window-size=1200,2000', ...gpuArgs, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
   const tab = await browser.tab();
   await tab.navigate(`${origin}/proof.html`);
   await tab.waitFor('!!document.getElementById("app")', {timeout:15000});

@@ -5,7 +5,7 @@ import {createServer} from 'node:https';
 import {readFileSync, existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {resolve, join, extname} from 'node:path';
 import {createInterface} from 'node:readline';
-import {launch} from '../../../../../tools/web/chrome.mjs';
+import {launch, pinnedCertificates, servedCertificate} from '../../../../../tools/web/chrome.mjs';
 import {mountChat} from './mount-chat.mjs';
 import {observe} from './observe.mjs';
 // The messages the page holds, as its message rows name them: each row's
@@ -86,9 +86,12 @@ const deadline = setTimeout(async () => {
 }, 130_000);
 try {
   if (fixture.encryptedRestart) stage('cold-remote-encrypted-canonical-primary');
-  // Certificate exceptions exist only inside this disposable fixture browser.
-  browser = await launch({args: ['--ignore-certificate-errors', '--enable-features=Vulkan',
-    '--use-vulkan=swiftshader', '--use-angle=swiftshader',
+  // The two origins the page reaches: its own fixture's certificate, and the
+  // host's development one as the host's listener presents it. The page loads
+  // these and no other.
+  browser = await launch({args: [pinnedCertificates([{certificate: credentials.cert, host: '127.0.0.1'},
+      await servedCertificate(fixture.origin)]),
+    '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
   tab = await browser.tab();
   observer = await observe(browser, tab, evidence);

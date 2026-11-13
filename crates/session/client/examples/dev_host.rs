@@ -9,9 +9,10 @@
 //!
 //! Prints one JSON line (`origin`, `userPublicKey`, `certificateSha256`,
 //! `room`) for the page's `connectPeer`, then serves until interrupted. The
-//! page's browser must accept the self-signed HTTPS certificate (trust it
-//! once, or start a test browser with `--ignore-certificate-errors`);
-//! Clients pin it by its hash.
+//! page's browser must accept the self-signed HTTPS certificate: trust it once
+//! in the browser that opens it, or pin it — a browser given
+//! `--ignore-certificate-errors-spki-list=<base64 SHA-256 of its SPKI>` loads
+//! that certificate and no other. Clients pin it by its hash.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "a test holds its fixtures' locks for the length of a step"
