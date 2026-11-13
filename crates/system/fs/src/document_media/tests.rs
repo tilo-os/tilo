@@ -79,6 +79,47 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
     }
 }
 
+/// Every store answers for the empty content without anyone having put it, so only a
+/// workspace's reference decides who reads it.
+#[tokio::test]
+async fn the_empty_attachment_is_readable_only_where_it_was_stored() {
+    let media = DocumentMedia::new(Arc::new(ContentStore::memory()));
+    let photos = scope("workspace-1", "so.tilo.photos");
+    let other = scope("workspace-2", "so.tilo.photos");
+    let empty = Hash::from(*blake3::hash(b"").as_bytes());
+
+    for unreferenced in [&photos, &other] {
+        assert_eq!(
+            media
+                .read_range(unreferenced.clone(), empty, 0, u32::MAX)
+                .await,
+            ReadOutcome::Unavailable,
+            "the empty content was read before anyone stored it"
+        );
+        assert!(!media.contains(unreferenced, empty).await);
+        assert_eq!(media.len_of(unreferenced, empty).await, None);
+    }
+
+    assert_eq!(media.store(&photos, Vec::new()).await.unwrap(), empty);
+    assert_eq!(
+        media.read_range(photos.clone(), empty, 0, u32::MAX).await,
+        ReadOutcome::Ready {
+            bytes: Vec::new(),
+            total_len: 0,
+        }
+    );
+    assert!(media.contains(&photos, empty).await);
+    assert_eq!(media.len_of(&photos, empty).await, Some(0));
+
+    assert_eq!(
+        media.read_range(other.clone(), empty, 0, u32::MAX).await,
+        ReadOutcome::Unavailable,
+        "another workspace read the empty content this one stored"
+    );
+    assert!(!media.contains(&other, empty).await);
+    assert_eq!(media.len_of(&other, empty).await, None);
+}
+
 #[tokio::test]
 async fn ranged_reads_after_a_restart_read_only_the_range() {
     let dir = tempfile::tempdir().unwrap();
