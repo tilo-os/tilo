@@ -1260,6 +1260,12 @@ impl Session {
         if let Some(shell) = &shell {
             shell.share_records(&services, &session_doors);
         }
+        // So do the records the services keep of every app the session runs itself (a seeded
+        // session's Tasks, Notes, Mail): a REPL's or an agent's `find(tasks.Task)` reads them on the
+        // session's pass, as it reads the shell's, and starts no app to read one.
+        for record in services.borrow().records() {
+            session_doors.keep_records_of(&record.app);
+        }
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
         crate::shell::state::ShellService::mount(
