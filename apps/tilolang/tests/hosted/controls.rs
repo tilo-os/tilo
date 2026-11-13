@@ -74,14 +74,21 @@ impl super::Session {
     /// The centre of the control that does `identity`: the action the app publishes, on the kind
     /// of record it acts on. Where it is the window's business — its bar while it lists nothing,
     /// its columns' header once it does — and so is what the person's language calls it.
-    pub(super) fn control(&mut self, identity: &str) -> (f64, f64) {
+    pub(super) fn control(&mut self, identity: &(String, String)) -> (f64, f64) {
+        let (kind, action) = identity;
         let control = self
             .controls()
             .into_iter()
-            .find(|control| control.doing.as_deref() == Some(identity))
+            .find(|control| {
+                control
+                    .doing
+                    .as_deref()
+                    .and_then(ui::tilo_actions::ActionAddress::parse)
+                    .is_some_and(|doing| doing.resource == *kind && doing.action == *action)
+            })
             .unwrap_or_else(|| {
                 panic!(
-                    "no control does {identity}: {:?}",
+                    "no control does {action} on {kind}: {:?}",
                     self.controls()
                         .into_iter()
                         .map(|control| (control.doing, control.name))
@@ -101,7 +108,7 @@ impl super::Session {
 
     /// The identity of the app's action `action`, as it is declared (`new_note`), on records of
     /// `ty`: the record kind and the id the app declares the action by.
-    pub(super) fn doing(&self, ty: &str, action: &str) -> String {
+    pub(super) fn doing(&self, ty: &str, action: &str) -> (String, String) {
         let bundle = package(package_of(&self.app));
         let Some(declared) = bundle
             .meta
@@ -111,7 +118,7 @@ impl super::Session {
         else {
             panic!("{} declares no action {action}", self.app);
         };
-        ui::tilo_actions::ActionAddress::new(self.kind(ty), &declared.id).encode()
+        (self.kind(ty), declared.id.clone())
     }
 
     /// The id the app gives the field `field`, as it is declared (`title`): what the control that
