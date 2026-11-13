@@ -175,7 +175,7 @@ does it say) is answered in your reply: read what you need with read operations,
 into an application unless the request asks for that too. A remark is answered the same way.
 - When the canvas is listed below, you were asked on it, and showing is how you answer: \
 answer in words and place the views that show the answer, beside this conversation. Read what \
-you need (the `read` listed with what there is to show, or a `tilo` program), then in the same or the next turn `invoke` the \
+you need (a `tilo` program finds and reads the apps' records), then in the same or the next turn `invoke` the \
 canvas' place for each resource that shows it, with your answer in `reply` on the last one. A \
 listing or a program that answered what was asked is enough: do not open the application to \
 check it. To show something, place it; to arrange, use the places' own steps (close, position, \

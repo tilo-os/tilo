@@ -978,7 +978,7 @@ impl World {
                 }}}),
                 false,
             ),
-            "record-work" | "read" | "place" | "position" | "close" | "activate" | "show-style" => {
+            "record-work" | "place" | "position" | "close" | "activate" | "show-style" => {
                 (serde_json::json!({"succeeded": {}}), false)
             }
             "type-text" => {

@@ -138,10 +138,18 @@ fn a_second_ask_goes_to_the_agent_the_first_made() {
 
 /// The agent the steps below are attributed to, as an agent's turn names it.
 const AGENT: &str = "agent:assistant";
-/// What the agent's steps stand beside: the inbox, standing on the canvas at a point of its own.
-const INBOX: &str = "tl:so.tilo.lang.mail:inbox";
-/// What the agent shows.
-const NOTES: &str = "tl:so.tilo.lang.notes:root";
+
+/// The published root of the seeded app `app` (`so.tilo.lang.mail`): what the agent's steps
+/// show, and what they stand beside.
+fn root_of(session: &Session, app: &str) -> String {
+    let prefix = format!("tl:{app}:root-");
+    session
+        .resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str().starts_with(&prefix))
+        .map(|spec| spec.id.as_str().to_owned())
+        .unwrap_or_else(|| panic!("{app}'s root is published"))
+}
 
 /// The canvas point of the strip `place` stands in, and its workspace.
 fn canvas_point(
@@ -182,13 +190,18 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
+    let (inbox_root, notes_root) = (
+        root_of(&session, "so.tilo.lang.mail"),
+        root_of(&session, "so.tilo.lang.notes"),
+    );
+    let (inbox_id, notes_id) = (inbox_root.as_str(), notes_root.as_str());
     let inbox = placed_as_agent(
         &mut session,
-        INBOX,
-        serde_json::json!({"resource": INBOX, "x": 240, "y": 160}),
+        inbox_id,
+        serde_json::json!({"resource": inbox_id, "x": 240, "y": 160}),
     );
-    let beside = serde_json::json!({"resource": NOTES, "beside": INBOX});
-    let notes = placed_as_agent(&mut session, NOTES, beside.clone());
+    let beside = serde_json::json!({"resource": notes_id, "beside": inbox_id});
+    let notes = placed_as_agent(&mut session, notes_id, beside.clone());
 
     let (x, y, workspace) = canvas_point(&session, &notes);
     let (ix, iy, inbox_in) = canvas_point(&session, &inbox);
@@ -209,7 +222,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     session.step(Duration::from_millis(1)).expect("a frame");
     let shown = crate::common::places(&session)
         .into_iter()
-        .filter(|place| place.record == NOTES)
+        .filter(|place| place.record == notes_id)
         .count();
     assert_eq!(shown, 1, "one place shows it");
 }
@@ -222,15 +235,20 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
+    let (inbox_root, notes_root) = (
+        root_of(&session, "so.tilo.lang.mail"),
+        root_of(&session, "so.tilo.lang.notes"),
+    );
+    let (inbox_id, notes_id) = (inbox_root.as_str(), notes_root.as_str());
     let inbox = placed_as_agent(
         &mut session,
-        INBOX,
-        serde_json::json!({"resource": INBOX, "x": 240, "y": 160}),
+        inbox_id,
+        serde_json::json!({"resource": inbox_id, "x": 240, "y": 160}),
     );
     let note = placed_as_agent(
         &mut session,
-        NOTES,
-        serde_json::json!({"resource": NOTES, "x": 6000, "y": 4000}),
+        notes_id,
+        serde_json::json!({"resource": notes_id, "x": 6000, "y": 4000}),
     );
     let (ix, iy, _) = canvas_point(&session, &inbox);
     let (nx, ny, _) = canvas_point(&session, &note);
@@ -254,7 +272,7 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     let moved = crate::common::wait_for(&mut session, "the note moved", |session| {
         let place = crate::common::places(session)
             .into_iter()
-            .find(|place| place.record == NOTES)?;
+            .find(|place| place.record == notes_id)?;
         let (x, y, _) = canvas_point(session, &place);
         (x < 6000).then_some((x, y))
     });

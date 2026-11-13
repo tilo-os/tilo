@@ -300,45 +300,6 @@ fn task(service: &mut RecordService, title: &str) -> String {
     output.resources.first().cloned().expect("the task it made")
 }
 
-/// The record's root publishes `read`, as every app's resource does in its instance: an agent
-/// answering "which of my tasks …" reads the tasks and each task's fields from the session,
-/// without a window of the app, and reading changes nothing.
-#[test]
-fn a_records_root_reads_what_it_holds_without_a_window() {
-    let (mut service, _) = tasks();
-    let made = task(&mut service, "Pay rent");
-    let root = tasks_root(&service);
-    assert!(
-        service
-            .resources()
-            .iter()
-            .find(|resource| resource.id == root)
-            .is_some_and(|resource| resource.actions.iter().any(|action| action.id == "read")),
-        "the root publishes `read`"
-    );
-    let agent = tilo_actions::ActionInvoker::actor("agent:assistant")
-        .with_kind(tilo_actions::ActorKind::Agent);
-    let read = |service: &mut RecordService, arguments: Json| {
-        let Started::Done(output) = service
-            .invoke_as(&agent, root.as_str(), "read", &args(arguments))
-            .expect("the read runs")
-        else {
-            panic!("a read answers at once");
-        };
-        output.value.expect("a read answers what it read")
-    };
-    let tasks = read(&mut service, json!({}));
-    assert!(
-        tasks.to_string().contains(&made),
-        "the root's read names the task it holds: {tasks}"
-    );
-    let one = read(&mut service, json!({ "item": made }));
-    assert!(
-        one.to_string().contains("Pay rent"),
-        "an item's read is its fields: {one}"
-    );
-}
-
 #[test]
 fn a_reminder_writes_the_notice_of_its_person_at_its_moment_once() {
     let (mut service, clock) = tasks();

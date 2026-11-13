@@ -21,8 +21,6 @@ use crate::surface::{Catalogue, Offer};
 pub const ARRANGEMENT: &str = "shell:arrangement";
 /// The action that shows a resource on the canvas.
 pub const PLACE: &str = "place";
-/// The action every app's resource answers what it holds with (`tilo_resource::read`).
-const READ: &str = "read";
 /// The prefix of every resource of the arrangement: itself, its record, and
 /// each row, strip and place.
 const ARRANGEMENT_PREFIX: &str = "shell:";
@@ -165,22 +163,11 @@ pub fn canvas_section(
         *count = items.get(root).map_or(0, std::collections::BTreeSet::len);
     }
     if !roots.is_empty() {
-        s.push_str(
-            "\nWhat there is to show (place it by its id; its `read` answers what it holds, its \
-             items with their fields and ids, without opening anything):\n",
-        );
+        s.push_str("\nWhat there is to show (place it by its id):\n");
         for (resource, label, kind, count) in &roots {
             let _ = write!(s, "  {resource} — {label} ({kind})");
             if *count > 0 {
                 let _ = write!(s, "; {count} items");
-            }
-            // Reading it is how a question about it is answered: said with its id, so the
-            // model need not look it up.
-            if let Some(read) = catalogue.offers.iter().find(|offer| {
-                offer.address().resource == *resource && offer.address().action == READ
-            }) {
-                revealed.reveal(read.id());
-                let _ = write!(s, "; read: `{}` (an item: `item`)", read.id());
             }
             s.push('\n');
         }

@@ -15,6 +15,8 @@ const HOST_PEER: u64 = 32;
 const RECORDS_PEER: u64 = 33;
 /// Notes, which publishes its open.
 const NOTES_PEER: u64 = 34;
+/// The session's door for a task's programs.
+const DOOR_PEER: u64 = 35;
 /// The Tasks app's root, as the session serves it.
 const TASKS: &str = "tl:so.tilo.lang.tasks:root-t";
 /// Mail's root.
@@ -164,14 +166,6 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             vec![],
         ),
         on(
-            TASKS,
-            "tl.so.tilo.lang.tasks.Tasks",
-            "Tasks",
-            "read",
-            "Read the content",
-            vec![text("item")],
-        ),
-        on(
             &format!("{TASKS}/i1"),
             "tl.so.tilo.lang.tasks.Task",
             "Pay rent",
@@ -210,11 +204,28 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
         "Notes",
         vec![],
     )];
+    // The session's door for the task's programs, offered to the agent for its runs: no app's
+    // window, and so no app's own host, is open.
+    let door = vec![on(
+        tilo_actions::remote::task_programs::RESOURCE,
+        tilo_actions::remote::task_programs::RESOURCE,
+        "Task programs",
+        tilo_actions::remote::task_programs::RUN,
+        "Run a step of a task",
+        vec![
+            ActionParam::required("program", ParamType::Text, "program"),
+            ActionParam::optional("confirm", ParamType::Boolean, "confirm"),
+            ActionParam::optional("this", ParamType::Text, "this"),
+            ActionParam::required("run", ParamType::Text, "run"),
+            ActionParam::optional("label", ParamType::Text, "label"),
+        ],
+    )];
     vec![
         surface(SESSION_PEER, "so.tilo.session", session),
         surface(RECORDS_PEER, "so.tilo.session", records),
         surface(NOTES_PEER, "so.tilo.lang.notes", notes),
         surface(HOST_PEER, "so.tilo.desktop", host),
+        surface(DOOR_PEER, "so.tilo.agent", door),
     ]
 }
 
@@ -240,6 +251,13 @@ fn canvas_invoke(
     (tools::INVOKE, input)
 }
 
+fn tilo(program: &str) -> (&'static str, Value) {
+    (
+        crate::programs::TILO,
+        serde_json::json!({ "program": program }),
+    )
+}
+
 /// The steps the session ran, by action, with their arguments.
 fn ran(world: &World, action: &str) -> Vec<serde_json::Map<String, Value>> {
     world
@@ -263,7 +281,7 @@ fn canvas_fixture(title: &str, turns: Vec<Vec<TurnEvent>>) -> Fixture {
 
 fn canvas_world() -> World {
     World {
-        tilolang: true,
+        tilolang: false,
         tl_programs: vec![(
             "due",
             serde_json::json!({
@@ -325,12 +343,14 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
         "what there is to show names Tasks' root and counts its items: {first}"
     );
     assert!(first.contains(&format!("{MAIL} — Mail")), "{first}");
+    // No app's window is open, yet programs reach every app the session serves through its door.
     assert!(
-        first.contains(&format!(
-            "read: `{}`",
-            session_op(RECORDS_PEER, TASKS, "read")
-        )),
-        "what there is to show says how to read it: {first}"
+        first.contains("- `tasks`: its record is a `tasks.Tasks`"),
+        "the apps a program can use, open or not: {first}"
+    );
+    assert!(
+        tool_names(&bodies[0]).contains(&crate::programs::TILO.to_owned()),
+        "the `tilo` tool is offered"
     );
     for host in ["Alacritty", "org.gnome.Calculator", "chromium-browser"] {
         assert!(
@@ -346,10 +366,9 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     );
 }
 
-/// "Which of my tasks are due this week?" asked on the canvas: the Tasks root's `read`, shown with
-/// it in the first turn, reads them, and the next turn places Tasks beside the conversation with
-/// the answer in words — two model calls, no app opened in a window, and the run succeeds with
-/// the words.
+/// "Which of my tasks are due this week?" asked on the canvas: one program reads them, and the
+/// next turn places Tasks beside the conversation with the answer in words — two model calls,
+/// no app opened in a window, and the run succeeds with the words.
 #[test]
 fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation() {
     let reply = "Two tasks are due this week: Pay rent on Tuesday and Call Ana on Thursday.";
@@ -357,12 +376,8 @@ fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation()
         "which of my tasks are due this week?",
         vec![
             turn(
-                &[canvas_invoke(
-                    RECORDS_PEER,
-                    TASKS,
-                    "read",
-                    &serde_json::json!({}),
-                    None,
+                &[tilo(
+                    "find(tasks.Task).filter(t -> t.due <= date(\"2026-11-22\"))",
                 )],
                 64,
             ),
