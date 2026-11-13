@@ -453,7 +453,7 @@ impl HostedBrowser {
     /// record's window once the desk holds the workspace, and report what became of it.
     pub(crate) fn follow(&mut self, shared: &Shared) {
         self.take_arrived(shared);
-        self.join();
+        self.join(shared);
         self.ask_host(shared);
         if self.holds == Holds::Apps {
             self.follow_apps(shared);
@@ -587,7 +587,12 @@ impl HostedBrowser {
 
     /// Ask its relay to enter the device into the workspace, once: as the device the
     /// material certifies, it answers with an invitation, which the session redeems.
-    fn join(&mut self) {
+    ///
+    /// The relay is reached at the address the material names, which is where this VM reaches
+    /// it; the invitation names the relay where it sees itself, its own loopback. Once the relay
+    /// answered there, the session's endpoint dials it there too, so the join and everything
+    /// after it reach the relay this session did.
+    fn join(&mut self, shared: &Shared) {
         if !matches!(self.join, Join::Waiting) {
             return;
         }
@@ -599,8 +604,14 @@ impl HostedBrowser {
         let material = self.material.clone();
         let arrived = self.sender.clone();
         let waking = self.waking.clone();
+        let reached = shared.sync.as_ref().map(|sync| sync.reached());
         runtime.spawn(async move {
             let answer = invitation(&material).await;
+            if answer.is_ok()
+                && let Some(reached) = &reached
+            {
+                reached.note(&material.relay);
+            }
             if arrived.send(Arrived::Invitation(answer)).is_err() {
                 return;
             }

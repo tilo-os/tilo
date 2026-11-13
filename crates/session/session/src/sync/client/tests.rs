@@ -1486,3 +1486,155 @@ fn mcp_agent_frames(device_seed: u8) -> Vec<Presence> {
         .map(|(_, frame)| frame)
         .collect()
 }
+
+/// What the test host below answers on: it echoes what it is sent.
+const ECHO_ALPN: &[u8] = b"tilo-test/echo/0";
+
+/// What `endpoint` hears back from the host at `host` on [`ECHO_ALPN`], or why it heard nothing
+/// within `within`.
+async fn echoed(
+    endpoint: &iroh::Endpoint,
+    host: EndpointAddr,
+    within: Duration,
+) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(within, async {
+        let connection = endpoint
+            .connect(host, ECHO_ALPN)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (mut send, mut receive) = connection
+            .open_bi()
+            .await
+            .map_err(|error| error.to_string())?;
+        send.write_all(b"here")
+            .await
+            .map_err(|error| error.to_string())?;
+        send.finish().map_err(|error| error.to_string())?;
+        receive
+            .read_to_end(64)
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| format!("nothing answered within {within:?}"))?
+}
+
+/// The endpoint this device's session binds, as `listening` binds it: dialling a host through what
+/// the session heard of it (`heard`) and where the session reached it (`reached`).
+async fn session_endpoint(
+    reached: &Reached,
+    heard: &iroh::address_lookup::memory::MemoryLookup,
+) -> iroh::Endpoint {
+    let (cert, key) = certified(1, 2, "here");
+    let identity = HostIdentity::kept(cert, key);
+    let relays = tilo_endpoint_reachability::EndpointRelays::for_choice(
+        &settings_store::relay::Relays::None,
+    );
+    let lan = tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {}));
+    let (builder, _) = endpoint_for(Some(&identity), &relays, &lan).expect("an endpoint to bind");
+    reached
+        .resolving(builder, heard)
+        .bind()
+        .await
+        .expect("the session's endpoint binds")
+}
+
+/// A host behind a NAT, a port forward or a VM's network says it is where it sees itself: its own
+/// loopback and a packet relay of its own network, which from where this device is are nobody.
+/// This device was given the address it reaches the host at, and reached it there: everything after
+/// that first contact (the join, the workspace's sessions, the host's actions) reaches the host
+/// there too, while the host's own address stays heard beside it.
+#[test]
+fn a_host_is_dialled_where_this_device_reached_it_whatever_it_says_of_itself() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for the endpoints");
+    runtime.block_on(async {
+        let host = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("a loopback address")
+            .alpns(vec![ECHO_ALPN.to_vec()])
+            .bind()
+            .await
+            .expect("the host binds");
+        let serving = host.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = serving.accept().await {
+                tokio::spawn(async move {
+                    let Ok(connection) = incoming.await else {
+                        return;
+                    };
+                    while let Ok((mut send, mut receive)) = connection.accept_bi().await {
+                        let said = receive.read_to_end(64).await.unwrap_or_default();
+                        let _ = send.write_all(&said).await;
+                        let _ = send.finish();
+                    }
+                });
+            }
+        });
+        // Where the host says it is: nothing listens there.
+        let nowhere: std::net::SocketAddr = "127.0.0.1:9".parse().expect("an address");
+        let says = EndpointAddr::from_parts(
+            host.id(),
+            [
+                iroh::TransportAddr::Ip(nowhere),
+                iroh::TransportAddr::Relay("http://127.0.0.1:9/".parse().expect("a relay url")),
+            ],
+        );
+        // Where this device was told the host is, and reached it: the first contact is made the way
+        // a VM's session makes it, on an endpoint of its own.
+        let given = host.addr();
+        let first = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .expect("the first contact's endpoint binds");
+        assert_eq!(
+            echoed(&first, given.clone(), Duration::from_secs(10)).await,
+            Ok(b"here".to_vec()),
+            "the host answers where this device was told it is"
+        );
+        first.close().await;
+
+        let reached = Reached::default();
+        reached.note(&given);
+        let heard = iroh::address_lookup::memory::MemoryLookup::new();
+        let session = session_endpoint(&reached, &heard).await;
+        // What the host says of itself is heard, as a workspace's host address is.
+        heard.add_endpoint_info(says.clone());
+        assert_eq!(
+            echoed(&session, says.clone(), Duration::from_secs(10)).await,
+            Ok(b"here".to_vec()),
+            "the host is dialled where this device reached it"
+        );
+        assert_eq!(
+            echoed(
+                &session,
+                EndpointAddr::new(host.id()),
+                Duration::from_secs(10)
+            )
+            .await,
+            Ok(b"here".to_vec()),
+            "and by its id alone"
+        );
+        session.close().await;
+
+        // A device that never reached the host has nothing but what the host says of itself.
+        let stranger = session_endpoint(
+            &Reached::default(),
+            &iroh::address_lookup::memory::MemoryLookup::new(),
+        )
+        .await;
+        assert!(
+            echoed(&stranger, says, Duration::from_secs(3))
+                .await
+                .is_err(),
+            "where the host says it is reaches nobody"
+        );
+        stranger.close().await;
+        host.close().await;
+    });
+}

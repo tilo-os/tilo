@@ -69,6 +69,8 @@ mod adopt;
 mod plane;
 
 #[cfg(target_os = "linux")]
+pub(crate) use plane::Reached;
+#[cfg(target_os = "linux")]
 use plane::{Serving, Wire, run};
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
@@ -1147,6 +1149,9 @@ pub struct Client {
     /// watcher, which keeps the endpoint's socket open until it goes.
     #[cfg(target_os = "linux")]
     own_address: Option<tokio::task::AbortHandle>,
+    /// Where this device was given and reached its hosts ([`plane::Reached`]).
+    #[cfg(target_os = "linux")]
+    reached: plane::Reached,
 }
 
 impl std::fmt::Debug for Client {
@@ -1254,6 +1259,7 @@ impl Client {
         let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = plane::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
+        let reached = binding.reached.clone();
         // The live plane's relay role, when this device may serve one, is one more protocol on the
         // endpoint this session binds.
         let mut live = engine
@@ -1318,6 +1324,7 @@ impl Client {
             outgoing,
             thread: Some(thread),
             own_address,
+            reached,
         };
         // The person's other devices are heard from the start, so a list one of them published is
         // taken even when this session shows none of their workspaces yet.
@@ -1359,6 +1366,8 @@ impl Client {
             thread: None,
             #[cfg(target_os = "linux")]
             own_address: None,
+            #[cfg(target_os = "linux")]
+            reached: plane::Reached::default(),
         }
     }
 
@@ -1421,6 +1430,7 @@ impl Client {
             outgoing: outbox,
             thread: None,
             own_address: None,
+            reached: plane::Reached::default(),
         };
         for host in hosts {
             let _ = client.outgoing.send(Cmd::Connect(host));
@@ -1608,6 +1618,14 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn hold_relays_with(&self, reachability: Reachability) {
         *self.hosting.seat.reachability.borrow_mut() = reachability;
+    }
+
+    /// Where this device notes the hosts it was given an address for and reached there: its
+    /// endpoint dials them there from then on, beside whatever they say of themselves
+    /// ([`Reached`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn reached(&self) -> Reached {
+        self.reached.clone()
     }
 
     /// This device's collaboration endpoint, once it has bound.
