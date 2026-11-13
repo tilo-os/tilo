@@ -63,14 +63,11 @@ impl SayPresence for Saying {
     fn say(
         &self,
         workspace: WorkspaceId,
-        sequence: u32,
-        frame: &collab_types::presence::Presence,
+        frames: &[(u32, collab_types::presence::Presence)],
     ) -> Result<(), String> {
-        // The plane numbers the objects it carries itself; `sequence` is the board's count.
-        let _ = sequence;
-        Ok(self
-            .peer
-            .send(Cmd::Presence(topic_of(workspace), vec![frame.clone()]))?)
+        // The plane numbers the objects it carries itself; the numbers are the board's count.
+        let frames = frames.iter().map(|(_, frame)| frame.clone()).collect();
+        Ok(self.peer.send(Cmd::Presence(topic_of(workspace), frames))?)
     }
 }
 

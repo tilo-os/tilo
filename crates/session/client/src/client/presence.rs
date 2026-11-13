@@ -247,7 +247,7 @@ impl Presence {
         for (ws, id) in leaving {
             // The members take this device down where it was.
             if let Some(workspace) = DeskWorkspaceId::parse(&id) {
-                self.say_frames(workspace, vec![(0, Frame::desktop(&id, Payload::Left))]);
+                self.say_frames(workspace, &[(0, Frame::desktop(&id, Payload::Left))]);
             }
             left(ws);
             changed = true;
@@ -283,7 +283,7 @@ impl Presence {
         let Some((desk, frames)) = self.plane.borrow_mut().due_in(workspace, now) else {
             return false;
         };
-        self.say_frames(desk, frames);
+        self.say_frames(desk, &frames);
         true
     }
 
@@ -349,6 +349,36 @@ impl Presence {
     /// of themselves, who left.
     pub(super) fn heard(&self, event: Event) {
         self.plane.borrow_mut().apply(event);
+    }
+
+    /// Whether `from` is a person's device heard in `workspace` whose person no certificate named.
+    pub(super) fn unknown_person(&self, workspace: &str, from: EndpointId) -> bool {
+        self.plane
+            .borrow()
+            .workspaces
+            .iter()
+            .find(|held| held.id == workspace)
+            .and_then(|held| held.board.member(*from.as_bytes()))
+            .is_some_and(|member| member.user.is_none() && member.spoken_by.is_none())
+    }
+
+    /// Take `from` in `workspace` as a device of `person`, as the workspace's governance admitted
+    /// it. Whether that changed what is known there.
+    pub(super) fn admitted_as(&self, workspace: &str, from: EndpointId, person: String) -> bool {
+        let mut plane = self.plane.borrow_mut();
+        let Some(held) = plane
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id == workspace)
+        else {
+            return false;
+        };
+        let device = held
+            .board
+            .member(*from.as_bytes())
+            .map(|member| member.device.clone())
+            .unwrap_or_default();
+        held.board.certify(*from.as_bytes(), person, &device)
     }
 
     /// The workspace on `topic`, by its id, and the person its board heard `peer` as there: what a
@@ -486,7 +516,7 @@ impl Presence {
         let Some((desk, frames)) = self.plane.borrow_mut().say_in_front(&word, now) else {
             return;
         };
-        self.say_frames(desk, frames);
+        self.say_frames(desk, &frames);
     }
 
     /// Say this device's whole word in `workspace`, on joining it: a device that came into a
@@ -509,7 +539,7 @@ impl Presence {
         let Some(desk) = desk else {
             return;
         };
-        self.say_frames(desk, frames);
+        self.say_frames(desk, &frames);
     }
 
     /// Take what the workspace in front's board owes now: what changed since its last burst, the
@@ -527,7 +557,7 @@ impl Presence {
         let Some((desk, frames)) = due else {
             return (false, forgot);
         };
-        self.say_frames(desk, frames);
+        self.say_frames(desk, &frames);
         (true, forgot)
     }
 
@@ -547,26 +577,27 @@ impl Presence {
     /// Say `frames` on `ws`'s presence track, each as the object the board numbered: one object per
     /// frame, sealed with the workspace scope's keys. Nothing while this session says presence
     /// nowhere: presence is ephemeral, and the next change says where its sender is.
-    fn say_frames(&self, ws: DeskWorkspaceId, frames: Vec<(u32, Frame)>) {
+    fn say_frames(&self, ws: DeskWorkspaceId, frames: &[(u32, Frame)]) {
         self.said
             .borrow_mut()
             .extend(frames.iter().map(|(_, frame)| frame.clone()));
         let Some(saying) = &self.saying else {
             return;
         };
-        for (sequence, frame) in frames {
-            let said = saying.say(ws, sequence, &frame).err();
-            let mut unsaid = self.unsaid.borrow_mut();
-            if *unsaid == said {
-                continue;
-            }
-            if let Some(error) = &said {
-                tracing::warn!(%error, "presence is not said on the live plane");
-            } else {
-                tracing::info!("presence is said on the live plane again");
-            }
-            *unsaid = said;
+        if frames.is_empty() {
+            return;
         }
+        let said = saying.say(ws, frames).err();
+        let mut unsaid = self.unsaid.borrow_mut();
+        if *unsaid == said {
+            return;
+        }
+        if let Some(error) = &said {
+            tracing::warn!(%error, "presence is not said on the live plane");
+        } else {
+            tracing::info!("presence is said on the live plane again");
+        }
+        *unsaid = said;
     }
 
     /// What this device said since the last call, as a session with no plane of its own would have

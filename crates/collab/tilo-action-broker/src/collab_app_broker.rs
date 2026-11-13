@@ -7286,7 +7286,9 @@ impl AppBrokerState {
                     .into_iter()
                     .map(|person| {
                         let row = workspace.collaborators.iter().find(|row| row.id == person);
-                        let name = row.map_or_else(|| person.clone(), |row| row.name.clone());
+                        // Someone presence has not named is unnamed here, never named by their
+                        // key: an app calls them as it calls anyone it has no name for.
+                        let name = row.map_or_else(String::new, |row| row.name.clone());
                         // The colour presence draws them in: the one they
                         // chose, or the one their identity derives, so an app
                         // paints a person as their desk and everyone else's

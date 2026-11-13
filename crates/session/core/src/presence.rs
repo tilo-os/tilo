@@ -21,6 +21,10 @@ const SETTLE_MS: f64 = 250.0;
 /// itself every keepalive, so a longer silence is a device that left before the workspace noticed.
 pub const POINTER_STALE_MS: f64 = KEEPALIVE_MS + 1000.0;
 
+/// A person as the bar and People draw them: their name, told apart as everywhere here, and their
+/// colour.
+pub type Face = (String, (u8, u8, u8));
+
 /// Who points where on a host's tiles now, and what each of them says beside their pointer.
 #[derive(Debug, Default)]
 pub struct Pointers {
@@ -41,9 +45,11 @@ pub struct Pointers {
 /// under the name `presence` knows the person by, where the tile they are over stands, with what
 /// they say beside it. `members` is who is here as the board lists them, `now` times the bubble and
 /// the reaction the receiver's own clock, and `now_ms` is the same clock in the milliseconds
-/// presence is heard on.
-pub fn pointers(
+/// presence is heard on. `faces` names the people here and gives their colour by publisher, as the
+/// bar and the People list draw them: a pointer of someone there wears that name and colour.
+pub fn pointers<S: std::hash::BuildHasher>(
     members: &[Shown],
+    faces: &std::collections::HashMap<String, Face, S>,
     tiles: &[Tile],
     chats: &mut CursorChats,
     presence: &PresenceCtx,
@@ -89,7 +95,8 @@ pub fn pointers(
         let [x, y] = pointer.at;
         let chat = chats.bubble(&user, now, motion);
         let reaction = chats.reaction(&user, now, motion);
-        pointers.drawn.push(presence.placed_cursor(PlacedPointer {
+        let face = faces.get(&member.publisher);
+        let mut cursor = presence.placed_cursor(PlacedPointer {
             user,
             at: tile.point((x, y)),
             name: Some(member.label.clone()),
@@ -97,7 +104,12 @@ pub fn pointers(
             activity: member.activity.clone(),
             chat,
             reaction,
-        }));
+        });
+        if let Some((label, (r, g, b))) = face {
+            cursor.label.clone_from(label);
+            cursor.color = ui::vello::peniko::Color::from_rgb8(*r, *g, *b);
+        }
+        pointers.drawn.push(cursor);
         pointers.tabs.push(tab);
     }
     chats.prune(now);
@@ -207,6 +219,47 @@ mod tests {
         }
     }
 
+    /// A person's pointer wears the name and colour of their face on the bar and in People, never
+    /// the key their presence was said under.
+    #[test]
+    fn a_pointer_wears_its_persons_face() {
+        let tiles = [Tile::new(1, 100.0, 50.0, 300.0, 200.0)];
+        let key = "ab".repeat(32);
+        let member = pointing("device", &key, 1, 10.0);
+        let faces = std::collections::HashMap::from([(
+            "device".to_owned(),
+            ("Bo".to_owned(), (0x38, 0xb8, 0xf6)),
+        )]);
+        let drawn = pointers(
+            std::slice::from_ref(&member),
+            &faces,
+            &tiles,
+            &mut CursorChats::default(),
+            &PresenceCtx::empty(),
+            Instant::now(),
+            1_000.0,
+            EffectiveMotion::default(),
+        )
+        .drawn;
+        assert_eq!(drawn[0].label, "Bo");
+        assert_eq!(
+            drawn[0].color,
+            ui::vello::peniko::Color::from_rgb8(0x38, 0xb8, 0xf6)
+        );
+        let unnamed = pointers(
+            &[member],
+            &std::collections::HashMap::new(),
+            &tiles,
+            &mut CursorChats::default(),
+            &PresenceCtx::empty(),
+            Instant::now(),
+            1_000.0,
+            EffectiveMotion::default(),
+        )
+        .drawn;
+        assert_eq!(unnamed[0].label, ui::presence::guest_label());
+    }
+
     /// A pointer is drawn where the tile it is over stands, under the name presence knows the
     /// person by, with what they say beside it and the reaction they gave.
     #[test]
@@ -226,6 +279,7 @@ mod tests {
         // What they say is heard on one pass and drawn on the next, once it has come in.
         let _ = pointers(
             &[member.clone()],
+            &std::collections::HashMap::new(),
             &tiles,
             &mut chats,
             &PresenceCtx::empty(),
@@ -235,6 +289,7 @@ mod tests {
         );
         let pointers = pointers(
             &[member],
+            &std::collections::HashMap::new(),
             &tiles,
             &mut chats,
             &PresenceCtx::empty(),
@@ -281,6 +336,7 @@ mod tests {
         let mut chats = CursorChats::default();
         let quiet = pointers(
             &[pointing("ada", "Ada", 1, POINTER_STALE_MS + 1.0)],
+            &std::collections::HashMap::new(),
             &tiles,
             &mut chats,
             &PresenceCtx::empty(),
@@ -292,6 +348,7 @@ mod tests {
         assert_eq!(quiet.leaving, None, "it already left");
         let elsewhere = pointers(
             &[pointing("cy", "Cy", 9, 0.0)],
+            &std::collections::HashMap::new(),
             &tiles,
             &mut chats,
             &PresenceCtx::empty(),

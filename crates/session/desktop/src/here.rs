@@ -373,7 +373,7 @@ fn availability_of(member: &LiveMember) -> ui::Availability {
 
 /// The name a member goes by here, as their presence says it.
 fn member_name(member: &LiveMember) -> Option<&str> {
-    Some(member.label.trim()).filter(|label| !label.is_empty())
+    ui::presence::shown_name(&member.label)
 }
 
 /// The row already listed for the agent at `device`: the same publisher, or the same person's
@@ -899,6 +899,56 @@ impl HereState {
         Some((label, rgb))
     }
 
+    /// What each other person's device here is drawn as, by live publisher: their person's name,
+    /// told apart as everywhere here, and the colour everyone here draws them in ([`Self::colors`]).
+    /// Their pointer wears it as their face on the bar and their row in People do.
+    #[must_use]
+    pub fn faces(&self) -> HashMap<String, (String, (u8, u8, u8))> {
+        let colors = self.colors();
+        let labels = self.labels();
+        self.members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind != "agent")
+            .map(|member| {
+                let face = self
+                    .user_of(&member.publisher)
+                    .and_then(|user| self.person(user))
+                    .unwrap_or_else(|| {
+                        let name = member_name(member).map_or_else(guest_label, str::to_owned);
+                        (
+                            labels.label(&member.publisher, &name),
+                            color_in(&colors, &member.publisher),
+                        )
+                    });
+                (member.publisher.clone(), face)
+            })
+            .collect()
+    }
+
+    /// Each other person here by the person they are (their user root, hex), with the name and
+    /// colour every surface here shows them by: what the apps here are told of them, so their
+    /// caret and their marks in a window wear the name and colour of their face on the bar.
+    #[must_use]
+    pub fn persons(&self) -> Vec<(String, String, (u8, u8, u8))> {
+        let mut persons: Vec<(String, String, (u8, u8, u8))> = Vec::new();
+        for member in self.members.iter().flatten() {
+            if member.kind == "agent" || self.is_own_person(&member.publisher) {
+                continue;
+            }
+            let Some(user) = self.user_of(&member.publisher) else {
+                continue;
+            };
+            if persons.iter().any(|(held, _, _)| held == user) {
+                continue;
+            }
+            if let Some((name, rgb)) = self.person(user) {
+                persons.push((user.to_owned(), name, rgb));
+            }
+        }
+        persons
+    }
+
     /// This page's own colour, as everyone here sees it.
     pub fn own_rgb(&self) -> Option<(u8, u8, u8)> {
         let own = self.own_id()?;
@@ -1033,8 +1083,7 @@ impl HereState {
                 user: self.user_of(&member.publisher).map(str::to_owned),
                 label: [member.label.as_str(), member.device.as_str()]
                     .into_iter()
-                    .map(str::trim)
-                    .find(|label| !label.is_empty())
+                    .find_map(ui::presence::shown_name)
                     .map_or_else(guest_label, str::to_owned),
                 devices: self.devices_of(&member.publisher),
                 rgb: color_in(&colors, &member.publisher),
@@ -1174,10 +1223,7 @@ fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8,
         .unwrap_or(ui::presence::UNSETTLED_RGB)
 }
 
-/// What a person who gave no name is called.
-pub fn guest_label() -> String {
-    "Guest".to_owned()
-}
+pub use ui::presence::guest_label;
 
 /// The window showing `focus` : the record's window, else the first window of its app.
 fn window_of(

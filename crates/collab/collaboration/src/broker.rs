@@ -3,7 +3,7 @@
 //! over bounded queues ([`CollabTransport::submit`] / [`CollabTransport::drain`]).
 //! Overload never closes the bridge: durable commands wait in the owner's
 //! ordered spill, documents defer (`Busy`) or are refused (`TooLarge`), and
-//! only presence is shed. Signing and verification happen on the worker.
+//! presence waits there with only its newest word per key. Signing and verification happen on the worker.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the shovel thread bridges a blocking socket"
@@ -455,15 +455,14 @@ impl BrokerTransport {
     /// never a reason to disable collaboration: a durable command that does
     /// not fit waits in [`Self::spill`] (in order, with a newer action
     /// surface replacing an older one) and is sent as the shovel frees room.
-    /// Presence is shed and document changes report `Busy`, as before.
+    /// Presence waits there too, a newer word under the same key taking the
+    /// place of the one waiting, so where someone is ends up said even when
+    /// their typing filled the queue. Document changes report `Busy`.
     fn enqueue(&mut self, command: SdkCommand) -> Result<(), TransportError> {
         self.flush_spill();
         if !self.spill.is_empty() || !self.reserve_barrier_slot() {
             // Everything behind a parked command stays behind it, and
             // nothing goes ahead of the next barrier's slot.
-            if command.is_transient_presence() {
-                return Err(TransportError::Shed);
-            }
             if command.document_len().is_some() {
                 self.state.command_bytes.arm_budget_wake();
                 return Err(TransportError::Busy);
@@ -504,7 +503,15 @@ impl BrokerTransport {
                     ));
                 }
             }
-            command => self.spill.push_back(command),
+            command => {
+                // Presence says where someone is now: what waits under the
+                // same key is older, and the newer goes to the back.
+                if let Some(slot) = command.presence_slot() {
+                    self.spill
+                        .retain(|parked| parked.presence_slot().as_ref() != Some(&slot));
+                }
+                self.spill.push_back(command);
+            }
         }
         // Arm before the retry so a release racing it is never missed.
         self.state.command_bytes.arm_budget_wake();
@@ -1042,6 +1049,18 @@ impl SdkCommand {
                     data.shrink_to_fit();
                 }
             }
+        }
+    }
+
+    /// The route and key a presence word is said under: a newer word under
+    /// the same one replaces it.
+    fn presence_slot(&self) -> Option<(Option<RouteSpec>, collab_types::presence::PresenceKey)> {
+        match self {
+            Self::Primary(CollabRequest::Presence { key, .. }) => Some((None, key.clone())),
+            Self::ToRoute(route, CollabRequest::Presence { key, .. }) => {
+                Some((Some(route.clone()), key.clone()))
+            }
+            _ => None,
         }
     }
 
@@ -1702,9 +1721,6 @@ fn admit_sdk_command(
         }));
     }
     let Some(reservation) = state.command_bytes.reserve(bytes, SDK_COMMAND_QUEUE_BYTES) else {
-        if transient {
-            return Err(Refused::error(TransportError::Shed));
-        }
         return Err(Refused {
             error: TransportError::Busy,
             command: Some(command),
@@ -1716,9 +1732,6 @@ fn admit_sdk_command(
     }) {
         Ok(()) => Ok(()),
         Err(tokio_mpsc::error::TrySendError::Full(refused)) => {
-            if transient {
-                return Err(Refused::error(TransportError::Shed));
-            }
             let QueuedSdkCommand {
                 command,
                 _reservation,

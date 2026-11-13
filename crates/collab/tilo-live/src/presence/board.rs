@@ -237,6 +237,35 @@ impl Member {
         true
     }
 
+    /// Take `shell`, the view they said of themselves.
+    ///
+    /// A run says each step it takes with a higher sequence: a view
+    /// at or below the one already taken is a repeat of it, sent
+    /// again or arrived late, and taking it would say what the run
+    /// was doing before the step it is on now. A person's device
+    /// stamps each view it says with when it said it: each frame is
+    /// a group of its own, which the track hands over as it lands,
+    /// so the caret a burst left at can land before one it passed
+    /// on the way. A view said earlier than the one taken is passed
+    /// over, so the latest always stands. Whether it is a change.
+    fn take_shell(&mut self, shell: &ShellPresence) -> bool {
+        if self.spoken_by.is_some() && shell.seq.wrapping_sub(self.shell_seq) >= u32::MAX / 2 {
+            return false;
+        }
+        if self.spoken_by.is_none()
+            && self
+                .shell
+                .as_deref()
+                .is_some_and(|held| shell.sent_at_ms < held.sent_at_ms)
+        {
+            return false;
+        }
+        self.shell_seq = shell.seq;
+        let changed = self.arrive() || self.shell.as_deref() != Some(shell);
+        self.shell = Some(Box::new(shell.clone()));
+        changed
+    }
+
     /// Whether this member is an agent rather than a person.
     #[must_use]
     pub fn agent(&self) -> bool {
@@ -821,21 +850,7 @@ impl Board {
                 }),
                 // A shell — a page's desktop, or an agent's face — says where
                 // its person is and, for an agent, that it works here at all.
-                // A run says each step it takes with a higher sequence: a view
-                // at or below the one already taken is a repeat of it, sent
-                // again or arrived late, and taking it would say what the run
-                // was doing before the step it is on now.
-                Payload::Shell(shell) => self.touch(from, |member| {
-                    if member.spoken_by.is_some()
-                        && shell.seq.wrapping_sub(member.shell_seq) >= u32::MAX / 2
-                    {
-                        return false;
-                    }
-                    member.shell_seq = shell.seq;
-                    let changed = member.arrive() || member.shell.as_deref() != Some(&**shell);
-                    member.shell = Some(shell.clone());
-                    changed
-                }),
+                Payload::Shell(shell) => self.touch(from, |member| member.take_shell(shell)),
                 payload => self.keep(from, &frame.key, payload),
             },
             // Another workspace's word says nothing of the people here.

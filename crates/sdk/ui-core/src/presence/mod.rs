@@ -32,7 +32,7 @@ pub use interaction::{
     TERMINAL_INTERACTION_DWELL, interaction_card_slots,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
-pub use labels::{ParticipantLabels, name_key};
+pub use labels::{ParticipantLabels, guest_label, name_key, shown_name};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
@@ -1741,18 +1741,28 @@ impl PresenceCtx {
     /// carry their number ("Ada (2)", [`ParticipantLabels`]); software acting for a person is named
     /// with that person ("Claude for Ada"), else with its kind.
     pub fn display_name(&self, user: &UserId) -> String {
-        let name = self.names.get(user).cloned().or_else(|| {
-            self.self_participant
-                .as_ref()
-                .filter(|(id, _)| id == user)
-                .map(|(_, name)| name.trim().to_owned())
-                .filter(|name| !name.is_empty())
-        });
+        let name = self
+            .names
+            .get(user)
+            .and_then(|name| shown_name(name))
+            .or_else(|| {
+                self.self_participant
+                    .as_ref()
+                    .filter(|(id, _)| id == user)
+                    .and_then(|(_, name)| shown_name(name))
+            })
+            .map(str::to_owned);
         let name = match name {
             Some(name) => name,
             // Software the roster has not named is named by what it is, never by its id:
-            // "Today · App". Someone presence knows only an id of keeps it until it knows a name.
-            None => crate::history_source::software_name(&user.0).unwrap_or_else(|| user.0.clone()),
+            // "Today · App". A person nobody named yet is a guest, never their key.
+            None => crate::history_source::software_name(&user.0).unwrap_or_else(|| {
+                if self.participant_kind(user) == ParticipantKind::Person {
+                    guest_label()
+                } else {
+                    user.0.clone()
+                }
+            }),
         };
         self.kind_label(user, &name)
     }
@@ -2648,7 +2658,7 @@ mod remote_cursor_tests {
             let c = &ctx.remote_cursors[0];
             assert_eq!(c.user_id, "alice");
             assert_eq!(c.position, [42.0, 17.0]);
-            assert_eq!(c.label, "alice");
+            assert_eq!(c.label, guest_label(), "an unnamed person is a guest");
             let (r, g, b) = user_color("alice");
             assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
             assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
@@ -2859,8 +2869,8 @@ mod string_id_wrapper_tests {
             );
             assert_eq!(
                 ctx.display_name(&alice),
-                "alice",
-                "name reverts to id fallback"
+                guest_label(),
+                "a person whose name went is a guest again"
             );
         }
         // phase: unregister_peer_leaves_other_users_alone
@@ -2916,8 +2926,8 @@ mod string_id_wrapper_tests {
         {
             let mut ctx = PresenceCtx::empty();
             let alice = UserId("alice".into());
-            // No roster entry yet → falls back to the id.
-            assert_eq!(ctx.display_name(&alice), "alice");
+            // No roster entry yet: a guest, never their id.
+            assert_eq!(ctx.display_name(&alice), guest_label());
             ctx.set_display_name(alice.clone(), "Alice Smith");
             assert_eq!(ctx.display_name(&alice), "Alice Smith");
             // `user()` bundles id + name + colour.
@@ -2944,20 +2954,18 @@ mod string_id_wrapper_tests {
             assert!(!ctx.user(&scribe).is_agent);
             assert_eq!(ctx.display_name(&scribe), "Editorial helper");
         }
-        // phase: an_unnamed_peer_is_labelled_with_its_id_and_never_with_a_stand_in
-        // Labelled with the raw id, never blank and never a stand-in name — a
-        // blank chip reads as a rendering fault, a stand-in reads as a real person.
+        // phase: an_unnamed_peer_is_a_guest_and_never_its_id
+        // A person nobody named is a guest on every surface: never blank, and never their key,
+        // which reads as a fault on a caret chip.
         {
             let ctx = PresenceCtx::empty();
-            let peer = UserId("peer@5537458103208628978".into());
-
+            let peer = UserId("ab".repeat(32));
             let label = ctx.display_name(&peer);
-            assert_eq!(label, "peer@5537458103208628978");
-            assert!(!label.trim().is_empty(), "a caret chip must never be blank");
+            assert_eq!(label, guest_label());
             assert_eq!(
                 ctx.user(&peer).name,
-                "peer@5537458103208628978",
-                "every renderer resolves the same way, so none of them invents a name",
+                guest_label(),
+                "every renderer resolves the same way",
             );
         }
         // phase: a_peer_that_gains_a_name_keeps_its_colour
@@ -2978,12 +2986,12 @@ mod string_id_wrapper_tests {
         }
         // phase: a_name_that_arrives_after_the_pointer_relabels_it
         // A name can arrive after the pointer it belongs to. The pill has to
-        // pick it up, or a peer stays a number on screen until they happen
+        // pick it up, or a peer stays a guest on screen until they happen
         // to move again.
         {
             let mut ctx = PresenceCtx::empty();
             ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
-            assert_eq!(ctx.remote_cursors[0].label, "peer@77");
+            assert_eq!(ctx.remote_cursors[0].label, guest_label());
 
             ctx.set_display_name(UserId("peer@77".into()), "Bob");
 

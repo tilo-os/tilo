@@ -298,7 +298,11 @@ pub(crate) fn start_collaboration(
         beside.push(remote.protocol(std::sync::Arc::clone(devices)));
     }
     let own = sync::OwnPresence {
-        label: options.person.clone(),
+        // What everyone here calls them: the name they gave, else their account's, never their key.
+        label: crate::platform::person::desk_person_name(
+            ui::local_identity::load().map(|identity| identity.display_name),
+            &options.person,
+        ),
         user: identity
             .as_ref()
             .map(|identity| hex::encode(identity.device_cert.user_public_key)),

@@ -1300,6 +1300,7 @@ impl Panel {
             if !members.is_empty() {
                 pointers = tilo_session_core::presence::pointers(
                     &members,
+                    &sync.here().borrow().faces(),
                     &tiles,
                     &mut self.chats.borrow_mut(),
                     presence,

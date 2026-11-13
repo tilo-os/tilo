@@ -128,13 +128,7 @@ impl Carets {
             self.read.borrow_mut().insert(workspace.clone(), revision);
             let mut placed: HashMap<String, (PresenceKey, PresencePayload)> = HashMap::new();
             for member in sync.members(&workspace) {
-                // Who they are: their certificate's person, else the person the workspace admitted
-                // their device as.
-                let user = member.user.clone().or_else(|| {
-                    let device = <[u8; 32]>::try_from(hex::decode(&member.publisher).ok()?).ok()?;
-                    sync.governed_person(&workspace, iroh::EndpointId::from_bytes(&device).ok()?)
-                });
-                let Some(user) = user.filter(|user| Some(user) != person.as_ref()) else {
+                let Some(user) = member.user.filter(|user| Some(user) != person.as_ref()) else {
                     continue;
                 };
                 if member.agent {

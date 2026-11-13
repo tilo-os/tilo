@@ -303,6 +303,51 @@ fn a_shell_says_itself_whole_and_only_when_it_changed() {
 }
 
 #[test]
+fn the_caret_a_burst_left_at_stands_whatever_order_its_frames_land_in() {
+    use collab_types::presence::{ShellPresence, ShellSelection};
+    let at = |sent_at_ms: u64, head: &str| {
+        said(Payload::Shell(Box::new(ShellPresence {
+            seq: 0,
+            sent_at_ms,
+            label: "Ada".into(),
+            agent: false,
+            colour: "#38b8f6".into(),
+            activity: None,
+            place: None,
+            size: [1440, 852],
+            windows: Vec::new(),
+            selection: Some(ShellSelection {
+                anchor: head.into(),
+                head: head.into(),
+            }),
+            chat: None,
+            reaction: None,
+        })))
+    };
+    let caret = |board: &Board| {
+        board
+            .member([1; 32])
+            .and_then(|member| member.shell.as_deref())
+            .and_then(|shell| shell.selection.as_ref())
+            .map(|selection| selection.head.clone())
+    };
+    let mut board = board();
+    // Three moves of one quick burst; the last one lands before the middle one.
+    assert!(board.hear([1; 32], &at(100, "a"), 0.0));
+    assert!(board.hear([1; 32], &at(300, "c"), 1.0));
+    assert!(
+        !board.hear([1; 32], &at(200, "b"), 2.0),
+        "a move said before the one taken changes nothing"
+    );
+    assert_eq!(caret(&board).as_deref(), Some("c"));
+    // The same view said again, for loss repair or as a keepalive, still stands.
+    board.hear([1; 32], &at(300, "c"), 3.0);
+    assert_eq!(caret(&board).as_deref(), Some("c"));
+    assert!(board.hear([1; 32], &at(400, "d"), 4.0));
+    assert_eq!(caret(&board).as_deref(), Some("d"));
+}
+
+#[test]
 fn stopping_following_is_said_so_nobody_keeps_showing_it() {
     let mut board = board();
     board.say(&Own {
