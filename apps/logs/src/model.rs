@@ -125,8 +125,10 @@ impl LogEntry {
         let now = ui::clock::local_now();
         let now_us = u64::try_from(now.timestamp_micros()).unwrap_or(0);
         let (ty, tmo, td, ..) = civil(local_us(now_us));
-        // format: machine (a journal time to the millisecond, as journalctl writes it)
-        let precise = format!("{hh:02}:{mm:02}:{ss:02}.{milli:03}");
+        let precise = ui::format::machine!(
+            "a journal time to the millisecond, as journalctl writes it",
+            format!("{hh:02}:{mm:02}:{ss:02}.{milli:03}")
+        );
         if (ty, tmo, td) == (y, mo, d) {
             return precise;
         }
@@ -142,15 +144,19 @@ impl LogEntry {
     /// `YYYY-MM-DD HH:MM:SS.mmm` in local time — the detail timestamp.
     pub fn timestamp_full(&self) -> String {
         let (y, mo, d, hh, mm, ss, milli) = civil(local_us(self.realtime_us));
-        // format: machine (the journal's own precise timestamp)
-        format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03}")
+        ui::format::machine!(
+            "the journal's own precise timestamp, as it writes it",
+            format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03}")
+        )
     }
 
     /// `HH:MM:SS` in local time, for compact contexts.
     pub fn time_hms(&self) -> String {
         let (_, _, _, hh, mm, ss, _) = civil(local_us(self.realtime_us));
-        // format: machine (a journal time to the second)
-        format!("{hh:02}:{mm:02}:{ss:02}")
+        ui::format::machine!(
+            "a journal time to the second, as it writes one",
+            format!("{hh:02}:{mm:02}:{ss:02}")
+        )
     }
 
     /// The unit label shown in the list — strips a trailing `.service` for density, leaves
