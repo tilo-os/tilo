@@ -1581,6 +1581,16 @@ try {
     // its title names the sheet without standing anywhere of its own.
     if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
     await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
+    // A sheet slides in over the desk, and a press lands where its controls
+    // stood when the last frame was read: the parts are pressed once they
+    // have stood still for a frame, as a person presses what they see.
+    const atCommenter = async () => JSON.parse(await find(a.tab, 'Commenter'))?.bounds ?? null;
+    for (let frames = 0, was = null; frames < 12; frames += 1) {
+      const now = JSON.stringify(await atCommenter());
+      if (was !== null && now === was) break;
+      was = now;
+      await settle(a.tab, 1);
+    }
     if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
     // The line under the choice follows the pick. Where it does not, what the
     // sheet stood as is kept: the parts it published, where they were drawn,
