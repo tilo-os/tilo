@@ -184,4 +184,70 @@ mod tests {
             assert_eq!(names.label(id), *expected, "{id:?}: {why}");
         }
     }
+
+    /// The roster's name for a participant comes before what their id says they are, the window's
+    /// own person reads as the workspace calls them once it says, and `follow` says whether a
+    /// name changed: the same roster said again changes nothing, and a person the roster no
+    /// longer names is unnamed again, never shown by the name they had.
+    #[test]
+    fn the_roster_names_a_participant_first_and_follow_says_when_a_name_changed() {
+        use ui::permissions::UserId;
+
+        let ben = || UserId("ben-id".to_owned());
+        let names = Names::new("me-id");
+        let mut presence = PresenceCtx::default();
+        assert!(
+            !names.follow(&presence),
+            "no roster yet and none before: nothing changed"
+        );
+
+        presence.names.insert(ben(), "Ben".to_owned());
+        assert!(names.follow(&presence), "the roster named a person");
+        assert_eq!(names.label("ben-id"), "Ben");
+        assert_eq!(
+            names.label("tomas"),
+            "Unknown participant",
+            "a person the roster does not name stays unnamed"
+        );
+        assert_eq!(
+            names.label("me-id"),
+            "You",
+            "the workspace has not said what it calls this window's person"
+        );
+        assert!(
+            !names.follow(&presence),
+            "the same roster said again changes nothing"
+        );
+
+        presence.set_self_participant(UserId("me-id".to_owned()), "Ada");
+        assert!(
+            names.follow(&presence),
+            "the workspace named this window's person"
+        );
+        assert_eq!(names.label("me-id"), "Ada");
+        assert_eq!(
+            said(&presence),
+            (
+                "Ada".to_owned(),
+                vec![("ben-id".to_owned(), "Ben".to_owned())]
+            ),
+            "what the window tells an instance out of its process: its person, and the others"
+        );
+
+        presence.names.remove(&ben());
+        assert!(
+            names.follow(&presence),
+            "the roster no longer names a person"
+        );
+        assert_eq!(
+            names.label("ben-id"),
+            "Unknown participant",
+            "a person the roster dropped is not shown by the name they had"
+        );
+        assert_eq!(
+            names.label("me-id"),
+            "Ada",
+            "and the window's person keeps theirs"
+        );
+    }
 }
