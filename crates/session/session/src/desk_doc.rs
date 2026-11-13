@@ -25,9 +25,6 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use tilo_session_core::desk::{Loaded, Store};
 
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-
 /// The document beside the rest of this device's state.
 #[cfg(target_os = "linux")]
 pub(crate) const FILE: &str = "desk.automerge";
@@ -198,12 +195,6 @@ impl DeskDoc {
             Some(tree) => Kept::Desk(Box::new(tree)),
             None => Kept::None,
         }
-    }
-
-    /// The desk the document holds, for a test that reads what a session left.
-    #[cfg(test)]
-    pub(crate) fn tree(&self) -> Option<DesktopTree> {
-        self.desk.tree()
     }
 
     /// The desk document itself, as the arrangement keeps it too.
