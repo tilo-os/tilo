@@ -3423,96 +3423,637 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
     }
-    #[test]
-    fn ordinary_confirmation_native_events_keep_bounded_measured_tree() {
-        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-        let mut host = Host::new(true, root);
-        let expected_rect = match &host {
-            Host::Native(app) => {
-                assert!(
-                    !app.root_widget.layout_needs_measure(),
-                    "retained Button is clean"
+    tilo_test_env::scenario! {
+        fn an_ordinary_confirmation_publishes_an_operable_dialog;
+
+        phase ordinary_confirmation_native_events_keep_bounded_measured_tree;
+        {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(true, root);
+            let expected_rect = match &host {
+                Host::Native(app) => {
+                    assert!(
+                        !app.root_widget.layout_needs_measure(),
+                        "retained Button is clean"
+                    );
+                    app.root_widget.get_rect()
+                }
+                Host::FrameHarness(_) => unreachable!(),
+            };
+            assert!(expected_rect.width() > 0.0 && expected_rect.height() > 0.0);
+            host.activate("Emit request");
+            let Host::Native(app) = &mut host else {
+                unreachable!()
+            };
+            let baseline_nodes = app.layout.taffy.total_node_count();
+            let mut samples = vec![(baseline_nodes, app.root_widget.get_rect())];
+            for index in 0..12 {
+                let event = crate::synthetic_input::cursor_moved(300.0 + f64::from(index), 220.0);
+                assert!(app.action_palette_handle_event(&event, 1.0));
+                layout(app);
+                samples.push((
+                    app.layout.taffy.total_node_count(),
+                    app.root_widget.get_rect(),
+                ));
+                let event = crate::synthetic_input::key_input(
+                    &Key::Character(format!("draft {index}").into()),
+                    ElementState::Pressed,
                 );
-                app.root_widget.get_rect()
+                assert!(app.action_palette_handle_key(&event));
+                app.controlled_local_idle_for_test();
+                layout(app);
+                samples.push((
+                    app.layout.taffy.total_node_count(),
+                    app.root_widget.get_rect(),
+                ));
             }
-            Host::FrameHarness(_) => unreachable!(),
-        };
-        assert!(expected_rect.width() > 0.0 && expected_rect.height() > 0.0);
-        host.activate("Emit request");
-        let Host::Native(app) = &mut host else {
-            unreachable!()
-        };
-        let baseline_nodes = app.layout.taffy.total_node_count();
-        let mut samples = vec![(baseline_nodes, app.root_widget.get_rect())];
-        for index in 0..12 {
-            let event = crate::synthetic_input::cursor_moved(300.0 + f64::from(index), 220.0);
-            assert!(app.action_palette_handle_event(&event, 1.0));
-            layout(app);
-            samples.push((
-                app.layout.taffy.total_node_count(),
-                app.root_widget.get_rect(),
-            ));
-            let event = crate::synthetic_input::key_input(
-                &Key::Character(format!("draft {index}").into()),
-                ElementState::Pressed,
+            assert!(ledger.borrow().is_empty());
+            let bounded = samples.iter().all(|(nodes, _)| *nodes <= baseline_nodes);
+            let measured = samples.iter().all(|(_, rect)| *rect == expected_rect);
+            assert!(
+                bounded && measured,
+                "unchanged-background events must retain bounded solved geometry: initial nodes={baseline_nodes}, rect={expected_rect:?}, samples={samples:?}"
             );
-            assert!(app.action_palette_handle_key(&event));
-            app.controlled_local_idle_for_test();
-            layout(app);
-            samples.push((
-                app.layout.taffy.total_node_count(),
-                app.root_widget.get_rect(),
-            ));
         }
-        assert!(ledger.borrow().is_empty());
-        let bounded = samples.iter().all(|(nodes, _)| *nodes <= baseline_nodes);
-        let measured = samples.iter().all(|(_, rect)| *rect == expected_rect);
-        assert!(
-            bounded && measured,
-            "unchanged-background events must retain bounded solved geometry: initial nodes={baseline_nodes}, rect={expected_rect:?}, samples={samples:?}"
-        );
+
+        phase ordinary_confirmation_native_instruction_is_independently_operable;
+        {
+            confirm_using_published_instruction(true);
+        }
+
+        phase ordinary_confirmation_driver_instruction_is_independently_operable;
+        {
+            confirm_using_published_instruction(false);
+        }
+
+        phase ordinary_confirmation_no_resolver_confirm_phrase_once_through_published_surface;
+        {
+            for native in [true, false] {
+                for phrase in ["CONFIRM", "APPLY EXACT"] {
+                    let policy = if phrase == "CONFIRM" {
+                        tilo_actions::ConfirmationPolicy::Confirm
+                    } else {
+                        tilo_actions::ConfirmationPolicy::Phrase {
+                            phrase: phrase.into(),
+                        }
+                    };
+                    let (root, ledger, _) = fixture(policy);
+                    let mut host = Host::new(native, root);
+                    host.activate("Emit request");
+                    assert!(ledger.borrow().is_empty());
+                    let stale = host.submit_id();
+                    let submit = if phrase == "CONFIRM" {
+                        "Run fixture"
+                    } else {
+                        "Run"
+                    };
+                    if phrase != "CONFIRM" {
+                        host.value("wrong");
+                        assert!(host.disabled(submit), "not the name it asks for");
+                        assert!(ledger.borrow().is_empty(), "not the name it asks for");
+                        host.value(phrase);
+                    }
+                    host.activate(submit);
+                    assert_eq!(
+                        &*ledger.borrow(),
+                        &[serde_json::json!({"payload":"original"})]
+                    );
+                    host.stale(stale);
+                    assert_eq!(ledger.borrow().len(), 1);
+                }
+            }
+        }
+
+        phase ordinary_confirmation_modal_focus_tracks_its_action_button;
+        {
+            for native in [true, false] {
+                let (root, _, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
+            }
+        }
+
+        phase ordinary_confirmation_pointer_and_keyboard_controls_use_shared_transition;
+        {
+            for native in [true, false] {
+                for cancel in [false, true] {
+                    let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                    let mut host = Host::new(native, root);
+                    host.activate("Emit request");
+                    let label = if cancel { "Cancel" } else { "Run fixture" };
+                    let nodes = match &mut host {
+                        Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
+                        Host::FrameHarness(driver) => driver.a11y_nodes(),
+                    };
+                    let bounds = nodes
+                        .iter()
+                        .find(|(_, node)| node.label() == Some(label))
+                        .unwrap()
+                        .1
+                        .bounds()
+                        .unwrap();
+                    assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+                    let scale = if native { 2.0 } else { 1.0 };
+                    let event = crate::synthetic_input::cursor_moved(
+                        (bounds.x0 + bounds.x1) * 0.5 * scale,
+                        (bounds.y0 + bounds.y1) * 0.5 * scale,
+                    );
+                    let mut send = |event: &WindowEvent| match &mut host {
+                        Host::Native(app) => {
+                            assert!(app.action_palette_handle_event(event, scale));
+                            layout(app)
+                        }
+                        Host::FrameHarness(driver) => driver.send(event),
+                    };
+                    send(&event);
+                    for state in [ElementState::Pressed, ElementState::Released] {
+                        send(&crate::synthetic_input::mouse_input(
+                            state,
+                            winit::event::MouseButton::Left,
+                        ));
+                    }
+                    assert_eq!(ledger.borrow().len(), usize::from(!cancel));
+                }
+            }
+            for native in [true, false] {
+                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                let event = crate::synthetic_input::key_input(
+                    &Key::Named(NamedKey::Tab),
+                    ElementState::Pressed,
+                );
+                match &mut host {
+                    Host::Native(app) => {
+                        assert!(app.action_palette_handle_event(&event, 1.0));
+                        layout(app)
+                    }
+                    Host::FrameHarness(driver) => driver.send(&event),
+                }
+                assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
+                let event = crate::synthetic_input::key_input(
+                    &Key::Named(NamedKey::Enter),
+                    ElementState::Pressed,
+                );
+                match &mut host {
+                    Host::Native(app) => {
+                        assert!(app.action_palette_handle_event(&event, 1.0));
+                        layout(app)
+                    }
+                    Host::FrameHarness(driver) => driver.send(&event),
+                }
+                assert!(ledger.borrow().is_empty());
+            }
+        }
+
+        phase ordinary_confirmation_cancel_restores_retained_background_focus;
+        {
+            for native in [true, false] {
+                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let mut host = Host::new(native, root);
+                host.act("Emit request", crate::a11y::Action::Focus);
+                assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+                host.activate("Emit request");
+                assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
+                if let Host::Native(app) = &host {
+                    assert!(app.actions.ordinary_palette_return_focus.is_some());
+                }
+                host.activate("Cancel");
+                assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+                if let Host::Native(app) = &host {
+                    assert!(app.actions.ordinary_palette_return_focus.is_none());
+                }
+                assert!(ledger.borrow().is_empty());
+            }
+        }
+
+        phase ordinary_confirmation_cancel_does_not_focus_a_removed_opener;
+        {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(true, root);
+            host.act("Emit request", crate::a11y::Action::Focus);
+            assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+            host.activate("Emit request");
+            assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
+            let Host::Native(app) = &mut host else {
+                unreachable!()
+            };
+            assert!(
+                app.actions.ordinary_palette_return_focus.is_some(),
+                "the modal actually retained the opener identity before removal"
+            );
+            app.bindings.clear();
+            app.layout.node_map.clear();
+            app.focused_node = None;
+            app.root_widget = Box::new(crate::widget::Button::new(
+                "replacement-control",
+                "Unrelated control",
+            ));
+            app.layout.request_rebuild();
+            layout(app);
+            host.activate("Cancel");
+            let Host::Native(app) = &mut host else {
+                unreachable!()
+            };
+            let published = app.build_a11y_tree_update(1.0);
+            assert!(
+                published
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| { node.label() == Some("Unrelated control") })
+            );
+            assert!(
+                published
+                    .nodes
+                    .iter()
+                    .all(|(_, node)| { node.label() != Some("Emit request") })
+            );
+            assert!(
+                app.focused_node.is_none(),
+                "removed focus must not transfer"
+            );
+            assert!(
+                ledger.borrow().is_empty(),
+                "cancellation executes no action"
+            );
+        }
+
+        phase ordinary_confirmation_native_publishes_actual_prompt;
+        {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut app = App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
+            layout(&mut app);
+            let named_action_target = named(&mut app, "Emit request");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            app.controlled_local_idle_for_test();
+            layout(&mut app);
+            assert!(ledger.borrow().is_empty());
+            named(&mut app, "Run fixture?");
+            named(&mut app, "Run fixture");
+            named(&mut app, "Cancel");
+        }
+
+        phase ordinary_confirmation_driver_publishes_actual_prompt;
+        {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
+                State::new(),
+                root,
+                (900, 650),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("fixture".into()),
+            )
+            .unwrap();
+            driver
+                .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(ledger.borrow().is_empty());
+            assert!(
+                driver.a11y_node_named("Run fixture?").is_some(),
+                "the actual dialog question must be published"
+            );
+            assert!(driver.a11y_node_named("Run fixture").is_some());
+            assert!(driver.a11y_node_named("Cancel").is_some());
+        }
     }
 
-    #[test]
-    fn ordinary_confirmation_history_outcome_stays_visible_without_moving_content() {
-        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-        let mut host = Host::new(true, root);
-        let Host::Native(app) = &mut host else {
-            unreachable!()
-        };
-        let original = app.root_widget.get_rect();
-        host.activate("Emit request");
-        let Host::Native(app) = &mut host else {
-            unreachable!()
-        };
-        assert_eq!(app.document_sync_status(), None);
-        assert_eq!(app.root_widget.get_rect(), original);
-        let input = app.begin_local_input_capture();
-        crate::local_dispatch::LocalDispatch::new()
-            .try_dispatch(&mut app.state.doc, "fixture.edit", &FixtureEdit)
-            .unwrap();
-        drop(input);
-        app.drain_local_input_capture();
-        assert_eq!(app.document_sync_status(), None);
-        app.local_input_capture_failed("refused for the test");
-        layout(app);
-        let status = app
-            .document_sync_status()
-            .expect("a change not saved to the history says so")
-            .into_owned();
-        assert_eq!(
-            status,
-            crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved")
-        );
-        let tree = app.build_a11y_tree_update(1.0);
-        let (_, node) = tree
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some(status.as_str()))
-            .expect("the outcome is published in the existing History bar");
-        assert!(node.bounds().is_some_and(|bounds| bounds.width() > 0.0));
-        assert_eq!(app.root_widget.get_rect(), original);
-        assert!(ledger.borrow().is_empty());
+    tilo_test_env::scenario! {
+        fn an_ordinary_confirmation_keeps_its_original_request_through_history;
+
+        phase ordinary_confirmation_history_outcome_stays_visible_without_moving_content;
+        {
+            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+            let mut host = Host::new(true, root);
+            let Host::Native(app) = &mut host else {
+                unreachable!()
+            };
+            let original = app.root_widget.get_rect();
+            host.activate("Emit request");
+            let Host::Native(app) = &mut host else {
+                unreachable!()
+            };
+            assert_eq!(app.document_sync_status(), None);
+            assert_eq!(app.root_widget.get_rect(), original);
+            let input = app.begin_local_input_capture();
+            crate::local_dispatch::LocalDispatch::new()
+                .try_dispatch(&mut app.state.doc, "fixture.edit", &FixtureEdit)
+                .unwrap();
+            drop(input);
+            app.drain_local_input_capture();
+            assert_eq!(app.document_sync_status(), None);
+            app.local_input_capture_failed("refused for the test");
+            layout(app);
+            let status = app
+                .document_sync_status()
+                .expect("a change not saved to the history says so")
+                .into_owned();
+            assert_eq!(
+                status,
+                crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved")
+            );
+            let tree = app.build_a11y_tree_update(1.0);
+            let (_, node) = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(status.as_str()))
+                .expect("the outcome is published in the existing History bar");
+            assert!(node.bounds().is_some_and(|bounds| bounds.width() > 0.0));
+            assert_eq!(app.root_widget.get_rect(), original);
+            assert!(ledger.borrow().is_empty());
+        }
+
+        phase ordinary_confirmation_history_clears_old_confirmation_and_fresh_no_resolver_works;
+        {
+            for native in [true, false] {
+                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                let stale = host.submit_id();
+                host.activate("History");
+                assert!(ledger.borrow().is_empty());
+                host.activate("History");
+                assert!(ledger.borrow().is_empty());
+                host.stale(stale);
+                host.activate("Run fixture");
+                assert!(ledger.borrow().is_empty());
+                host.activate("Cancel");
+                host.activate("Emit request");
+                host.activate("Run fixture");
+                assert_eq!(ledger.borrow().len(), 1);
+            }
+        }
+
+        phase ordinary_confirmation_copies_emitted_json_and_types_with_fixture_fonts;
+        {
+            for native in [true, false] {
+                let input = source();
+                let (widget, ledger, _) =
+                    fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, input.clone());
+                let mut host = Host::new(native, managed(Box::new(widget)));
+                host.activate("Emit request");
+                input
+                    .lock()
+                    .unwrap()
+                    .insert("payload".into(), serde_json::json!("successor-selection"));
+                host.key("CONFIRM");
+                host.activate("Run fixture");
+                assert_eq!(
+                    &*ledger.borrow(),
+                    &[serde_json::json!({"payload":"original"})]
+                );
+            }
+        }
+
+        phase ordinary_confirmation_native_immediate_and_text_use_original_representation;
+        {
+            use tilo_actions::*;
+            const PROMPT: &str = "Enter original text";
+            for text in [false, true] {
+                let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                let mut spec = if text {
+                    ActionSpec::prompted_operation(
+                        "run",
+                        "Run fixture",
+                        PROMPT,
+                        "Original",
+                        OperationKind::Effect,
+                        "fixture.control",
+                        |text| {
+                            EncodedAction::encode_operation(
+                                "fixture.control",
+                                &serde_json::json!({"prompted_argument":text}),
+                            )
+                            .unwrap()
+                        },
+                    )
+                } else {
+                    ActionSpec::operation(
+                        "run",
+                        "Run fixture",
+                        OperationKind::Effect,
+                        "fixture.control",
+                        &serde_json::json!({"immediate":"original"}),
+                    )
+                    .unwrap()
+                };
+                spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
+                resources.borrow_mut()[0].actions[0] = spec;
+                let mut app =
+                    App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
+                layout(&mut app);
+                app.dispatch_a11y_action(
+                    crate::accesskit_bridge::resource_action_node_id("ordinary:fixture", "run"),
+                    &crate::a11y::Action::Activate,
+                );
+                layout(&mut app);
+                if text {
+                    let named_action_target = named(&mut app, PROMPT);
+                    app.dispatch_a11y_action(
+                        named_action_target,
+                        &crate::a11y::Action::SetValue("not-a-value-field".into()),
+                    );
+                    layout(&mut app);
+                    app.action_palette_handle_key(&crate::synthetic_input::key_input(
+                        &Key::Named(NamedKey::Enter),
+                        ElementState::Pressed,
+                    ));
+                    layout(&mut app);
+                }
+                assert!(ledger.borrow().is_empty());
+                assert!(
+                    app.action_palette_handle_key(&crate::synthetic_input::key_input(
+                        &Key::Character("CONFIRM".into()),
+                        ElementState::Pressed,
+                    ))
+                );
+                layout(&mut app);
+                let named_action_target = named(&mut app, "Run fixture");
+                app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+                layout(&mut app);
+                assert_eq!(
+                    &*ledger.borrow(),
+                    &[if text {
+                        serde_json::json!({"prompted_argument":"not-a-value-field"})
+                    } else {
+                        serde_json::json!({"immediate":"original"})
+                    }]
+                );
+            }
+        }
+
+        phase ordinary_confirmation_history_preserves_original_snapshot_and_exact_continuation;
+        {
+            use tilo_actions::*;
+            for native in [true, false] {
+                for changed in [false, true] {
+                    let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                    let original = resources.borrow()[0].actions[0].clone();
+                    resources.borrow_mut()[0].actions[0] = original.with_continuation_identity(|q| {
+                        matches!(q, ContinuationQuery::Exact(_)).then(|| ContinuationEvidence::Exact {
+                            target: ContinuationKey::new("target", [b"original"]),
+                            handler: ContinuationKey::new("handler", [b"v1"]),
+                        })
+                    });
+                    let mut host = Host::new(native, root);
+                    host.activate("Emit request");
+                    host.activate("History");
+                    if changed {
+                        resources.borrow_mut()[0].actions[0].type_mut().label =
+                            "Changed during History".into();
+                    }
+                    host.activate("History");
+                    assert!(ledger.borrow().is_empty());
+                    host.activate("Run fixture");
+                    assert_eq!(
+                        ledger.borrow().len(),
+                        usize::from(!changed),
+                        "{native}:{changed}"
+                    );
+                }
+            }
+        }
+
+        phase ordinary_confirmation_document_uses_authored_undo_completion;
+        {
+            use tilo_actions::*;
+            for native in [true, false] {
+                let (root, _, resources) = fixture(ConfirmationPolicy::Confirm);
+                let mut spec = ActionSpec::typed(
+                    "run",
+                    "Run fixture",
+                    "Payload",
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required("payload", ParamType::Text, "Payload")],
+                    |_| EncodedAction::encode("fixture.edit", &FixtureEdit).unwrap(),
+                );
+                spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
+                resources.borrow_mut()[0].actions[0] = spec;
+                let mut host = Host::new(native, root);
+                match &mut host {
+                    Host::Native(app) => app
+                        .action_registry_mut()
+                        .register::<FixtureEdit>("fixture.edit"),
+                    Host::FrameHarness(driver) => driver
+                        .action_registry_mut()
+                        .register::<FixtureEdit>("fixture.edit"),
+                }
+                fn state(host: &mut Host) -> &mut State {
+                    match host {
+                        Host::Native(app) => &mut app.state,
+                        Host::FrameHarness(driver) => driver.state_mut(),
+                    }
+                }
+                use automerge::ReadDoc;
+                assert!(state(&mut host).peek_last_undo().is_none());
+                let before = state(&mut host).doc.get_heads();
+                host.activate("Emit request");
+                host.activate("Run fixture");
+                let author = match &host {
+                    Host::Native(app) => app.collaboration.local_author.clone(),
+                    Host::FrameHarness(_) => crate::permissions::UserId("fixture".into()),
+                };
+                let state = state(&mut host);
+                assert_eq!(
+                    state
+                        .doc
+                        .get(automerge::ROOT, "confirmed-document")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_bool(),
+                    Some(true)
+                );
+                let entry = state.peek_last_undo().unwrap();
+                assert_eq!(entry.before, before);
+                assert_ne!(entry.after, entry.before);
+                assert_eq!(entry.author.as_ref(), Some(&author));
+                let committed = state.doc.get_heads();
+                assert!(state.undo_as(Some(&author), None, None).is_some());
+                assert!(
+                    state
+                        .doc
+                        .get(automerge::ROOT, "confirmed-document")
+                        .unwrap()
+                        .is_none()
+                );
+                assert_ne!(state.doc.get_heads(), committed);
+                assert!(
+                    state.peek_last_undo().is_none(),
+                    "exactly one authored undo boundary"
+                );
+            }
+        }
+
+        phase ordinary_confirmation_history_preserves_e_suppresses_h_and_fresh_f_is_ordinary;
+        {
+            use tilo_actions::*;
+            for native in [true, false] {
+                for owner in [0, 1] {
+                    let input = source();
+                    let (widget, ledger, resources) =
+                        fixture_widget(ConfirmationPolicy::Confirm, input.clone());
+                    let output = widget.output.clone();
+                    let spec = resources.borrow()[0].actions[0].clone();
+                    resources.borrow_mut()[0].actions[0] = spec.with_continuation_identity(|query| {
+                        matches!(query, ContinuationQuery::Exact(_)).then(|| {
+                            ContinuationEvidence::Exact {
+                                target: ContinuationKey::new("target", [b"original"]),
+                                handler: ContinuationKey::new("handler", [b"original"]),
+                            }
+                        })
+                    });
+                    let (root, guard) = if owner == 0 {
+                        (managed(Box::new(widget)), None)
+                    } else {
+                        let (root, guard) = owned(widget);
+                        (guard.managed(root), Some(guard))
+                    };
+                    let mut host = Host::new(native, root);
+                    host.activate("Emit request");
+                    let stale = host.submit_id();
+                    host.activate("History");
+                    assert_eq!(
+                        output.borrow().as_ref().unwrap().emit(ControlInvocation {
+                            address: ActionAddress::new("ordinary:fixture", "run"),
+                            arguments: serde_json::json!({"payload":"H"})
+                                .as_object()
+                                .unwrap()
+                                .clone()
+                        }),
+                        Ok(crate::control_custody::LocalEmission::Suppressed)
+                    );
+                    input
+                        .lock()
+                        .unwrap()
+                        .insert("payload".into(), serde_json::json!("F"));
+                    host.activate("History");
+                    assert!(ledger.borrow().is_empty());
+                    host.stale(stale);
+                    if ledger.borrow().is_empty() {
+                        host.activate("Run fixture");
+                    }
+                    assert_eq!(
+                        &*ledger.borrow(),
+                        &[serde_json::json!({"payload":"original"})]
+                    );
+                    let mut fresh = resources.borrow()[0].actions[0].clone();
+                    fresh = fresh.with_continuation_identity(|_| None);
+                    resources.borrow_mut()[0].actions[0] = fresh;
+                    host.activate("Emit request");
+                    host.activate("Run fixture");
+                    assert_eq!(
+                        &*ledger.borrow(),
+                        &[
+                            serde_json::json!({"payload":"original"}),
+                            serde_json::json!({"payload":"F"})
+                        ]
+                    );
+                    drop(guard);
+                }
+            }
+        }
     }
 
     fn confirmation_field(label: &str) -> bool {
@@ -3592,427 +4133,286 @@ pub(crate) mod ordinary_confirmation_tests {
             assert_eq!(ledger.borrow().len(), 1);
         }
     }
-    #[test]
-    fn ordinary_confirmation_native_instruction_is_independently_operable() {
-        confirm_using_published_instruction(true);
-    }
-    #[test]
-    fn ordinary_confirmation_driver_instruction_is_independently_operable() {
-        confirm_using_published_instruction(false);
-    }
 
-    #[test]
-    fn ordinary_confirmation_no_resolver_confirm_phrase_once_through_published_surface() {
-        for native in [true, false] {
-            for phrase in ["CONFIRM", "APPLY EXACT"] {
-                let policy = if phrase == "CONFIRM" {
-                    tilo_actions::ConfirmationPolicy::Confirm
-                } else {
-                    tilo_actions::ConfirmationPolicy::Phrase {
-                        phrase: phrase.into(),
-                    }
-                };
-                let (root, ledger, _) = fixture(policy);
+    tilo_test_env::scenario! {
+        fn an_ordinary_confirmation_refuses_stale_changed_or_revoked_requests;
+
+        phase ordinary_confirmation_cancel_and_successor_reject_stale_submit;
+        {
+            for native in [true, false] {
+                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                assert!(ledger.borrow().is_empty());
                 let stale = host.submit_id();
-                let submit = if phrase == "CONFIRM" {
-                    "Run fixture"
-                } else {
-                    "Run"
-                };
-                if phrase != "CONFIRM" {
-                    host.value("wrong");
-                    assert!(host.disabled(submit), "not the name it asks for");
-                    assert!(ledger.borrow().is_empty(), "not the name it asks for");
-                    host.value(phrase);
-                }
-                host.activate(submit);
-                assert_eq!(
-                    &*ledger.borrow(),
-                    &[serde_json::json!({"payload":"original"})]
-                );
+                host.activate("Cancel");
+                host.activate("Emit request");
                 host.stale(stale);
+                assert!(ledger.borrow().is_empty());
+                host.activate("Run fixture");
                 assert_eq!(ledger.borrow().len(), 1);
             }
         }
-    }
-    #[test]
-    fn ordinary_confirmation_cancel_and_successor_reject_stale_submit() {
-        for native in [true, false] {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-            let mut host = Host::new(native, root);
-            host.activate("Emit request");
-            let stale = host.submit_id();
-            host.activate("Cancel");
-            host.activate("Emit request");
-            host.stale(stale);
-            assert!(ledger.borrow().is_empty());
-            host.activate("Run fixture");
-            assert_eq!(ledger.borrow().len(), 1);
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_declared_mutations_and_revocation_refuse() {
-        use tilo_actions::*;
-        for native in [true, false] {
-            for mutation in [
-                "encoding",
-                "contract",
-                "policy",
-                "schema",
-                "unavailable",
-                "duplicate-resource",
-                "duplicate-action",
-                "revoked",
-                "label",
-                "kind",
-            ] {
-                let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
-                let mut host = Host::new(native, root);
-                host.activate("Emit request");
-                {
-                    let mut resources = resources.borrow_mut();
-                    let spec = &mut resources[0].actions[0];
-                    match mutation {
-                        "encoding" => {
-                            let old = spec.contract.clone();
-                            *spec = ActionSpec::typed_operation(
-                                "run",
-                                "Run fixture",
-                                "Payload",
-                                OperationKind::Effect,
-                                "fixture.control",
-                                vec![ActionParam::required("payload", ParamType::Text, "Payload")],
-                                |_| {
-                                    EncodedAction::encode_operation(
-                                        "fixture.control",
-                                        &serde_json::json!({"payload":"changed"}),
-                                    )
-                                    .unwrap()
-                                },
-                            )
-                            .with_contract(old);
-                        }
-                        "contract" => spec.type_mut().contract.risk = RiskLevel::Privileged,
-                        "policy" => {
-                            spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
-                                phrase: "OTHER".into(),
-                            }
-                        }
-                        "schema" => {
-                            let old = spec.contract.clone();
-                            *spec = ActionSpec::typed_operation(
-                                "run",
-                                "Run fixture",
-                                "Payload",
-                                OperationKind::Effect,
-                                "fixture.control",
-                                vec![ActionParam::required(
-                                    "payload",
-                                    ParamType::Integer,
-                                    "Payload",
-                                )],
-                                |args| {
-                                    EncodedAction::encode_operation(
-                                        "fixture.control",
-                                        &args.to_json(),
-                                    )
-                                    .unwrap()
-                                },
-                            )
-                            .with_contract(old);
-                        }
-                        "unavailable" => {
-                            spec.type_mut().contract.availability = Availability::Unavailable {
-                                code: "gone".into(),
-                                reason: "Gone".into(),
-                            }
-                        }
-                        "duplicate-resource" => {
-                            let duplicate = resources[0].clone();
-                            resources.push(duplicate);
-                        }
-                        "duplicate-action" => {
-                            let duplicate = resources[0].actions[0].clone();
-                            resources[0].actions.push(duplicate);
-                        }
-                        "label" => spec.type_mut().label = "Different reviewed meaning".into(),
-                        "kind" => spec.type_mut().kind = OperationKind::View,
-                        "revoked" => {}
-                        _ => unreachable!(),
-                    }
-                }
-                if mutation == "revoked" {
-                    host.revoke();
-                }
-                host.activate("Run fixture");
-                assert!(ledger.borrow().is_empty(), "{native}:{mutation}");
-            }
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_optional_exact_evidence_change_or_loss_refuses() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        };
-        use tilo_actions::*;
-        for native in [true, false] {
-            for later in [0, 2] {
-                for handler in [false, true] {
+
+        phase ordinary_confirmation_declared_mutations_and_revocation_refuse;
+        {
+            use tilo_actions::*;
+            for native in [true, false] {
+                for mutation in [
+                    "encoding",
+                    "contract",
+                    "policy",
+                    "schema",
+                    "unavailable",
+                    "duplicate-resource",
+                    "duplicate-action",
+                    "revoked",
+                    "label",
+                    "kind",
+                ] {
                     let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
-                    let epoch = Arc::new(AtomicU64::new(1));
-                    let captured = epoch.clone();
-                    let original = resources.borrow()[0].actions[0].clone();
-                    resources.borrow_mut()[0].actions[0] =
-                        original.with_continuation_identity(move |query| {
-                            let epoch = captured.load(Ordering::SeqCst);
-                            if epoch == 0 {
-                                return None;
-                            }
-                            matches!(query, ContinuationQuery::Exact(_)).then(|| {
-                                ContinuationEvidence::Exact {
-                                    target: ContinuationKey::new(
-                                        "alias-target",
-                                        [if handler {
-                                            1u64.to_le_bytes()
-                                        } else {
-                                            epoch.to_le_bytes()
-                                        }],
-                                    ),
-                                    handler: ContinuationKey::new(
-                                        "handler",
-                                        [if handler {
-                                            epoch.to_le_bytes()
-                                        } else {
-                                            1u64.to_le_bytes()
-                                        }],
-                                    ),
-                                }
-                            })
-                        });
                     let mut host = Host::new(native, root);
                     host.activate("Emit request");
-                    epoch.store(later, Ordering::SeqCst);
-                    host.activate("Run fixture");
-                    assert!(ledger.borrow().is_empty());
-                }
-            }
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_history_clears_old_confirmation_and_fresh_no_resolver_works() {
-        for native in [true, false] {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-            let mut host = Host::new(native, root);
-            host.activate("Emit request");
-            let stale = host.submit_id();
-            host.activate("History");
-            assert!(ledger.borrow().is_empty());
-            host.activate("History");
-            assert!(ledger.borrow().is_empty());
-            host.stale(stale);
-            host.activate("Run fixture");
-            assert!(ledger.borrow().is_empty());
-            host.activate("Cancel");
-            host.activate("Emit request");
-            host.activate("Run fixture");
-            assert_eq!(ledger.borrow().len(), 1);
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_copies_emitted_json_and_types_with_fixture_fonts() {
-        for native in [true, false] {
-            let input = source();
-            let (widget, ledger, _) =
-                fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, input.clone());
-            let mut host = Host::new(native, managed(Box::new(widget)));
-            host.activate("Emit request");
-            input
-                .lock()
-                .unwrap()
-                .insert("payload".into(), serde_json::json!("successor-selection"));
-            host.key("CONFIRM");
-            host.activate("Run fixture");
-            assert_eq!(
-                &*ledger.borrow(),
-                &[serde_json::json!({"payload":"original"})]
-            );
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_component_owner_permission_and_duplicate_matrix() {
-        for native in [true, false] {
-            {
-                for case in ["positive", "closed", "revoked", "duplicate"] {
-                    let (widget, ledger, resources) =
-                        fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
-                    let (root, guard) = owned(widget);
-                    let mut host = Host::new(native, guard.managed(root));
-                    host.activate("Emit request");
-                    match case {
-                        "closed" => guard.close(),
-                        "revoked" => guard.revoke(),
-                        "duplicate" => {
-                            let duplicate = resources.borrow()[0].clone();
-                            resources.borrow_mut().push(duplicate);
+                    {
+                        let mut resources = resources.borrow_mut();
+                        let spec = &mut resources[0].actions[0];
+                        match mutation {
+                            "encoding" => {
+                                let old = spec.contract.clone();
+                                *spec = ActionSpec::typed_operation(
+                                    "run",
+                                    "Run fixture",
+                                    "Payload",
+                                    OperationKind::Effect,
+                                    "fixture.control",
+                                    vec![ActionParam::required("payload", ParamType::Text, "Payload")],
+                                    |_| {
+                                        EncodedAction::encode_operation(
+                                            "fixture.control",
+                                            &serde_json::json!({"payload":"changed"}),
+                                        )
+                                        .unwrap()
+                                    },
+                                )
+                                .with_contract(old);
+                            }
+                            "contract" => spec.type_mut().contract.risk = RiskLevel::Privileged,
+                            "policy" => {
+                                spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
+                                    phrase: "OTHER".into(),
+                                }
+                            }
+                            "schema" => {
+                                let old = spec.contract.clone();
+                                *spec = ActionSpec::typed_operation(
+                                    "run",
+                                    "Run fixture",
+                                    "Payload",
+                                    OperationKind::Effect,
+                                    "fixture.control",
+                                    vec![ActionParam::required(
+                                        "payload",
+                                        ParamType::Integer,
+                                        "Payload",
+                                    )],
+                                    |args| {
+                                        EncodedAction::encode_operation(
+                                            "fixture.control",
+                                            &args.to_json(),
+                                        )
+                                        .unwrap()
+                                    },
+                                )
+                                .with_contract(old);
+                            }
+                            "unavailable" => {
+                                spec.type_mut().contract.availability = Availability::Unavailable {
+                                    code: "gone".into(),
+                                    reason: "Gone".into(),
+                                }
+                            }
+                            "duplicate-resource" => {
+                                let duplicate = resources[0].clone();
+                                resources.push(duplicate);
+                            }
+                            "duplicate-action" => {
+                                let duplicate = resources[0].actions[0].clone();
+                                resources[0].actions.push(duplicate);
+                            }
+                            "label" => spec.type_mut().label = "Different reviewed meaning".into(),
+                            "kind" => spec.type_mut().kind = OperationKind::View,
+                            "revoked" => {}
+                            _ => unreachable!(),
                         }
-                        _ => {}
+                    }
+                    if mutation == "revoked" {
+                        host.revoke();
                     }
                     host.activate("Run fixture");
-                    assert_eq!(
-                        ledger.borrow().len(),
-                        usize::from(case == "positive"),
-                        "{native}:{case}"
-                    );
+                    assert!(ledger.borrow().is_empty(), "{native}:{mutation}");
                 }
             }
         }
-    }
-    #[test]
-    fn ordinary_confirmation_same_address_successor_cannot_receive_original_request() {
-        for native in [true, false] {
-            {
-                let (widget, old_ledger, _) =
-                    fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
-                let (old, old_guard) = owned(widget);
-                let (widget, new_ledger, _) =
-                    fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
-                let (new, new_guard) = owned(widget);
-                let mut values = [Some(old), Some(new)];
-                let changed = Rc::new(std::cell::Cell::new(false));
-                let projection = changed.clone();
-                let mut model = crate::widget::ModelView::from_document(
-                    move |_, _| projection.get(),
-                    move |changed| values[usize::from(*changed)].take().unwrap(),
-                );
-                model.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
-                let mut host = Host::new(native, old_guard.managed(Box::new(model)));
-                host.activate("Emit request");
-                let stale = host.submit_id();
-                changed.set(true);
-                host.frame();
-                match &mut host {
-                    Host::Native(app) => {
-                        app.dispatch_a11y_action(stale, &crate::a11y::Action::Activate);
-                        layout(app)
-                    }
-                    Host::FrameHarness(driver) => {
-                        let _ = driver.perform_a11y_action(stale, &crate::a11y::Action::Activate);
-                    }
-                }
-                assert!(old_ledger.borrow().is_empty());
-                assert!(new_ledger.borrow().is_empty());
-                drop((old_guard, new_guard));
-            }
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_native_immediate_and_text_use_original_representation() {
-        use tilo_actions::*;
-        const PROMPT: &str = "Enter original text";
-        for text in [false, true] {
-            let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
-            let mut spec = if text {
-                ActionSpec::prompted_operation(
-                    "run",
-                    "Run fixture",
-                    PROMPT,
-                    "Original",
-                    OperationKind::Effect,
-                    "fixture.control",
-                    |text| {
-                        EncodedAction::encode_operation(
-                            "fixture.control",
-                            &serde_json::json!({"prompted_argument":text}),
-                        )
-                        .unwrap()
-                    },
-                )
-            } else {
-                ActionSpec::operation(
-                    "run",
-                    "Run fixture",
-                    OperationKind::Effect,
-                    "fixture.control",
-                    &serde_json::json!({"immediate":"original"}),
-                )
-                .unwrap()
+
+        phase ordinary_confirmation_optional_exact_evidence_change_or_loss_refuses;
+        {
+            use std::sync::{
+                Arc,
+                atomic::{AtomicU64, Ordering},
             };
-            spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
-            resources.borrow_mut()[0].actions[0] = spec;
-            let mut app =
-                App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
-            layout(&mut app);
-            app.dispatch_a11y_action(
-                crate::accesskit_bridge::resource_action_node_id("ordinary:fixture", "run"),
-                &crate::a11y::Action::Activate,
-            );
-            layout(&mut app);
-            if text {
-                let named_action_target = named(&mut app, PROMPT);
-                app.dispatch_a11y_action(
-                    named_action_target,
-                    &crate::a11y::Action::SetValue("not-a-value-field".into()),
-                );
-                layout(&mut app);
-                app.action_palette_handle_key(&crate::synthetic_input::key_input(
-                    &Key::Named(NamedKey::Enter),
-                    ElementState::Pressed,
-                ));
-                layout(&mut app);
+            use tilo_actions::*;
+            for native in [true, false] {
+                for later in [0, 2] {
+                    for handler in [false, true] {
+                        let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                        let epoch = Arc::new(AtomicU64::new(1));
+                        let captured = epoch.clone();
+                        let original = resources.borrow()[0].actions[0].clone();
+                        resources.borrow_mut()[0].actions[0] =
+                            original.with_continuation_identity(move |query| {
+                                let epoch = captured.load(Ordering::SeqCst);
+                                if epoch == 0 {
+                                    return None;
+                                }
+                                matches!(query, ContinuationQuery::Exact(_)).then(|| {
+                                    ContinuationEvidence::Exact {
+                                        target: ContinuationKey::new(
+                                            "alias-target",
+                                            [if handler {
+                                                1u64.to_le_bytes()
+                                            } else {
+                                                epoch.to_le_bytes()
+                                            }],
+                                        ),
+                                        handler: ContinuationKey::new(
+                                            "handler",
+                                            [if handler {
+                                                epoch.to_le_bytes()
+                                            } else {
+                                                1u64.to_le_bytes()
+                                            }],
+                                        ),
+                                    }
+                                })
+                            });
+                        let mut host = Host::new(native, root);
+                        host.activate("Emit request");
+                        epoch.store(later, Ordering::SeqCst);
+                        host.activate("Run fixture");
+                        assert!(ledger.borrow().is_empty());
+                    }
+                }
             }
-            assert!(ledger.borrow().is_empty());
-            assert!(
-                app.action_palette_handle_key(&crate::synthetic_input::key_input(
-                    &Key::Character("CONFIRM".into()),
-                    ElementState::Pressed,
-                ))
-            );
-            layout(&mut app);
-            let named_action_target = named(&mut app, "Run fixture");
-            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
-            assert_eq!(
-                &*ledger.borrow(),
-                &[if text {
-                    serde_json::json!({"prompted_argument":"not-a-value-field"})
-                } else {
-                    serde_json::json!({"immediate":"original"})
-                }]
-            );
         }
-    }
-    #[test]
-    fn ordinary_confirmation_history_preserves_original_snapshot_and_exact_continuation() {
-        use tilo_actions::*;
-        for native in [true, false] {
-            for changed in [false, true] {
-                let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
-                let original = resources.borrow()[0].actions[0].clone();
-                resources.borrow_mut()[0].actions[0] = original.with_continuation_identity(|q| {
-                    matches!(q, ContinuationQuery::Exact(_)).then(|| ContinuationEvidence::Exact {
-                        target: ContinuationKey::new("target", [b"original"]),
-                        handler: ContinuationKey::new("handler", [b"v1"]),
-                    })
-                });
+
+        phase ordinary_confirmation_component_owner_permission_and_duplicate_matrix;
+        {
+            for native in [true, false] {
+                {
+                    for case in ["positive", "closed", "revoked", "duplicate"] {
+                        let (widget, ledger, resources) =
+                            fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
+                        let (root, guard) = owned(widget);
+                        let mut host = Host::new(native, guard.managed(root));
+                        host.activate("Emit request");
+                        match case {
+                            "closed" => guard.close(),
+                            "revoked" => guard.revoke(),
+                            "duplicate" => {
+                                let duplicate = resources.borrow()[0].clone();
+                                resources.borrow_mut().push(duplicate);
+                            }
+                            _ => {}
+                        }
+                        host.activate("Run fixture");
+                        assert_eq!(
+                            ledger.borrow().len(),
+                            usize::from(case == "positive"),
+                            "{native}:{case}"
+                        );
+                    }
+                }
+            }
+        }
+
+        phase ordinary_confirmation_same_address_successor_cannot_receive_original_request;
+        {
+            for native in [true, false] {
+                {
+                    let (widget, old_ledger, _) =
+                        fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
+                    let (old, old_guard) = owned(widget);
+                    let (widget, new_ledger, _) =
+                        fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
+                    let (new, new_guard) = owned(widget);
+                    let mut values = [Some(old), Some(new)];
+                    let changed = Rc::new(std::cell::Cell::new(false));
+                    let projection = changed.clone();
+                    let mut model = crate::widget::ModelView::from_document(
+                        move |_, _| projection.get(),
+                        move |changed| values[usize::from(*changed)].take().unwrap(),
+                    );
+                    model.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
+                    let mut host = Host::new(native, old_guard.managed(Box::new(model)));
+                    host.activate("Emit request");
+                    let stale = host.submit_id();
+                    changed.set(true);
+                    host.frame();
+                    match &mut host {
+                        Host::Native(app) => {
+                            app.dispatch_a11y_action(stale, &crate::a11y::Action::Activate);
+                            layout(app)
+                        }
+                        Host::FrameHarness(driver) => {
+                            let _ = driver.perform_a11y_action(stale, &crate::a11y::Action::Activate);
+                        }
+                    }
+                    assert!(old_ledger.borrow().is_empty());
+                    assert!(new_ledger.borrow().is_empty());
+                    drop((old_guard, new_guard));
+                }
+            }
+        }
+
+        phase ordinary_confirmation_none_and_later_optional_evidence_remain_compatible;
+        {
+            use tilo_actions::*;
+            for native in [true, false] {
+                let (root, ledger, _) = fixture(ConfirmationPolicy::None);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.activate("History");
-                if changed {
-                    resources.borrow_mut()[0].actions[0].type_mut().label =
-                        "Changed during History".into();
-                }
-                host.activate("History");
-                assert!(ledger.borrow().is_empty());
+                assert_eq!(ledger.borrow().len(), 1);
+                let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
+                let mut host = Host::new(native, root);
+                host.activate("Emit request");
+                let spec = resources.borrow()[0].actions[0].clone();
+                resources.borrow_mut()[0].actions[0] = spec.with_continuation_identity(|_| {
+                    Some(ContinuationEvidence::Exact {
+                        target: ContinuationKey::new("later", [b"target"]),
+                        handler: ContinuationKey::new("later", [b"handler"]),
+                    })
+                });
                 host.activate("Run fixture");
-                assert_eq!(
-                    ledger.borrow().len(),
-                    usize::from(!changed),
-                    "{native}:{changed}"
-                );
+                assert_eq!(ledger.borrow().len(), 1);
+            }
+        }
+
+        phase ordinary_confirmation_native_closed_or_replaced_outer_domain_refuses;
+        {
+            for replacement in [false, true] {
+                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+                let mut host = Host::new(true, root);
+                host.activate("Emit request");
+                let Host::Native(app) = &mut host else {
+                    unreachable!()
+                };
+                let old = app.control_domain.clone();
+                if replacement {
+                    app.control_domain = crate::ControlDomain::new();
+                } else {
+                    old.close();
+                }
+                host.activate("Run fixture");
+                assert!(ledger.borrow().is_empty());
             }
         }
     }
@@ -4024,317 +4424,6 @@ pub(crate) mod ordinary_confirmation_tests {
             doc.put(automerge::ROOT, "confirmed-document", true)?;
             Ok(())
         }
-    }
-    #[test]
-    fn ordinary_confirmation_document_uses_authored_undo_completion() {
-        use tilo_actions::*;
-        for native in [true, false] {
-            let (root, _, resources) = fixture(ConfirmationPolicy::Confirm);
-            let mut spec = ActionSpec::typed(
-                "run",
-                "Run fixture",
-                "Payload",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required("payload", ParamType::Text, "Payload")],
-                |_| EncodedAction::encode("fixture.edit", &FixtureEdit).unwrap(),
-            );
-            spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
-            resources.borrow_mut()[0].actions[0] = spec;
-            let mut host = Host::new(native, root);
-            match &mut host {
-                Host::Native(app) => app
-                    .action_registry_mut()
-                    .register::<FixtureEdit>("fixture.edit"),
-                Host::FrameHarness(driver) => driver
-                    .action_registry_mut()
-                    .register::<FixtureEdit>("fixture.edit"),
-            }
-            fn state(host: &mut Host) -> &mut State {
-                match host {
-                    Host::Native(app) => &mut app.state,
-                    Host::FrameHarness(driver) => driver.state_mut(),
-                }
-            }
-            use automerge::ReadDoc;
-            assert!(state(&mut host).peek_last_undo().is_none());
-            let before = state(&mut host).doc.get_heads();
-            host.activate("Emit request");
-            host.activate("Run fixture");
-            let author = match &host {
-                Host::Native(app) => app.collaboration.local_author.clone(),
-                Host::FrameHarness(_) => crate::permissions::UserId("fixture".into()),
-            };
-            let state = state(&mut host);
-            assert_eq!(
-                state
-                    .doc
-                    .get(automerge::ROOT, "confirmed-document")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_bool(),
-                Some(true)
-            );
-            let entry = state.peek_last_undo().unwrap();
-            assert_eq!(entry.before, before);
-            assert_ne!(entry.after, entry.before);
-            assert_eq!(entry.author.as_ref(), Some(&author));
-            let committed = state.doc.get_heads();
-            assert!(state.undo_as(Some(&author), None, None).is_some());
-            assert!(
-                state
-                    .doc
-                    .get(automerge::ROOT, "confirmed-document")
-                    .unwrap()
-                    .is_none()
-            );
-            assert_ne!(state.doc.get_heads(), committed);
-            assert!(
-                state.peek_last_undo().is_none(),
-                "exactly one authored undo boundary"
-            );
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_modal_focus_tracks_its_action_button() {
-        for native in [true, false] {
-            let (root, _, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-            let mut host = Host::new(native, root);
-            host.activate("Emit request");
-            assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_pointer_and_keyboard_controls_use_shared_transition() {
-        for native in [true, false] {
-            for cancel in [false, true] {
-                let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-                let mut host = Host::new(native, root);
-                host.activate("Emit request");
-                let label = if cancel { "Cancel" } else { "Run fixture" };
-                let nodes = match &mut host {
-                    Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
-                    Host::FrameHarness(driver) => driver.a11y_nodes(),
-                };
-                let bounds = nodes
-                    .iter()
-                    .find(|(_, node)| node.label() == Some(label))
-                    .unwrap()
-                    .1
-                    .bounds()
-                    .unwrap();
-                assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
-                let scale = if native { 2.0 } else { 1.0 };
-                let event = crate::synthetic_input::cursor_moved(
-                    (bounds.x0 + bounds.x1) * 0.5 * scale,
-                    (bounds.y0 + bounds.y1) * 0.5 * scale,
-                );
-                let mut send = |event: &WindowEvent| match &mut host {
-                    Host::Native(app) => {
-                        assert!(app.action_palette_handle_event(event, scale));
-                        layout(app)
-                    }
-                    Host::FrameHarness(driver) => driver.send(event),
-                };
-                send(&event);
-                for state in [ElementState::Pressed, ElementState::Released] {
-                    send(&crate::synthetic_input::mouse_input(
-                        state,
-                        winit::event::MouseButton::Left,
-                    ));
-                }
-                assert_eq!(ledger.borrow().len(), usize::from(!cancel));
-            }
-        }
-        for native in [true, false] {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-            let mut host = Host::new(native, root);
-            host.activate("Emit request");
-            let event = crate::synthetic_input::key_input(
-                &Key::Named(NamedKey::Tab),
-                ElementState::Pressed,
-            );
-            match &mut host {
-                Host::Native(app) => {
-                    assert!(app.action_palette_handle_event(&event, 1.0));
-                    layout(app)
-                }
-                Host::FrameHarness(driver) => driver.send(&event),
-            }
-            assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
-            let event = crate::synthetic_input::key_input(
-                &Key::Named(NamedKey::Enter),
-                ElementState::Pressed,
-            );
-            match &mut host {
-                Host::Native(app) => {
-                    assert!(app.action_palette_handle_event(&event, 1.0));
-                    layout(app)
-                }
-                Host::FrameHarness(driver) => driver.send(&event),
-            }
-            assert!(ledger.borrow().is_empty());
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_history_preserves_e_suppresses_h_and_fresh_f_is_ordinary() {
-        use tilo_actions::*;
-        for native in [true, false] {
-            for owner in [0, 1] {
-                let input = source();
-                let (widget, ledger, resources) =
-                    fixture_widget(ConfirmationPolicy::Confirm, input.clone());
-                let output = widget.output.clone();
-                let spec = resources.borrow()[0].actions[0].clone();
-                resources.borrow_mut()[0].actions[0] = spec.with_continuation_identity(|query| {
-                    matches!(query, ContinuationQuery::Exact(_)).then(|| {
-                        ContinuationEvidence::Exact {
-                            target: ContinuationKey::new("target", [b"original"]),
-                            handler: ContinuationKey::new("handler", [b"original"]),
-                        }
-                    })
-                });
-                let (root, guard) = if owner == 0 {
-                    (managed(Box::new(widget)), None)
-                } else {
-                    let (root, guard) = owned(widget);
-                    (guard.managed(root), Some(guard))
-                };
-                let mut host = Host::new(native, root);
-                host.activate("Emit request");
-                let stale = host.submit_id();
-                host.activate("History");
-                assert_eq!(
-                    output.borrow().as_ref().unwrap().emit(ControlInvocation {
-                        address: ActionAddress::new("ordinary:fixture", "run"),
-                        arguments: serde_json::json!({"payload":"H"})
-                            .as_object()
-                            .unwrap()
-                            .clone()
-                    }),
-                    Ok(crate::control_custody::LocalEmission::Suppressed)
-                );
-                input
-                    .lock()
-                    .unwrap()
-                    .insert("payload".into(), serde_json::json!("F"));
-                host.activate("History");
-                assert!(ledger.borrow().is_empty());
-                host.stale(stale);
-                if ledger.borrow().is_empty() {
-                    host.activate("Run fixture");
-                }
-                assert_eq!(
-                    &*ledger.borrow(),
-                    &[serde_json::json!({"payload":"original"})]
-                );
-                let mut fresh = resources.borrow()[0].actions[0].clone();
-                fresh = fresh.with_continuation_identity(|_| None);
-                resources.borrow_mut()[0].actions[0] = fresh;
-                host.activate("Emit request");
-                host.activate("Run fixture");
-                assert_eq!(
-                    &*ledger.borrow(),
-                    &[
-                        serde_json::json!({"payload":"original"}),
-                        serde_json::json!({"payload":"F"})
-                    ]
-                );
-                drop(guard);
-            }
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_none_and_later_optional_evidence_remain_compatible() {
-        use tilo_actions::*;
-        for native in [true, false] {
-            let (root, ledger, _) = fixture(ConfirmationPolicy::None);
-            let mut host = Host::new(native, root);
-            host.activate("Emit request");
-            assert_eq!(ledger.borrow().len(), 1);
-            let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
-            let mut host = Host::new(native, root);
-            host.activate("Emit request");
-            let spec = resources.borrow()[0].actions[0].clone();
-            resources.borrow_mut()[0].actions[0] = spec.with_continuation_identity(|_| {
-                Some(ContinuationEvidence::Exact {
-                    target: ContinuationKey::new("later", [b"target"]),
-                    handler: ContinuationKey::new("later", [b"handler"]),
-                })
-            });
-            host.activate("Run fixture");
-            assert_eq!(ledger.borrow().len(), 1);
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_cancel_restores_retained_background_focus() {
-        for native in [true, false] {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-            let mut host = Host::new(native, root);
-            host.act("Emit request", crate::a11y::Action::Focus);
-            assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
-            host.activate("Emit request");
-            assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
-            if let Host::Native(app) = &host {
-                assert!(app.actions.ordinary_palette_return_focus.is_some());
-            }
-            host.activate("Cancel");
-            assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
-            if let Host::Native(app) = &host {
-                assert!(app.actions.ordinary_palette_return_focus.is_none());
-            }
-            assert!(ledger.borrow().is_empty());
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_cancel_does_not_focus_a_removed_opener() {
-        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-        let mut host = Host::new(true, root);
-        host.act("Emit request", crate::a11y::Action::Focus);
-        assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
-        host.activate("Emit request");
-        assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
-        let Host::Native(app) = &mut host else {
-            unreachable!()
-        };
-        assert!(
-            app.actions.ordinary_palette_return_focus.is_some(),
-            "the modal actually retained the opener identity before removal"
-        );
-        app.bindings.clear();
-        app.layout.node_map.clear();
-        app.focused_node = None;
-        app.root_widget = Box::new(crate::widget::Button::new(
-            "replacement-control",
-            "Unrelated control",
-        ));
-        app.layout.request_rebuild();
-        layout(app);
-        host.activate("Cancel");
-        let Host::Native(app) = &mut host else {
-            unreachable!()
-        };
-        let published = app.build_a11y_tree_update(1.0);
-        assert!(
-            published
-                .nodes
-                .iter()
-                .any(|(_, node)| { node.label() == Some("Unrelated control") })
-        );
-        assert!(
-            published
-                .nodes
-                .iter()
-                .all(|(_, node)| { node.label() != Some("Emit request") })
-        );
-        assert!(
-            app.focused_node.is_none(),
-            "removed focus must not transfer"
-        );
-        assert!(
-            ledger.borrow().is_empty(),
-            "cancellation executes no action"
-        );
     }
 
     #[test]
@@ -4395,62 +4484,5 @@ pub(crate) mod ordinary_confirmation_tests {
                 .unwrap_or_else(|| panic!("missing retained binding {control}"));
             assert_eq!(entry.status, expected, "binding {control}");
         }
-    }
-
-    #[test]
-    fn ordinary_confirmation_native_closed_or_replaced_outer_domain_refuses() {
-        for replacement in [false, true] {
-            let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-            let mut host = Host::new(true, root);
-            host.activate("Emit request");
-            let Host::Native(app) = &mut host else {
-                unreachable!()
-            };
-            let old = app.control_domain.clone();
-            if replacement {
-                app.control_domain = crate::ControlDomain::new();
-            } else {
-                old.close();
-            }
-            host.activate("Run fixture");
-            assert!(ledger.borrow().is_empty());
-        }
-    }
-    #[test]
-    fn ordinary_confirmation_native_publishes_actual_prompt() {
-        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-        let mut app = App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
-        layout(&mut app);
-        let named_action_target = named(&mut app, "Emit request");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        app.controlled_local_idle_for_test();
-        layout(&mut app);
-        assert!(ledger.borrow().is_empty());
-        named(&mut app, "Run fixture?");
-        named(&mut app, "Run fixture");
-        named(&mut app, "Cancel");
-    }
-    #[test]
-    fn ordinary_confirmation_driver_publishes_actual_prompt() {
-        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
-        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
-            State::new(),
-            root,
-            (900, 650),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
-        )
-        .unwrap();
-        driver
-            .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(ledger.borrow().is_empty());
-        assert!(
-            driver.a11y_node_named("Run fixture?").is_some(),
-            "the actual dialog question must be published"
-        );
-        assert!(driver.a11y_node_named("Run fixture").is_some());
-        assert!(driver.a11y_node_named("Cancel").is_some());
     }
 }

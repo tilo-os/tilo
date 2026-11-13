@@ -195,21 +195,100 @@ mod tests {
         }))
     }
 
-    #[test]
-    fn first_registration_per_id_wins() {
-        let first = definition("test.registry.first-wins");
-        let second = definition("test.registry.first-wins");
-        assert!(register(first));
-        assert!(!register(second));
-        let found = application("test.registry.first-wins").unwrap();
-        assert!(std::ptr::eq(found, first));
-        assert_eq!(
-            applications()
-                .iter()
-                .filter(|d| d.app_id == "test.registry.first-wins")
-                .count(),
-            1
-        );
+    tilo_test_env::scenario! {
+        fn the_application_registry_keeps_first_registrations_and_deferred_places;
+
+        phase first_registration_per_id_wins;
+        {
+            let first = definition("test.registry.first-wins");
+            let second = definition("test.registry.first-wins");
+            assert!(register(first));
+            assert!(!register(second));
+            let found = application("test.registry.first-wins").unwrap();
+            assert!(std::ptr::eq(found, first));
+            assert_eq!(
+                applications()
+                    .iter()
+                    .filter(|d| d.app_id == "test.registry.first-wins")
+                    .count(),
+                1
+            );
+        }
+
+        phase a_deferred_app_is_listed_before_it_loads_and_keeps_its_place_once_loaded;
+        {
+            assert!(defer("test.registry.deferred", "Deferred", || {
+                Box::pin(async { Some(definition("test.registry.deferred")) })
+            }));
+            assert!(register(definition("test.registry.after-deferred")));
+            assert!(application("test.registry.deferred").is_none());
+            assert!(is_deferred("test.registry.deferred"));
+            let listed = |catalogue: Vec<(&'static str, &'static str)>| {
+                catalogue
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .filter(|id| id.starts_with("test.registry.") && id.contains("deferred"))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                listed(catalogue()),
+                ["test.registry.deferred", "test.registry.after-deferred"]
+            );
+
+            let loaded = block_on(load("test.registry.deferred")).unwrap();
+            assert_eq!(loaded.app_id, "test.registry.deferred");
+            assert!(!is_deferred("test.registry.deferred"));
+            assert!(std::ptr::eq(
+                application("test.registry.deferred").unwrap(),
+                loaded
+            ));
+            assert_eq!(
+                listed(catalogue()),
+                ["test.registry.deferred", "test.registry.after-deferred"]
+            );
+        }
+
+        phase a_deferred_app_declares_what_its_window_shows_while_its_code_is_on_its_way;
+        {
+            use crate::widget::SkeletonShape;
+            assert!(defer_arriving(
+                "test.registry.shaped",
+                "Shaped",
+                SkeletonShape::Page,
+                || Box::pin(async { Some(definition("test.registry.shaped")) })
+            ));
+            assert_eq!(
+                declared_arrival_shape("test.registry.shaped"),
+                SkeletonShape::Page
+            );
+            assert!(defer("test.registry.unshaped", "Unshaped", || Box::pin(
+                async { Some(definition("test.registry.unshaped")) }
+            )));
+            assert_eq!(
+                declared_arrival_shape("test.registry.unshaped"),
+                SkeletonShape::Ground
+            );
+            assert_eq!(
+                declared_arrival_shape("test.registry.nobody"),
+                SkeletonShape::Ground
+            );
+            let loaded = block_on(load("test.registry.shaped")).unwrap();
+            assert_eq!(loaded.app_id, "test.registry.shaped");
+            assert_eq!(
+                declared_arrival_shape("test.registry.shaped"),
+                SkeletonShape::Page
+            );
+        }
+
+        phase a_failed_load_leaves_the_app_deferred;
+        {
+            assert!(defer("test.registry.failing", "Failing", || {
+                Box::pin(async { None })
+            }));
+            assert!(block_on(load("test.registry.failing")).is_none());
+            assert!(is_deferred("test.registry.failing"));
+            assert!(block_on(load("test.registry.unknown")).is_none());
+        }
     }
 
     fn block_on<F: Future>(future: F) -> F::Output {
@@ -221,80 +300,5 @@ mod tests {
                 return value;
             }
         }
-    }
-
-    #[test]
-    fn a_deferred_app_is_listed_before_it_loads_and_keeps_its_place_once_loaded() {
-        assert!(defer("test.registry.deferred", "Deferred", || {
-            Box::pin(async { Some(definition("test.registry.deferred")) })
-        }));
-        assert!(register(definition("test.registry.after-deferred")));
-        assert!(application("test.registry.deferred").is_none());
-        assert!(is_deferred("test.registry.deferred"));
-        let listed = |catalogue: Vec<(&'static str, &'static str)>| {
-            catalogue
-                .into_iter()
-                .map(|(id, _)| id)
-                .filter(|id| id.starts_with("test.registry.") && id.contains("deferred"))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            listed(catalogue()),
-            ["test.registry.deferred", "test.registry.after-deferred"]
-        );
-
-        let loaded = block_on(load("test.registry.deferred")).unwrap();
-        assert_eq!(loaded.app_id, "test.registry.deferred");
-        assert!(!is_deferred("test.registry.deferred"));
-        assert!(std::ptr::eq(
-            application("test.registry.deferred").unwrap(),
-            loaded
-        ));
-        assert_eq!(
-            listed(catalogue()),
-            ["test.registry.deferred", "test.registry.after-deferred"]
-        );
-    }
-
-    #[test]
-    fn a_deferred_app_declares_what_its_window_shows_while_its_code_is_on_its_way() {
-        use crate::widget::SkeletonShape;
-        assert!(defer_arriving(
-            "test.registry.shaped",
-            "Shaped",
-            SkeletonShape::Page,
-            || Box::pin(async { Some(definition("test.registry.shaped")) })
-        ));
-        assert_eq!(
-            declared_arrival_shape("test.registry.shaped"),
-            SkeletonShape::Page
-        );
-        assert!(defer("test.registry.unshaped", "Unshaped", || Box::pin(
-            async { Some(definition("test.registry.unshaped")) }
-        )));
-        assert_eq!(
-            declared_arrival_shape("test.registry.unshaped"),
-            SkeletonShape::Ground
-        );
-        assert_eq!(
-            declared_arrival_shape("test.registry.nobody"),
-            SkeletonShape::Ground
-        );
-        let loaded = block_on(load("test.registry.shaped")).unwrap();
-        assert_eq!(loaded.app_id, "test.registry.shaped");
-        assert_eq!(
-            declared_arrival_shape("test.registry.shaped"),
-            SkeletonShape::Page
-        );
-    }
-
-    #[test]
-    fn a_failed_load_leaves_the_app_deferred() {
-        assert!(defer("test.registry.failing", "Failing", || {
-            Box::pin(async { None })
-        }));
-        assert!(block_on(load("test.registry.failing")).is_none());
-        assert!(is_deferred("test.registry.failing"));
-        assert!(block_on(load("test.registry.unknown")).is_none());
     }
 }

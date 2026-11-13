@@ -1247,186 +1247,476 @@ mod native_process_tests {
         }
     }
 
-    #[test]
-    fn fresh_native_window_records_do_not_contest_an_existing_writer() {
-        use crate::application_test_support as probe;
-        let temp = tempfile::tempdir().unwrap();
-        let definition = definition(probe::APP);
-        let workspace = "3f2b1c00-0000-4000-8000-00000000000a";
-        let launch = |instance: u64| {
-            NativeProcessHost::open_with(
-                &definition,
-                NativeProcessEnvironment {
-                    workspace_id: Some(workspace.into()),
-                    participation: Some("author".into()),
-                    continuity_instance: Some(instance.to_string()),
-                    ..environment(temp.path())
-                },
-                probe::author(),
-            )
-            .unwrap()
-        };
-        let prepare = |native: &mut NativeProcessHost| {
-            native.prepare_launch(&definition, None, probe::runner_inputs())
-        };
-        let mut first = launch(41);
-        let mut first_record = prepare(&mut first).unwrap();
-        first_record
-            .context
-            .initialize_new_record(|_| Ok(()))
-            .unwrap();
-        let mut second = launch(42);
-        let second_record = prepare(&mut second).unwrap();
-        assert_ne!(
-            first_record.context.record(),
-            second_record.context.record()
-        );
-        // Naming the first record explicitly still contends with its actual
-        // live writer: distinct defaults must never weaken the storage lock.
-        assert!(
-            second
-                .prepare_launch(
+    tilo_test_env::scenario! {
+        fn native_window_records_open_share_and_keep_their_writers;
+
+        phase fresh_native_window_records_do_not_contest_an_existing_writer;
+        {
+            use crate::application_test_support as probe;
+            let temp = tempfile::tempdir().unwrap();
+            let definition = definition(probe::APP);
+            let workspace = "3f2b1c00-0000-4000-8000-00000000000a";
+            let launch = |instance: u64| {
+                NativeProcessHost::open_with(
                     &definition,
-                    Some(first_record.context.record().id.clone()),
+                    NativeProcessEnvironment {
+                        workspace_id: Some(workspace.into()),
+                        participation: Some("author".into()),
+                        continuity_instance: Some(instance.to_string()),
+                        ..environment(temp.path())
+                    },
+                    probe::author(),
+                )
+                .unwrap()
+            };
+            let prepare = |native: &mut NativeProcessHost| {
+                native.prepare_launch(&definition, None, probe::runner_inputs())
+            };
+            let mut first = launch(41);
+            let mut first_record = prepare(&mut first).unwrap();
+            first_record
+                .context
+                .initialize_new_record(|_| Ok(()))
+                .unwrap();
+            let mut second = launch(42);
+            let second_record = prepare(&mut second).unwrap();
+            assert_ne!(
+                first_record.context.record(),
+                second_record.context.record()
+            );
+            // Naming the first record explicitly still contends with its actual
+            // live writer: distinct defaults must never weaken the storage lock.
+            assert!(
+                second
+                    .prepare_launch(
+                        &definition,
+                        Some(first_record.context.record().id.clone()),
+                        probe::runner_inputs(),
+                    )
+                    .is_err()
+            );
+            let first_id = first_record.context.record().id.clone();
+            first
+                .host
+                .views
+                .save(&first_record.context.envelope(View::default(), None))
+                .unwrap();
+            drop(first_record);
+            drop(first);
+            let mut restored = launch(41);
+            let restored_record = prepare(&mut restored).unwrap();
+            assert_eq!(restored_record.context.record().id, first_id);
+            assert!(matches!(
+                restored_record.target,
+                LaunchTarget::Record { .. }
+            ));
+        }
+
+        phase a_window_of_an_app_kept_as_each_members_own_opens_the_persons_own_record;
+        {
+            use crate::application_test_support as probe;
+            let mut definition = definition(probe::APP);
+            definition.workspace_record = true;
+            definition.member_record = true;
+            let workspace = "3f2b1c00-0000-4000-8000-00000000000c";
+            let record_of = |person: &str| {
+                let temp = tempfile::tempdir().unwrap();
+                let mut native = NativeProcessHost::open_with(
+                    &definition,
+                    NativeProcessEnvironment {
+                        workspace_id: Some(workspace.into()),
+                        participation: Some("author".into()),
+                        continuity_instance: Some("61".into()),
+                        ..environment(temp.path())
+                    },
+                    UserId(person.into()),
+                )
+                .unwrap();
+                native
+                    .prepare_launch(&definition, None, probe::runner_inputs())
+                    .unwrap()
+                    .context
+                    .record()
+                    .id
+                    .clone()
+            };
+            let (ada, bo) = ("ab".repeat(32), "cd".repeat(32));
+            assert_eq!(
+                record_of(&ada),
+                RecordId::of_member(&ada, "host.probe").unwrap(),
+                "Ada's window opens her own record of the workspace"
+            );
+            assert_eq!(
+                record_of(&bo),
+                RecordId::of_member(&bo, "host.probe").unwrap(),
+                "Bo's opens his, never hers"
+            );
+            assert!(
+                record_of("person-a").is_package_primary(),
+                "someone without a root identity is a member of no workspace: the workspace's record"
+            );
+        }
+
+        phase native_window_defaults_preserve_standalone_primary_and_saved_records;
+        {
+            use crate::application_test_support as probe;
+            let temp = tempfile::tempdir().unwrap();
+            let definition = definition(probe::APP);
+            let mut standalone =
+                NativeProcessHost::open_with(&definition, environment(temp.path()), probe::author())
+                    .unwrap();
+            let standalone_record = standalone
+                .prepare_launch(&definition, None, probe::runner_inputs())
+                .unwrap();
+            assert_eq!(
+                standalone_record.context.record().id,
+                RecordId::workspace_default()
+            );
+            drop(standalone_record);
+            drop(standalone);
+
+            let workspace = "3f2b1c00-0000-4000-8000-00000000000b";
+            let launch = || {
+                NativeProcessHost::open_with(
+                    &definition,
+                    NativeProcessEnvironment {
+                        workspace_id: Some(workspace.into()),
+                        participation: Some("author".into()),
+                        continuity_instance: Some("51".into()),
+                        ..environment(temp.path())
+                    },
+                    probe::author(),
+                )
+                .unwrap()
+            };
+            // A saved pre-fix window can still name the old workspace-default record.
+            // Changing the fresh fallback must not replace its existing data.
+            let mut legacy = launch();
+            let mut old = legacy
+                .host_mut()
+                .prepare_default(
+                    &definition,
+                    51,
+                    RecordCheckout::new(
+                        RecordId::workspace_default(),
+                        definition.record_kind.clone(),
+                    ),
+                    None,
                     probe::runner_inputs(),
                 )
-                .is_err()
-        );
-        let first_id = first_record.context.record().id.clone();
-        first
-            .host
-            .views
-            .save(&first_record.context.envelope(View::default(), None))
-            .unwrap();
-        drop(first_record);
-        drop(first);
-        let mut restored = launch(41);
-        let restored_record = prepare(&mut restored).unwrap();
-        assert_eq!(restored_record.context.record().id, first_id);
-        assert!(matches!(
-            restored_record.target,
-            LaunchTarget::Record { .. }
-        ));
-    }
-
-    #[test]
-    fn a_window_of_an_app_kept_as_each_members_own_opens_the_persons_own_record() {
-        use crate::application_test_support as probe;
-        let mut definition = definition(probe::APP);
-        definition.workspace_record = true;
-        definition.member_record = true;
-        let workspace = "3f2b1c00-0000-4000-8000-00000000000c";
-        let record_of = |person: &str| {
-            let temp = tempfile::tempdir().unwrap();
-            let mut native = NativeProcessHost::open_with(
-                &definition,
-                NativeProcessEnvironment {
-                    workspace_id: Some(workspace.into()),
-                    participation: Some("author".into()),
-                    continuity_instance: Some("61".into()),
-                    ..environment(temp.path())
-                },
-                UserId(person.into()),
-            )
-            .unwrap();
-            native
-                .prepare_launch(&definition, None, probe::runner_inputs())
-                .unwrap()
-                .context
-                .record()
-                .id
-                .clone()
-        };
-        let (ada, bo) = ("ab".repeat(32), "cd".repeat(32));
-        assert_eq!(
-            record_of(&ada),
-            RecordId::of_member(&ada, "host.probe").unwrap(),
-            "Ada's window opens her own record of the workspace"
-        );
-        assert_eq!(
-            record_of(&bo),
-            RecordId::of_member(&bo, "host.probe").unwrap(),
-            "Bo's opens his, never hers"
-        );
-        assert!(
-            record_of("person-a").is_package_primary(),
-            "someone without a root identity is a member of no workspace: the workspace's record"
-        );
-    }
-
-    #[test]
-    fn native_window_defaults_preserve_standalone_primary_and_saved_records() {
-        use crate::application_test_support as probe;
-        let temp = tempfile::tempdir().unwrap();
-        let definition = definition(probe::APP);
-        let mut standalone =
-            NativeProcessHost::open_with(&definition, environment(temp.path()), probe::author())
                 .unwrap();
-        let standalone_record = standalone
-            .prepare_launch(&definition, None, probe::runner_inputs())
-            .unwrap();
-        assert_eq!(
-            standalone_record.context.record().id,
-            RecordId::workspace_default()
-        );
-        drop(standalone_record);
-        drop(standalone);
+            old.context.initialize_new_record(|_| Ok(())).unwrap();
+            legacy
+                .host
+                .views
+                .save(&old.context.envelope(View::default(), None))
+                .unwrap();
+            drop(old);
+            drop(legacy);
+            let mut restored = launch();
+            let old = restored
+                .prepare_launch(&definition, None, probe::runner_inputs())
+                .unwrap();
+            assert_eq!(old.context.record().id, RecordId::workspace_default());
+            assert!(matches!(old.target, LaunchTarget::Record { .. }));
+            drop(old);
+            drop(restored);
 
-        let workspace = "3f2b1c00-0000-4000-8000-00000000000b";
-        let launch = || {
-            NativeProcessHost::open_with(
-                &definition,
-                NativeProcessEnvironment {
-                    workspace_id: Some(workspace.into()),
-                    participation: Some("author".into()),
-                    continuity_instance: Some("51".into()),
-                    ..environment(temp.path())
-                },
-                probe::author(),
-            )
-            .unwrap()
-        };
-        // A saved pre-fix window can still name the old workspace-default record.
-        // Changing the fresh fallback must not replace its existing data.
-        let mut legacy = launch();
-        let mut old = legacy
-            .host_mut()
-            .prepare_default(
-                &definition,
-                51,
-                RecordCheckout::new(
-                    RecordId::workspace_default(),
-                    definition.record_kind.clone(),
+            let mut primary_definition = self::definition(probe::APP);
+            primary_definition.workspace_record = true;
+            let mut primary = launch();
+            let prepared = primary
+                .prepare_launch(&primary_definition, None, probe::runner_inputs())
+                .unwrap();
+            assert!(prepared.context.record().id.is_package_primary());
+            assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
+        }
+
+        phase workspace_record_windows_share_one_record_and_see_the_per_window_ones;
+        {
+            use crate::application_test_support as probe;
+            use automerge::{ReadDoc, transaction::Transactable};
+            let temp = tempfile::tempdir().unwrap();
+            let per_window = definition(probe::APP);
+            let mut per_workspace = definition(probe::APP);
+            per_workspace.workspace_record = true;
+            let workspace = "3f2b1c00-0000-4000-8000-00000000000c";
+            let launch = |definition: &ApplicationDefinition, instance: u64| {
+                NativeProcessHost::open_with(
+                    definition,
+                    NativeProcessEnvironment {
+                        workspace_id: Some(workspace.into()),
+                        participation: Some("author".into()),
+                        continuity_instance: Some(instance.to_string()),
+                        ..environment(temp.path())
+                    },
+                    probe::author(),
+                )
+                .unwrap()
+            };
+            let note = |doc: &automerge::AutoCommit| -> Option<String> {
+                match doc.get(automerge::ROOT, "note").unwrap() {
+                    Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+                        automerge::ScalarValue::Str(text) => Some(text.to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            };
+            for (instance, text) in [(42, "second"), (41, "first")] {
+                let mut window = launch(&per_window, instance);
+                let mut prepared = window
+                    .prepare_launch(&per_window, None, probe::runner_inputs())
+                    .unwrap();
+                assert_eq!(
+                    prepared.context.record().id,
+                    RecordId::window_default(instance)
+                );
+                prepared
+                    .context
+                    .initialize_new_record(|doc| {
+                        doc.put(automerge::ROOT, "note", text)
+                            .map_err(|e| e.to_string())
+                    })
+                    .unwrap();
+            }
+            let mut first = launch(&per_workspace, 43);
+            let mut created = first
+                .prepare_launch(&per_workspace, None, probe::runner_inputs())
+                .unwrap();
+            assert!(created.context.record().id.is_package_primary());
+            assert!(matches!(created.target, LaunchTarget::PrimaryNew));
+            let windows = created.context.window_records();
+            assert_eq!(
+                windows
+                    .iter()
+                    .map(|(id, doc)| (id.clone(), note(doc)))
+                    .collect::<Vec<_>>(),
+                [
+                    (RecordId::window_default(41), Some("first".into())),
+                    (RecordId::window_default(42), Some("second".into())),
+                ]
+            );
+            created
+                .context
+                .initialize_new_record(|doc| {
+                    doc.put(automerge::ROOT, "note", "shared")
+                        .map_err(|e| e.to_string())
+                })
+                .unwrap();
+            drop(created);
+            drop(first);
+            let mut second = launch(&per_workspace, 44);
+            let reopened = second
+                .prepare_launch(&per_workspace, None, probe::runner_inputs())
+                .unwrap();
+            assert!(reopened.context.record().id.is_package_primary());
+            assert!(matches!(reopened.target, LaunchTarget::Record { .. }));
+            assert_eq!(
+                reopened.context.read_record(note).unwrap(),
+                Some("shared".into())
+            );
+            assert_eq!(reopened.context.window_records().len(), 2);
+            drop(reopened);
+            drop(second);
+            let mut old = launch(&per_window, 41);
+            let old = old
+                .prepare_launch(&per_window, None, probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(old.target, LaunchTarget::Record { .. }));
+            assert_eq!(old.context.read_record(note).unwrap(), Some("first".into()));
+            assert!(old.context.window_records().is_empty());
+        }
+
+        phase a_live_primary_kind_mismatch_reports_the_original_error_and_preserves_data;
+        {
+            use crate::application_test_support as probe;
+            use automerge::{ReadDoc, transaction::Transactable};
+
+            let temp = tempfile::tempdir().unwrap();
+            let mut original = definition(probe::APP);
+            original.workspace_record = true;
+            let launch = |definition: &ApplicationDefinition| {
+                NativeProcessHost::open_with(
+                    definition,
+                    NativeProcessEnvironment {
+                        workspace_id: Some("3f2b1c00-0000-4000-8000-00000000000c".into()),
+                        participation: Some("author".into()),
+                        continuity_instance: Some("61".into()),
+                        ..environment(temp.path())
+                    },
+                    probe::author(),
+                )
+                .unwrap()
+            };
+            let mut native = launch(&original);
+            let mut prepared = native
+                .prepare_launch(&original, None, probe::runner_inputs())
+                .unwrap();
+            prepared
+                .context
+                .initialize_new_record(|doc| {
+                    doc.put(automerge::ROOT, "body", "retained original")
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap();
+            prepared
+                .context
+                .records
+                .try_flush_record(&prepared.context.record().id)
+                .unwrap();
+            let mut incompatible = definition(probe::APP);
+            incompatible.workspace_record = true;
+            incompatible.record_kind = crate::record::RecordKind::new("host.changed");
+            let existing = native.host.records_for(&incompatible).unwrap();
+            assert!(
+                existing.same_owner(&prepared.context.records),
+                "the new definition must address the original live owner"
+            );
+            drop(existing);
+            let error = native
+                .prepare_launch(&incompatible, None, probe::runner_inputs())
+                .err()
+                .expect("a live owner cannot be reopened as another kind");
+            assert!(
+                matches!(
+                    error,
+                    LaunchError::Record(crate::record::RecordOpenError::IdentityMismatch)
                 ),
-                None,
-                probe::runner_inputs(),
+                "{error}"
+            );
+            drop(prepared);
+            drop(native);
+
+            let mut native = launch(&original);
+            let restored = native
+                .prepare_launch(&original, None, probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(restored.target, LaunchTarget::Record { .. }));
+            assert_eq!(
+                restored
+                    .context
+                    .read_record(|doc| {
+                        doc.get(automerge::ROOT, "body")
+                            .unwrap()
+                            .unwrap()
+                            .0
+                            .into_string()
+                            .unwrap()
+                    })
+                    .unwrap(),
+                "retained original"
+            );
+        }
+
+        phase window_default_storage_keys_name_exactly_their_record;
+        {
+            for instance in [0, 0x42, 0xf276_0000_0000_0044, u64::MAX] {
+                let id = RecordId::window_default(instance);
+                assert_eq!(
+                    RecordId::window_default_of_storage_key(&id.storage_key()),
+                    Some(id)
+                );
+            }
+            assert_eq!(RecordId::window_default(0), RecordId::workspace_default());
+            for other in [
+                RecordId::package_primary(),
+                RecordId::for_tab(0x42),
+                RecordId::derived("notes", &RecordId::for_tab(0x42)),
+            ] {
+                assert_eq!(
+                    RecordId::window_default_of_storage_key(&other.storage_key()),
+                    None
+                );
+            }
+            let real = RecordId::window_default(0x42).storage_key();
+            let last = if real.ends_with('0') { '1' } else { '0' };
+            let forged = format!("{}{last}", real.get(..real.len() - 1).unwrap());
+            assert_eq!(RecordId::window_default_of_storage_key(&forged), None);
+        }
+
+        phase a_saved_view_names_the_record_and_a_retired_one_gives_way;
+        {
+            use crate::application_test_support as probe;
+            use automerge::transaction::Transactable as _;
+            let temp = tempfile::tempdir().unwrap();
+            let workspace = "3f2b1c00-0000-4000-8000-0000000000c1";
+            let definition = definition(probe::APP);
+            let default = RecordCheckout::new(
+                RecordId::derived("default", &RecordId::for_tab(0)),
+                definition.record_kind.clone(),
+            );
+            let carried = RecordCheckout::new(RecordId::minted(), definition.record_kind.clone());
+            {
+                let mut owners = RecordOwners::new(temp.path().to_owned());
+                let records = owners.open(probe::APP, workspace).unwrap();
+                records.create_record(&carried).unwrap();
+                records
+                    .with(&carried.id, |doc| {
+                        doc.put(automerge::ROOT, "body", "arrived").unwrap();
+                    })
+                    .unwrap();
+                records.try_flush().unwrap();
+            }
+            let profile = NativeProfile::open(temp.path(), Some(workspace)).unwrap();
+            let view = SavedInstanceView {
+                version: 2,
+                app_id: probe::APP.into(),
+                device_id: "elsewhere".into(),
+                workspace_id: "elsewhere".into(),
+                instance_id: 7,
+                record_id: default.id.as_str().into(),
+                record_kind: default.kind.as_str().into(),
+                view: View::default(),
+                application: None,
+            };
+            let _ = profile.adopt_view(&view, 7, &carried).unwrap();
+            let host = |temp: &Path| {
+                ApplicationHost::new(
+                    temp.to_owned(),
+                    profile.device_id().to_owned(),
+                    workspace,
+                    probe::author(),
+                    probe::runner_permissions(),
+                    probe::provenance(),
+                )
+                .unwrap()
+            };
+
+            let prepared = host(temp.path())
+                .prepare_default(
+                    &definition,
+                    7,
+                    default.clone(),
+                    None,
+                    probe::runner_inputs(),
+                )
+                .unwrap();
+            assert!(
+                matches!(&prepared.target, LaunchTarget::Record { checkout, .. } if checkout == &carried),
+                "the instance reopens the record its view names, not the workspace default"
+            );
+            assert!(matches!(prepared.restore, RestoreInput::Local(_)));
+            drop(prepared);
+
+            let _ = crate::record::transfer::retire(
+                profile.store(),
+                probe::APP,
+                workspace,
+                &crate::record::transfer::Origin::Record(carried.clone()),
+                &crate::record::transfer::Retirement::Moved(None),
             )
             .unwrap();
-        old.context.initialize_new_record(|_| Ok(())).unwrap();
-        legacy
-            .host
-            .views
-            .save(&old.context.envelope(View::default(), None))
-            .unwrap();
-        drop(old);
-        drop(legacy);
-        let mut restored = launch();
-        let old = restored
-            .prepare_launch(&definition, None, probe::runner_inputs())
-            .unwrap();
-        assert_eq!(old.context.record().id, RecordId::workspace_default());
-        assert!(matches!(old.target, LaunchTarget::Record { .. }));
-        drop(old);
-        drop(restored);
-
-        let mut primary_definition = self::definition(probe::APP);
-        primary_definition.workspace_record = true;
-        let mut primary = launch();
-        let prepared = primary
-            .prepare_launch(&primary_definition, None, probe::runner_inputs())
-            .unwrap();
-        assert!(prepared.context.record().id.is_package_primary());
-        assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
+            let prepared = host(temp.path())
+                .prepare_default(&definition, 7, default, None, probe::runner_inputs())
+                .unwrap();
+            assert!(
+                matches!(prepared.target, LaunchTarget::New),
+                "a record that left the workspace is never reopened; its successor starts fresh"
+            );
+            assert!(matches!(prepared.restore, RestoreInput::None));
+            assert_ne!(prepared.context.record().id, carried.id);
+        }
     }
 
     #[test]
@@ -1585,547 +1875,265 @@ mod native_process_tests {
         }
     }
 
-    #[test]
-    fn workspace_record_windows_share_one_record_and_see_the_per_window_ones() {
-        use crate::application_test_support as probe;
-        use automerge::{ReadDoc, transaction::Transactable};
-        let temp = tempfile::tempdir().unwrap();
-        let per_window = definition(probe::APP);
-        let mut per_workspace = definition(probe::APP);
-        per_workspace.workspace_record = true;
-        let workspace = "3f2b1c00-0000-4000-8000-00000000000c";
-        let launch = |definition: &ApplicationDefinition, instance: u64| {
-            NativeProcessHost::open_with(
-                definition,
-                NativeProcessEnvironment {
-                    workspace_id: Some(workspace.into()),
-                    participation: Some("author".into()),
-                    continuity_instance: Some(instance.to_string()),
-                    ..environment(temp.path())
-                },
-                probe::author(),
-            )
-            .unwrap()
-        };
-        let note = |doc: &automerge::AutoCommit| -> Option<String> {
-            match doc.get(automerge::ROOT, "note").unwrap() {
-                Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
-                    automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-        for (instance, text) in [(42, "second"), (41, "first")] {
-            let mut window = launch(&per_window, instance);
-            let mut prepared = window
-                .prepare_launch(&per_window, None, probe::runner_inputs())
-                .unwrap();
-            assert_eq!(
-                prepared.context.record().id,
-                RecordId::window_default(instance)
-            );
-            prepared
-                .context
-                .initialize_new_record(|doc| {
-                    doc.put(automerge::ROOT, "note", text)
-                        .map_err(|e| e.to_string())
-                })
-                .unwrap();
-        }
-        let mut first = launch(&per_workspace, 43);
-        let mut created = first
-            .prepare_launch(&per_workspace, None, probe::runner_inputs())
-            .unwrap();
-        assert!(created.context.record().id.is_package_primary());
-        assert!(matches!(created.target, LaunchTarget::PrimaryNew));
-        let windows = created.context.window_records();
-        assert_eq!(
-            windows
-                .iter()
-                .map(|(id, doc)| (id.clone(), note(doc)))
-                .collect::<Vec<_>>(),
-            [
-                (RecordId::window_default(41), Some("first".into())),
-                (RecordId::window_default(42), Some("second".into())),
-            ]
-        );
-        created
-            .context
-            .initialize_new_record(|doc| {
-                doc.put(automerge::ROOT, "note", "shared")
-                    .map_err(|e| e.to_string())
-            })
-            .unwrap();
-        drop(created);
-        drop(first);
-        let mut second = launch(&per_workspace, 44);
-        let reopened = second
-            .prepare_launch(&per_workspace, None, probe::runner_inputs())
-            .unwrap();
-        assert!(reopened.context.record().id.is_package_primary());
-        assert!(matches!(reopened.target, LaunchTarget::Record { .. }));
-        assert_eq!(
-            reopened.context.read_record(note).unwrap(),
-            Some("shared".into())
-        );
-        assert_eq!(reopened.context.window_records().len(), 2);
-        drop(reopened);
-        drop(second);
-        let mut old = launch(&per_window, 41);
-        let old = old
-            .prepare_launch(&per_window, None, probe::runner_inputs())
-            .unwrap();
-        assert!(matches!(old.target, LaunchTarget::Record { .. }));
-        assert_eq!(old.context.read_record(note).unwrap(), Some("first".into()));
-        assert!(old.context.window_records().is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn a_native_host_keeps_authority_and_identity_explicit;
 
-    #[test]
-    fn a_live_primary_kind_mismatch_reports_the_original_error_and_preserves_data() {
-        use crate::application_test_support as probe;
-        use automerge::{ReadDoc, transaction::Transactable};
-
-        let temp = tempfile::tempdir().unwrap();
-        let mut original = definition(probe::APP);
-        original.workspace_record = true;
-        let launch = |definition: &ApplicationDefinition| {
-            NativeProcessHost::open_with(
-                definition,
-                NativeProcessEnvironment {
-                    workspace_id: Some("3f2b1c00-0000-4000-8000-00000000000c".into()),
-                    participation: Some("author".into()),
-                    continuity_instance: Some("61".into()),
-                    ..environment(temp.path())
-                },
-                probe::author(),
-            )
-            .unwrap()
-        };
-        let mut native = launch(&original);
-        let mut prepared = native
-            .prepare_launch(&original, None, probe::runner_inputs())
-            .unwrap();
-        prepared
-            .context
-            .initialize_new_record(|doc| {
-                doc.put(automerge::ROOT, "body", "retained original")
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap();
-        prepared
-            .context
-            .records
-            .try_flush_record(&prepared.context.record().id)
-            .unwrap();
-        let mut incompatible = definition(probe::APP);
-        incompatible.workspace_record = true;
-        incompatible.record_kind = crate::record::RecordKind::new("host.changed");
-        let existing = native.host.records_for(&incompatible).unwrap();
-        assert!(
-            existing.same_owner(&prepared.context.records),
-            "the new definition must address the original live owner"
-        );
-        drop(existing);
-        let error = native
-            .prepare_launch(&incompatible, None, probe::runner_inputs())
-            .err()
-            .expect("a live owner cannot be reopened as another kind");
-        assert!(
-            matches!(
-                error,
-                LaunchError::Record(crate::record::RecordOpenError::IdentityMismatch)
-            ),
-            "{error}"
-        );
-        drop(prepared);
-        drop(native);
-
-        let mut native = launch(&original);
-        let restored = native
-            .prepare_launch(&original, None, probe::runner_inputs())
-            .unwrap();
-        assert!(matches!(restored.target, LaunchTarget::Record { .. }));
-        assert_eq!(
-            restored
-                .context
-                .read_record(|doc| {
-                    doc.get(automerge::ROOT, "body")
-                        .unwrap()
-                        .unwrap()
-                        .0
-                        .into_string()
-                        .unwrap()
-                })
-                .unwrap(),
-            "retained original"
-        );
-    }
-
-    #[test]
-    fn window_default_storage_keys_name_exactly_their_record() {
-        for instance in [0, 0x42, 0xf276_0000_0000_0044, u64::MAX] {
-            let id = RecordId::window_default(instance);
-            assert_eq!(
-                RecordId::window_default_of_storage_key(&id.storage_key()),
-                Some(id)
-            );
-        }
-        assert_eq!(RecordId::window_default(0), RecordId::workspace_default());
-        for other in [
-            RecordId::package_primary(),
-            RecordId::for_tab(0x42),
-            RecordId::derived("notes", &RecordId::for_tab(0x42)),
-        ] {
-            assert_eq!(
-                RecordId::window_default_of_storage_key(&other.storage_key()),
-                None
-            );
-        }
-        let real = RecordId::window_default(0x42).storage_key();
-        let last = if real.ends_with('0') { '1' } else { '0' };
-        let forged = format!("{}{last}", real.get(..real.len() - 1).unwrap());
-        assert_eq!(RecordId::window_default_of_storage_key(&forged), None);
-    }
-
-    #[test]
-    fn native_host_action_authority_is_current_and_scoped_to_the_app() {
-        use crate::permissions::{ActionKind, Answer, TreePath};
-        use collab_types::action_authority::AppActionAuthorityProjection;
-        use std::sync::{Arc, Mutex};
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = "3f2b1c00-0000-4000-8000-000000000001";
-        let app = "so.tilo.store";
-        let author = UserId("person-a".into());
-        let original = AppActionAuthorityProjection::project(
-            &tilo_action_policy::WorkspacePolicy::new(workspace, author.0.clone()),
-            app,
-            &author.0,
-            false,
-        );
-        let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
-        let source: tilo_host::action_authority::AuthoritySource = {
-            let bytes = bytes.clone();
-            Arc::new(move || Ok(bytes.lock().unwrap().clone()))
-        };
-        let (watch, changed) = manual_authority_watch();
-        let environment = NativeProcessEnvironment {
-            workspace_id: Some(workspace.into()),
-            participation: Some("read-only".into()),
-            action_authority: Some(HostAuthority {
-                read: source.clone(),
-                watch,
-            }),
-            ..environment(temp.path())
-        };
-        let publish = |value: Option<Vec<u8>>| {
-            *bytes.lock().unwrap() = value;
-            changed();
-        };
-        let resolved = environment.resolve(app, &author).unwrap();
-        let permissions = resolved.permissions;
-        let own = TreePath::root().app(app).action("buy");
-        assert_eq!(permissions.role(), Some(crate::permissions::Role::Viewer));
-        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
-        assert_eq!(
-            permissions.answer(
-                &TreePath::root().app("so.tilo.settings").action("reset"),
-                ActionKind::Outside
-            ),
-            Answer::Deny,
-            "another app's actions keep the launch participation"
-        );
-        let allowed = permissions.directory_witness().unwrap();
-        let mut revoked = original.clone();
-        revoked.policy.owner = None;
-        publish(Some(serde_json::to_vec(&revoked).unwrap()));
-        assert_ne!(permissions.directory_witness().unwrap(), allowed);
-        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
+        phase native_host_action_authority_is_current_and_scoped_to_the_app;
         {
-            let mut invalid = original.clone();
-            invalid.schema_version = 2;
-            publish(Some(serde_json::to_vec(&invalid).unwrap()));
-            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-        }
-        for (field, value) in [
-            ("room", "foreign-workspace"),
-            ("app_id", "so.tilo.other"),
-            ("person", "person-b"),
-        ] {
-            let mut invalid = serde_json::to_value(&original).unwrap();
-            invalid[field] = value.into();
-            publish(Some(serde_json::to_vec(&invalid).unwrap()));
-            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-            assert!(permissions.directory_witness().is_err());
-        }
-        for invalid in [None, Some(b"invalid".to_vec())] {
-            publish(invalid);
-            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-            assert!(permissions.directory_witness().is_err());
-        }
-        publish(Some(serde_json::to_vec(&original).unwrap()));
-        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
-        assert_eq!(permissions.directory_witness().unwrap(), allowed);
-    }
-
-    #[test]
-    fn a_host_authority_whose_changes_cannot_be_heard_is_read_at_each_decision() {
-        use crate::permissions::{ActionKind, Answer, TreePath};
-        use collab_types::action_authority::AppActionAuthorityProjection;
-        use std::sync::{Arc, Mutex};
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = "3f2b1c00-0000-4000-8000-000000000001";
-        let app = "so.tilo.store";
-        let author = UserId("person-a".into());
-        let original = AppActionAuthorityProjection::project(
-            &tilo_action_policy::WorkspacePolicy::new(workspace, author.0.clone()),
-            app,
-            &author.0,
-            false,
-        );
-        let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
-        let source: tilo_host::action_authority::AuthoritySource = {
-            let bytes = bytes.clone();
-            Arc::new(move || Ok(bytes.lock().unwrap().clone()))
-        };
-        let watch: AuthorityWatcher =
-            Arc::new(|_| Err("Too many open files (os error 24)".to_owned()));
-        let environment = NativeProcessEnvironment {
-            workspace_id: Some(workspace.into()),
-            participation: Some("read-only".into()),
-            action_authority: Some(HostAuthority {
-                read: source,
-                watch,
-            }),
-            ..environment(temp.path())
-        };
-        let permissions = environment.resolve(app, &author).unwrap().permissions;
-        let own = TreePath::root().app(app).action("buy");
-        assert_eq!(
-            permissions.answer(&own, ActionKind::Outside),
-            Answer::Allow,
-            "the person's authority holds without a watch"
-        );
-        let mut revoked = original.clone();
-        revoked.policy.owner = None;
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
-        assert_eq!(
-            permissions.answer(&own, ActionKind::Outside),
-            Answer::Deny,
-            "and what the host holds now is what decides"
-        );
-    }
-
-    #[test]
-    fn native_host_identity_authority_and_inputs_are_explicit() {
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let author = UserId("person-a".into());
-            let first = NativeProcessHost::open_with(
-                &definition("so.tilo.one"),
-                environment(temp.path()),
-                author.clone(),
-            )
-            .unwrap();
-            let device = first.host.device_id.clone();
-            assert!(!first.workspace_scoped());
-            assert_eq!(first.host.views.workspace_id(), PERSONAL_WORKSPACE);
-            assert_eq!(
-                first.host.permissions.borrow().role(),
-                Some(crate::permissions::Role::Owner)
-            );
-            assert_eq!(first.host.permissions.borrow().user(), &author);
-            drop(first);
-
-            let reopened = NativeProcessHost::open_with(
-                &definition("so.tilo.one"),
-                environment(temp.path()),
-                author.clone(),
-            )
-            .unwrap();
-            let other = NativeProcessHost::open_with(
-                &definition("so.tilo.two"),
-                environment(temp.path()),
-                author,
-            )
-            .unwrap();
-            assert_eq!(reopened.host.device_id, device);
-            assert_eq!(other.host.device_id, device);
-            assert_eq!(reopened.instance_id(), stable_instance_id("so.tilo.one"));
-            assert_ne!(reopened.instance_id(), other.instance_id());
-        }
-
-        {
+            use crate::permissions::{ActionKind, Answer, TreePath};
+            use collab_types::action_authority::AppActionAuthorityProjection;
+            use std::sync::{Arc, Mutex};
             let temp = tempfile::tempdir().unwrap();
             let workspace = "3f2b1c00-0000-4000-8000-000000000001";
-            let make = |participation: Option<&str>| NativeProcessEnvironment {
-                workspace_id: Some(workspace.into()),
-                participation: participation.map(str::to_owned),
-                continuity_instance: Some("42".into()),
-                xdg_data_home: Some(temp.path().to_owned()),
-                ..NativeProcessEnvironment::default()
+            let app = "so.tilo.store";
+            let author = UserId("person-a".into());
+            let original = AppActionAuthorityProjection::project(
+                &tilo_action_policy::WorkspacePolicy::new(workspace, author.0.clone()),
+                app,
+                &author.0,
+                false,
+            );
+            let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
+            let source: tilo_host::action_authority::AuthoritySource = {
+                let bytes = bytes.clone();
+                Arc::new(move || Ok(bytes.lock().unwrap().clone()))
             };
-            for (mode, role) in [
-                (Some("read-only"), crate::permissions::Role::Viewer),
-                (Some("author"), crate::permissions::Role::Editor),
-                (None, crate::permissions::Role::Viewer),
+            let (watch, changed) = manual_authority_watch();
+            let environment = NativeProcessEnvironment {
+                workspace_id: Some(workspace.into()),
+                participation: Some("read-only".into()),
+                action_authority: Some(HostAuthority {
+                    read: source.clone(),
+                    watch,
+                }),
+                ..environment(temp.path())
+            };
+            let publish = |value: Option<Vec<u8>>| {
+                *bytes.lock().unwrap() = value;
+                changed();
+            };
+            let resolved = environment.resolve(app, &author).unwrap();
+            let permissions = resolved.permissions;
+            let own = TreePath::root().app(app).action("buy");
+            assert_eq!(permissions.role(), Some(crate::permissions::Role::Viewer));
+            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
+            assert_eq!(
+                permissions.answer(
+                    &TreePath::root().app("so.tilo.settings").action("reset"),
+                    ActionKind::Outside
+                ),
+                Answer::Deny,
+                "another app's actions keep the launch participation"
+            );
+            let allowed = permissions.directory_witness().unwrap();
+            let mut revoked = original.clone();
+            revoked.policy.owner = None;
+            publish(Some(serde_json::to_vec(&revoked).unwrap()));
+            assert_ne!(permissions.directory_witness().unwrap(), allowed);
+            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
+            {
+                let mut invalid = original.clone();
+                invalid.schema_version = 2;
+                publish(Some(serde_json::to_vec(&invalid).unwrap()));
+                assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
+            }
+            for (field, value) in [
+                ("room", "foreign-workspace"),
+                ("app_id", "so.tilo.other"),
+                ("person", "person-b"),
             ] {
-                let resolved = make(mode)
-                    .resolve("so.tilo.notes", &UserId("person-a".into()))
-                    .unwrap();
-                assert!(resolved.workspace_scoped);
-                assert_eq!(resolved.workspace_id, workspace);
-                assert_eq!(resolved.instance_id, 42);
-                assert_eq!(resolved.permissions.role(), Some(role));
+                let mut invalid = serde_json::to_value(&original).unwrap();
+                invalid[field] = value.into();
+                publish(Some(serde_json::to_vec(&invalid).unwrap()));
+                assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
+                assert!(permissions.directory_witness().is_err());
+            }
+            for invalid in [None, Some(b"invalid".to_vec())] {
+                publish(invalid);
+                assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
+                assert!(permissions.directory_witness().is_err());
+            }
+            publish(Some(serde_json::to_vec(&original).unwrap()));
+            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
+            assert_eq!(permissions.directory_witness().unwrap(), allowed);
+        }
+
+        phase a_host_authority_whose_changes_cannot_be_heard_is_read_at_each_decision;
+        {
+            use crate::permissions::{ActionKind, Answer, TreePath};
+            use collab_types::action_authority::AppActionAuthorityProjection;
+            use std::sync::{Arc, Mutex};
+            let temp = tempfile::tempdir().unwrap();
+            let workspace = "3f2b1c00-0000-4000-8000-000000000001";
+            let app = "so.tilo.store";
+            let author = UserId("person-a".into());
+            let original = AppActionAuthorityProjection::project(
+                &tilo_action_policy::WorkspacePolicy::new(workspace, author.0.clone()),
+                app,
+                &author.0,
+                false,
+            );
+            let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
+            let source: tilo_host::action_authority::AuthoritySource = {
+                let bytes = bytes.clone();
+                Arc::new(move || Ok(bytes.lock().unwrap().clone()))
+            };
+            let watch: AuthorityWatcher =
+                Arc::new(|_| Err("Too many open files (os error 24)".to_owned()));
+            let environment = NativeProcessEnvironment {
+                workspace_id: Some(workspace.into()),
+                participation: Some("read-only".into()),
+                action_authority: Some(HostAuthority {
+                    read: source,
+                    watch,
+                }),
+                ..environment(temp.path())
+            };
+            let permissions = environment.resolve(app, &author).unwrap().permissions;
+            let own = TreePath::root().app(app).action("buy");
+            assert_eq!(
+                permissions.answer(&own, ActionKind::Outside),
+                Answer::Allow,
+                "the person's authority holds without a watch"
+            );
+            let mut revoked = original.clone();
+            revoked.policy.owner = None;
+            *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
+            assert_eq!(
+                permissions.answer(&own, ActionKind::Outside),
+                Answer::Deny,
+                "and what the host holds now is what decides"
+            );
+        }
+
+        phase native_host_identity_authority_and_inputs_are_explicit;
+        {
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let author = UserId("person-a".into());
+                let first = NativeProcessHost::open_with(
+                    &definition("so.tilo.one"),
+                    environment(temp.path()),
+                    author.clone(),
+                )
+                .unwrap();
+                let device = first.host.device_id.clone();
+                assert!(!first.workspace_scoped());
+                assert_eq!(first.host.views.workspace_id(), PERSONAL_WORKSPACE);
+                assert_eq!(
+                    first.host.permissions.borrow().role(),
+                    Some(crate::permissions::Role::Owner)
+                );
+                assert_eq!(first.host.permissions.borrow().user(), &author);
+                drop(first);
+
+                let reopened = NativeProcessHost::open_with(
+                    &definition("so.tilo.one"),
+                    environment(temp.path()),
+                    author.clone(),
+                )
+                .unwrap();
+                let other = NativeProcessHost::open_with(
+                    &definition("so.tilo.two"),
+                    environment(temp.path()),
+                    author,
+                )
+                .unwrap();
+                assert_eq!(reopened.host.device_id, device);
+                assert_eq!(other.host.device_id, device);
+                assert_eq!(reopened.instance_id(), stable_instance_id("so.tilo.one"));
+                assert_ne!(reopened.instance_id(), other.instance_id());
+            }
+
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let workspace = "3f2b1c00-0000-4000-8000-000000000001";
+                let make = |participation: Option<&str>| NativeProcessEnvironment {
+                    workspace_id: Some(workspace.into()),
+                    participation: participation.map(str::to_owned),
+                    continuity_instance: Some("42".into()),
+                    xdg_data_home: Some(temp.path().to_owned()),
+                    ..NativeProcessEnvironment::default()
+                };
+                for (mode, role) in [
+                    (Some("read-only"), crate::permissions::Role::Viewer),
+                    (Some("author"), crate::permissions::Role::Editor),
+                    (None, crate::permissions::Role::Viewer),
+                ] {
+                    let resolved = make(mode)
+                        .resolve("so.tilo.notes", &UserId("person-a".into()))
+                        .unwrap();
+                    assert!(resolved.workspace_scoped);
+                    assert_eq!(resolved.workspace_id, workspace);
+                    assert_eq!(resolved.instance_id, 42);
+                    assert_eq!(resolved.permissions.role(), Some(role));
+                }
+            }
+
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let author = UserId("person-a".into());
+                let mut mismatched = environment(temp.path());
+                mismatched.package_id = Some("so.tilo.other".into());
+                assert!(matches!(
+                    mismatched.resolve("so.tilo.notes", &author),
+                    Err(LaunchError::BindingMismatch)
+                ));
+                let relative = NativeProcessEnvironment {
+                    xdg_data_home: Some(PathBuf::from("relative")),
+                    ..NativeProcessEnvironment::default()
+                };
+                assert!(relative.resolve("so.tilo.notes", &author).is_err());
+                assert!(
+                    NativeProcessEnvironment::default()
+                        .resolve("so.tilo.notes", &author)
+                        .is_err()
+                );
+                for invalid in [
+                    NativeProcessEnvironment {
+                        workspace_id: Some("not-a-workspace".into()),
+                        ..environment(temp.path())
+                    },
+                    NativeProcessEnvironment {
+                        participation: Some("owner".into()),
+                        ..environment(temp.path())
+                    },
+                    NativeProcessEnvironment {
+                        continuity_instance: Some("window".into()),
+                        ..environment(temp.path())
+                    },
+                ] {
+                    assert!(invalid.resolve("so.tilo.notes", &author).is_err());
+                }
+                std::fs::write(temp.path().join(DEVICE_ID_FILE), b"damaged\n").unwrap();
+                assert!(
+                    environment(temp.path())
+                        .resolve("so.tilo.notes", &author)
+                        .is_err()
+                );
+                assert_eq!(
+                    std::fs::read(temp.path().join(DEVICE_ID_FILE)).unwrap(),
+                    b"damaged\n"
+                );
             }
         }
 
+        phase signed_package_id_must_name_the_launched_definition;
         {
             let temp = tempfile::tempdir().unwrap();
             let author = UserId("person-a".into());
-            let mut mismatched = environment(temp.path());
-            mismatched.package_id = Some("so.tilo.other".into());
+            let mut exact = environment(temp.path());
+            exact.package_id = Some("so.tilo.notes".into());
+            let resolved = exact.resolve("so.tilo.notes", &author).unwrap();
+            assert_eq!(resolved.package_id, "so.tilo.notes");
+            assert_eq!(resolved.instance_id, stable_instance_id("so.tilo.notes"));
+
+            let mut foreign_package = environment(temp.path());
+            foreign_package.package_id = Some("so.tilo.photos".into());
             assert!(matches!(
-                mismatched.resolve("so.tilo.notes", &author),
+                foreign_package.resolve("so.tilo.notes", &author),
                 Err(LaunchError::BindingMismatch)
             ));
-            let relative = NativeProcessEnvironment {
-                xdg_data_home: Some(PathBuf::from("relative")),
-                ..NativeProcessEnvironment::default()
-            };
-            assert!(relative.resolve("so.tilo.notes", &author).is_err());
-            assert!(
-                NativeProcessEnvironment::default()
-                    .resolve("so.tilo.notes", &author)
-                    .is_err()
-            );
-            for invalid in [
-                NativeProcessEnvironment {
-                    workspace_id: Some("not-a-workspace".into()),
-                    ..environment(temp.path())
-                },
-                NativeProcessEnvironment {
-                    participation: Some("owner".into()),
-                    ..environment(temp.path())
-                },
-                NativeProcessEnvironment {
-                    continuity_instance: Some("window".into()),
-                    ..environment(temp.path())
-                },
-            ] {
-                assert!(invalid.resolve("so.tilo.notes", &author).is_err());
-            }
-            std::fs::write(temp.path().join(DEVICE_ID_FILE), b"damaged\n").unwrap();
-            assert!(
-                environment(temp.path())
-                    .resolve("so.tilo.notes", &author)
-                    .is_err()
-            );
-            assert_eq!(
-                std::fs::read(temp.path().join(DEVICE_ID_FILE)).unwrap(),
-                b"damaged\n"
-            );
         }
-    }
-
-    #[test]
-    fn a_saved_view_names_the_record_and_a_retired_one_gives_way() {
-        use crate::application_test_support as probe;
-        use automerge::transaction::Transactable as _;
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = "3f2b1c00-0000-4000-8000-0000000000c1";
-        let definition = definition(probe::APP);
-        let default = RecordCheckout::new(
-            RecordId::derived("default", &RecordId::for_tab(0)),
-            definition.record_kind.clone(),
-        );
-        let carried = RecordCheckout::new(RecordId::minted(), definition.record_kind.clone());
-        {
-            let mut owners = RecordOwners::new(temp.path().to_owned());
-            let records = owners.open(probe::APP, workspace).unwrap();
-            records.create_record(&carried).unwrap();
-            records
-                .with(&carried.id, |doc| {
-                    doc.put(automerge::ROOT, "body", "arrived").unwrap();
-                })
-                .unwrap();
-            records.try_flush().unwrap();
-        }
-        let profile = NativeProfile::open(temp.path(), Some(workspace)).unwrap();
-        let view = SavedInstanceView {
-            version: 2,
-            app_id: probe::APP.into(),
-            device_id: "elsewhere".into(),
-            workspace_id: "elsewhere".into(),
-            instance_id: 7,
-            record_id: default.id.as_str().into(),
-            record_kind: default.kind.as_str().into(),
-            view: View::default(),
-            application: None,
-        };
-        let _ = profile.adopt_view(&view, 7, &carried).unwrap();
-        let host = |temp: &Path| {
-            ApplicationHost::new(
-                temp.to_owned(),
-                profile.device_id().to_owned(),
-                workspace,
-                probe::author(),
-                probe::runner_permissions(),
-                probe::provenance(),
-            )
-            .unwrap()
-        };
-
-        let prepared = host(temp.path())
-            .prepare_default(
-                &definition,
-                7,
-                default.clone(),
-                None,
-                probe::runner_inputs(),
-            )
-            .unwrap();
-        assert!(
-            matches!(&prepared.target, LaunchTarget::Record { checkout, .. } if checkout == &carried),
-            "the instance reopens the record its view names, not the workspace default"
-        );
-        assert!(matches!(prepared.restore, RestoreInput::Local(_)));
-        drop(prepared);
-
-        let _ = crate::record::transfer::retire(
-            profile.store(),
-            probe::APP,
-            workspace,
-            &crate::record::transfer::Origin::Record(carried.clone()),
-            &crate::record::transfer::Retirement::Moved(None),
-        )
-        .unwrap();
-        let prepared = host(temp.path())
-            .prepare_default(&definition, 7, default, None, probe::runner_inputs())
-            .unwrap();
-        assert!(
-            matches!(prepared.target, LaunchTarget::New),
-            "a record that left the workspace is never reopened; its successor starts fresh"
-        );
-        assert!(matches!(prepared.restore, RestoreInput::None));
-        assert_ne!(prepared.context.record().id, carried.id);
-    }
-
-    #[test]
-    fn signed_package_id_must_name_the_launched_definition() {
-        let temp = tempfile::tempdir().unwrap();
-        let author = UserId("person-a".into());
-        let mut exact = environment(temp.path());
-        exact.package_id = Some("so.tilo.notes".into());
-        let resolved = exact.resolve("so.tilo.notes", &author).unwrap();
-        assert_eq!(resolved.package_id, "so.tilo.notes");
-        assert_eq!(resolved.instance_id, stable_instance_id("so.tilo.notes"));
-
-        let mut foreign_package = environment(temp.path());
-        foreign_package.package_id = Some("so.tilo.photos".into());
-        assert!(matches!(
-            foreign_package.resolve("so.tilo.notes", &author),
-            Err(LaunchError::BindingMismatch)
-        ));
     }
 }

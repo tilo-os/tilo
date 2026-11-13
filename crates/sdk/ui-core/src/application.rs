@@ -2308,129 +2308,17 @@ mod bound_lifetime_tests {
         ))
     }
 
-    #[test]
-    fn host_named_new_and_package_primary_keep_distinct_identity_contracts() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
-        let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
-        let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe".into(),
-            title: "Mount probe".into(),
-            icon: IconDescriptor::Glyph("P"),
-            record_kind: RecordKind::new("probe"),
-            required: vec![],
-            optional: vec![],
-            opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
-            create: factory,
-        };
-        let supplied = RecordId::for_tab(55);
-        let prepare = |target, supplied| {
-            HostContext::prepare_scoped(
-                &definition,
-                HostContextInputs {
-                    records: records.clone(),
-                    views: views.clone(),
-                    device_id: "D".into(),
-                    instance_id: 7,
-                    permissions: crate::permissions::SharedPermissions::new(
-                        PermissionContext::permissive(),
-                    ),
-                    author: UserId("probe-author".into()),
-                    action_context: tilo_actions::ActionContext::default(),
-                },
-                target,
-                supplied,
-            )
-        };
+    tilo_test_env::scenario! {
+        fn bound_component_lifetimes_keep_identity_and_refuse_stale_entries;
 
-        let named = prepare(&LaunchTarget::New, Some(supplied.clone())).unwrap();
-        assert_eq!(named.record.id, supplied);
-        drop(named);
-
-        assert!(matches!(
-            prepare(&LaunchTarget::PrimaryNew, Some(RecordId::for_tab(56))),
-            Err(LaunchError::BindingMismatch)
-        ));
-        let primary = prepare(&LaunchTarget::PrimaryNew, None).unwrap();
-        assert!(primary.record.id.is_package_primary());
-    }
-
-    #[test]
-    fn existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
-        let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
-        let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe".into(),
-            title: "Mount probe".into(),
-            icon: IconDescriptor::Glyph("P"),
-            record_kind: RecordKind::new("probe"),
-            required: vec![],
-            optional: vec![],
-            opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
-            create: factory,
-        };
-        let prepare = |checkout| {
-            HostContext::prepare(
-                &definition,
-                HostContextInputs {
-                    records: records.clone(),
-                    views: views.clone(),
-                    device_id: "D".into(),
-                    instance_id: 7,
-                    permissions: crate::permissions::SharedPermissions::new(
-                        PermissionContext::permissive(),
-                    ),
-                    author: UserId("probe-author".into()),
-                    action_context: tilo_actions::ActionContext::default(),
-                },
-                &LaunchTarget::Record {
-                    checkout,
-                    reveal: None,
-                },
-            )
-        };
-
-        let malformed = RecordCheckout::new(
-            RecordId::derived("invalid role", &RecordId::for_tab(55)),
-            definition.record_kind.clone(),
-        );
-        assert!(matches!(
-            prepare(malformed),
-            Err(LaunchError::BindingMismatch)
-        ));
-        let foreign = RecordCheckout::new(RecordId::for_tab(56), definition.record_kind.clone());
-        assert!(matches!(
-            prepare(foreign),
-            Err(LaunchError::Record(
-                crate::record::RecordOpenError::MissingRecord
-            ))
-        ));
-
-        let primary = RecordCheckout::package_primary(definition.record_kind.clone());
-        records.create_record(&primary).unwrap();
-        let context = prepare(primary).expect("an existing local package primary must reopen");
-        assert!(context.record.id.is_package_primary());
-    }
-
-    #[test]
-    fn component_lifetimes_refuse_stale_wakes_loans_and_busy_entries() {
+        phase host_named_new_and_package_primary_keep_distinct_identity_contracts;
         {
             let temp = tempfile::tempdir().unwrap();
             let mut owners = crate::record::RecordOwners::new(temp.path().into());
-            let records = owners.open("so.tilo.mount-probe", "A").unwrap();
-            let views =
-                Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+            let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+            let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.mount-probe".into(),
+                app_id: "dev.tilo.mount-probe".into(),
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: RecordKind::new("probe"),
@@ -2442,8 +2330,9 @@ mod bound_lifetime_tests {
                 opens_before_record: false,
                 create: factory,
             };
-            let prepare = |target: &LaunchTarget| {
-                HostContext::prepare(
+            let supplied = RecordId::for_tab(55);
+            let prepare = |target, supplied| {
+                HostContext::prepare_scoped(
                     &definition,
                     HostContextInputs {
                         records: records.clone(),
@@ -2457,71 +2346,30 @@ mod bound_lifetime_tests {
                         action_context: tilo_actions::ActionContext::default(),
                     },
                     target,
+                    supplied,
                 )
-                .unwrap()
             };
-            let mut old = definition
-                .instantiate(
-                    prepare(&LaunchTarget::New),
-                    LaunchTarget::New,
-                    RestoreInput::None,
-                )
-                .unwrap();
-            let binding = old.callback_binding();
-            let target = LaunchTarget::Record {
-                checkout: old.record().clone(),
-                reveal: None,
-            };
-            let (tx, rx) = std::sync::mpsc::channel();
-            old.mount(move |event| {
-                tx.send(event).unwrap();
-            })
-            .unwrap();
-            let local = binding
-                .read_document(&AutoCommit::new(), |_, _| crate::LocalState::new(0))
-                .unwrap();
-            assert!(local.writer().try_set(1));
-            let queued = rx.try_recv().unwrap();
-            assert!(old.context.wake_scope.accepts(&queued));
-            records
-                .with(&old.record().id, |_| {
-                    assert!(matches!(
-                        binding
-                            .with_document(&mut AutoCommit::new(), |_, _| panic!("busy entry ran")),
-                        Err(crate::bound_dispatch::BoundDispatchError::Record(
-                            RecordOpenError::Busy
-                        ))
-                    ));
-                })
-                .unwrap();
-            old.close();
-            let mut reopened = definition
-                .instantiate(prepare(&target), target, RestoreInput::None)
-                .unwrap();
-            let (tx, new_rx) = std::sync::mpsc::channel();
-            reopened
-                .mount(move |event| {
-                    tx.send(event).unwrap();
-                })
-                .unwrap();
-            assert!(!old.context.wake_scope.accepts(&queued));
-            assert!(!reopened.context.wake_scope.accepts(&queued));
-            assert!(!local.writer().try_set(2));
-            assert!(new_rx.try_recv().is_err());
+
+            let named = prepare(&LaunchTarget::New, Some(supplied.clone())).unwrap();
+            assert_eq!(named.record.id, supplied);
+            drop(named);
+
             assert!(matches!(
-                binding.with_document(&mut AutoCommit::new(), |_, _| panic!("closed entry ran")),
-                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+                prepare(&LaunchTarget::PrimaryNew, Some(RecordId::for_tab(56))),
+                Err(LaunchError::BindingMismatch)
             ));
+            let primary = prepare(&LaunchTarget::PrimaryNew, None).unwrap();
+            assert!(primary.record.id.is_package_primary());
         }
 
+        phase existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected;
         {
             let temp = tempfile::tempdir().unwrap();
             let mut owners = crate::record::RecordOwners::new(temp.path().into());
-            let records = owners.open("so.tilo.mount-probe", "A").unwrap();
-            let views =
-                Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+            let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+            let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.mount-probe".into(),
+                app_id: "dev.tilo.mount-probe".into(),
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: RecordKind::new("probe"),
@@ -2533,45 +2381,201 @@ mod bound_lifetime_tests {
                 opens_before_record: false,
                 create: factory,
             };
-            let context = HostContext::prepare(
-                &definition,
-                HostContextInputs {
-                    records,
-                    views,
-                    device_id: "D".into(),
-                    instance_id: 7,
-                    permissions: crate::permissions::SharedPermissions::new(
-                        PermissionContext::permissive(),
-                    ),
-                    author: UserId("probe-author".into()),
-                    action_context: tilo_actions::ActionContext::default(),
-                },
-                &LaunchTarget::New,
-            )
-            .unwrap();
-            let mut component = definition
-                .instantiate(context, LaunchTarget::New, RestoreInput::None)
-                .unwrap();
-            let binding = component.callback_binding();
-            component
-                .with_live_component(&binding, |admitted, root, _registry| {
-                    assert_eq!(admitted.instance_id, 7);
-                    assert_eq!(root.app_title(), "Mount probe");
+            let prepare = |checkout| {
+                HostContext::prepare(
+                    &definition,
+                    HostContextInputs {
+                        records: records.clone(),
+                        views: views.clone(),
+                        device_id: "D".into(),
+                        instance_id: 7,
+                        permissions: crate::permissions::SharedPermissions::new(
+                            PermissionContext::permissive(),
+                        ),
+                        author: UserId("probe-author".into()),
+                        action_context: tilo_actions::ActionContext::default(),
+                    },
+                    &LaunchTarget::Record {
+                        checkout,
+                        reveal: None,
+                    },
+                )
+            };
+
+            let malformed = RecordCheckout::new(
+                RecordId::derived("invalid role", &RecordId::for_tab(55)),
+                definition.record_kind.clone(),
+            );
+            assert!(matches!(
+                prepare(malformed),
+                Err(LaunchError::BindingMismatch)
+            ));
+            let foreign = RecordCheckout::new(RecordId::for_tab(56), definition.record_kind.clone());
+            assert!(matches!(
+                prepare(foreign),
+                Err(LaunchError::Record(
+                    crate::record::RecordOpenError::MissingRecord
+                ))
+            ));
+
+            let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+            records.create_record(&primary).unwrap();
+            let context = prepare(primary).expect("an existing local package primary must reopen");
+            assert!(context.record.id.is_package_primary());
+        }
+
+        phase component_lifetimes_refuse_stale_wakes_loans_and_busy_entries;
+        {
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let mut owners = crate::record::RecordOwners::new(temp.path().into());
+                let records = owners.open("so.tilo.mount-probe", "A").unwrap();
+                let views =
+                    Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+                let definition = ApplicationDefinition {
+                    app_id: "so.tilo.mount-probe".into(),
+                    title: "Mount probe".into(),
+                    icon: IconDescriptor::Glyph("P"),
+                    record_kind: RecordKind::new("probe"),
+                    required: vec![],
+                    optional: vec![],
+                    opens: &[],
+                    workspace_record: false,
+                    member_record: false,
+                    opens_before_record: false,
+                    create: factory,
+                };
+                let prepare = |target: &LaunchTarget| {
+                    HostContext::prepare(
+                        &definition,
+                        HostContextInputs {
+                            records: records.clone(),
+                            views: views.clone(),
+                            device_id: "D".into(),
+                            instance_id: 7,
+                            permissions: crate::permissions::SharedPermissions::new(
+                                PermissionContext::permissive(),
+                            ),
+                            author: UserId("probe-author".into()),
+                            action_context: tilo_actions::ActionContext::default(),
+                        },
+                        target,
+                    )
+                    .unwrap()
+                };
+                let mut old = definition
+                    .instantiate(
+                        prepare(&LaunchTarget::New),
+                        LaunchTarget::New,
+                        RestoreInput::None,
+                    )
+                    .unwrap();
+                let binding = old.callback_binding();
+                let target = LaunchTarget::Record {
+                    checkout: old.record().clone(),
+                    reveal: None,
+                };
+                let (tx, rx) = std::sync::mpsc::channel();
+                old.mount(move |event| {
+                    tx.send(event).unwrap();
                 })
                 .unwrap();
-            let mut foreign = binding.clone();
-            foreign.registry_owner = std::rc::Weak::new();
-            assert!(matches!(
+                let local = binding
+                    .read_document(&AutoCommit::new(), |_, _| crate::LocalState::new(0))
+                    .unwrap();
+                assert!(local.writer().try_set(1));
+                let queued = rx.try_recv().unwrap();
+                assert!(old.context.wake_scope.accepts(&queued));
+                records
+                    .with(&old.record().id, |_| {
+                        assert!(matches!(
+                            binding
+                                .with_document(&mut AutoCommit::new(), |_, _| panic!("busy entry ran")),
+                            Err(crate::bound_dispatch::BoundDispatchError::Record(
+                                RecordOpenError::Busy
+                            ))
+                        ));
+                    })
+                    .unwrap();
+                old.close();
+                let mut reopened = definition
+                    .instantiate(prepare(&target), target, RestoreInput::None)
+                    .unwrap();
+                let (tx, new_rx) = std::sync::mpsc::channel();
+                reopened
+                    .mount(move |event| {
+                        tx.send(event).unwrap();
+                    })
+                    .unwrap();
+                assert!(!old.context.wake_scope.accepts(&queued));
+                assert!(!reopened.context.wake_scope.accepts(&queued));
+                assert!(!local.writer().try_set(2));
+                assert!(new_rx.try_recv().is_err());
+                assert!(matches!(
+                    binding.with_document(&mut AutoCommit::new(), |_, _| panic!("closed entry ran")),
+                    Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+                ));
+            }
+
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let mut owners = crate::record::RecordOwners::new(temp.path().into());
+                let records = owners.open("so.tilo.mount-probe", "A").unwrap();
+                let views =
+                    Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+                let definition = ApplicationDefinition {
+                    app_id: "so.tilo.mount-probe".into(),
+                    title: "Mount probe".into(),
+                    icon: IconDescriptor::Glyph("P"),
+                    record_kind: RecordKind::new("probe"),
+                    required: vec![],
+                    optional: vec![],
+                    opens: &[],
+                    workspace_record: false,
+                    member_record: false,
+                    opens_before_record: false,
+                    create: factory,
+                };
+                let context = HostContext::prepare(
+                    &definition,
+                    HostContextInputs {
+                        records,
+                        views,
+                        device_id: "D".into(),
+                        instance_id: 7,
+                        permissions: crate::permissions::SharedPermissions::new(
+                            PermissionContext::permissive(),
+                        ),
+                        author: UserId("probe-author".into()),
+                        action_context: tilo_actions::ActionContext::default(),
+                    },
+                    &LaunchTarget::New,
+                )
+                .unwrap();
+                let mut component = definition
+                    .instantiate(context, LaunchTarget::New, RestoreInput::None)
+                    .unwrap();
+                let binding = component.callback_binding();
                 component
-                    .with_live_component(&foreign, |_, _, _| panic!("foreign registry delivered")),
-                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
-            ));
-            component.close();
-            assert!(matches!(
-                component
-                    .with_live_component(&binding, |_, _, _| panic!("closed component delivered")),
-                Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
-            ));
+                    .with_live_component(&binding, |admitted, root, _registry| {
+                        assert_eq!(admitted.instance_id, 7);
+                        assert_eq!(root.app_title(), "Mount probe");
+                    })
+                    .unwrap();
+                let mut foreign = binding.clone();
+                foreign.registry_owner = std::rc::Weak::new();
+                assert!(matches!(
+                    component
+                        .with_live_component(&foreign, |_, _, _| panic!("foreign registry delivered")),
+                    Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+                ));
+                component.close();
+                assert!(matches!(
+                    component
+                        .with_live_component(&binding, |_, _, _| panic!("closed component delivered")),
+                    Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+                ));
+            }
         }
     }
 }
@@ -2581,220 +2585,225 @@ mod portable_tests {
     use super::*;
     use crate::application_test_support as probe;
 
-    #[test]
-    fn models_are_explicitly_bound_to_each_host_context() {
-        struct Backend;
-        impl crate::models::ModelBackend for Backend {
-            fn complete<'a>(
-                &'a self,
-                _: &'a crate::models::ModelRequest,
-            ) -> crate::models::CompletionFuture<'a> {
-                Box::pin(async {
-                    Err(crate::models::ModelError {
-                        kind: crate::models::ErrorKind::PermissionDenied,
-                        message: "fixture session".into(),
+    tilo_test_env::scenario! {
+        fn a_portable_host_binds_models_identity_and_storage_explicitly;
+
+        phase models_are_explicitly_bound_to_each_host_context;
+        {
+            struct Backend;
+            impl crate::models::ModelBackend for Backend {
+                fn complete<'a>(
+                    &'a self,
+                    _: &'a crate::models::ModelRequest,
+                ) -> crate::models::CompletionFuture<'a> {
+                    Box::pin(async {
+                        Err(crate::models::ModelError {
+                            kind: crate::models::ErrorKind::PermissionDenied,
+                            message: "fixture session".into(),
+                        })
                     })
-                })
+                }
             }
-        }
-        let cache = crate::portable_storage::PortableStorage::new("models", probe::DEVICE).unwrap();
-        let records = crate::record::RecordOwners::portable(cache.clone())
-            .open(probe::APP, probe::WORKSPACE)
-            .unwrap();
-        let views = Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap());
-        let definition = probe::definition(probe::probe_factory);
-        let prepare = |instance_id| {
-            HostContext::prepare(
-                &definition,
-                HostContextInputs {
-                    records: records.clone(),
-                    views: views.clone(),
-                    device_id: probe::DEVICE.into(),
-                    instance_id,
-                    permissions: probe::permissions(),
-                    author: probe::author(),
-                    action_context: probe::provenance(),
-                },
-                &LaunchTarget::New,
-            )
-            .unwrap()
-        };
-        let mut first = prepare(41);
-        assert!(!first.models().is_available());
-        first.provide_models(crate::models::Models::new(Rc::new(Backend)));
-        first.provide_models(crate::models::Models::new(Rc::new(Backend)));
-        let mut second = prepare(42);
-        assert!(!first.provider_admin().is_available());
-        first.provide_provider_admin(crate::models::ProviderAdministration::default());
-        first.provide_provider_admin(crate::models::ProviderAdministration::default());
-        let mut loans = first.take_lent();
-        let admin = loans.remove(
-            loans
-                .iter()
-                .position(|loan| loan.is::<crate::models::ProviderAdministration>())
-                .unwrap(),
-        );
-        assert!(
-            !admin
-                .downcast::<crate::models::ProviderAdministration>()
+            let cache = crate::portable_storage::PortableStorage::new("models", probe::DEVICE).unwrap();
+            let records = crate::record::RecordOwners::portable(cache.clone())
+                .open(probe::APP, probe::WORKSPACE)
+                .unwrap();
+            let views = Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap());
+            let definition = probe::definition(probe::probe_factory);
+            let prepare = |instance_id| {
+                HostContext::prepare(
+                    &definition,
+                    HostContextInputs {
+                        records: records.clone(),
+                        views: views.clone(),
+                        device_id: probe::DEVICE.into(),
+                        instance_id,
+                        permissions: probe::permissions(),
+                        author: probe::author(),
+                        action_context: probe::provenance(),
+                    },
+                    &LaunchTarget::New,
+                )
                 .unwrap()
-                .is_available()
-        );
-        assert!(!second.provider_admin().is_available());
-        assert_eq!(loans.len(), 1, "replacing a capability replaces its loan");
-        let loaned = loans
-            .into_iter()
-            .next()
-            .unwrap()
-            .downcast::<crate::models::Models>()
-            .unwrap();
-        assert!(loaned.is_available());
-        assert!(second.take_lent().is_empty());
-        assert!(first.models().is_available());
-        assert!(!second.models().is_available());
-        let retained = first.models();
-        drop(first);
-        assert!(retained.is_available());
-    }
-    #[test]
-    fn trusted_host_person_survives_author_changes_and_reopening() {
-        let cache =
-            crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
-        let records = crate::record::RecordOwners::portable(cache.clone())
-            .open(probe::APP, probe::WORKSPACE)
-            .unwrap();
-        let definition = probe::definition(probe::probe_factory);
-        let mut context = HostContext::prepare(
-            &definition,
-            HostContextInputs {
-                records,
-                views: Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap()),
-                device_id: probe::DEVICE.into(),
-                instance_id: 7,
-                permissions: probe::permissions(),
-                author: probe::author(),
-                action_context: probe::provenance(),
-            },
-            &LaunchTarget::New,
-        )
-        .unwrap();
-        context.author = UserId("agent".into());
-        assert_eq!(context.host_person(), &probe::author());
-        assert_eq!(context.callback_binding().host_person, probe::author());
-        let (reopened, _) = context
-            .reopener()
-            .prepare(&definition, RecordId::minted())
-            .unwrap();
-        assert_eq!(reopened.author(), &UserId("agent".into()));
-        assert_eq!(reopened.host_person(), &probe::author());
-        assert_eq!(reopened.callback_binding().host_person, probe::author());
-    }
-
-    /// The compositor runs apps on its frame loop: checkpointing and closing
-    /// one there must never wait for a store's writer thread (an fsync),
-    /// and the document and View still reach the disk.
-    #[test]
-    fn checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage() {
-        let host = probe::ProbeHost::new();
-        let root = host.root();
-        let mut component =
-            probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
-        let checkout = {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
-            let checkout = component.record().clone();
-            assert_eq!(component.checkpoint_for_close(), Vec::<String>::new());
-            let report = component.close();
-            assert_eq!(report.record_error, None);
-            assert_eq!(report.view_error, None);
-            drop(component);
-            checkout
-        };
-        let probe::ProbeHost {
-            owners,
-            records,
-            views,
-            temp,
-        } = host;
-        drop((records, owners, views));
-        let mut owners = crate::record::RecordOwners::new(root.clone());
-        let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
-        assert!(records.open_record(&checkout), "the record was saved");
-        assert_eq!(probe::body(&records, &checkout), "initialized");
-        let saved = InstanceViewStore::new(root, probe::DEVICE, probe::WORKSPACE)
-            .unwrap()
-            .load(7)
-            .unwrap()
-            .expect("the View was saved");
-        assert_eq!(saved.record_id, checkout.id.as_str());
-        drop((records, owners, temp));
-    }
-
-    #[test]
-    fn portable_host_checks_namespaces_authority_and_persists_real_component() {
-        let cache =
-            crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
-        let records = crate::record::RecordOwners::portable(cache.clone())
-            .open(probe::APP, probe::WORKSPACE)
-            .unwrap();
-        let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::WORKSPACE).unwrap());
-        let definition = probe::definition(probe::probe_factory);
-        let prepare = |views, permissions| {
-            HostContext::prepare(
-                &definition,
-                HostContextInputs {
-                    records: records.clone(),
-                    views,
-                    device_id: probe::DEVICE.into(),
-                    instance_id: 7,
-                    permissions,
-                    author: probe::author(),
-                    action_context: probe::provenance(),
-                },
-                &LaunchTarget::New,
-            )
-        };
-        let foreign =
-            crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
-        assert!(matches!(
-            prepare(
-                Rc::new(InstanceViewStore::portable(foreign, probe::WORKSPACE).unwrap()),
-                probe::permissions()
-            ),
-            Err(LaunchError::BindingMismatch)
-        ));
-        let context = prepare(views.clone(), probe::permissions()).unwrap();
-        let mut component = definition
-            .instantiate(context, LaunchTarget::New, RestoreInput::None)
-            .unwrap();
-        let checkout = component.record().clone();
-        assert!(records.is_ready(&checkout.id));
-        let report = component.close();
-        assert!(report.record_error.is_some());
-        assert!(report.view_error.is_some());
-        for write in cache.pending_writes() {
-            cache.acknowledge(&write, Ok(())).unwrap();
+            };
+            let mut first = prepare(41);
+            assert!(!first.models().is_available());
+            first.provide_models(crate::models::Models::new(Rc::new(Backend)));
+            first.provide_models(crate::models::Models::new(Rc::new(Backend)));
+            let mut second = prepare(42);
+            assert!(!first.provider_admin().is_available());
+            first.provide_provider_admin(crate::models::ProviderAdministration::default());
+            first.provide_provider_admin(crate::models::ProviderAdministration::default());
+            let mut loans = first.take_lent();
+            let admin = loans.remove(
+                loans
+                    .iter()
+                    .position(|loan| loan.is::<crate::models::ProviderAdministration>())
+                    .unwrap(),
+            );
+            assert!(
+                !admin
+                    .downcast::<crate::models::ProviderAdministration>()
+                    .unwrap()
+                    .is_available()
+            );
+            assert!(!second.provider_admin().is_available());
+            assert_eq!(loans.len(), 1, "replacing a capability replaces its loan");
+            let loaned = loans
+                .into_iter()
+                .next()
+                .unwrap()
+                .downcast::<crate::models::Models>()
+                .unwrap();
+            assert!(loaned.is_available());
+            assert!(second.take_lent().is_empty());
+            assert!(first.models().is_available());
+            assert!(!second.models().is_available());
+            let retained = first.models();
+            drop(first);
+            assert!(retained.is_available());
         }
-        records.try_flush().unwrap();
-        let saved = views.load(7).unwrap().unwrap();
-        assert_eq!(saved.record_id, checkout.id.as_str());
-        views.save(&saved).unwrap();
-        let mut denied = probe::definition(probe::probe_factory);
-        denied.required.push(probe::denied_scope());
-        assert!(matches!(
-            HostContext::prepare(
-                &denied,
+
+        phase trusted_host_person_survives_author_changes_and_reopening;
+        {
+            let cache =
+                crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
+            let records = crate::record::RecordOwners::portable(cache.clone())
+                .open(probe::APP, probe::WORKSPACE)
+                .unwrap();
+            let definition = probe::definition(probe::probe_factory);
+            let mut context = HostContext::prepare(
+                &definition,
                 HostContextInputs {
                     records,
-                    views,
+                    views: Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap()),
                     device_id: probe::DEVICE.into(),
-                    instance_id: 8,
+                    instance_id: 7,
                     permissions: probe::permissions(),
                     author: probe::author(),
-                    action_context: probe::provenance()
+                    action_context: probe::provenance(),
                 },
                 &LaunchTarget::New,
-            ),
-            Err(LaunchError::CapabilityDenied(_))
-        ));
+            )
+            .unwrap();
+            context.author = UserId("agent".into());
+            assert_eq!(context.host_person(), &probe::author());
+            assert_eq!(context.callback_binding().host_person, probe::author());
+            let (reopened, _) = context
+                .reopener()
+                .prepare(&definition, RecordId::minted())
+                .unwrap();
+            assert_eq!(reopened.author(), &UserId("agent".into()));
+            assert_eq!(reopened.host_person(), &probe::author());
+            assert_eq!(reopened.callback_binding().host_person, probe::author());
+        }
+
+        // The compositor runs apps on its frame loop: checkpointing and closing
+        // one there must never wait for a store's writer thread (an fsync),
+        // and the document and View still reach the disk.
+        phase checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage;
+        {
+            let host = probe::ProbeHost::new();
+            let root = host.root();
+            let mut component =
+                probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
+            let checkout = {
+                let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+                let checkout = component.record().clone();
+                assert_eq!(component.checkpoint_for_close(), Vec::<String>::new());
+                let report = component.close();
+                assert_eq!(report.record_error, None);
+                assert_eq!(report.view_error, None);
+                drop(component);
+                checkout
+            };
+            let probe::ProbeHost {
+                owners,
+                records,
+                views,
+                temp,
+            } = host;
+            drop((records, owners, views));
+            let mut owners = crate::record::RecordOwners::new(root.clone());
+            let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
+            assert!(records.open_record(&checkout), "the record was saved");
+            assert_eq!(probe::body(&records, &checkout), "initialized");
+            let saved = InstanceViewStore::new(root, probe::DEVICE, probe::WORKSPACE)
+                .unwrap()
+                .load(7)
+                .unwrap()
+                .expect("the View was saved");
+            assert_eq!(saved.record_id, checkout.id.as_str());
+            drop((records, owners, temp));
+        }
+
+        phase portable_host_checks_namespaces_authority_and_persists_real_component;
+        {
+            let cache =
+                crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
+            let records = crate::record::RecordOwners::portable(cache.clone())
+                .open(probe::APP, probe::WORKSPACE)
+                .unwrap();
+            let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::WORKSPACE).unwrap());
+            let definition = probe::definition(probe::probe_factory);
+            let prepare = |views, permissions| {
+                HostContext::prepare(
+                    &definition,
+                    HostContextInputs {
+                        records: records.clone(),
+                        views,
+                        device_id: probe::DEVICE.into(),
+                        instance_id: 7,
+                        permissions,
+                        author: probe::author(),
+                        action_context: probe::provenance(),
+                    },
+                    &LaunchTarget::New,
+                )
+            };
+            let foreign =
+                crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
+            assert!(matches!(
+                prepare(
+                    Rc::new(InstanceViewStore::portable(foreign, probe::WORKSPACE).unwrap()),
+                    probe::permissions()
+                ),
+                Err(LaunchError::BindingMismatch)
+            ));
+            let context = prepare(views.clone(), probe::permissions()).unwrap();
+            let mut component = definition
+                .instantiate(context, LaunchTarget::New, RestoreInput::None)
+                .unwrap();
+            let checkout = component.record().clone();
+            assert!(records.is_ready(&checkout.id));
+            let report = component.close();
+            assert!(report.record_error.is_some());
+            assert!(report.view_error.is_some());
+            for write in cache.pending_writes() {
+                cache.acknowledge(&write, Ok(())).unwrap();
+            }
+            records.try_flush().unwrap();
+            let saved = views.load(7).unwrap().unwrap();
+            assert_eq!(saved.record_id, checkout.id.as_str());
+            views.save(&saved).unwrap();
+            let mut denied = probe::definition(probe::probe_factory);
+            denied.required.push(probe::denied_scope());
+            assert!(matches!(
+                HostContext::prepare(
+                    &denied,
+                    HostContextInputs {
+                        records,
+                        views,
+                        device_id: probe::DEVICE.into(),
+                        instance_id: 8,
+                        permissions: probe::permissions(),
+                        author: probe::author(),
+                        action_context: probe::provenance()
+                    },
+                    &LaunchTarget::New,
+                ),
+                Err(LaunchError::CapabilityDenied(_))
+            ));
+        }
     }
 }

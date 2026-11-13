@@ -96,31 +96,35 @@ pub(crate) fn media_type_essence(media_type: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_file_carries_its_normalised_type_and_reports_what_opened_it() {
-        let (file, receipt) =
-            OpenFile::new("The Odyssey.epub", "Application/EPUB+zip; q=1", vec![1, 2]).unwrap();
-        assert_eq!(file.media_type(), "application/epub+zip");
-        assert_eq!(file.name(), "The Odyssey.epub");
-        assert_eq!(file.bytes(), [1, 2]);
-        assert_eq!(receipt.opened_resource(), None);
-        file.report_opened("ebook.book:book:0");
-        assert_eq!(
-            receipt.opened_resource().as_deref(),
-            Some("ebook.book:book:0")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_open_file_is_normalised_reported_and_bounded;
 
-    #[test]
-    fn malformed_names_types_and_oversized_files_are_refused() {
-        assert!(OpenFile::new(" ", "text/plain", vec![]).is_err());
-        assert!(OpenFile::new("a\nb", "text/plain", vec![]).is_err());
-        for media_type in ["", "epub", "/zip", "text/", "text/pl ain"] {
-            assert!(
-                OpenFile::new("a", media_type, vec![]).is_err(),
-                "{media_type:?}"
+        phase a_file_carries_its_normalised_type_and_reports_what_opened_it;
+        {
+            let (file, receipt) =
+                OpenFile::new("The Odyssey.epub", "Application/EPUB+zip; q=1", vec![1, 2]).unwrap();
+            assert_eq!(file.media_type(), "application/epub+zip");
+            assert_eq!(file.name(), "The Odyssey.epub");
+            assert_eq!(file.bytes(), [1, 2]);
+            assert_eq!(receipt.opened_resource(), None);
+            file.report_opened("ebook.book:book:0");
+            assert_eq!(
+                receipt.opened_resource().as_deref(),
+                Some("ebook.book:book:0")
             );
         }
-        assert!(OpenFile::new("a", "text/plain", vec![0; MAX_OPEN_FILE_BYTES + 1]).is_err());
+
+        phase malformed_names_types_and_oversized_files_are_refused;
+        {
+            assert!(OpenFile::new(" ", "text/plain", vec![]).is_err());
+            assert!(OpenFile::new("a\nb", "text/plain", vec![]).is_err());
+            for media_type in ["", "epub", "/zip", "text/", "text/pl ain"] {
+                assert!(
+                    OpenFile::new("a", media_type, vec![]).is_err(),
+                    "{media_type:?}"
+                );
+            }
+            assert!(OpenFile::new("a", "text/plain", vec![0; MAX_OPEN_FILE_BYTES + 1]).is_err());
+        }
     }
 }
