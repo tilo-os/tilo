@@ -571,56 +571,60 @@ impl ui::widget::Collaborative for SetupDoor {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_servers_are_read_from_discords_answer_by_name() {
-        let body = r#"[
+    tilo_test_env::scenario! {
+        fn setup_reads_the_bots_servers_and_asks_the_host_to_bridge_one;
+
+        phase the_servers_are_read_from_discords_answer_by_name;
+        {
+            let body = r#"[
             {"id": "222", "name": "garden club", "icon": null},
             {"id": "111", "name": "Book Club", "owner": false},
             {"id": "not-a-snowflake", "name": "Broken"},
             {"name": "No id"}
         ]"#;
-        assert_eq!(
-            parse_servers(body).unwrap(),
-            [
-                Server {
-                    id: "111".into(),
-                    name: "Book Club".into()
-                },
-                Server {
-                    id: "222".into(),
-                    name: "garden club".into()
-                },
-            ]
-        );
-        assert!(parse_servers("<html>").is_none());
-    }
+            assert_eq!(
+                parse_servers(body).unwrap(),
+                [
+                    Server {
+                        id: "111".into(),
+                        name: "Book Club".into()
+                    },
+                    Server {
+                        id: "222".into(),
+                        name: "garden club".into()
+                    },
+                ]
+            );
+            assert!(parse_servers("<html>").is_none());
+        }
 
-    /// The token goes to the host as a connector secret, never in the
-    /// bridge request every member can read; the bridge names the server.
-    #[test]
-    fn bridging_gives_the_host_the_token_apart_from_the_request() {
-        let server = Server {
-            id: "123456789012345678".into(),
-            name: "Garden club".into(),
-        };
-        let [secret, bridge] = bridge_requests("workspace-1", " a.b.c ", &server);
-        assert_eq!(secret.target.address.action, SET_CONNECTOR_SECRET);
-        assert_eq!(bridge.target.address.action, REQUEST_BOT);
-        let InvokeArgument::Json(secret) = secret.argument else {
-            panic!("named arguments");
-        };
-        assert_eq!(secret["secret"], "a.b.c");
-        assert_eq!(secret["app"], crate::APP_ID);
-        let InvokeArgument::Json(bridge) = bridge.argument else {
-            panic!("named arguments");
-        };
-        assert_eq!(bridge["entry"], BRIDGE_ENTRY);
-        assert_eq!(bridge["inputs"]["guild"], "123456789012345678");
-        assert_eq!(bridge["inputs"]["server"], "Garden club");
-        assert!(
-            !bridge
-                .values()
-                .any(|value| value.to_string().contains("a.b.c"))
-        );
+        phase bridging_gives_the_host_the_token_apart_from_the_request;
+        // The token goes to the host as a connector secret, never in the
+        // bridge request every member can read; the bridge names the server.
+        {
+            let server = Server {
+                id: "123456789012345678".into(),
+                name: "Garden club".into(),
+            };
+            let [secret, bridge] = bridge_requests("workspace-1", " a.b.c ", &server);
+            assert_eq!(secret.target.address.action, SET_CONNECTOR_SECRET);
+            assert_eq!(bridge.target.address.action, REQUEST_BOT);
+            let InvokeArgument::Json(secret) = secret.argument else {
+                panic!("named arguments");
+            };
+            assert_eq!(secret["secret"], "a.b.c");
+            assert_eq!(secret["app"], crate::APP_ID);
+            let InvokeArgument::Json(bridge) = bridge.argument else {
+                panic!("named arguments");
+            };
+            assert_eq!(bridge["entry"], BRIDGE_ENTRY);
+            assert_eq!(bridge["inputs"]["guild"], "123456789012345678");
+            assert_eq!(bridge["inputs"]["server"], "Garden club");
+            assert!(
+                !bridge
+                    .values()
+                    .any(|value| value.to_string().contains("a.b.c"))
+            );
+        }
     }
 }

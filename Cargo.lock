@@ -4024,6 +4024,7 @@ dependencies = [
  "tilo-automation",
  "tilo-net",
  "tilo-reference",
+ "tilo-test-env",
  "workspace-hack",
 ]
 

@@ -152,80 +152,88 @@ mod tests {
     use super::*;
     use discord_wire::op::ChannelKind;
 
-    #[test]
-    fn slug_lowercases_and_dashes() {
-        assert_eq!(channel_slug("General Chat!!"), "general-chat");
-        assert_eq!(channel_slug("  road map / 2026 "), "road-map-2026");
-        assert_eq!(channel_slug("Ünïcode Ok"), "ünïcode-ok");
+    tilo_test_env::scenario! {
+        fn channel_names_are_made_fit_for_discord;
+
+        phase slug_lowercases_and_dashes;
+        {
+            assert_eq!(channel_slug("General Chat!!"), "general-chat");
+            assert_eq!(channel_slug("  road map / 2026 "), "road-map-2026");
+            assert_eq!(channel_slug("Ünïcode Ok"), "ünïcode-ok");
+        }
+
+        phase slug_of_nothing_kept_is_never_empty;
+        {
+            assert_eq!(channel_slug("🎉"), FALLBACK_SLUG);
+            assert_eq!(channel_slug("!!!"), FALLBACK_SLUG);
+            assert_eq!(channel_slug(""), FALLBACK_SLUG);
+        }
+
+        phase slug_is_bounded_and_stable;
+        {
+            let long = "a".repeat(300);
+            assert_eq!(channel_slug(&long).chars().count(), MAX_CHANNEL_NAME_CHARS);
+            let once = channel_slug("Hello World");
+            assert_eq!(
+                channel_slug(&once),
+                once,
+                "a slug slugs to itself, so the reconcile settles"
+            );
+        }
+
+        phase slug_collisions_are_numbered;
+        {
+            let names = unique([
+                "general".to_owned(),
+                "general".to_owned(),
+                "general".to_owned(),
+            ]);
+            assert_eq!(names, ["general", "general-2", "general-3"]);
+        }
+
+        phase categories_and_voice_keep_their_names;
+        {
+            assert_eq!(
+                discord_channel_name(ChannelKind::Category, " Chat Workspace "),
+                "Chat Workspace"
+            );
+            assert_eq!(discord_channel_name(ChannelKind::Voice, "Voice"), "Voice");
+            assert_eq!(discord_channel_name(ChannelKind::Text, "Voice"), "voice");
+        }
     }
 
-    #[test]
-    fn slug_of_nothing_kept_is_never_empty() {
-        assert_eq!(channel_slug("🎉"), FALLBACK_SLUG);
-        assert_eq!(channel_slug("!!!"), FALLBACK_SLUG);
-        assert_eq!(channel_slug(""), FALLBACK_SLUG);
-    }
+    tilo_test_env::scenario! {
+        fn webhook_usernames_are_made_fit_for_discord;
 
-    #[test]
-    fn slug_is_bounded_and_stable() {
-        let long = "a".repeat(300);
-        assert_eq!(channel_slug(&long).chars().count(), MAX_CHANNEL_NAME_CHARS);
-        let once = channel_slug("Hello World");
-        assert_eq!(
-            channel_slug(&once),
-            once,
-            "a slug slugs to itself, so the reconcile settles"
-        );
-    }
+        phase a_linked_person_is_named_with_their_handle;
+        {
+            assert_eq!(linked_webhook_username("Ada", "ada"), "Ada (@ada)");
+            let long = linked_webhook_username(&"Ada ".repeat(40), "ada.lovelace");
+            assert_eq!(long.chars().count(), MAX_USERNAME_CHARS);
+            assert!(long.ends_with("… (@ada.lovelace)"), "{long}");
+            assert_eq!(
+                linked_webhook_username("Kim", "kim.discord"),
+                "Kim (@kim.)",
+                "Discord refuses its own name in a webhook's"
+            );
+            assert_eq!(linked_webhook_username("Kim", "discord"), "Kim");
+        }
 
-    #[test]
-    fn slug_collisions_are_numbered() {
-        let names = unique([
-            "general".to_owned(),
-            "general".to_owned(),
-            "general".to_owned(),
-        ]);
-        assert_eq!(names, ["general", "general-2", "general-3"]);
-    }
-
-    #[test]
-    fn categories_and_voice_keep_their_names() {
-        assert_eq!(
-            discord_channel_name(ChannelKind::Category, " Chat Workspace "),
-            "Chat Workspace"
-        );
-        assert_eq!(discord_channel_name(ChannelKind::Voice, "Voice"), "Voice");
-        assert_eq!(discord_channel_name(ChannelKind::Text, "Voice"), "voice");
-    }
-
-    #[test]
-    fn a_linked_person_is_named_with_their_handle() {
-        assert_eq!(linked_webhook_username("Ada", "ada"), "Ada (@ada)");
-        let long = linked_webhook_username(&"Ada ".repeat(40), "ada.lovelace");
-        assert_eq!(long.chars().count(), MAX_USERNAME_CHARS);
-        assert!(long.ends_with("… (@ada.lovelace)"), "{long}");
-        assert_eq!(
-            linked_webhook_username("Kim", "kim.discord"),
-            "Kim (@kim.)",
-            "Discord refuses its own name in a webhook's"
-        );
-        assert_eq!(linked_webhook_username("Kim", "discord"), "Kim");
-    }
-
-    #[test]
-    fn webhook_username_is_cleaned() {
-        assert_eq!(webhook_username("Discord fan", false), "fan");
-        assert_eq!(webhook_username("my CLYDE @bot #1 ```", false), "my bot 1");
-        assert_eq!(webhook_username("discord", false), FALLBACK_USERNAME);
-        assert_eq!(webhook_username("Scribe", true), "🤖 Scribe");
-        assert_eq!(
-            webhook_username(&"x".repeat(200), false).chars().count(),
-            MAX_USERNAME_CHARS
-        );
-        assert_eq!(
-            webhook_username("disclydecord", false),
-            FALLBACK_USERNAME,
-            "removing one can reveal another"
-        );
+        phase webhook_username_is_cleaned;
+        {
+            assert_eq!(webhook_username("Discord fan", false), "fan");
+            assert_eq!(webhook_username("my CLYDE @bot #1 ```", false), "my bot 1");
+            assert_eq!(webhook_username("discord", false), FALLBACK_USERNAME);
+            assert_eq!(webhook_username("Scribe", true), "🤖 Scribe");
+            assert_eq!(
+                webhook_username(&"x".repeat(200), false).chars().count(),
+                MAX_USERNAME_CHARS
+            );
+            assert_eq!(
+                webhook_username("disclydecord", false),
+                FALLBACK_USERNAME,
+                "removing one can reveal another"
+            );
+        }
     }
 }

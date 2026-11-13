@@ -67,18 +67,72 @@ fn connect_goes_to_the_page_the_host_offers_and_binds_the_state_to_the_person() 
     );
 }
 
-#[test]
-fn the_consent_page_asks_for_identify_only_and_comes_back_to_the_host() {
-    let page = discord_wire::event::sign_in_page(
-        "https://discord.com/oauth2/authorize",
-        "1234",
-        "https://workspaces.example/discord/callback",
-    );
-    assert_eq!(page, PAGE);
-    assert_eq!(consent_url(&page, "st/te"), format!("{PAGE}&state=st%2Fte"));
-    let states: std::collections::BTreeSet<String> = (0..8).map(|_| new_state()).collect();
-    assert_eq!(states.len(), 8, "each round trip its own state");
-    assert!(states.iter().all(|state| state.len() == 43));
+tilo_test_env::scenario! {
+    fn linking_reads_are_made_for_whoever_asks;
+
+    phase the_consent_page_asks_for_identify_only_and_comes_back_to_the_host;
+    {
+        let page = discord_wire::event::sign_in_page(
+            "https://discord.com/oauth2/authorize",
+            "1234",
+            "https://workspaces.example/discord/callback",
+        );
+        assert_eq!(page, PAGE);
+        assert_eq!(consent_url(&page, "st/te"), format!("{PAGE}&state=st%2Fte"));
+        let states: std::collections::BTreeSet<String> = (0..8).map(|_| new_state()).collect();
+        assert_eq!(states.len(), 8, "each round trip its own state");
+        assert!(states.iter().all(|state| state.len() == 43));
+    }
+
+    phase my_link_answers_for_its_reader_by_name;
+    {
+        let guild = linked_guild();
+        let ada = my_link(&guild, Some("ada"));
+        assert!(ada.connected);
+        assert_eq!(ada.service, "Discord");
+        let account = ada.account.unwrap();
+        assert_eq!(account.user_name, "ada.l");
+        assert_eq!(account.display_name.as_deref(), Some("Ada L"));
+        assert_eq!(
+            ada.connect.as_deref(),
+            Some(DiscordEffect::ConnectAccount.id())
+        );
+        assert_eq!(ada.unlink.as_deref(), Some(DiscordEffect::UnlinkMine.id()));
+        assert!(ada.elsewhere.unwrap().contains("/link"));
+
+        let no_sign_in = Guild {
+            sign_in_page: None,
+            ..linked_guild()
+        };
+        let bo = my_link(&no_sign_in, Some("bo"));
+        assert_eq!((bo.account, bo.connect, bo.unlink), (None, None, None));
+        let one_channel = Guild {
+            only_channel: Some("5".into()),
+            ..linked_guild()
+        };
+        assert_eq!(
+            my_link(&one_channel, Some("bo")).elsewhere,
+            None,
+            "/link is registered only for a whole server"
+        );
+        assert!(!my_link(&Guild::default(), Some("ada")).connected);
+    }
+
+    phase an_offer_reads_for_whoever_holds_its_token_or_only_its_starter;
+    {
+        let guild = linked_guild();
+        let bo = read_offer(&guild, "FROM-DISCORD", Some("anyone"), 50).unwrap();
+        assert_eq!(bo.account.user_name, "bo");
+        assert!(!bo.started_here, "a link from Discord asks first");
+        let cy = read_offer(&guild, "FROM-TILO", Some("cy"), 50).unwrap();
+        assert!(cy.started_here);
+        let theirs = read_offer(&guild, "FROM-TILO", Some("eve"), 50).unwrap_err();
+        assert!(theirs.contains("another Tilo account"), "{theirs}");
+        let late = read_offer(&guild, "FROM-DISCORD", Some("bo"), 101).unwrap_err();
+        assert!(late.contains("10 minutes"), "{late}");
+        let forged = read_offer(&guild, "GUESSED", Some("bo"), 50).unwrap_err();
+        assert!(forged.contains("/link"), "says what to do: {forged}");
+    }
 }
 
 #[test]
@@ -143,56 +197,6 @@ fn linked_guild() -> Guild {
         expires_ms: 100,
     });
     guild
-}
-
-#[test]
-fn my_link_answers_for_its_reader_by_name() {
-    let guild = linked_guild();
-    let ada = my_link(&guild, Some("ada"));
-    assert!(ada.connected);
-    assert_eq!(ada.service, "Discord");
-    let account = ada.account.unwrap();
-    assert_eq!(account.user_name, "ada.l");
-    assert_eq!(account.display_name.as_deref(), Some("Ada L"));
-    assert_eq!(
-        ada.connect.as_deref(),
-        Some(DiscordEffect::ConnectAccount.id())
-    );
-    assert_eq!(ada.unlink.as_deref(), Some(DiscordEffect::UnlinkMine.id()));
-    assert!(ada.elsewhere.unwrap().contains("/link"));
-
-    let no_sign_in = Guild {
-        sign_in_page: None,
-        ..linked_guild()
-    };
-    let bo = my_link(&no_sign_in, Some("bo"));
-    assert_eq!((bo.account, bo.connect, bo.unlink), (None, None, None));
-    let one_channel = Guild {
-        only_channel: Some("5".into()),
-        ..linked_guild()
-    };
-    assert_eq!(
-        my_link(&one_channel, Some("bo")).elsewhere,
-        None,
-        "/link is registered only for a whole server"
-    );
-    assert!(!my_link(&Guild::default(), Some("ada")).connected);
-}
-
-#[test]
-fn an_offer_reads_for_whoever_holds_its_token_or_only_its_starter() {
-    let guild = linked_guild();
-    let bo = read_offer(&guild, "FROM-DISCORD", Some("anyone"), 50).unwrap();
-    assert_eq!(bo.account.user_name, "bo");
-    assert!(!bo.started_here, "a link from Discord asks first");
-    let cy = read_offer(&guild, "FROM-TILO", Some("cy"), 50).unwrap();
-    assert!(cy.started_here);
-    let theirs = read_offer(&guild, "FROM-TILO", Some("eve"), 50).unwrap_err();
-    assert!(theirs.contains("another Tilo account"), "{theirs}");
-    let late = read_offer(&guild, "FROM-DISCORD", Some("bo"), 101).unwrap_err();
-    assert!(late.contains("10 minutes"), "{late}");
-    let forged = read_offer(&guild, "GUESSED", Some("bo"), 50).unwrap_err();
-    assert!(forged.contains("/link"), "says what to do: {forged}");
 }
 
 #[test]

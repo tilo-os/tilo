@@ -115,43 +115,47 @@ mod tests {
         guild
     }
 
-    #[test]
-    fn a_guild_pairs_its_mapped_voice_channels_by_discord_id() {
-        let mut guild = guild();
-        assert_eq!(
-            guild.voice_pairs(),
-            [
-                VoicePair {
-                    discord: "12".into(),
-                    tilo: "voice".into()
-                },
-                VoicePair {
-                    discord: "13".into(),
-                    tilo: "lounge".into()
-                }
-            ],
-            "text channels are no call"
-        );
-        guild.only_channel = Some("13".into());
-        assert_eq!(
-            guild.voice_pairs().len(),
-            1,
-            "a confined bridge reaches one"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_guild_answers_what_voice_asks_of_it;
 
-    #[test]
-    fn a_guild_knows_who_an_account_is_and_its_stored_avatar() {
-        let guild = guild();
-        assert_eq!(guild.linked_person("100"), Some("ab".repeat(32).as_str()));
-        assert_eq!(guild.linked_person("200"), None);
-        assert_eq!(
-            guild.stored_avatar("https://cdn.discordapp.com/avatars/100/a_1f.png?size=128"),
-            Some("cd".repeat(32).as_str())
-        );
-        assert_eq!(
-            guild.stored_avatar("https://cdn.discordapp.com/avatars/100/ff.png"),
-            None
-        );
+        phase a_guild_pairs_its_mapped_voice_channels_by_discord_id;
+        {
+            let mut guild = guild();
+            assert_eq!(
+                guild.voice_pairs(),
+                [
+                    VoicePair {
+                        discord: "12".into(),
+                        tilo: "voice".into()
+                    },
+                    VoicePair {
+                        discord: "13".into(),
+                        tilo: "lounge".into()
+                    }
+                ],
+                "text channels are no call"
+            );
+            guild.only_channel = Some("13".into());
+            assert_eq!(
+                guild.voice_pairs().len(),
+                1,
+                "a confined bridge reaches one"
+            );
+        }
+
+        phase a_guild_knows_who_an_account_is_and_its_stored_avatar;
+        {
+            let guild = guild();
+            assert_eq!(guild.linked_person("100"), Some("ab".repeat(32).as_str()));
+            assert_eq!(guild.linked_person("200"), None);
+            assert_eq!(
+                guild.stored_avatar("https://cdn.discordapp.com/avatars/100/a_1f.png?size=128"),
+                Some("cd".repeat(32).as_str())
+            );
+            assert_eq!(
+                guild.stored_avatar("https://cdn.discordapp.com/avatars/100/ff.png"),
+                None
+            );
+        }
     }
 }

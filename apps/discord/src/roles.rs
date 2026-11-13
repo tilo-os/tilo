@@ -304,134 +304,170 @@ mod tests {
         g
     }
 
-    #[test]
-    fn without_role_mapping_no_role_or_permission_is_touched() {
-        let mut g = settled();
-        g.map_roles = false;
-        g.roles = [drole("1", "@everyone", 0, 0)].into_iter().collect();
-        assert!(plan(&g).is_empty());
-        g.links.push(Link {
-            discord_user: "d_ada".into(),
-            person: "u_ada".into(),
-            ..Link::default()
-        });
-        assert_eq!(plan_member(&g, "d_ada", Some("moderator"), None), None);
-    }
+    tilo_test_env::scenario! {
+        fn roles_and_overwrites_are_reconciled_with_tilos;
 
-    #[test]
-    fn a_new_server_gets_five_roles_of_the_bridges_own_and_everyone_is_left_alone() {
-        let mut g = guild();
-        g.roles = [
-            drole("1", "@everyone", 0, 0),
-            drole("r_mods", "Moderator", perm::MANAGE_MESSAGES, 0),
-        ]
-        .into_iter()
-        .collect();
-        let p = plan(&g);
-        let names: Vec<_> = p.apply.iter().map(|i| i.op.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "Tilo Viewer",
-                "Tilo Commenter",
-                "Tilo Editor",
-                "Tilo Moderator",
-                "Tilo Owner"
+        phase without_role_mapping_no_role_or_permission_is_touched;
+        {
+            let mut g = settled();
+            g.map_roles = false;
+            g.roles = [drole("1", "@everyone", 0, 0)].into_iter().collect();
+            assert!(plan(&g).is_empty());
+            g.links.push(Link {
+                discord_user: "d_ada".into(),
+                person: "u_ada".into(),
+                ..Link::default()
+            });
+            assert_eq!(plan_member(&g, "d_ada", Some("moderator"), None), None);
+        }
+
+        phase a_new_server_gets_five_roles_of_the_bridges_own_and_everyone_is_left_alone;
+        {
+            let mut g = guild();
+            g.roles = [
+                drole("1", "@everyone", 0, 0),
+                drole("r_mods", "Moderator", perm::MANAGE_MESSAGES, 0),
             ]
-        );
-        assert!(
-            p.apply.iter().all(|i| i.op.id.is_none()),
-            "the server's own roles are never taken over"
-        );
-        assert!(
-            p.overwrites.is_empty(),
-            "overwrites follow once the roles exist"
-        );
-    }
+            .into_iter()
+            .collect();
+            let p = plan(&g);
+            let names: Vec<_> = p.apply.iter().map(|i| i.op.name.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "Tilo Viewer",
+                    "Tilo Commenter",
+                    "Tilo Editor",
+                    "Tilo Moderator",
+                    "Tilo Owner"
+                ]
+            );
+            assert!(
+                p.apply.iter().all(|i| i.op.id.is_none()),
+                "the server's own roles are never taken over"
+            );
+            assert!(
+                p.overwrites.is_empty(),
+                "overwrites follow once the roles exist"
+            );
+        }
 
-    #[test]
-    fn a_settled_server_plans_nothing() {
-        assert!(plan(&settled()).is_empty(), "{:?}", plan(&settled()));
-    }
+        phase a_settled_server_plans_nothing;
+        {
+            assert!(plan(&settled()).is_empty(), "{:?}", plan(&settled()));
+        }
 
-    #[test]
-    fn a_role_edited_in_discord_is_reverted() {
-        let mut g = settled();
-        g.roles.take(&Id::from_raw("r3"));
-        g.roles.push(drole(
-            "r3",
-            "Mods",
-            permissions("moderator") | perm::MANAGE_CHANNELS,
-            0,
-        ));
-        let p = plan(&g);
-        assert_eq!(p.apply.len(), 1);
-        assert_eq!(p.apply[0].op.id.as_deref(), Some("r3"));
-        assert_eq!(
-            perm::parse(&p.apply[0].op.permissions) & perm::MANAGE_CHANNELS,
-            0,
-            "nobody gets Manage Channels"
-        );
-    }
+        phase a_role_edited_in_discord_is_reverted;
+        {
+            let mut g = settled();
+            g.roles.take(&Id::from_raw("r3"));
+            g.roles.push(drole(
+                "r3",
+                "Mods",
+                permissions("moderator") | perm::MANAGE_CHANNELS,
+                0,
+            ));
+            let p = plan(&g);
+            assert_eq!(p.apply.len(), 1);
+            assert_eq!(p.apply[0].op.id.as_deref(), Some("r3"));
+            assert_eq!(
+                perm::parse(&p.apply[0].op.permissions) & perm::MANAGE_CHANNELS,
+                0,
+                "nobody gets Manage Channels"
+            );
+        }
 
-    #[test]
-    fn viewers_and_commenters_are_denied_through_overwrites() {
-        let mut g = settled();
-        g.map.push(mapping(MappedKind::Channel, "c2", "d2"));
-        g.channels
-            .push(dchan("d2", ChannelKind::Text, "new", None, 1));
-        let p = plan(&g);
-        assert_eq!(p.overwrites.len(), 2);
-        let viewer = p.overwrites.iter().find(|o| o.target == "r0").unwrap();
-        assert_ne!(perm::parse(&viewer.deny) & perm::SEND_MESSAGES, 0);
-        let commenter = p.overwrites.iter().find(|o| o.target == "r1").unwrap();
-        assert_eq!(
-            perm::parse(&commenter.deny) & perm::ADD_REACTIONS,
-            0,
-            "commenters react"
-        );
-    }
+        phase viewers_and_commenters_are_denied_through_overwrites;
+        {
+            let mut g = settled();
+            g.map.push(mapping(MappedKind::Channel, "c2", "d2"));
+            g.channels
+                .push(dchan("d2", ChannelKind::Text, "new", None, 1));
+            let p = plan(&g);
+            assert_eq!(p.overwrites.len(), 2);
+            let viewer = p.overwrites.iter().find(|o| o.target == "r0").unwrap();
+            assert_ne!(perm::parse(&viewer.deny) & perm::SEND_MESSAGES, 0);
+            let commenter = p.overwrites.iter().find(|o| o.target == "r1").unwrap();
+            assert_eq!(
+                perm::parse(&commenter.deny) & perm::ADD_REACTIONS,
+                0,
+                "commenters react"
+            );
+        }
 
-    #[test]
-    fn an_overwrite_asked_for_is_asked_again_only_once_a_layout_answers_it() {
-        let mut g = settled();
-        g.map.push(mapping(MappedKind::Channel, "c2", "d2"));
-        g.channels
-            .push(dchan("d2", ChannelKind::Text, "new", None, 1));
-        let first = plan(&g);
-        let asked = first.overwrites[0].clone();
-        let entry = Id::from_raw("e1");
-        g.outbox.push(
-            entry.clone(),
-            discord_wire::op::Queued {
-                op: DiscordOp::SetOverwrite(asked.clone()),
-                publish: Vec::new(),
-                attach: Vec::new(),
-            },
-        );
-        assert_eq!(plan(&g).overwrites, first.overwrites[1..], "queued");
-        g.outbox
-            .settle(&entry, Settled::Done(discord_wire::op::DiscordResult::Done));
-        // A layout from before it took effect: nothing changed for it.
-        let stale = layout_of(&g);
-        g.observe(String::new(), stale.clone(), roles_of(&g));
-        assert_eq!(
-            plan(&g).overwrites,
-            first.overwrites[1..],
-            "done, no echo yet"
-        );
-        // Someone sets something else on it in Discord: answered, so reverted.
-        let mut edited = stale;
-        let d2 = edited.iter_mut().find(|c| c.id == "d2").unwrap();
-        d2.overwrites.push(OverwriteInfo {
-            id: asked.target.clone(),
-            kind: 0,
-            allow: "0".into(),
-            deny: "0".into(),
-        });
-        g.observe(String::new(), edited, roles_of(&g));
-        assert!(g.outbox.is_empty(), "the ask is forgotten");
-        assert!(plan(&g).overwrites.contains(&asked));
+        phase an_overwrite_asked_for_is_asked_again_only_once_a_layout_answers_it;
+        {
+            let mut g = settled();
+            g.map.push(mapping(MappedKind::Channel, "c2", "d2"));
+            g.channels
+                .push(dchan("d2", ChannelKind::Text, "new", None, 1));
+            let first = plan(&g);
+            let asked = first.overwrites[0].clone();
+            let entry = Id::from_raw("e1");
+            g.outbox.push(
+                entry.clone(),
+                discord_wire::op::Queued {
+                    op: DiscordOp::SetOverwrite(asked.clone()),
+                    publish: Vec::new(),
+                    attach: Vec::new(),
+                },
+            );
+            assert_eq!(plan(&g).overwrites, first.overwrites[1..], "queued");
+            g.outbox
+                .settle(&entry, Settled::Done(discord_wire::op::DiscordResult::Done));
+            // A layout from before it took effect: nothing changed for it.
+            let stale = layout_of(&g);
+            g.observe(String::new(), stale.clone(), roles_of(&g));
+            assert_eq!(
+                plan(&g).overwrites,
+                first.overwrites[1..],
+                "done, no echo yet"
+            );
+            // Someone sets something else on it in Discord: answered, so reverted.
+            let mut edited = stale;
+            let d2 = edited.iter_mut().find(|c| c.id == "d2").unwrap();
+            d2.overwrites.push(OverwriteInfo {
+                id: asked.target.clone(),
+                kind: 0,
+                allow: "0".into(),
+                deny: "0".into(),
+            });
+            g.observe(String::new(), edited, roles_of(&g));
+            assert!(g.outbox.is_empty(), "the ask is forgotten");
+            assert!(plan(&g).overwrites.contains(&asked));
+        }
+
+        phase membership_is_mirrored_only_for_linked_accounts;
+        {
+            let mut g = settled();
+            assert_eq!(
+                plan_member(&g, "d_ada", Some("moderator"), None),
+                None,
+                "unlinked"
+            );
+            g.links.push(Link {
+                discord_user: "d_ada".into(),
+                person: "u_ada".into(),
+                ..Link::default()
+            });
+            let op = plan_member(
+                &g,
+                "d_ada",
+                Some("moderator"),
+                Some(&["r2".to_owned(), "x".to_owned()]),
+            )
+            .unwrap();
+            assert_eq!(op.add, ["r3"]);
+            assert_eq!(op.remove, ["r2"], "only managed roles are taken away");
+            assert_eq!(
+                plan_member(&g, "d_ada", Some("moderator"), Some(&["r3".to_owned()])),
+                None
+            );
+            let blind = plan_member(&g, "d_ada", Some("editor"), None).unwrap();
+            assert_eq!(blind.add, ["r2"]);
+            assert_eq!(blind.remove.len(), 4);
+            assert_eq!(linked_accounts(&g, "u_ada"), ["d_ada"]);
+        }
     }
 
     fn roles_of(g: &Guild) -> Vec<discord_wire::event::RoleInfo> {
@@ -461,37 +497,5 @@ mod tests {
                 overwrites: c.overwrites.clone(),
             })
             .collect()
-    }
-
-    #[test]
-    fn membership_is_mirrored_only_for_linked_accounts() {
-        let mut g = settled();
-        assert_eq!(
-            plan_member(&g, "d_ada", Some("moderator"), None),
-            None,
-            "unlinked"
-        );
-        g.links.push(Link {
-            discord_user: "d_ada".into(),
-            person: "u_ada".into(),
-            ..Link::default()
-        });
-        let op = plan_member(
-            &g,
-            "d_ada",
-            Some("moderator"),
-            Some(&["r2".to_owned(), "x".to_owned()]),
-        )
-        .unwrap();
-        assert_eq!(op.add, ["r3"]);
-        assert_eq!(op.remove, ["r2"], "only managed roles are taken away");
-        assert_eq!(
-            plan_member(&g, "d_ada", Some("moderator"), Some(&["r3".to_owned()])),
-            None
-        );
-        let blind = plan_member(&g, "d_ada", Some("editor"), None).unwrap();
-        assert_eq!(blind.add, ["r2"]);
-        assert_eq!(blind.remove.len(), 4);
-        assert_eq!(linked_accounts(&g, "u_ada"), ["d_ada"]);
     }
 }
