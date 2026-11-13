@@ -196,7 +196,20 @@ pub fn action_type(
         .collect();
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());
     let planner = Arc::clone(planner);
-    let build = move |subject: &Target, args: &ActionArgs| {
+    let build = build_of(app, kind, id, planner);
+    let spec = spec_of(meta, action, words, params, build);
+    decorated(action, words, spec)
+}
+
+/// The build of a published action: it plans the action with the arguments the caller gives,
+/// and answers the action encoding it planned, or the reason it could not.
+fn build_of(
+    app: String,
+    kind: String,
+    id: String,
+    planner: Arc<dyn Planner>,
+) -> impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static {
+    move |subject: &Target, args: &ActionArgs| {
         let json = args.to_json();
         let caller = planner.caller();
         // What the invocation is made from, as the caller named it with the arguments.
@@ -219,7 +232,18 @@ pub fn action_type(
                 type_id: INVALID_ARGUMENTS_TYPE.to_owned(),
                 payload: message.into_bytes(),
             })
-    };
+    }
+}
+
+/// The spec of a published action, bound to the build that plans it: its parameters, its label
+/// and what it asks of the person who chooses it.
+fn spec_of(
+    meta: &Meta,
+    action: &ActionMeta,
+    words: &dyn Words,
+    params: Vec<ActionParam>,
+    build: impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
     // What the platform calls the action, as the compiler derived it, in the reader's words.
     let label = label_of(
         words,
@@ -274,11 +298,16 @@ pub fn action_type(
         .arguments(&action.params)
         .iter()
         .all(|param| param.default.is_some());
-    let spec = if defaulted && !no_params {
+    if defaulted && !no_params {
         spec.with_immediate_per_target()
     } else {
         spec
-    };
+    }
+}
+
+/// The spec `spec` with what the declaration says of it: its kind, description, icon, whether it
+/// is destructive, and the id a change of it goes by.
+fn decorated(action: &ActionMeta, words: &dyn Words, spec: ActionSpec) -> Arc<ActionType> {
     // In the order a native verb's declaration is made into its spec: its kind, description,
     // icon, then whether it is destructive, which settles its confirmation.
     let mut spec = spec.of_kind(action_kind(action.class));

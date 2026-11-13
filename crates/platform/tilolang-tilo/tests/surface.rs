@@ -162,14 +162,9 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
     );
 }
 
-/// A note's `edit-text` lists the type's editable fields by their **names** — `title` and
-/// `body`, never the internal ids a record stores them under — so an agent reads the field to
-/// set from the verb itself. `edit-text` takes `body` and writes the note's body.
-#[test]
-fn an_edit_verb_names_its_fields_the_app_declares_and_takes_one() {
-    // A package with a note's shape — a title, a body and a flag — the same fields the Notes
-    // app declares; it stands alone so it compiles without another app's records.
-    const NOTE: &str = r#"app so.tilo.lang.note "Note"
+/// A package with a note's shape — a title, a body and a flag — the same fields the Notes app
+/// declares; it stands alone so it compiles without another app's records.
+const NOTE: &str = r#"app so.tilo.lang.note "Note"
 
 type Note {
   title: Text
@@ -187,6 +182,12 @@ view note(n: Note) {
   }
 }
 "#;
+
+/// A note's `edit-text` lists the type's editable fields by their **names** — `title` and
+/// `body`, never the internal ids a record stores them under — so an agent reads the field to
+/// set from the verb itself. `edit-text` takes `body` and writes the note's body.
+#[test]
+fn an_edit_verb_names_its_fields_the_app_declares_and_takes_one() {
     let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(NOTE, "")]);
     let meta = packages[0].meta.clone();
     replica.host.root_of(&meta.app).unwrap();
@@ -231,6 +232,17 @@ view note(n: Note) {
         .as_array()
         .expect("the flag names its choices");
     assert_eq!(flag_choices, &[json!("pinned")]);
+}
+
+/// A field the type lacks is refused by the verb's own build, with a sentence that names the
+/// fields it offers rather than the internal ids; and the verb takes a field by the name the app
+/// declares or by the id a bound control hands back, both reaching the same field.
+#[test]
+fn an_edit_verb_takes_a_field_by_name_or_by_id() {
+    let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(NOTE, "")]);
+    let meta = packages[0].meta.clone();
+    replica.host.root_of(&meta.app).unwrap();
+    replica.commit();
 
     // The verb's own binding takes the name, and the edit reaches the note's body.
     let note_id = tilolang_tilo::publish::resource_id(APP_NOTE, "anote");
@@ -289,17 +301,17 @@ view note(n: Note) {
 
     // `field: "body"` is accepted: it names a field the verb offers, and the edit is the
     // note's body, not a field id.
-    let planned = tilolang_tilo::publish::edit_action(
+    let built_edit = tilolang_tilo::publish::edit_action(
         &meta,
         "Note",
-        &note_id.trim_start_matches(&format!("tl:{APP_NOTE}:")),
+        note_id.trim_start_matches(&format!("tl:{APP_NOTE}:")),
         "body",
         &json!({"rich": [{"id": "", "kind": "paragraph", "text": "milk and eggs",
                           "marks": [], "attrs": {}, "children": []}]}),
     )
     .expect("`body` names the note's body");
     assert_eq!(
-        planned.args["field"],
+        built_edit.args["field"],
         json!(crate::fixtures::field_id(&meta, "Note", "body")),
         "the name is mapped to the id the record stores it under"
     );
