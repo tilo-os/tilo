@@ -528,7 +528,7 @@ mod https_completion {
                     loop {
                         turn.notified().await;
                         let Some(state) = state.upgrade() else { break };
-                        state.drain_action_directory_bridge(&directories);
+                        state.take_turn(&directories);
                     }
                 }));
                 target
@@ -673,7 +673,7 @@ mod https_completion {
                     loop {
                         turn.notified().await;
                         let Some(state) = state.upgrade() else { break };
-                        state.drain_action_directory_bridge(&directories);
+                        state.take_turn(&directories);
                     }
                 }));
                 let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();

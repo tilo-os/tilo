@@ -327,7 +327,7 @@ async fn bridge_query(
     );
     tilo_test_env::within("the directory disclosure", async {
         loop {
-            state.drain_action_directory_bridge(directories);
+            state.take_turn(directories);
             match pending.poll_ready() {
                 PendingPoll::Ready(page) => break page.unwrap(),
                 PendingPoll::Abandoned => panic!("bridge query abandoned"),

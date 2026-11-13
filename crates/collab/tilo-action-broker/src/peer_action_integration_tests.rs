@@ -60,9 +60,7 @@ async fn answered<T>(
                 PendingPoll::Waiting => {
                     // What the door asks a live directory is answered on this
                     // local set, as the shell's accept loop answers it.
-                    fixture
-                        .state
-                        .drain_action_directory_bridge(&fixture.directories);
+                    fixture.state.take_turn(&fixture.directories);
                     tokio::task::yield_now().await;
                 }
                 PendingPoll::Abandoned => return None,

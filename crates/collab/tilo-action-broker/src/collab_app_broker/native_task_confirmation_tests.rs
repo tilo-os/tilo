@@ -422,7 +422,7 @@ async fn press_replied(
         tokio::select! {
             replied = &mut reply => return replied.unwrap(),
             () = tokio::time::sleep(std::time::Duration::from_millis(5)) => {
-                f.state.drain_action_directory_bridge(&f.directories);
+                f.state.take_turn(&f.directories);
                 assert!(tokio::time::Instant::now() < deadline, "the press is answered");
             }
         }

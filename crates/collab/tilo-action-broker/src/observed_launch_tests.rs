@@ -55,7 +55,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             let mut request = local_host_request(true);
             request.invocation = original;
             let admitted = host.invoke(&person, request);
-            rig.state.drain_action_directory_bridge(&rig.directories);
+            rig.state.take_turn(&rig.directories);
             local_host_answer(admitted).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.invocation_uuid, *original.0.as_bytes());
@@ -508,7 +508,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                         appearance: None,
                     },
                 );
-                rig.state.drain_action_directory_bridge(&rig.directories);
+                rig.state.take_turn(&rig.directories);
                 let admitted = local_host_answer(pending_admission).await.unwrap();
                 assert_eq!(
                     admitted.status,

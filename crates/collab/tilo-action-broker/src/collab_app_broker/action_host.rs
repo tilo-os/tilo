@@ -2788,14 +2788,16 @@ impl AppBrokerState {
             return Pending::ready(Err(ActionHostError::UnknownInvocation));
         };
         let (receipt, answered) = pending();
-        let state = Arc::clone(self);
-        self.journal_in_flight(&invocation).then(move |outcome| {
-            receipt.complete(
-                outcome
-                    .map(|()| state.receipt_for(invocation, job))
-                    .map_err(|reason| ActionHostError::Unavailable { reason }),
-            );
-        });
+        self.when_durable(
+            self.journal_in_flight(&invocation),
+            move |state, outcome| {
+                receipt.complete(
+                    outcome
+                        .map(|()| state.receipt_for(invocation, job))
+                        .map_err(|reason| ActionHostError::Unavailable { reason }),
+                );
+            },
+        );
         answered
     }
 

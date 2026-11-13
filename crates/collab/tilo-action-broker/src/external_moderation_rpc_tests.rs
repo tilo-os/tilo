@@ -1040,9 +1040,7 @@ mod external_moderation_rpc_tests {
                     });
                     // The app's own directory answers on the broker's turn.
                     let answer = loop {
-                        workspace
-                            .state
-                            .drain_action_directory_bridge(&workspace.directories);
+                        workspace.state.take_turn(&workspace.directories);
                         if asked.is_finished() {
                             break (&mut asked).await.unwrap().unwrap();
                         }

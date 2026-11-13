@@ -28,7 +28,7 @@ async fn certified_jobs_lifecycle_uses_exact_certificate_owner_and_live_session(
                 .unwrap();
             let request = local_host_request(false);
             let answer = host.invoke(&caller, request.clone());
-            rig.state.drain_action_directory_bridge(&rig.directories);
+            rig.state.take_turn(&rig.directories);
             local_host_answer(answer).await.unwrap();
             let _lease = local_host_lease(&rig, &caller, request.invocation).await;
             let id = rig.state.remote_job(&caller, &request.invocation).unwrap();

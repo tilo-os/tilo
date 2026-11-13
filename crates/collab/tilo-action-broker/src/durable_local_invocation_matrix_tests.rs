@@ -222,7 +222,7 @@ mod durable_local_matrix {
                     let Some(state) = bridge_state.upgrade() else {
                         break;
                     };
-                    state.drain_action_directory_bridge(&bridge_directories);
+                    state.take_turn(&bridge_directories);
                 }
             });
             Self {

@@ -2926,8 +2926,31 @@ pub struct AppBrokerState {
     service_peers: Mutex<Vec<u64>>,
     /// How often the broker thread unwound and started again.
     thread_restarts: AtomicU64,
-    #[cfg(test)]
-    thread_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+    /// Work another thread hands the broker's turn (see [`TurnWork`]).
+    turn_work: std::sync::Arc<TurnWork>,
+}
+
+/// Work another thread handed the broker's turn, run with the state.
+type TurnTask = Box<dyn FnOnce(&AppBrokerState) + Send>;
+
+/// Work a thread hands the broker's turn instead of doing it there.
+///
+/// The journal resolves a write on a thread of its own; a callback that took
+/// the broker there would drop the journal on it, and a writer cannot wait for
+/// itself, so the store's lock would outlive the journal. Work that needs the
+/// broker is handed here, with the state the turn owns and gives it.
+pub(super) struct TurnWork {
+    handed: Mutex<Vec<TurnTask>>,
+    /// The turn that runs what is handed: the broker loop parks on it.
+    turn: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl TurnWork {
+    /// Queue `work` for the turn, which runs it with the state.
+    pub(super) fn hand(&self, work: TurnTask) {
+        self.handed.lock_recover().push(work);
+        self.turn.notify_one();
+    }
 }
 
 impl AppBrokerState {
@@ -3027,8 +3050,8 @@ impl AppBrokerState {
         clear!(self.workers);
         // A launch waiting for an app to publish learns the broker stopped.
         self.invocation_streams_changed();
-        #[cfg(test)]
-        clear!(self.thread_callbacks);
+        // The broker that would run what is handed over is gone.
+        std::mem::take(&mut *self.turn_work.handed.lock_recover());
         self.refresh_action_directory_root_snapshot();
 
         let journal = {
@@ -3039,23 +3062,6 @@ impl AppBrokerState {
             std::mem::replace(&mut *slot, Ok(None))
         };
         drop(journal);
-    }
-
-    #[cfg(test)]
-    fn enqueue_thread_callback(&self, callback: Box<dyn FnOnce() + Send>) {
-        match self.thread_callbacks.lock() {
-            Ok(mut callbacks) => callbacks.push(callback),
-            Err(poisoned) => poisoned.into_inner().push(callback),
-        }
-        self.local_turn.notify_one();
-    }
-
-    #[cfg(test)]
-    fn callbacks_pending(&self) -> usize {
-        match self.thread_callbacks.lock() {
-            Ok(callbacks) => callbacks.len(),
-            Err(poisoned) => poisoned.into_inner().len(),
-        }
     }
 
     /// Allocate a private connected descriptor for an actual host-mounted worker.
@@ -3651,15 +3657,17 @@ impl AppBrokerState {
                 services,
                 workers: Mutex::new(Vec::new()),
                 worker_admitted: tokio::sync::Notify::new(),
-                local_turn,
+                local_turn: std::sync::Arc::clone(&local_turn),
                 offloads: Mutex::default(),
                 offloaded_here: Mutex::default(),
                 host_workers: Mutex::default(),
                 route_holders: Mutex::default(),
                 service_peers: Mutex::new(Vec::new()),
                 thread_restarts: AtomicU64::new(0),
-                #[cfg(test)]
-                thread_callbacks: Mutex::new(Vec::new()),
+                turn_work: std::sync::Arc::new(TurnWork {
+                    handed: Mutex::new(Vec::new()),
+                    turn: std::sync::Arc::clone(&local_turn),
+                }),
             }),
             bridge_rx,
         )
@@ -4039,18 +4047,21 @@ impl AppBrokerState {
             .roots
     }
 
-    /// Drain a bounded batch on the broker `LocalSet`.  This function must only
-    /// be called by the accept-loop `LocalSet`: it starts the Rc-backed RPCs
-    /// there, while the request sender is safe for compositor threads.
+    /// Take the broker's turn once: run what other threads handed over, then
+    /// drain a bounded batch on the broker `LocalSet`. The loop takes the turn
+    /// each time it wakes, and a test that drives the broker takes it here.
+    /// This function must only be called by the accept-loop `LocalSet`: it
+    /// starts the Rc-backed RPCs there, while the request sender is safe for
+    /// compositor threads.
     #[allow(
         clippy::too_many_lines,
         reason = "the bounded bridge deliberately keeps request validation, LocalSet dispatch, and reply delivery in one ordered drain turn"
     )]
-    fn drain_action_directory_bridge(
-        self: &Arc<Self>,
-        directories: &Rc<LocalActionDirectoryRegistry>,
-    ) {
+    fn take_turn(self: &Arc<Self>, directories: &Rc<LocalActionDirectoryRegistry>) {
         const MAX_DRAIN_PER_TICK: usize = ActionDirectoryRequestQueue::CAPACITY;
+        for work in std::mem::take(&mut *self.turn_work.handed.lock_recover()) {
+            work(self);
+        }
         for _ in 0..MAX_DRAIN_PER_TICK {
             let request = match directories.bridge_rx.borrow().try_recv() {
                 Ok(request) => request,
@@ -9990,10 +10001,6 @@ async fn sleep_until(deadline: Option<std::time::Instant>) {
 /// One run of the broker thread: start the broker's own services, then
 /// accept and drive connections until asked to quit.
 #[expect(
-    clippy::too_many_lines,
-    reason = "the broker's turn: service start, worker admission, accept and expiry in one loop"
-)]
-#[expect(
     clippy::future_not_send,
     reason = "the broker state and its Rc-backed action-directory registry run only on the broker LocalSet"
 )]
@@ -10039,16 +10046,6 @@ async fn serve_broker_thread(
             state.refresh_native_task_delivery();
             delivered = Some(epoch);
         }
-        #[cfg(test)]
-        {
-            let callbacks = match state.thread_callbacks.lock() {
-                Ok(mut callbacks) => std::mem::take(&mut *callbacks),
-                Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
-            };
-            for callback in callbacks {
-                callback();
-            }
-        }
         let workers = state
             .workers
             .lock()
@@ -10076,7 +10073,7 @@ async fn serve_broker_thread(
                 }
             });
         }
-        state.drain_action_directory_bridge(&directories);
+        state.take_turn(&directories);
         state.drain_offloads();
         if quit.load(Ordering::Relaxed) {
             break;
@@ -11119,7 +11116,7 @@ pub mod tests {
                 }),
             );
         let fanout_for_callback = Arc::clone(&fanout);
-        state.enqueue_thread_callback(Box::new(move || {
+        state.turn_work.hand(Box::new(move |_| {
             fanout_for_callback.fanout_to_route(
                 &CollabEvent::FollowChanged { peer_id: None },
                 u64::MAX,
@@ -11418,12 +11415,14 @@ pub mod tests {
 
         // A failing broker thread is started again on the same socket, and
         // the session's handles to it stay live.
-        state.enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+        state
+            .turn_work
+            .hand(Box::new(|_| panic!("broker-thread unwind fixture")));
         tilo_test_env::wait_until("the broker thread to start again", || {
             state.thread_restarts() == 1
         });
         let (reached, answered) = std::sync::mpsc::channel();
-        state.enqueue_thread_callback(Box::new(move || {
+        state.turn_work.hand(Box::new(move |_| {
             let _ = reached.send(tilo_rt::panic_boundary::is_isolated());
         }));
         assert!(
@@ -11447,9 +11446,11 @@ pub mod tests {
 
         // One that keeps failing stays down and releases what it held.
         for _ in 0..BROKER_THREAD_RESTARTS {
-            state.enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+            state
+                .turn_work
+                .hand(Box::new(|_| panic!("broker-thread unwind fixture")));
             tilo_test_env::wait_until("the broker thread to fail", || {
-                !socket.exists() || state.callbacks_pending() == 0
+                !socket.exists() || state.turn_work.handed.lock_recover().is_empty()
             });
         }
         drop(state);
@@ -12211,9 +12212,7 @@ pub mod tests {
         reason = "the directory bridge is deliberately driven on the LocalSet because its state contains Rc values"
     )]
     pub async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
-        fixture
-            .state
-            .drain_action_directory_bridge(&fixture.directories);
+        fixture.state.take_turn(&fixture.directories);
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
     }
