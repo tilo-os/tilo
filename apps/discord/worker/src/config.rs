@@ -117,4 +117,131 @@ mod tests {
         let one = config(&[(ENV_CHANNEL_ID, "1101")]).unwrap();
         assert_eq!(one.only_channel.as_deref(), Some("1101"));
     }
+
+    /// Each setting on its own: a flag is on for exactly three spellings, an
+    /// id is digits and nothing else, and the link's web entry is an http(s)
+    /// URL or nothing.
+    #[test]
+    fn flags_ids_and_the_link_url_are_read_strictly() {
+        for (value, on) in [
+            ("1", true),
+            ("true", true),
+            ("yes", true),
+            (" 1\n", true),
+            ("", false),
+            ("0", false),
+            ("no", false),
+            ("2", false),
+        ] {
+            let read = config(&[(ENV_READ_ONLY, value)]).unwrap();
+            assert_eq!(read.read_only, on, "{ENV_READ_ONLY}={value:?}");
+        }
+        assert!(!config(&[]).unwrap().read_only, "unset");
+
+        for name in [ENV_GUILD_ID, ENV_CHANNEL_ID] {
+            for (value, expected) in [
+                ("", Ok(None)),
+                ("0", Ok(Some("0"))),
+                ("1101", Ok(Some("1101"))),
+                (
+                    "123456789012345678901234567890",
+                    Ok(Some("123456789012345678901234567890")),
+                ),
+                ("-1", Err(())),
+                ("+1", Err(())),
+                (" 1101", Err(())),
+                ("1101\n", Err(())),
+                ("11 01", Err(())),
+                ("0x44d", Err(())),
+                ("general", Err(())),
+            ] {
+                let read = config(&[(name, value)]).map(|settings| {
+                    if name == ENV_GUILD_ID {
+                        settings.guild_id
+                    } else {
+                        settings.only_channel
+                    }
+                });
+                let expected = expected
+                    .map(|id: Option<&str>| id.map(str::to_owned))
+                    .map_err(|()| format!("{name}: {value:?} is not a Discord id"));
+                assert_eq!(read, expected, "{name}={value:?}");
+            }
+        }
+
+        for (value, expected) in [
+            ("https://tilo.example/", Some("https://tilo.example/")),
+            ("  https://tilo.example/\n", Some("https://tilo.example/")),
+            ("http://localhost:8080/", Some("http://localhost:8080/")),
+            ("", None),
+            ("tilo.example", None),
+            ("ftp://tilo.example/", None),
+            ("javascript:alert(1)", None),
+        ] {
+            let read = config(&[(ENV_LINK_URL, value)]).unwrap();
+            assert_eq!(
+                read.link_url.as_deref(),
+                expected,
+                "{ENV_LINK_URL}={value:?}"
+            );
+        }
+        assert_eq!(config(&[]).unwrap().link_url, None, "unset");
+    }
+
+    /// A base elsewhere than Discord's is refused by the name of its setting
+    /// and its host, never its path; one of Discord's is taken without its
+    /// trailing slash.
+    #[test]
+    fn a_base_off_discord_is_refused_by_setting_and_host() {
+        for (name, value, error) in [
+            (
+                ENV_API_BASE,
+                "https://cdn.discordapp.com",
+                "DISCORD_API_BASE: cdn.discordapp.com is not one of Discord's Api hosts",
+            ),
+            (
+                ENV_CDN_BASE,
+                "https://discord.com",
+                "DISCORD_CDN_BASE: discord.com is not one of Discord's Cdn hosts",
+            ),
+            (
+                ENV_API_BASE,
+                "https://example.com/api/webhooks/1/SECRET",
+                "DISCORD_API_BASE: example.com is not one of Discord's Api hosts",
+            ),
+            (
+                ENV_API_BASE,
+                "https://user:pw@discord.com/api/v10",
+                "DISCORD_API_BASE: discord.com: credentials in a URL are not allowed",
+            ),
+            (
+                ENV_API_BASE,
+                "http://discord.com/api/v10",
+                "DISCORD_API_BASE: discord.com: only https is allowed",
+            ),
+            (
+                ENV_API_BASE,
+                "https://discord.com:8443/api/v10",
+                "DISCORD_API_BASE: discord.com: Discord is reached on its default port",
+            ),
+            (
+                ENV_CDN_BASE,
+                "http://127.0.0.1:9/cdn",
+                "DISCORD_CDN_BASE: 127.0.0.1: Discord is reached on its default port",
+            ),
+        ] {
+            assert_eq!(
+                config(&[(name, value)]).unwrap_err(),
+                error,
+                "{name}={value}"
+            );
+        }
+        let read = config(&[
+            (ENV_API_BASE, "https://discord.com/api/v10/"),
+            (ENV_CDN_BASE, "https://media.discordapp.net/"),
+        ])
+        .unwrap();
+        assert_eq!(read.api_base.as_str(), "https://discord.com/api/v10");
+        assert_eq!(read.cdn_base.as_str(), "https://media.discordapp.net/");
+    }
 }

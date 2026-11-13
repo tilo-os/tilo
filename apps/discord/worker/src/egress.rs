@@ -257,4 +257,159 @@ mod tests {
             "only loopback"
         );
     }
+
+    /// What a URL carries beside its host is checked too, and a refusal says
+    /// why, naming the host and never the path.
+    #[test]
+    fn a_refusal_says_why_and_names_only_the_host() {
+        for (url, purpose, allow_loopback, expected) in [
+            (
+                "https://discord.com:443/api/v10",
+                Purpose::Api,
+                false,
+                Ok(()),
+            ),
+            ("HTTPS://DISCORD.COM/api/v10", Purpose::Api, false, Ok(())),
+            ("wss://a.b.discord.gg", Purpose::Gateway, false, Ok(())),
+            (
+                "wss://gateway-us-east1-b.discord.gg:443/?v=10",
+                Purpose::Gateway,
+                false,
+                Ok(()),
+            ),
+            (
+                "https://gateway.discord.gg",
+                Purpose::Gateway,
+                false,
+                Err("gateway.discord.gg: only wss is allowed"),
+            ),
+            (
+                "wss://gateway.discord.gg:8443",
+                Purpose::Gateway,
+                false,
+                Err("gateway.discord.gg: Discord is reached on its default port"),
+            ),
+            (
+                "https://discord.gg",
+                Purpose::Api,
+                false,
+                Err("discord.gg is not one of Discord's Api hosts"),
+            ),
+            (
+                "https://cdn.discordapp.com.evil.example/x",
+                Purpose::Cdn,
+                false,
+                Err("cdn.discordapp.com.evil.example is not one of Discord's Cdn hosts"),
+            ),
+            (
+                "https://discord.com/api/webhooks/1/SECRET",
+                Purpose::Cdn,
+                false,
+                Err("discord.com is not one of Discord's Cdn hosts"),
+            ),
+            (
+                "wss://xdiscord.media",
+                Purpose::Voice,
+                false,
+                Err("xdiscord.media is not one of Discord's Voice hosts"),
+            ),
+            (
+                "http://[::1]:4000/cdn/x",
+                Purpose::Cdn,
+                false,
+                Err("[::1]: Discord is reached on its default port"),
+            ),
+            (
+                "http://user@127.0.0.1:4000/api",
+                Purpose::Api,
+                true,
+                Err("127.0.0.1: credentials in a URL are not allowed"),
+            ),
+            (
+                "ftp://127.0.0.1/x",
+                Purpose::Cdn,
+                true,
+                Err("127.0.0.1: unsupported scheme ftp"),
+            ),
+            (
+                "https://localhost.evil.example/",
+                Purpose::Api,
+                true,
+                Err("localhost.evil.example is not one of Discord's Api hosts"),
+            ),
+            (
+                "http://127.0.0.1.evil.example:4000/",
+                Purpose::Api,
+                true,
+                Err("127.0.0.1.evil.example: Discord is reached on its default port"),
+            ),
+        ] {
+            let checked = Egress { allow_loopback }.check(&Url::parse(url).unwrap(), purpose);
+            assert_eq!(
+                checked,
+                expected.map_err(str::to_owned),
+                "{url} for {purpose:?}"
+            );
+        }
+    }
+
+    /// Voice media goes to public addresses only: every range no voice
+    /// server of Discord's is in is refused, and loopback too unless the
+    /// configuration allows it.
+    #[test]
+    fn voice_media_goes_to_public_addresses_only() {
+        for (ip, strict, with_loopback) in [
+            ("162.159.128.233", true, true),
+            ("172.15.255.255", true, true),
+            ("172.32.0.1", true, true),
+            ("2606:4700:4700::1111", true, true),
+            ("127.0.0.1", false, true),
+            ("127.255.255.254", false, true),
+            ("::1", false, true),
+            ("10.0.0.1", false, false),
+            ("172.16.0.1", false, false),
+            ("172.31.255.255", false, false),
+            ("192.168.1.1", false, false),
+            ("169.254.0.1", false, false),
+            ("0.0.0.0", false, false),
+            ("255.255.255.255", false, false),
+            ("224.0.0.1", false, false),
+            ("239.255.255.255", false, false),
+            ("192.0.2.1", false, false),
+            ("198.51.100.1", false, false),
+            ("203.0.113.1", false, false),
+            ("::", false, false),
+            ("ff02::1", false, false),
+            ("fc00::1", false, false),
+            ("fd12:3456::1", false, false),
+            ("fe80::1", false, false),
+        ] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            assert_eq!(
+                Egress::default().check_voice_udp(ip).is_ok(),
+                strict,
+                "{ip}"
+            );
+            let fake = Egress {
+                allow_loopback: true,
+            };
+            assert_eq!(
+                fake.check_voice_udp(ip).is_ok(),
+                with_loopback,
+                "{ip} with loopback allowed"
+            );
+        }
+        assert_eq!(
+            Egress::default()
+                .check_voice_udp([127, 0, 0, 1].into())
+                .unwrap_err(),
+            "127.0.0.1: a voice server on loopback is not Discord"
+        );
+        assert_eq!(
+            Egress::default()
+                .check_voice_udp([10, 0, 0, 1].into())
+                .unwrap_err(),
+            "10.0.0.1 is not a public address, as Discord's voice servers have"
+        );
+    }
 }
